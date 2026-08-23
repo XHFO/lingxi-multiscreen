@@ -10,6 +10,13 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.3.1", date: "2026-08-23", notes: [
+            "自定义图像模块解耦：键盘与墨水屏画板互相独立设定——先知/摘录画板可各自独立选择与替换图片（按各自屏幕比例裁切，先知 1:1、摘录 296:152），互不串扰；键盘「背景」模式下图片模块不再占用模块高度，可容纳更多模块。",
+            "少数派推荐：键盘卡片最多显示三条（推荐优先、不足时以最新文章补齐）；文章多于三条时可开启「进入本页随机推送三条」，每次进入随机抽取并推送到键盘。",
+            "正在播放纳入卡片管理：可拖拽排序、开关侧栏显示与自动轮播参与。",
+            "口袋先知画板：保存的画板支持重命名。",
+            "新增基于 GitHub 仓库的更新提醒：启动自动检查最新版本（6 小时节流），发现新版本在「设置 → 关于」提示并可一键前往下载。",
+        ]),
         ReleaseNote(id: "1.3.0", date: "2026-08-23", notes: [
             "新增多设备管理：灵犀68 键盘 / 口袋先知 / 摘录均支持添加多台设备，每台设备独立保存连接信息与画板设置；侧栏按设备分组展示，卡片管理按键盘设备独立记录；设备支持启用/禁用（禁用后侧栏隐藏）；删除设备需二次确认，允许删光全部设备。",
             "卡片管理（原「卡片轮换」更名）：统一管理各卡片在侧栏的显示、自动轮播的参与与顺序（拖拽排序，顺序同时决定侧栏与轮播）；新添加的键盘设备默认无卡片并提示去卡片管理添加。",
@@ -48,8 +55,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.3.0"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.3.1"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
+    }
+
+    /// 当前短版本号（如 1.3.0，不含构建号），用于与 GitHub 最新版本比较
+    static var currentShortVersion: String {
+        let info = Bundle.main.infoDictionary
+        return info?["CFBundleShortVersionString"] as? String ?? "1.3.1"
     }
 }

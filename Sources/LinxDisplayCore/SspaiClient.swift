@@ -82,15 +82,25 @@ public enum SspaiClient {
                                          recommendTime: recommendTime))
         }
 
+        // 编辑推荐优先（按推荐时间倒序）；推荐不足时用最新文章补齐，
+        // 保证列表始终有足够内容（键盘卡片取前 3 不会因近期推荐少而显示不足）
         let recommended = articles
             .compactMap { article -> (SspaiArticle, Date)? in
                 article.recommendTime.map { (article, $0) }
             }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
-        if !recommended.isEmpty {
-            return recommended
+        let latest = articles.sorted { $0.id > $1.id }
+        var merged: [SspaiArticle] = []
+        var seen = Set<Int>()
+        for article in recommended {
+            merged.append(article)
+            seen.insert(article.id)
         }
-        return articles.sorted { $0.id > $1.id }
+        for article in latest where !seen.contains(article.id) {
+            merged.append(article)
+            seen.insert(article.id)
+        }
+        return merged
     }
 }

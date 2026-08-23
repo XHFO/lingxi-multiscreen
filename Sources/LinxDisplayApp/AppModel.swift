@@ -196,6 +196,8 @@ public final class AppModel: ObservableObject {
         Task { await activateMode() }
         // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
         ensureRand0Session()
+        // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
+        Task { await checkForUpdate() }
     }
 
     /// 设备设置同步防重入（同步操作会再次触发 onChange）
@@ -754,6 +756,72 @@ public final class AppModel: ObservableObject {
 
     // MARK: - 画板编辑
 
+    /// 各画板图像模块自己的图片路径（键盘用自定义图片；先知/摘录各自独立）
+    public func canvasImagePath(for owner: CanvasOwner) -> String? {
+        switch owner {
+        case .keyboard: return settings.customImagePath
+        case .oracle: return settings.oracleCanvasImagePath
+        case .excerpt: return settings.excerptCanvasImagePath
+        }
+    }
+
+    /// 各画板图像模块当前图片名
+    public func canvasImageName(for owner: CanvasOwner) -> String? {
+        switch owner {
+        case .keyboard: return settings.customImageName
+        case .oracle: return settings.oracleCanvasImageName
+        case .excerpt: return settings.excerptCanvasImageName
+        }
+    }
+
+    /// 为指定画板选择/替换图像模块的图片：按该画板屏幕比例裁切后保存（键盘/先知/摘录各自独立）
+    public func pickCanvasImage(for owner: CanvasOwner) async {
+        let panel = NSOpenPanel()
+        panel.title = "选择画板图片（按屏幕比例裁切）"
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .heic]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let image = NSImage(contentsOf: url) else {
+            status = "无法读取所选图片"
+            return
+        }
+        if owner == .keyboard {
+            showCropEditor(image: image, sourceURL: url)
+        } else if owner == .oracle {
+            showCropEditor(image: image, sourceURL: url,
+                           cropRatio: 1.0, owner: .oracle) // 先知 200×200 方形
+        } else {
+            showCropEditor(image: image, sourceURL: url,
+                           cropRatio: 296.0 / 152.0, owner: .excerpt) // 摘录 296×152
+        }
+    }
+
+    /// 设置指定画板图像模块的图片（先知/摘录各自独立存储）
+    public func setCanvasImage(url: URL, displayName: String?, owner: CanvasOwner) async {
+        guard owner != .keyboard else {
+            await setCustomImage(url: url, displayName: displayName)
+            return
+        }
+        do {
+            let destination = try store.saveHistoryImage(from: url)
+            let name = displayName ?? url.lastPathComponent
+            switch owner {
+            case .keyboard: break
+            case .oracle:
+                settings.oracleCanvasImagePath = destination.path
+                settings.oracleCanvasImageName = name
+            case .excerpt:
+                settings.excerptCanvasImagePath = destination.path
+                settings.excerptCanvasImageName = name
+            }
+            persistSettings()
+            refreshDevicePreview(for: owner)
+            status = "已更新\(owner == .oracle ? "先知" : "摘录")画板图片"
+        } catch {
+            status = Self.friendly(error)
+        }
+    }
+
     /// 添加一个画板模块（已存在则忽略）
     public func addCanvasModule(_ module: CanvasModule, to owner: CanvasOwner = .keyboard) {
         let key = modulesKeyPath(for: owner)
@@ -1102,6 +1170,36 @@ public final class AppModel: ObservableObject {
         return "剩余 \(Int((tracked * 100).rounded()))%"
     }
 
+    /// 少数派推荐：键盘卡片当前展示的随机三条（nil = 按推荐顺序取前三条）
+    @Published private var keyboardSspaiSelection: [SspaiArticle]?
+
+    /// 键盘少数派卡片使用的文章：随机模式下用已抽取的三条，否则用推荐顺序的前三条
+    var keyboardSspaiArticles: [SspaiArticle] {
+        keyboardSspaiSelection ?? sspaiArticles
+    }
+
+    /// 重新随机抽取三条少数派文章（文章多于三条时）
+    private func rollSspaiRandom() {
+        guard sspaiArticles.count > 3 else {
+            keyboardSspaiSelection = nil
+            return
+        }
+        keyboardSspaiSelection = Array(sspaiArticles.shuffled().prefix(3))
+    }
+
+    /// 进入「少数派推荐」页：开启随机推送且文章多于三条时，重新随机抽取三条并推送到键盘
+    public func enterSspaiPage() async {
+        guard settings.sspaiRandomPush else { return }
+        _ = await fetchSspai()   // 先刷新文章池
+        rollSspaiRandom()        // 再随机抽取三条
+        if settings.displayMode != .sspai {
+            setMode(.sspai)      // 切到少数派卡片并推送
+        } else {
+            renderPreview()
+            await push(force: true)
+        }
+    }
+
     /// 抓取少数派推荐文章；内容有变化返回 true（用于触发推送）
     private func fetchSspai() async -> Bool {
         do {
@@ -1340,7 +1438,8 @@ public final class AppModel: ObservableObject {
                                                 palette: oraclePalette,
                                                 flipVertical: rotate,
                                                 flipHorizontal: rotate,
-                                                nowPlayingHorizontal: settings.oracleNowPlayingHorizontal)
+                                                nowPlayingHorizontal: settings.oracleNowPlayingHorizontal,
+                                                canvasImagePath: settings.oracleCanvasImagePath)
     }
 
     /// 口袋先知画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -1374,7 +1473,8 @@ public final class AppModel: ObservableObject {
                                                  flipHorizontal: rotate,
                                                  columns: settings.excerptLayoutColumns,
                                                  fullWidthModules: Set(settings.excerptFullWidthModules),
-                                                 nowPlayingHorizontal: settings.excerptNowPlayingHorizontal)
+                                                 nowPlayingHorizontal: settings.excerptNowPlayingHorizontal,
+                                                 canvasImagePath: settings.excerptCanvasImagePath)
     }
 
     /// 摘录画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -1566,6 +1666,15 @@ public final class AppModel: ObservableObject {
         guard next != current else { return false }
         applyOracleCanvasBoard(at: next)
         return true
+    }
+
+    /// 口袋先知多画板：重命名画板
+    public func renameOracleCanvasBoard(id: UUID, to name: String) {
+        guard let index = settings.oracleCanvasBoards.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        settings.oracleCanvasBoards[index].name = trimmed
+        status = "已重命名画板"
     }
 
     /// 口袋先知多画板：删除指定画板（删除当前画板时套用新的当前画板）
@@ -2009,13 +2118,18 @@ public final class AppModel: ObservableObject {
     }
 
     /// 弹出裁切编辑器，按屏幕显示区域比例选择图片显示部分
-    private func showCropEditor(image: NSImage, sourceURL: URL) {
+    /// - Parameters:
+    ///   - cropRatio: 目标画板宽高比（nil = 键盘 142×(428-安全区)）
+    ///   - owner: 图片归属画板（键盘走自定义图片，先知/摘录存各自画板图片）
+    private func showCropEditor(image: NSImage, sourceURL: URL,
+                                cropRatio: CGFloat? = nil,
+                                owner: CanvasOwner = .keyboard) {
         let editor = CropEditorView(
             sourceImage: image,
-            safeAreaHeight: settings.safeAreaHeight,
+            cropRatio: cropRatio ?? (142.0 / CGFloat(428 - settings.safeAreaHeight)),
             onConfirm: { [weak self] cropped in
                 Task { @MainActor in
-                    await self?.applyCroppedImage(cropped, sourceURL: sourceURL)
+                    await self?.applyCroppedImage(cropped, sourceURL: sourceURL, owner: owner)
                 }
             },
             onCancel: { [weak self] in
@@ -2043,8 +2157,9 @@ public final class AppModel: ObservableObject {
         cropWindow = window
     }
 
-    /// 把裁切后的图片保存为自定义图片并推送
-    private func applyCroppedImage(_ cropped: CGImage, sourceURL: URL) async {
+    /// 把裁切后的图片保存为对应画板的图片并推送
+    private func applyCroppedImage(_ cropped: CGImage, sourceURL: URL,
+                                   owner: CanvasOwner = .keyboard) async {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("linx-crop-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: tempURL) }
@@ -2059,7 +2174,7 @@ public final class AppModel: ObservableObject {
             return
         }
         closeCropEditor()
-        await setCustomImage(url: tempURL, displayName: sourceURL.lastPathComponent)
+        await setCanvasImage(url: tempURL, displayName: sourceURL.lastPathComponent, owner: owner)
     }
 
     private func closeCropEditor() {
@@ -2186,15 +2301,15 @@ public final class AppModel: ObservableObject {
 
     // MARK: - 卡片管理（排序 / 侧栏显示 / 自动循环，按键盘设备独立）
 
-    /// 某台键盘设备侧栏显示的卡片（有序可见列表；nil = 旧设备未配置，回退侧栏排序的全部卡片）
+    /// 某台键盘设备侧栏显示的卡片（有序可见列表；nil = 旧设备未配置，回退侧栏排序的全部卡片，含正在播放）
     func keyboardCardList(for deviceID: UUID) -> [Panel] {
         guard let device = settings.devices.first(where: { $0.id == deviceID }) else { return [] }
         if let panels = device.settings.keyboardCardPanels {
             return panels.compactMap(Panel.init(rawValue:))
         }
-        // 未配置（旧设备）：按侧栏排序派生全部卡片
+        // 未配置（旧设备）：按侧栏排序派生全部卡片（含正在播放）
         return Panel.orderedKeyboardItems(settings.sidebarOrder)
-            .filter { $0 != .nowPlaying && $0 != .devices && $0 != .cardRotation }
+            .filter { $0 != .devices && $0 != .cardRotation }
     }
 
     /// 活动键盘设备的可见卡片列表
@@ -2207,7 +2322,7 @@ public final class AppModel: ObservableObject {
     var keyboardHiddenCardList: [Panel] {
         let visible = Set(activeKeyboardCardList.map(\.rawValue))
         return Panel.orderedKeyboardItems(settings.sidebarOrder)
-            .filter { $0 != .nowPlaying && $0 != .devices && $0 != .cardRotation && !visible.contains($0.rawValue) }
+            .filter { $0 != .devices && $0 != .cardRotation && !visible.contains($0.rawValue) }
     }
 
     /// 设置活动键盘设备某张卡片是否显示在侧栏（先写全局镜像再写设备快照，防 sync 覆盖）
@@ -2251,6 +2366,37 @@ public final class AppModel: ObservableObject {
         settings.sidebarOrder = []
         persistSettings()
         status = "已恢复默认菜单顺序"
+    }
+
+    /// 检测到的新版本（nil = 未发现更新）
+    @Published public var updateAvailable: GitHubReleaseInfo?
+    /// 更新检查状态说明（nil = 未检查；"已是最新版本" 等）
+    @Published public var updateStatusText: String?
+    /// 更新检查进行中
+    @Published public var updateChecking = false
+
+    /// 检查 GitHub 仓库是否有新版本（force = 忽略节流立即检查）
+    public func checkForUpdate(force: Bool = false) async {
+        guard !updateChecking else { return }
+        if !force, let last = settings.lastUpdateCheckAt,
+           Date().timeIntervalSince(last) < 6 * 3600 { return }
+        updateChecking = true
+        defer { updateChecking = false }
+        settings.lastUpdateCheckAt = Date()
+        do {
+            let release = try await GitHubReleaseClient.fetchLatestRelease()
+            if GitHubReleaseClient.isNewer(latest: release.tag,
+                                           than: ReleaseNotes.currentShortVersion) {
+                updateAvailable = release
+                updateStatusText = "发现新版本 \(release.tag)"
+                status = "发现新版本 \(release.tag)，可在「设置 → 关于」中查看下载"
+            } else {
+                updateAvailable = nil
+                updateStatusText = "已是最新版本"
+            }
+        } catch {
+            updateStatusText = nil // 离线/限流时静默，不打扰
+        }
     }
 
     // MARK: - 菜单栏目标键盘（多台键盘时指定快捷切换控制哪一台）
@@ -2345,7 +2491,7 @@ public final class AppModel: ObservableObject {
         case .excerptQuote:
             return try ScreenRenderer.renderExcerptQuote(quote: quoteDisplayText, settings: settings, now: Date())
         case .sspai:
-            return try ScreenRenderer.renderSspai(articles: sspaiArticles, settings: settings, now: Date())
+            return try ScreenRenderer.renderSspai(articles: keyboardSspaiArticles, settings: settings, now: Date())
         case .emojiWallpaper:
             return try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: Date())
         case .nowPlaying:

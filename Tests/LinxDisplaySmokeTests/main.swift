@@ -1784,6 +1784,14 @@ func testCanvasCustomization() throws {
                                           palette: ScreenThemes.einkMono,
                                           nowPlayingHorizontal: settings.oracleNowPlayingHorizontal)
     }
+    func renderDeviceImageModes(_ settings: AppSettings) -> CGImage {
+        ScreenRenderer.renderDeviceCanvas(modules: [CanvasModule.image, .clock], system: system,
+                                          nowPlaying: npWithArt, pomodoro: pomodoro,
+                                          customText: "", settings: settings, now: fixed,
+                                          width: ScreenRenderer.oracleCanvasSize,
+                                          height: ScreenRenderer.oracleCanvasSize,
+                                          palette: ScreenThemes.einkMono)
+    }
     let oraVertical = renderOracle(s)
     s.oracleNowPlayingHorizontal = true
     let oraHorizontal = renderOracle(s)
@@ -1806,7 +1814,7 @@ func testCanvasCustomization() throws {
     let oraKeyOn = renderOracle(s)
     check(bitmapEqual(oraVertical, oraKeyOn), "键盘画板智能取色开关不应影响先知画板渲染")
 
-    // 自定义图像模块：背景 / 叠加两种模式
+    // 自定义图像模块：键盘画板背景 / 叠加两模式渲染应不同；墨水屏画板固定叠加不受模式影响
     s.canvasModules = [CanvasModule.image.rawValue, CanvasModule.clock.rawValue]
     s.customImagePath = path.path
     s.canvasImageMode = .background
@@ -1816,7 +1824,13 @@ func testCanvasCustomization() throws {
     s.canvasImageMode = .overlay
     let overlayMode = try render()
     check(overlayMode.data.count <= ScreenRenderer.maximumFileSize, "图像叠加模式大小")
-    check(bgMode.data != overlayMode.data, "背景/叠加两模式渲染应不同")
+    check(bgMode.data != overlayMode.data, "键盘画板背景/叠加两模式渲染应不同")
+    // 墨水屏画板：图片模块固定叠加，两种模式设置渲染一致
+    s.canvasImageMode = .background
+    let einkBG = renderDeviceImageModes(s)
+    s.canvasImageMode = .overlay
+    let einkOV = renderDeviceImageModes(s)
+    check(bitmapEqual(einkBG, einkOV), "墨水屏画板不受图像模式影响")
 
     // 设置往返
     let rt = AppSettings()
@@ -2650,9 +2664,10 @@ func testCanvasOracleExcerpt() async throws {
     ],"total":3}
     """
     let sspaiParsed = try SspaiClient.parseArticles(Data(sspaiJSON.utf8))
-    checkEqual(sspaiParsed.count, 2, "少数派解析应只保留编辑推荐")
+    checkEqual(sspaiParsed.count, 3, "少数派解析：推荐优先 + 最新补齐")
     checkEqual(sspaiParsed.first?.title, "最新推荐", "少数派推荐应按推荐时间倒序")
     checkEqual(sspaiParsed.first?.author, "作者甲", "少数派作者解析")
+    checkEqual(sspaiParsed[2].id, 3, "推荐不足时用最新文章补齐（键盘卡片始终够 3 条）")
     let sspaiFallbackJSON = """
     {"list":[{"id":3,"title":"第三篇","author":"作者C"},{"id":1,"title":"第一篇","author":"作者A"}]}
     """
@@ -2663,6 +2678,12 @@ func testCanvasOracleExcerpt() async throws {
     checkEqual(sspaiCard.image.height, 428, "少数派卡片高度")
     check(sspaiCard.data.count <= ScreenRenderer.maximumFileSize, "少数派卡片大小")
     checkEqual(DisplayMode.sspai.title, "少数派推荐", "少数派模式标题")
+    // GitHub 更新版本比较
+    check(GitHubReleaseClient.isNewer(latest: "v1.4.0", than: "1.3.0"), "更新版本比较-新版本")
+    check(!GitHubReleaseClient.isNewer(latest: "v1.2.0", than: "1.3.0"), "更新版本比较-旧版本")
+    check(!GitHubReleaseClient.isNewer(latest: "v1.3.0", than: "1.3.0"), "更新版本比较-相同版本")
+    check(GitHubReleaseClient.isNewer(latest: "1.10.0", than: "1.9.9"), "更新版本比较-多段数值")
+    check(GitHubReleaseClient.isNewer(latest: "v2.0", than: "1.3.0"), "更新版本比较-跨主版本")
     check(DisplayMode.allCases.contains(.sspai), "少数派模式应参与卡片轮换选项")
     let sspaiRT = AppSettings()
     sspaiRT.sspaiRefreshMinutes = 45
@@ -3107,6 +3128,26 @@ func testDeviceManagement() throws {
     clampEmpty.oracleCanvasBoardIndex = 5
     clampEmpty.clamped()
     checkEqual(clampEmpty.oracleCanvasBoardIndex, 0, "空画板列表下标归零")
+
+    // 画板图像模块独立图片：先知/摘录各自独立，与键盘自定义图片解耦
+    let imgSource = AppSettings()
+    imgSource.customImagePath = "/kbd.png"
+    imgSource.oracleCanvasImagePath = "/oracle.png"
+    imgSource.oracleCanvasImageName = "先知图"
+    imgSource.excerptCanvasImagePath = "/excerpt.png"
+    let oraImgCap = DeviceSettings.capture(from: imgSource, type: .oracle)
+    checkEqual(oraImgCap.canvasImagePath, "/oracle.png", "先知画板图片独立捕获")
+    checkEqual(oraImgCap.canvasImageName, "先知图", "先知画板图片名捕获")
+    let exImgCap = DeviceSettings.capture(from: imgSource, type: .excerpt)
+    checkEqual(exImgCap.canvasImagePath, "/excerpt.png", "摘录画板图片独立捕获")
+    let imgTarget = AppSettings()
+    oraImgCap.apply(to: imgTarget, type: .oracle)
+    checkEqual(imgTarget.oracleCanvasImagePath, "/oracle.png", "先知画板图片独立套用")
+    check(imgTarget.customImagePath == nil, "先知画板图片不影响键盘自定义图片")
+    let imgRT = AppSettings()
+    imgRT.oracleCanvasImagePath = "/o.png"
+    let imgDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(imgRT))
+    checkEqual(imgDecoded.oracleCanvasImagePath, "/o.png", "先知画板图片编码往返")
     let exCap = DeviceSettings.capture(from: source, type: .excerpt)
     checkEqual(exCap.excerptCanvasModules, [13, 0], "摘录快照-模块")
     checkEqual(exCap.excerptPushRawImage, true, "摘录快照-原始推送")

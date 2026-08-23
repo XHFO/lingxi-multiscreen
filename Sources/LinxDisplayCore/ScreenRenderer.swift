@@ -353,7 +353,8 @@ public enum ScreenRenderer {
         // 画板专用底色模式（手动深/浅色）覆盖默认调色板
         let basePalette = palette ?? settings.resolvedPalette
 
-        // 背景模式：图像模块铺满整卡作底（其上叠加深色蒙版保证文字可读）
+        // 背景模式：图像模块铺满整卡作底（其上叠加深色蒙版保证文字可读）。
+        // 图像模式仅键盘画板可选；墨水屏画板图片模块固定按叠加模块显示
         let useImageBackground = modules.contains(.image)
             && settings.canvasImageMode == .background
             && isCanvasImageReady(settings.customImagePath)
@@ -370,9 +371,10 @@ public enum ScreenRenderer {
             colors = ScreenThemes.get(.deepSpace) // 深色系，保证图上文字可读
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            drawImageCover(ctx, path: path,
-                           into: CGRect(x: 0, y: CGFloat(safe), width: CGFloat(width),
-                                        height: CGFloat(height) - CGFloat(safe)))
+            // 背景模式：图片等比完整显示（contain，不裁剪不变形），其他模块叠加其上
+            drawImageContain(ctx, path: path,
+                             into: CGRect(x: 0, y: CGFloat(safe), width: CGFloat(width),
+                                          height: CGFloat(height) - CGFloat(safe)))
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.5))
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
             c = CGRect(x: 9, y: CGFloat(safe) + 1, width: 124,
@@ -402,7 +404,8 @@ public enum ScreenRenderer {
         } else {
             let region = CGRect(x: c.minX + 8, y: regionTop,
                                 width: c.maxX - c.minX - 16, height: regionHeight)
-            let bands = moduleBands(modules: modules, region: region, settings: settings)
+            let bands = moduleBands(modules: modules, region: region, settings: settings,
+                                    zeroHeightImageModule: useImageBackground)
             for (index, module) in modules.enumerated() {
                 drawCanvasModule(ctx, module, band: bands[index], colors: colors,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
@@ -419,17 +422,20 @@ public enum ScreenRenderer {
     /// 模块加权分带：模块上下边距越大（紧凑度越高）权重越小、占用高度越少。
     /// columns=2 时按双列流式排列：普通模块占一列，fullWidthModules 中的模块占满整行；
     /// 行高按该行最大权重计算（同行的两个模块等高）。
+    /// zeroHeightImageModule=true 时图像模块占位为 0（键盘画板背景模式下让其他模块占满整卡）。
     private static func moduleBands(modules: [CanvasModule], region: CGRect,
                                     settings: AppSettings,
                                     columns: Int = 1,
-                                    fullWidthModules: Set<Int> = []) -> [CGRect] {
+                                    fullWidthModules: Set<Int> = [],
+                                    zeroHeightImageModule: Bool = false) -> [CGRect] {
         let weights = modules.map { m -> CGFloat in
+            if zeroHeightImageModule && m == .image { return 0 }
             let margin = settings.canvasMargin(for: m)
             return max(0.25, 1.0 - CGFloat(margin) / 40.0)
         }
         var bands: [CGRect] = []
         if columns <= 1 || modules.count <= 1 {
-            let totalWeight = weights.reduce(0, +)
+            let totalWeight = max(weights.reduce(0, +), 0.01)
             var cursor = region.minY
             for (index, _) in modules.enumerated() {
                 let bandHeight = region.height * weights[index] / totalWeight
@@ -510,7 +516,8 @@ public enum ScreenRenderer {
                                           flipHorizontal: Bool = false,
                                           columns: Int = 1,
                                           fullWidthModules: Set<Int> = [],
-                                          nowPlayingHorizontal: Bool = false) -> CGImage {
+                                          nowPlayingHorizontal: Bool = false,
+                                          canvasImagePath: String? = nil) -> CGImage {
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
@@ -548,7 +555,8 @@ public enum ScreenRenderer {
                                  nowPlayingSmartBg: false,
                                  fullWidth: fullWidthModules.contains(module.rawValue),
                                  deviceCanvas: true,
-                                 nowPlayingHorizontal: nowPlayingHorizontal)
+                                 nowPlayingHorizontal: nowPlayingHorizontal,
+                                 canvasImagePath: canvasImagePath)
             }
         }
         var result = ctx.makeImage() ?? placeholderCanvas()
@@ -639,6 +647,30 @@ public enum ScreenRenderer {
         ctx.restoreGState()
     }
 
+    /// 完整绘制图片（contain）：等比缩放完整显示，不裁剪不变形；比例不符时居中留边
+    private static func drawImageContain(_ ctx: CGContext, path: String, into target: CGRect) {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let original = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return }
+        let targetRatio = target.width / target.height
+        let sourceRatio = CGFloat(original.width) / CGFloat(original.height)
+        let drawRect: CGRect
+        if sourceRatio > targetRatio {
+            // 图更宽：按宽度撑满，上下留边
+            let h = target.width / sourceRatio
+            drawRect = CGRect(x: target.minX, y: target.minY + (target.height - h) / 2,
+                              width: target.width, height: h)
+        } else {
+            // 图更高：按高度撑满，左右留边
+            let w = target.height * sourceRatio
+            drawRect = CGRect(x: target.minX + (target.width - w) / 2, y: target.minY,
+                              width: w, height: target.height)
+        }
+        ctx.saveGState()
+        ctx.interpolationQuality = .high
+        ctx.draw(original, in: rect(drawRect))
+        ctx.restoreGState()
+    }
+
     /// 绘制单个画板模块（band 为 Skia 语义的横带）；imageOverlayOnly=true 时图像模块强制按叠加绘制；
     /// nowPlayingSmartBg=true 时正在播放模块用封面主色填充模块底（键盘画板整卡背景已是封面主色时由
     /// canvasCoverBgActive=true 跳过，避免出现色差圆角块）
@@ -653,7 +685,8 @@ public enum ScreenRenderer {
                                          canvasCoverBgActive: Bool = false,
                                          fullWidth: Bool = false,
                                          deviceCanvas: Bool = false,
-                                         nowPlayingHorizontal: Bool = false) {
+                                         nowPlayingHorizontal: Bool = false,
+                                         canvasImagePath: String? = nil) {
         let w = band.width
         switch module {
         case .clock:
@@ -895,11 +928,13 @@ public enum ScreenRenderer {
             drawText(ctx, text, size: size, bold: true, color: colors.accentCG,
                      in: rect(band.minX, band.minY, w, band.height), align: .center)
         case .image:
-            // 「叠加」模式：图像作为一个模块铺满当前横带；「背景」模式在 renderCanvas 中已整卡铺底，此处不再重复
-            if settings.canvasImageMode == .background && !imageOverlayOnly {
+            // 「叠加」模式：图像作为一个模块铺满当前横带；键盘画板「背景」模式在整卡已铺底，此处不再重复。
+            // 墨水屏画板图片模块固定按叠加绘制
+            if !deviceCanvas && settings.canvasImageMode == .background && !imageOverlayOnly {
                 break
             }
-            if isCanvasImageReady(settings.customImagePath), let path = settings.customImagePath {
+            let imagePath = canvasImagePath ?? settings.customImagePath
+            if isCanvasImageReady(imagePath), let path = imagePath {
                 drawImageCover(ctx, path: path, into: band)
                 strokeRound(ctx, rect(band), radius: 6, color: colors.borderCG, width: 1)
             } else {

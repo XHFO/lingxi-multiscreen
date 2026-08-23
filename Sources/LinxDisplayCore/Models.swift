@@ -161,7 +161,7 @@ public enum CanvasImageMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .background: return "背景（铺满整卡）"
+        case .background: return "背景（完整显示，模块叠加）"
         case .overlay: return "叠加（作为模块）"
         }
     }
@@ -885,6 +885,9 @@ public struct DeviceSettings: Codable, Equatable {
     public var excerptSspaiCount: Int?
     public var excerptSspaiRandom: Bool?
     public var excerptNowPlayingHorizontal: Bool?
+    /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
+    public var canvasImagePath: String?
+    public var canvasImageName: String?
 
     public init() {}
 
@@ -948,6 +951,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.oracleNowPlayingHorizontal = s.oracleNowPlayingHorizontal
             d.oracleCanvasBoards = s.oracleCanvasBoards
             d.oracleCanvasBoardIndex = s.oracleCanvasBoardIndex
+            d.canvasImagePath = s.oracleCanvasImagePath
+            d.canvasImageName = s.oracleCanvasImageName
             d.rand0ButtonTarget = s.rand0ButtonTarget
             d.rand0ButtonTargetDeviceID = s.rand0ButtonTargetDeviceID
         case .excerpt:
@@ -969,6 +974,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.excerptSspaiCount = s.excerptSspaiCount
             d.excerptSspaiRandom = s.excerptSspaiRandom
             d.excerptNowPlayingHorizontal = s.excerptNowPlayingHorizontal
+            d.canvasImagePath = s.excerptCanvasImagePath
+            d.canvasImageName = s.excerptCanvasImageName
         }
         return d
     }
@@ -1032,6 +1039,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = oracleNowPlayingHorizontal { s.oracleNowPlayingHorizontal = v }
             if let v = oracleCanvasBoards { s.oracleCanvasBoards = v }
             if let v = oracleCanvasBoardIndex { s.oracleCanvasBoardIndex = v }
+            if let v = canvasImagePath { s.oracleCanvasImagePath = v }
+            if let v = canvasImageName { s.oracleCanvasImageName = v }
             if let v = rand0ButtonTarget { s.rand0ButtonTarget = v }
             if let v = rand0ButtonTargetDeviceID { s.rand0ButtonTargetDeviceID = v }
         case .excerpt:
@@ -1053,6 +1062,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = excerptSspaiCount { s.excerptSspaiCount = v }
             if let v = excerptSspaiRandom { s.excerptSspaiRandom = v }
             if let v = excerptNowPlayingHorizontal { s.excerptNowPlayingHorizontal = v }
+            if let v = canvasImagePath { s.excerptCanvasImagePath = v }
+            if let v = canvasImageName { s.excerptCanvasImageName = v }
         }
     }
 }

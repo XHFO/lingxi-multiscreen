@@ -301,6 +301,9 @@ struct SettingsView: View {
     @State private var dragBoards: [OracleCanvasBoard]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
+    /// 待重命名的先知画板（非 nil 时弹出重命名输入框）
+    @State private var boardRenameTarget: OracleCanvasBoard?
+    @State private var boardRenameDraft = ""
 
     init(model: AppModel) {
         self.model = model
@@ -939,6 +942,9 @@ struct SettingsView: View {
     private var sspaiForm: some View {
         Group {
             Section {
+                Text("推送到键盘的少数派推荐卡片最多显示三条内容。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if model.sspaiArticles.isEmpty {
                     Text("正在获取少数派推荐文章…")
                         .font(.caption)
@@ -971,12 +977,23 @@ struct SettingsView: View {
                     Task { await model.refresh() }
                 }
             }
+            Section("推送") {
+                Toggle("文章多于三条时，进入本页随机推送三条到键盘", isOn: model.sspaiRandomPushBinding)
+                Text("开启后每次进入本页都会重新随机抽取三条推荐内容推送到键盘（文章不超过三条时按全部推送）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("刷新周期") {
                 Stepper("\(model.settings.sspaiRefreshMinutes) 分钟",
                         value: model.sspaiRefreshMinutesBinding, in: 5...240, step: 5)
                 Text("到点自动重新抓取编辑推荐文章并推送到键盘（内容变化时才会推送）；点击标题可在浏览器打开原文。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            if model.settings.sspaiRandomPush {
+                Task { await model.enterSspaiPage() }
             }
         }
     }
@@ -1226,6 +1243,20 @@ struct SettingsView: View {
             .frame(width: 280)
         }
         .padding(.bottom, 12)
+        .alert("重命名画板", isPresented: Binding(
+            get: { boardRenameTarget != nil },
+            set: { if !$0 { boardRenameTarget = nil } })) {
+            TextField("画板名称", text: $boardRenameDraft)
+            Button("确定") {
+                if let board = boardRenameTarget {
+                    model.renameOracleCanvasBoard(id: board.id, to: boardRenameDraft)
+                }
+                boardRenameTarget = nil
+            }
+            Button("取消", role: .cancel) {
+                boardRenameTarget = nil
+            }
+        }
         .onAppear {
             model.refreshOracleCanvasPreview()
             model.ensureRand0Session()
@@ -1252,6 +1283,14 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             Spacer()
+            Button {
+                boardRenameTarget = board
+                boardRenameDraft = board.name
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("重命名画板")
             Button(role: .destructive) {
                 model.removeOracleCanvasBoard(at: index)
             } label: {
@@ -1568,14 +1607,27 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             case .image:
-                Picker("图像模式", selection: model.canvasImageModeBinding) {
-                    ForEach(CanvasImageMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                if owner == .keyboard {
+                    Picker("图像模式", selection: model.canvasImageModeBinding) {
+                        ForEach(CanvasImageMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
                     }
+                    Text("背景：完整显示作为底层，其他模块叠加其上（自动加深）。叠加：作为一个模块显示。「自定义图片」中选择的图片即为此模块使用的图片。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Button("选择图片…") { Task { await model.pickCanvasImage(for: owner) } }
+                        Spacer()
+                        Text(model.canvasImageName(for: owner) ?? "未选择")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("为该画板独立选择图片（与键盘自定义图片互不影响），可随时替换；图片模块固定作为模块叠加显示。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Text("背景：铺满整卡作为底层（自动加深）。叠加：作为一个模块显示。「自定义图片」中选择的图片即为此模块使用的图片。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             case .sspai:
                 Stepper("显示 \(model.sspaiCount(for: owner)) 条",
                         value: model.sspaiCountBinding(for: owner), in: 1...6)
@@ -1781,10 +1833,30 @@ struct SettingsView: View {
             LabeledContent("版本", value: ReleaseNotes.currentVersion)
             LabeledContent("系统要求", value: "macOS 14+ · Apple 芯片")
             LabeledContent("驱动设备", value: "灵犀68 键盘 / 口袋先知 / 摘录")
+            if let release = model.updateAvailable {
+                Label("发现新版本 \(release.tag)", systemImage: "arrow.down.circle")
+                    .foregroundStyle(Color.accentColor)
+                if let url = release.htmlURL {
+                    Button("前往下载") { NSWorkspace.shared.open(url) }
+                }
+            } else if let text = model.updateStatusText {
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Button("检查更新") {
+                    Task { await model.checkForUpdate(force: true) }
+                }
+                if model.updateChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
         } header: {
             HStack(spacing: 4) {
                 Text("关于")
-                HelpIcon(text: "一套软件驱动三块屏幕；版本号随每次更新递增，可在本页查看当前版本与历史更新记录。")
+                HelpIcon(text: "一套软件驱动三块屏幕；版本号随每次更新递增，可在本页查看当前版本、历史更新记录，并检查 GitHub 仓库是否有新版本。")
             }
         }
         Section("版本更新日志") {
@@ -2669,7 +2741,8 @@ struct PreviewPanel: View {
 
 struct CropEditorView: View {
     let sourceImage: NSImage
-    let safeAreaHeight: Int
+    /// 裁切比例（宽/高）：键盘 142×428 带安全区、先知 200×200、摘录 296×152
+    let cropRatio: CGFloat
     let onConfirm: (CGImage) -> Void
     let onCancel: () -> Void
 
@@ -2677,11 +2750,6 @@ struct CropEditorView: View {
     @State private var zoom: CGFloat = 1.0
     @State private var gestureStartOffset: CGSize = .zero
     @State private var displaySize: CGSize = .zero
-
-    /// 屏幕显示区域比例：图片实际显示为 142 × (428 - 安全区)
-    private var cropRatio: CGFloat {
-        142.0 / CGFloat(428 - safeAreaHeight)
-    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -2885,6 +2953,10 @@ extension AppModel {
     var sspaiRefreshMinutesBinding: Binding<Double> {
         Binding(get: { Double(self.settings.sspaiRefreshMinutes) },
                 set: { self.settings.sspaiRefreshMinutes = Int($0.rounded()) })
+    }
+    var sspaiRandomPushBinding: Binding<Bool> {
+        Binding(get: { self.settings.sspaiRandomPush },
+                set: { self.settings.sspaiRandomPush = $0 })
     }
     var showCpuBinding: Binding<Bool> {
         Binding(get: { self.settings.showCpu }, set: { self.settings.showCpu = $0 })

@@ -14,6 +14,10 @@ public final class AppSettings: ObservableObject {
     @Published public var sspaiRefreshMinutes = 30 {
         didSet { onChange() }
     }
+    /// 少数派推荐：文章多于三条时，进入该页随机推送三条到键盘
+    @Published public var sspaiRandomPush = false {
+        didSet { onChange() }
+    }
     @Published public var dynamicUploadSeconds = 5 {
         didSet { onChange() }
     }
@@ -38,6 +42,20 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     @Published public var customImageName: String? {
+        didSet { onChange() }
+    }
+    /// 口袋先知画板图像模块自己的图片（与键盘自定义图片解耦，按设备独立）
+    @Published public var oracleCanvasImagePath: String? {
+        didSet { onChange() }
+    }
+    @Published public var oracleCanvasImageName: String? {
+        didSet { onChange() }
+    }
+    /// 摘录画板图像模块自己的图片（与键盘自定义图片解耦，按设备独立）
+    @Published public var excerptCanvasImagePath: String? {
+        didSet { onChange() }
+    }
+    @Published public var excerptCanvasImageName: String? {
         didSet { onChange() }
     }
     /// 最近使用的自定义图片（最多 9 条，最新在前）
@@ -386,6 +404,10 @@ public final class AppSettings: ObservableObject {
     @Published public var menuBarKeyboardDeviceID: UUID? {
         didSet { onChange() }
     }
+    /// 最近一次自动检查 GitHub 更新的时间（节流，避免频繁请求）
+    @Published public var lastUpdateCheckAt: Date? {
+        didSet { onChange() }
+    }
     /// 各类设备当前活动的设备 ID（nil = 使用该类第一台）
     @Published public var activeKeyboardDeviceID: UUID? {
         didSet { onChange() }
@@ -532,8 +554,9 @@ public final class AppSettings: ObservableObject {
     // MARK: - Codable（手动实现，与 @Published 兼容）
 
     private enum CodingKeys: String, CodingKey {
-        case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, dynamicUploadSeconds, safeAreaHeight,
+        case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, sspaiRandomPush, dynamicUploadSeconds, safeAreaHeight,
              jpegQuality, qwenQuotaBaseline, displayMode, cardTheme, customImagePath, customImageName,
+             oracleCanvasImagePath, oracleCanvasImageName, excerptCanvasImagePath, excerptCanvasImageName,
              customImageHistory,
              startWithSystem, codexCliPath, appearanceMode, backgroundTone,
              customBackgroundHex, accentTone, customAccentHex,
@@ -560,7 +583,7 @@ public final class AppSettings: ObservableObject {
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -576,6 +599,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(endpoint, forKey: .endpoint)
         try container.encode(codexRefreshSeconds, forKey: .codexRefreshSeconds)
         try container.encode(sspaiRefreshMinutes, forKey: .sspaiRefreshMinutes)
+        try container.encode(sspaiRandomPush, forKey: .sspaiRandomPush)
         try container.encode(dynamicUploadSeconds, forKey: .dynamicUploadSeconds)
         try container.encode(safeAreaHeight, forKey: .safeAreaHeight)
         try container.encode(jpegQuality, forKey: .jpegQuality)
@@ -584,6 +608,10 @@ public final class AppSettings: ObservableObject {
         try container.encode(cardTheme.rawValue, forKey: .cardTheme)
         try container.encodeIfPresent(customImagePath, forKey: .customImagePath)
         try container.encodeIfPresent(customImageName, forKey: .customImageName)
+        try container.encodeIfPresent(oracleCanvasImagePath, forKey: .oracleCanvasImagePath)
+        try container.encodeIfPresent(oracleCanvasImageName, forKey: .oracleCanvasImageName)
+        try container.encodeIfPresent(excerptCanvasImagePath, forKey: .excerptCanvasImagePath)
+        try container.encodeIfPresent(excerptCanvasImageName, forKey: .excerptCanvasImageName)
         try container.encode(customImageHistory, forKey: .customImageHistory)
         try container.encode(startWithSystem, forKey: .startWithSystem)
         try container.encodeIfPresent(codexCliPath, forKey: .codexCliPath)
@@ -655,6 +683,7 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(rand0ButtonTargetDeviceID, forKey: .rand0ButtonTargetDeviceID)
         try container.encode(devices, forKey: .devices)
         try container.encodeIfPresent(menuBarKeyboardDeviceID, forKey: .menuBarKeyboardDeviceID)
+        try container.encodeIfPresent(lastUpdateCheckAt, forKey: .lastUpdateCheckAt)
         try container.encodeIfPresent(activeKeyboardDeviceID, forKey: .activeKeyboardDeviceID)
         try container.encodeIfPresent(activeOracleDeviceID, forKey: .activeOracleDeviceID)
         try container.encodeIfPresent(activeExcerptDeviceID, forKey: .activeExcerptDeviceID)
@@ -686,6 +715,7 @@ extension AppSettings: Codable {
         endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? endpoint
         codexRefreshSeconds = try container.decodeIfPresent(Int.self, forKey: .codexRefreshSeconds) ?? codexRefreshSeconds
         sspaiRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .sspaiRefreshMinutes) ?? sspaiRefreshMinutes
+        sspaiRandomPush = try container.decodeIfPresent(Bool.self, forKey: .sspaiRandomPush) ?? sspaiRandomPush
         dynamicUploadSeconds = try container.decodeIfPresent(Int.self, forKey: .dynamicUploadSeconds) ?? dynamicUploadSeconds
         safeAreaHeight = try container.decodeIfPresent(Int.self, forKey: .safeAreaHeight) ?? safeAreaHeight
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? jpegQuality
@@ -700,6 +730,10 @@ extension AppSettings: Codable {
         }
         customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
         customImageName = try container.decodeIfPresent(String.self, forKey: .customImageName)
+        oracleCanvasImagePath = try container.decodeIfPresent(String.self, forKey: .oracleCanvasImagePath)
+        oracleCanvasImageName = try container.decodeIfPresent(String.self, forKey: .oracleCanvasImageName)
+        excerptCanvasImagePath = try container.decodeIfPresent(String.self, forKey: .excerptCanvasImagePath)
+        excerptCanvasImageName = try container.decodeIfPresent(String.self, forKey: .excerptCanvasImageName)
         customImageHistory = try container.decodeIfPresent([RecentImage].self, forKey: .customImageHistory) ?? []
         startWithSystem = try container.decodeIfPresent(Bool.self, forKey: .startWithSystem) ?? startWithSystem
         codexCliPath = try container.decodeIfPresent(String.self, forKey: .codexCliPath)
@@ -802,6 +836,7 @@ extension AppSettings: Codable {
         rand0ButtonTargetDeviceID = try container.decodeIfPresent(UUID.self, forKey: .rand0ButtonTargetDeviceID) ?? rand0ButtonTargetDeviceID
         devices = try container.decodeIfPresent([ManagedDevice].self, forKey: .devices) ?? devices
         menuBarKeyboardDeviceID = try container.decodeIfPresent(UUID.self, forKey: .menuBarKeyboardDeviceID)
+        lastUpdateCheckAt = try container.decodeIfPresent(Date.self, forKey: .lastUpdateCheckAt)
         activeKeyboardDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeKeyboardDeviceID) ?? activeKeyboardDeviceID
         activeOracleDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeOracleDeviceID) ?? activeOracleDeviceID
         activeExcerptDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeExcerptDeviceID) ?? activeExcerptDeviceID
