@@ -47,9 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         false // 关闭窗口后继续在菜单栏运行
     }
 
-    /// 安装全局番茄钟快捷键（⌃⌥Space / ⌃⌥→ / ⌃⌥⌫）
+    /// 安装全局番茄钟快捷键（默认 ⌃⌥Space / ⌃⌥→ / ⌃⌥⌫，可在番茄钟设置中自定义）
     private func installHotkeys() {
-        GlobalHotkeyManager.install { [weak self] action in
+        let shortcuts: [GlobalHotkeyManager.Action: GlobalShortcut] = MainActor.assumeIsolated {
+            [
+                .togglePomodoro: model?.settings.pomodoroToggleShortcut ?? .defaultToggle,
+                .skipPomodoro: model?.settings.pomodoroSkipShortcut ?? .defaultSkip,
+                .resetPomodoro: model?.settings.pomodoroResetShortcut ?? .defaultReset
+            ]
+        }
+        GlobalHotkeyManager.install(handler: { [weak self] action in
             MainActor.assumeIsolated {
                 guard let self, let model = self.model else { return }
                 switch action {
@@ -58,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .resetPomodoro: Task { await model.resetPomodoro() }
                 }
             }
-        }
+        }, shortcuts: shortcuts)
     }
 
     // MARK: - 菜单栏常驻图标（左键/右键均弹出菜单，含快速切换与番茄钟子菜单）
@@ -139,11 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if menu === self.pomodoroSubmenu || menu === self.statusItem?.menu {
                 let items = self.pomodoroSubmenu?.items ?? []
-                if let toggle = items.first {
-                    toggle.title = "\(model.pomodoroAction)  \(GlobalHotkeyManager.shortcutHint(for: .togglePomodoro))"
-                }
-                if let statusLabel = items.last {
-                    statusLabel.title = model.pomodoroStatus
+                if items.count >= 4 {
+                    items[0].title = "\(model.pomodoroAction)  \(GlobalHotkeyManager.shortcutHint(for: .togglePomodoro))"
+                    items[1].title = "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))"
+                    items[2].title = "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))"
+                    items[3].title = model.pomodoroStatus
                 }
             }
         }
@@ -172,8 +179,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.styleMask.insert(.fullSizeContentView)
         window.contentMinSize = NSSize(width: 700, height: 560)
         window.setFrameAutosaveName("LingxiMultiMainWindow")
-        // 使用常规不透明窗口（手动窗口环境下的可靠渲染方式），外观由 window.appearance 控制
-        window.isOpaque = true
         window.contentView = hosting
 
         let controller = NSWindowController(window: window)

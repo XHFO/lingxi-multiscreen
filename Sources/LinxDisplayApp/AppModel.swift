@@ -168,6 +168,73 @@ public final class AppModel: ObservableObject {
                 device.settings.apply(to: loaded, type: type)
             }
         }
+        wireSettingsHandlers()
+        applyStartupState()
+        startTimer()
+        renderPreview()
+        Task { await activateMode() }
+        // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
+        ensureRand0Session()
+        // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
+        Task { await checkForUpdate() }
+    }
+
+    /// 启动/恢复初始设定后把系统相关状态与设置对齐（登录项、外观、自动推送计时起点）。
+    /// 不包含 startTimer：定时器在 init 只启动一次，恢复初始设定复用本函数时不会重复建定时器。
+    private func applyStartupState() {
+        updateSoftwareDarkState()
+        settings.startWithSystem = startup.isEnabled()
+        // 自动推送开启时启动即推一次（推送内部会等待会话连接就绪）；未开启则从启动时刻起算间隔
+        lastOracleAutoPush = settings.oracleAutoPushEnabled ? nil : Date()
+        lastExcerptAutoPush = settings.excerptAutoPushEnabled ? nil : Date()
+    }
+
+    /// 恢复初始设定：清除全部设置、已添加的设备、自定义内容与自定义图片缓存，
+    /// 回到首次启动状态。调用前界面已完成多次确认。
+    public func resetToFactoryDefaults() {
+        // 1. 磁盘数据（设置/番茄钟/自定义图片/图片缓存）移入废纸篓（可恢复，不永久删除）
+        store.resetAllData()
+        // 2. 换入全新默认设置并重新接线 onChange
+        let fresh = AppSettings()
+        fresh.clamped()
+        settings = fresh
+        wireSettingsHandlers()
+        // 3. 重置内存运行态
+        pomodoro.reset()
+        usage = .sample
+        qwenQuota = .sample
+        sspaiArticles = []
+        sspaiRandomSelection = [:]
+        quoteOverrideIndex = nil
+        praiseText = nil
+        praiseUntil = nil
+        lastQuotaRefresh = nil
+        lastPushAttempt = nil
+        lastUploadedHash = nil
+        lastNowPlayingFetch = nil
+        lastTickDate = nil
+        lastImageRotation = nil
+        lastClockMinute = nil
+        lastCardRotation = nil
+        cardRotationIndex = 0
+        lastQuotePushText = nil
+        lastSspaiFetch = nil
+        lastSspaiHash = nil
+        rand0SessionIP = ""
+        rand0SessionEndpoint = .bw
+        // 4. 对齐系统状态、断开旧设备会话、持久化全新默认设置并刷新界面
+        applyStartupState()
+        ensureRand0Session()
+        persistSettings()
+        objectWillChange.send()
+        renderPreview()
+        refreshOracleCanvasPreview()
+        refreshExcerptCanvasPreview()
+        status = "已恢复初始设定：设备、自定义内容与图片缓存均已清除"
+    }
+
+    /// 给当前 settings 对象接线 onChange（init 与恢复初始设定共用）
+    private func wireSettingsHandlers() {
         settings.onChange = { [weak self] in
             MainActor.assumeIsolated {
                 self?.updateSoftwareDarkState()
@@ -178,6 +245,7 @@ public final class AppModel: ObservableObject {
                 // 同步活动设备设置（内部防重入），随后持久化
                 self?.syncActiveDeviceSettings()
                 self?.persistSettings()
+                self?.applyGlobalShortcuts()
                 self?.renderPreview()
                 self?.refreshOracleCanvasPreview()
                 self?.refreshExcerptCanvasPreview()
@@ -186,18 +254,6 @@ public final class AppModel: ObservableObject {
                 self?.ensureRand0Session()
             }
         }
-        updateSoftwareDarkState()
-        settings.startWithSystem = startup.isEnabled()
-        // 自动推送开启时启动即推一次（推送内部会等待会话连接就绪）；未开启则从启动时刻起算间隔
-        lastOracleAutoPush = settings.oracleAutoPushEnabled ? nil : Date()
-        lastExcerptAutoPush = settings.excerptAutoPushEnabled ? nil : Date()
-        startTimer()
-        renderPreview()
-        Task { await activateMode() }
-        // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
-        ensureRand0Session()
-        // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
-        Task { await checkForUpdate() }
     }
 
     /// 设备设置同步防重入（同步操作会再次触发 onChange）
@@ -294,25 +350,48 @@ public final class AppModel: ObservableObject {
         refreshExcerptCanvasPreview()
     }
 
-    /// 新增一台该类型设备（复制当前活动设备的设置作为起点，并设为活动）
+    /// 新增一台该类型设备（以当前活动设备设置为模板，但连接/凭证字段一律置空：
+    /// 新设备的 IP / API Key / 设备序列号等需要单独填写，与已有设备完全隔离、互不串扰）
     @discardableResult
     public func addDevice(type: DeviceType) -> UUID {
-        // 无活动设备时（如删光后重加）继承全局设置快照：连接信息等仍保留的内容照常显示，
-        // 避免「显示已清除但实际未清除」的不一致
-        let current = activeDevice(for: type)?.settings
+        // 屏蔽中间 onChange 的同步回写：添加过程涉及设备列表、全局镜像、活动设备多处变更，
+        // 若每次变更都触发 syncActiveDeviceSettings，会把全局旧值写回新设备快照、
+        // 或把置空后的全局值污染旧设备快照（卡片列表/连接信息串扰）
+        isSyncingDeviceSettings = true
+        defer { isSyncingDeviceSettings = false }
+        // 无活动设备时（如删光后重加）继承全局设置快照：非连接字段照常继承，连接字段随后统一置空
+        var current = activeDevice(for: type)?.settings
             ?? DeviceSettings.capture(from: settings, type: type)
         let count = devices(for: type).count
         let device = ManagedDevice(type: type,
                                    name: ManagedDevice.defaultName(for: type, index: count),
                                    settings: current)
         settings.devices.append(device)
+        let index = settings.devices.count - 1
         // 新键盘设备默认无卡片（空可见列表，侧栏显示去卡片管理的提示）；镜像先行防 sync 覆盖
         if type == .keyboard {
             settings.keyboardCardPanels = []
-            settings.devices[settings.devices.count - 1].settings.keyboardCardPanels = []
+            settings.devices[index].settings.keyboardCardPanels = []
+        }
+        // 连接/凭证字段置空：设备快照与全局镜像同步清空（镜像先行，与新设备实际状态一致）
+        switch type {
+        case .keyboard:
+            settings.endpoint = ""
+            settings.devices[index].settings.endpoint = ""
+        case .oracle:
+            settings.rand0IP = ""
+            settings.devices[index].settings.rand0IP = ""
+        case .excerpt:
+            settings.dotApiKey = ""
+            settings.dotDeviceId = ""
+            settings.devices[index].settings.dotApiKey = ""
+            settings.devices[index].settings.dotDeviceId = ""
         }
         setActiveDeviceID(type, device.id)
         persistSettings()
+        renderPreview()
+        refreshOracleCanvasPreview()
+        refreshExcerptCanvasPreview()
         return device.id
     }
 
@@ -494,20 +573,35 @@ public final class AppModel: ObservableObject {
 
     /// 正在拖拽调整侧边栏宽度（拖拽中跳过重量级刷新）
     private var sidebarResizing = false
+    /// 系统分隔条拖拽的防抖提交任务（最后一次宽度变化后 0.35s 统一持久化）
+    private var sidebarResizeDebounce: DispatchWorkItem?
 
     /// 拖拽开始：进入批处理模式
     public func beginSidebarResize() {
         sidebarResizing = true
     }
 
+    /// NavigationSplitView 原生分隔条拖拽：进入批处理模式并安排防抖提交
+    /// （原生分隔条没有拖拽开始/结束回调，用防抖代替松手时机）
+    public func noteSidebarResize() {
+        sidebarResizing = true
+        sidebarResizeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.finishSidebarResize() }
+        }
+        sidebarResizeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
     /// 拖拽中更新宽度（仅更新布局，不持久化/不重渲染预览）
     public func setSidebarWidth(_ width: Int) {
-        settings.sidebarWidth = min(max(width, 140), 280)
+        settings.sidebarWidth = min(max(width, 48), 320)
     }
 
     /// 拖拽结束：一次性持久化并刷新预览
     public func finishSidebarResize() {
         sidebarResizing = false
+        sidebarResizeDebounce = nil
         persistSettings()
         renderPreview()
     }
@@ -752,6 +846,20 @@ public final class AppModel: ObservableObject {
         settings.clockTimeFormat = trimmed.isEmpty ? "HH:mm" : trimmed
         lastClockMinute = nil
         persistSettings()
+    }
+
+    /// 恢复时钟叠加默认样式：字体 Helvetica Neue、纤细、36pt、HH:mm、无偏移；
+    /// 叠加开关与布局（顶部/底部/左/中）保持不变
+    public func resetClockOverlay() {
+        settings.clockFont = .helveticaNeue
+        settings.clockFontSize = 36
+        settings.clockFontWeight = .thin
+        settings.clockTimeFormat = "HH:mm"
+        settings.clockOffsetX = 0
+        settings.clockOffsetY = 0
+        lastClockMinute = nil
+        persistSettings()
+        renderPreview()
     }
 
     // MARK: - 画板编辑
@@ -1133,14 +1241,29 @@ public final class AppModel: ObservableObject {
         let outcome = await usageAggregator.fetch(codexCliPath: settings.codexCliPath)
         if let usage = outcome.usage { self.usage = usage }
         if let quota = outcome.quota {
-            // 千问额度百分比：以用户手动捕获的基线为 100%，按 当前/基线 算剩余百分比
-            // （未设置基线时 trackedProgress 为 nil，卡片显示「剩余 —%」并提示设置）
+            // 千问额度百分比：以基线为 100%，按 当前/基线 算剩余百分比。
+            // 基线每日自动采样（跨天后重新采样），同一日内额度回升超过基线（如每日赠送积分入账）
+            // 时自动把基线拉高到当前额度；未取得额度数据时基线保持 nil，卡片显示「剩余 —%」
             var updated = quota
+            applyQuotaBaselineSampling(remaining: quota.remainingCredits, now: Date())
             updated.trackedProgress = QwenWorkQuota.trackedQuotaProgress(
                 current: quota.remainingCredits, baseline: settings.qwenQuotaBaseline)
             qwenQuota = updated
         }
         return outcome.failures
+    }
+
+    /// 额度百分比基线自动采样：跨天重新采样 + 额度高于基线时拉高基线（基线变更经 onChange 自动持久化；
+    /// 值未变化时跳过赋值，避免每次刷新触发多余持久化/重渲染）
+    private func applyQuotaBaselineSampling(remaining: Double, now: Date) {
+        let result = QuotaBaselineSampler.sample(
+            baseline: settings.qwenQuotaBaseline,
+            baselineDay: settings.qwenQuotaBaselineDay,
+            remaining: remaining,
+            today: QuotaBaselineSampler.dayKey(now))
+        guard settings.qwenQuotaBaseline != result.baseline || settings.qwenQuotaBaselineDay != result.day else { return }
+        settings.qwenQuotaBaseline = result.baseline
+        settings.qwenQuotaBaselineDay = result.day
     }
 
     /// 手动把当前剩余额度抓取为百分比基线（100%）；之后每次减少按 当前/基线 计算
@@ -1150,10 +1273,11 @@ public final class AppModel: ObservableObject {
             return
         }
         settings.qwenQuotaBaseline = qwenQuota.remainingCredits
+        settings.qwenQuotaBaselineDay = QuotaBaselineSampler.dayKey(Date())
         var updated = qwenQuota
         updated.trackedProgress = 1
         qwenQuota = updated
-        status = "已把当前额度 \(String(format: "%.1f", qwenQuota.remainingCredits)) 设为 100% 基线"
+        status = "已把当前额度 \(String(format: "%.2f", qwenQuota.remainingCredits)) 设为 100% 基线"
         persistSettings()
         renderPreview()
     }
@@ -1161,12 +1285,12 @@ public final class AppModel: ObservableObject {
     /// 额度百分比基线说明文字（设置页显示）
     public var quotaBaselineText: String {
         guard let baseline = settings.qwenQuotaBaseline else { return "未设置" }
-        return String(format: "%.1f", baseline)
+        return String(format: "%.2f", baseline)
     }
 
-    /// 剩余百分比说明文字（设置页显示；未设基线时提示）
+    /// 剩余百分比说明文字（设置页显示；尚未取得额度数据时提示）
     public var qwenQuotaPercentText: String {
-        guard let tracked = qwenQuota.trackedProgress else { return "未设置基线" }
+        guard let tracked = qwenQuota.trackedProgress else { return "尚无额度数据" }
         return "剩余 \(Int((tracked * 100).rounded()))%"
     }
 
@@ -2011,7 +2135,7 @@ public final class AppModel: ObservableObject {
     /// 千问办公额度摘要文本
     public var qwenQuotaText: String {
         let plan = qwenQuota.plan.map { "\($0) · " } ?? ""
-        return "\(plan)剩余 \(String(format: "%.1f", qwenQuota.remainingCredits)) \(qwenQuota.unit)"
+        return "\(plan)剩余 \(String(format: "%.2f", qwenQuota.remainingCredits)) \(qwenQuota.unit)"
     }
 
     /// 正在播放摘要文本
@@ -2086,6 +2210,40 @@ public final class AppModel: ObservableObject {
         store.savePomodoro(pomodoro.state)
         renderPreview()
         await push(force: true)
+    }
+
+    // MARK: - 全局快捷键（番茄钟）
+
+    func shortcut(for action: GlobalHotkeyManager.Action) -> GlobalShortcut {
+        switch action {
+        case .togglePomodoro: return settings.pomodoroToggleShortcut
+        case .skipPomodoro: return settings.pomodoroSkipShortcut
+        case .resetPomodoro: return settings.pomodoroResetShortcut
+        }
+    }
+
+    func setShortcut(_ shortcut: GlobalShortcut, for action: GlobalHotkeyManager.Action) {
+        switch action {
+        case .togglePomodoro: settings.pomodoroToggleShortcut = shortcut
+        case .skipPomodoro: settings.pomodoroSkipShortcut = shortcut
+        case .resetPomodoro: settings.pomodoroResetShortcut = shortcut
+        }
+        // 触发 onChange → 持久化 + applyGlobalShortcuts 重新注册
+    }
+
+    public func resetPomodoroShortcuts() {
+        settings.pomodoroToggleShortcut = .defaultToggle
+        settings.pomodoroSkipShortcut = .defaultSkip
+        settings.pomodoroResetShortcut = .defaultReset
+    }
+
+    /// 把设置中的快捷键组合应用到全局注册（组合未变化时跳过）
+    public func applyGlobalShortcuts() {
+        GlobalHotkeyManager.apply(shortcuts: [
+            .togglePomodoro: settings.pomodoroToggleShortcut,
+            .skipPomodoro: settings.pomodoroSkipShortcut,
+            .resetPomodoro: settings.pomodoroResetShortcut
+        ])
     }
 
     /// 每完成一个时间段：设置夸夸文案并在任何界面下立即推送夸夸卡

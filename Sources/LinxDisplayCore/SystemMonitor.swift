@@ -20,6 +20,7 @@ public final class SystemMonitor {
         let (idle, total) = readCpuTimes()
         let (received, sent) = readNetworkTotals()
         let (usedMemory, totalMemory) = readMemory()
+        let (usedDisk, totalDisk) = readDiskSpace()
 
         var cpu = 0.0
         var download = 0.0
@@ -50,11 +51,15 @@ public final class SystemMonitor {
         }
 
         let memoryPercent = totalMemory == 0 ? 0 : Double(usedMemory) * 100 / Double(totalMemory)
+        let diskPercent = totalDisk == 0 ? 0 : Double(usedDisk) * 100 / Double(totalDisk)
         return SystemSnapshot(
             cpuPercent: cpu,
             memoryPercent: memoryPercent,
             usedMemoryBytes: usedMemory,
             totalMemoryBytes: totalMemory,
+            diskPercent: diskPercent,
+            usedDiskBytes: usedDisk,
+            totalDiskBytes: totalDisk,
             downloadBytesPerSecond: download,
             uploadBytesPerSecond: upload,
             uptime: readUptime(),
@@ -116,6 +121,19 @@ public final class SystemMonitor {
         }
         _ = size
         return 0
+    }
+
+    // MARK: - 磁盘空间（启动卷）
+
+    /// 返回（已用字节数, 总字节数）。已用 = 总块 - 空闲块（与「磁盘已用」口径一致）。
+    private func readDiskSpace() -> (used: UInt64, total: UInt64) {
+        var fs = statfs()
+        guard statfs("/", &fs) == 0 else { return (0, 0) }
+        let blockSize = UInt64(fs.f_bsize)
+        let total = fs.f_blocks * blockSize
+        let free = fs.f_bfree * blockSize
+        let used = total >= free ? total - free : 0
+        return (used, total)
     }
 
     // MARK: - 网络

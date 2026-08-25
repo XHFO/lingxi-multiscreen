@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 // MARK: - 面板类型
 
 enum Panel: String, CaseIterable, Identifiable, Hashable {
+    case welcome
     case appearance
     case qwenWork
     case codex
@@ -86,6 +87,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .welcome: return "开始使用"
         case .general: return "设置"
         case .appearance: return "外观"
         case .qwenWork: return "千问办公额度"
@@ -108,6 +110,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     var icon: String {
         switch self {
+        case .welcome: return "shippingbox"
         case .general: return "gearshape"
         case .appearance: return "paintbrush"
         case .qwenWork: return "creditcard"
@@ -128,10 +131,10 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// 选择该面板时对应的显示模式（设置/外观/设备管理/按键控制/独立画板无对应键盘显示模式）
+    /// 选择该面板时对应的显示模式（设置/外观/设备管理/按键控制/独立画板/开始使用无对应键盘显示模式）
     var displayMode: DisplayMode? {
         switch self {
-        case .general, .appearance: return nil
+        case .welcome, .general, .appearance: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .cardRotation: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
@@ -279,7 +282,8 @@ private let rand0DisplayModeDocsURL = URL(string: "https://dot.mindreset.tech/do
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var sidebarVisible = true
+    /// NavigationSplitView 侧栏列可见性
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var selected: Panel
     @State private var showClearHistoryConfirm = false
     @State private var expandedModule: CanvasModule?
@@ -301,15 +305,25 @@ struct SettingsView: View {
     @State private var dragBoards: [OracleCanvasBoard]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
+    /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
+    @State private var showResetConfirm1 = false
+    @State private var showResetConfirm2 = false
     /// 待重命名的先知画板（非 nil 时弹出重命名输入框）
     @State private var boardRenameTarget: OracleCanvasBoard?
     @State private var boardRenameDraft = ""
+    /// 全局快捷键录制：正在录制的动作（nil = 未录制）与本地按键监听器
+    @State private var recordingShortcutAction: GlobalHotkeyManager.Action?
+    @State private var recordingMonitor: Any?
+    /// 恢复初始快捷键确认 / 快捷键冲突提示
+    @State private var showRestoreShortcutsConfirm = false
+    @State private var showShortcutConflict = false
+    @State private var shortcutConflictText = ""
 
     init(model: AppModel) {
         self.model = model
-        // 首次使用（无任何设备）直接进入设备管理引导添加设备；已有设备时跟随当前显示模式
+        // 首次使用（无任何设备）直接进入「开始使用」引导页；已有设备时跟随当前显示模式
         if model.settings.devices.isEmpty {
-            _selected = State(initialValue: .devices)
+            _selected = State(initialValue: .welcome)
         } else {
             _selected = State(initialValue: Panel.from(displayMode: model.settings.displayMode) ?? .general)
         }
@@ -317,6 +331,25 @@ struct SettingsView: View {
 
     var body: some View {
         mainContent
+            .alert("恢复初始设定？", isPresented: $showResetConfirm1) {
+                Button("取消", role: .cancel) {}
+                Button("继续", role: .destructive) { showResetConfirm2 = true }
+            } message: {
+                Text("将清除软件的全部信息：已添加的设备档案、自定义内容（画板/卡片/图片/文字/主题等所有设置），以及自定义图片缓存。恢复后软件回到首次启动状态。")
+            }
+            .alert("再次确认：此操作不可撤销", isPresented: $showResetConfirm2) {
+                Button("取消", role: .cancel) {}
+                Button("恢复初始设定", role: .destructive) {
+                    model.resetToFactoryDefaults()
+                }
+            } message: {
+                Text("即将清除全部 \(model.settings.devices.count) 台设备、所有自定义内容与图片缓存（数据会移入废纸篓），并恢复为首次启动状态。确认执行吗？")
+            }
+            .alert("快捷键冲突", isPresented: $showShortcutConflict) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(shortcutConflictText)
+            }
     }
 
     /// 独立设备画板页面（口袋先知/摘录）自带宽幅设备预览，隐藏键盘小屏实时预览
@@ -324,9 +357,10 @@ struct SettingsView: View {
         selected == .oracleCanvas || selected == .excerptCanvas
     }
 
-    /// 不显示右侧键盘小屏实时预览的面板：两个独立画板（自带设备预览）、设备管理、设置；
-    /// 按键控制页只有被控目标是灵犀68 键盘时才显示键盘预览
+    /// 不显示右侧键盘小屏实时预览的面板：两个独立画板（自带设备预览）、设备管理、设置、开始使用；
+    /// 无设备时一律不显示预览（引导页/设备管理阶段无需预览）；按键控制页只有被控目标是灵犀68 键盘时才显示键盘预览
     private var hidesPreviewPanel: Bool {
+        if model.settings.devices.isEmpty { return true }
         switch selected {
         case .oracleCanvas, .excerptCanvas, .devices, .general:
             return true
@@ -368,45 +402,83 @@ struct SettingsView: View {
 
     private var mainContent: some View {
         GeometryReader { geo in
-            content(width: geo.size.width)
+            // 详情区所需宽度：主内容最小 380 + 分隔线 + 预览面板 210（隐藏预览的面板只需 380）。
+            // 侧栏列最大宽度随窗口宽度动态收缩，保证详情区永远放得下——
+            // 预览面板任何窗口尺寸下都完整展示、绝不被裁切（与旧版自适应行为一致）
+            let detailNeed: CGFloat = 380 + (hidesPreviewPanel ? 0 : 210) + 2
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                sidebarColumn(windowWidth: geo.size.width)
+                    // 图标模式最窄 82
+                    .navigationSplitViewColumnWidth(min: 82,
+                                                    ideal: CGFloat(model.settings.sidebarWidth),
+                                                    max: max(82, min(320, geo.size.width - detailNeed)))
+            } detail: {
+                detailColumn
+            }
+            .onChange(of: selected) { newValue in
+                if let mode = newValue.displayMode {
+                    model.setMode(mode)
+                }
+                // 两个独立画板均为双栏布局（左主内容 + 右侧边栏）：
+                // 窗口不够宽时自动放大到能完整显示，避免用户看不到右侧边栏
+                if newValue == .excerptCanvas || newValue == .oracleCanvas {
+                    ensureDeviceCanvasWindowWidth()
+                }
+            }
+            // 卡片自动轮换等外部改变 displayMode 时，侧栏选中项跟随同步；
+            // 但自动轮换开启时键盘按轮换池循环推送，侧栏不跟随（避免用户操作中途界面被切走）。
+            // 关闭自动轮换后，点击侧栏项才会切换显示。
+            .onChange(of: model.settings.displayMode) { newMode in
+                if model.settings.cardRotationEnabled { return }
+                if let panel = Panel.from(displayMode: newMode), panel != selected {
+                    selected = panel
+                }
+            }
         }
     }
 
-    /// 自适应宽度布局：窗口变窄时优先压缩左侧导航栏宽度（压缩到仅剩图标条为止），
-    /// 导航栏压到最小后详情内容仍放不下时，才由详情滚动区提供横向滚动条。
-    private func content(width windowWidth: CGFloat) -> some View {
-        // 详情区理想宽度：两个独立画板为双栏（主内容 + 右侧边栏），其余面板取最小列宽 380
-        let centerIdeal: CGFloat = isDeviceCanvasPanel ? 620 : 380
-        let previewWidth: CGFloat = hidesPreviewPanel ? 0 : 210
-        let sidebarBudget = windowWidth - centerIdeal - previewWidth - 8
-        let effectiveSidebar = min(CGFloat(model.settings.sidebarWidth), max(48, sidebarBudget))
-        let useMiniSidebar = effectiveSidebar <= 96
-        return HStack(spacing: 0) {
-            if sidebarVisible {
-                if useMiniSidebar {
-                    // 已压缩到仅剩图标条：窄图标栏（选项卡图标 + 正在播放封面）
+    /// 侧栏列内容：列宽被压到图标条宽度（≤96）时自动切换为窄图标栏
+    private func sidebarColumn(windowWidth: CGFloat) -> some View {
+        GeometryReader { geo in
+            Group {
+                if geo.size.width <= 96 {
                     MiniSidebar(selection: $selected, model: model)
-                        .transition(.move(edge: .leading))
-                        .zIndex(1)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 } else {
-                    Sidebar(selection: $selected, sidebarVisible: $sidebarVisible, model: model)
-                        .frame(width: effectiveSidebar)
-                        .transition(.move(edge: .leading))
-                        .zIndex(1) // 导航栏层级最高：详情内容再宽也不会盖住导航栏
-                    SidebarResizeHandle(model: model)
-                        .zIndex(1)
+                    Sidebar(selection: $selected, model: model)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 }
-            } else {
-                // 收起态：保留最窄一条图标栏（选项卡快速切换 + 正在播放封面点击跳转）
-                MiniSidebar(selection: $selected, model: model)
-                    .zIndex(1)
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            // 跨越 96pt 模式切换阈值时用带弹跳的 spring 衔接（跳入/跳出感），拖拽过程本身不逐帧动画
+            .animation(.spring(response: 0.32, dampingFraction: 0.6), value: geo.size.width <= 96)
+            .onChange(of: geo.size.width) { newWidth in
+                persistSidebarWidth(newWidth, windowWidth: windowWidth)
+            }
+        }
+    }
 
+    /// 用户拖拽系统分隔条调整侧栏宽度后，回写持久化设置：
+    /// 窗口不够宽时系统会把侧栏列压窄给内容让位——不要把被压缩的结果持久化，
+    /// 否则窗口拉回原宽后侧栏回不到用户设定的宽度
+    private func persistSidebarWidth(_ width: CGFloat, windowWidth: CGFloat) {
+        guard width > 96 else { return } // 图标条模式下宽度由窗口决定，不持久化
+        let detailBudget: CGFloat = 380 + (hidesPreviewPanel ? 0 : 210)
+        guard windowWidth - width >= detailBudget else { return } // 列正被系统压缩中
+        let w = Int(width.rounded())
+        guard abs(w - model.settings.sidebarWidth) >= 2 else { return }
+        model.noteSidebarResize() // 进入批处理模式 + 防抖提交（拖拽过程中跳过逐帧持久化/预览渲染）
+        model.setSidebarWidth(w)
+    }
+
+    /// 详情列：顶部栏 + 主内容滚动区 + 实时预览面板
+    private var detailColumn: some View {
+        HStack(spacing: 0) {
+            // 两个独立画板均为双栏（主内容 + 右侧边栏）：窗口自动放大容纳，保持纯纵向滚动
+            // （横向滚动会干扰右侧边栏 TextField 的键盘焦点：Cmd+V/Tab 失效）
             VStack(spacing: 0) {
                 headerBar
                 Divider()
-                // 两个独立画板均为双栏（主内容 + 右侧边栏）：窗口自动放大容纳，保持纯纵向滚动
-                // （横向滚动会干扰右侧边栏 TextField 的键盘焦点：Cmd+V/Tab 失效）
                 ScrollView([.vertical]) {
                     if model.settings.devices.isEmpty && !worksWithoutDevices(selected) {
                         emptyDevicesOnboarding
@@ -424,33 +496,11 @@ struct SettingsView: View {
                 // 面板切换时重建滚动视图，确保每次打开都从页面顶部开始（不继承上一面板的滚动位置）
                 .id(selected)
             }
-            .frame(minWidth: 380)
+            .frame(minWidth: 300, maxWidth: .infinity) // 空间不足时中间区先让位，预览保持完整
 
             if !hidesPreviewPanel {
                 Divider()
-
-                PreviewPanel(model: model)
-                    .frame(width: 210)
-            }
-        }
-        .animation(.easeInOut(duration: 0.18), value: sidebarVisible)
-        .onChange(of: selected) { newValue in
-            if let mode = newValue.displayMode {
-                model.setMode(mode)
-            }
-            // 两个独立画板均为双栏布局（左主内容 + 右侧边栏）：
-            // 窗口不够宽时自动放大到能完整显示，避免用户看不到右侧边栏
-            if newValue == .excerptCanvas || newValue == .oracleCanvas {
-                ensureDeviceCanvasWindowWidth()
-            }
-        }
-        // 卡片自动轮换等外部改变 displayMode 时，侧栏选中项跟随同步；
-        // 但自动轮换开启时键盘按轮换池循环推送，侧栏不跟随（避免用户操作中途界面被切走）。
-        // 关闭自动轮换后，点击侧栏项才会切换显示。
-        .onChange(of: model.settings.displayMode) { newMode in
-            if model.settings.cardRotationEnabled { return }
-            if let panel = Panel.from(displayMode: newMode), panel != selected {
-                selected = panel
+                PreviewPanel(model: model) // 面板自适应宽度（70–210），内容等比缩放永不裁切
             }
         }
     }
@@ -469,23 +519,26 @@ struct SettingsView: View {
         window.setFrame(frame, display: true, animate: true)
     }
 
-    // MARK: 顶部栏（折叠侧栏按钮 + 标题 + 状态）
+    // MARK: 顶部栏（收起态才出现的展开按钮 + 标题 + 状态）
 
     private var headerBar: some View {
         HStack(spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    sidebarVisible.toggle()
+            // 展开按钮只在侧栏收起后才出现（滑动+淡入动画，不突兀）；
+            // 展开态详情页不放按钮——折叠操作在侧栏右上角
+            if columnVisibility == .detailOnly {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { columnVisibility = .all }
+                } label: {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 26, height: 22)
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 26, height: 22)
-                    .contentShape(Rectangle())
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("展开侧边栏")
+                .transition(.move(edge: .leading).combined(with: .opacity))
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help(sidebarVisible ? "折叠侧边栏" : "展开侧边栏")
 
             Text(model.settings.devices.isEmpty && !worksWithoutDevices(selected)
                  ? "开始使用" : selected.title)
@@ -498,7 +551,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 12) // 收起后系统自动把本行下移到红绿灯下方，无需再避让
         .padding(.top, 14) // 沉浸式标题栏留白
         .padding(.bottom, 8)
     }
@@ -508,6 +561,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func panelContent(for panel: Panel) -> some View {
         switch panel {
+        case .welcome: EmptyView() // 开始使用引导页由 detailColumn 的空设备状态渲染，此处无需内容
         case .general: generalForm
         case .appearance: appearanceForm
         case .qwenWork: qwenWorkForm
@@ -875,6 +929,12 @@ struct SettingsView: View {
                     HelpIcon(text: "勾选要轮换的语录分类，轮换池 = 所选分类的语录合集；至少保留一个分类。切换分类后立即回到自动轮换。")
                 }
             }
+            Section {
+                Toggle("显示语录出处", isOn: model.showExcerptSourceBinding)
+                Text("开启后在页脚时钟位置显示语录出处并隐藏时钟；没有确切出处的语录（如谚语）回退为正常页脚。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1032,14 +1092,20 @@ struct SettingsView: View {
                                         showFullWidthToggle: Bool = false) -> some View {
         VStack(spacing: 4) {
             HStack(spacing: 10) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                Image(systemName: module.icon)
-                    .font(.system(size: 12))
-                    .frame(width: 16)
-                Text(module.title)
-                Spacer()
+                // 标签栏主体（拖拽把手/图标/标题/弹性空白）整段可点击展开/收起设置，
+                // 按钮（占满整行/展开箭头/删除）保持各自独立交互
+                Group {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                    Image(systemName: module.icon)
+                        .font(.system(size: 12))
+                        .frame(width: 16)
+                    Text(module.title)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { toggleModuleExpanded(module) }
                 if showFullWidthToggle {
                     let isFullWidth = model.settings.excerptFullWidthModules.contains(module.rawValue)
                     Button { model.toggleExcerptFullWidth(module) } label: {
@@ -1051,9 +1117,7 @@ struct SettingsView: View {
                 }
                 if canvasHasSettings(module) {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            expandedModule = expandedModule == module ? nil : module
-                        }
+                        toggleModuleExpanded(module)
                     } label: {
                         Image(systemName: expandedModule == module ? "chevron.up" : "chevron.down")
                     }
@@ -1362,6 +1426,12 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    Toggle(isOn: model.showExcerptSourceBinding) {
+                        HStack(spacing: 4) {
+                            Text("显示语录出处")
+                            HelpIcon(text: "摘录语录模块在底部显示语录出处（替换时钟位置并隐藏时钟）；没有确切出处的语录不显示。")
+                        }
+                    }
                 }
                 canvasModuleEditor(owner: .excerpt,
                                    modulesRaw: model.settings.excerptCanvasModules,
@@ -1520,10 +1590,17 @@ struct SettingsView: View {
         true
     }
 
-    /// 模块上下边距（紧凑度）滑杆绑定
+    /// 展开/收起模块设置（带过渡动画；标签栏整段与展开箭头共用）
+    private func toggleModuleExpanded(_ module: CanvasModule) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            expandedModule = expandedModule == module ? nil : module
+        }
+    }
+
+    /// 模块上下边距（紧凑度）滑杆绑定：显示手动设置值（0 = 自适应模式，滑杆归零即恢复自适应）
     private func canvasMarginBinding(for module: CanvasModule) -> Binding<Double> {
         Binding(
-            get: { Double(self.model.settings.canvasMargin(for: module)) },
+            get: { Double(self.model.settings.manualCanvasMargin(for: module)) },
             set: { self.model.settings.setCanvasMargin(Int($0), for: module) }
         )
     }
@@ -1545,12 +1622,17 @@ struct SettingsView: View {
                 HStack {
                     Text("上下边距")
                     Spacer()
-                    Text("\(model.settings.canvasMargin(for: module))")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                    if model.settings.manualCanvasMargin(for: module) == 0 {
+                        Text("自适应")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(model.settings.manualCanvasMargin(for: module))")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 }
                 Slider(value: canvasMarginBinding(for: module), in: 0...40, step: 1)
-                Text("数值越大该模块越紧凑，模块之间排布越密集。")
+                Text("数值 0 = 自适应调节模式：自动按模块类型选用合适的间距（时钟/日期=2，CPU/内存等=4，正在播放/图片=6）；调大数值让该模块更紧凑、模块之间排布更密集。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1633,6 +1715,15 @@ struct SettingsView: View {
                         value: model.sspaiCountBinding(for: owner), in: 1...6)
                 Toggle("随机显示", isOn: model.sspaiRandomBinding(for: owner))
                 Text("抓取到的文章多于显示条数时，勾选后每次刷新随机挑一批显示；不勾选固定显示最新几篇。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .qwenQuota:
+                Picker("显示方式", selection: model.qwenQuotaShowPercentBinding) {
+                    Text("百分比").tag(true)
+                    Text("额度数值").tag(false)
+                }
+                .pickerStyle(.segmented)
+                Text("百分比：与其他模块一致，大字显示剩余百分比；额度数值：大字仅显示剩余额度数字。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             default:
@@ -1782,10 +1873,15 @@ struct SettingsView: View {
             Text("以下选项仅适用于灵犀68 键盘，不影响口袋先知与摘录。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker("菜单栏切换目标键盘", selection: model.menuBarTargetBinding()) {
+            Picker(selection: model.menuBarTargetBinding()) {
                 Text("跟随当前活动键盘").tag("follow")
                 ForEach(model.enabledDevices(for: .keyboard)) { device in
                     Text(device.name).tag("kb:\(device.id.uuidString)")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("菜单栏切换目标键盘")
+                    HelpIcon(text: "菜单栏的「切换显示内容 / 立即推送」操作哪台键盘的判定依据：选「跟随当前活动键盘」时，作用于软件当前活动的键盘设备（侧栏中正在操作的那台）；选某台具体键盘时，执行前会先把活动键盘切到这台设备再操作，无论当前活动的是哪台。目标设备被禁用时回退到当前活动键盘。")
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -1831,7 +1927,7 @@ struct SettingsView: View {
         Section {
             LabeledContent("应用", value: "多屏灵犀（Lingxi MultiScreen）")
             LabeledContent("版本", value: ReleaseNotes.currentVersion)
-            LabeledContent("系统要求", value: "macOS 14+ · Apple 芯片")
+            LabeledContent("系统要求", value: "macOS 26+ · Apple 芯片")
             LabeledContent("驱动设备", value: "灵犀68 键盘 / 口袋先知 / 摘录")
             if let release = model.updateAvailable {
                 Label("发现新版本 \(release.tag)", systemImage: "arrow.down.circle")
@@ -1882,6 +1978,14 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        Section("高级") {
+            Button("恢复初始设定…", role: .destructive) {
+                showResetConfirm1 = true
+            }
+            Text("清除全部设置、已添加的设备、自定义内容与自定义图片缓存，软件回到首次启动状态。需要两次确认，请谨慎操作。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
         }
     }
 
@@ -1896,13 +2000,14 @@ struct SettingsView: View {
             Button("立即刷新") {
                 Task { await model.refresh() }
             }
+            LabeledContent("套餐版本", value: model.qwenQuota.plan ?? "未知")
             LabeledContent("剩余额度", value: model.qwenQuotaText)
             LabeledContent("剩余百分比", value: model.qwenQuotaPercentText)
             LabeledContent("百分比基线", value: model.quotaBaselineText)
             Button("将当前额度设为 100% 基线") {
                 model.captureQuotaBaseline()
             }
-            Text("额度百分比按「当前剩余 ÷ 基线」计算：先点上方按钮把当前额度记为 100%，之后额度减少时自动计算剩余百分比；额度充值后可重新设置基线。")
+            Text("额度百分比按「当前剩余 ÷ 基线」计算。基线每日自动采样：跨天后以当天额度重新采样；同一日内额度回升超过基线（如每日赠送积分入账）时自动把基线拉高到当前额度，无需手动维护。也可点上方按钮随时手动重设基线。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             LabeledContent("最后采样", value: Self.formatSample(model.qwenQuota.sampledAt))
@@ -1936,50 +2041,153 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var pomodoroForm: some View {
-        Section {
-            TextField("任务名称", text: model.taskNameBinding)
-                .textFieldStyle(.roundedBorder)
-            VStack(alignment: .leading, spacing: 2) {
+        Group {
+            Section {
+                TextField("任务名称", text: model.taskNameBinding)
+                    .textFieldStyle(.roundedBorder)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("任务名字号")
+                        Spacer()
+                        Text("\(model.settings.pomodoroTaskFontSize) pt")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: model.pomodoroTaskFontSizeBinding, in: 7...16, step: 1)
+                }
+                editableMinutesRow("专注时长", binding: model.focusMinutesBinding)
+                editableMinutesRow("短休息", binding: model.shortBreakMinutesBinding)
+                editableMinutesRow("长休息", binding: model.longBreakMinutesBinding)
                 HStack {
-                    Text("任务名字号")
+                    Button(model.pomodoroAction) {
+                        Task { await model.togglePomodoro() }
+                    }
+                    Button("跳过") {
+                        Task { await model.skipPomodoro() }
+                    }
+                    Button("重置") {
+                        Task { await model.resetPomodoro() }
+                    }
                     Spacer()
-                    Text("\(model.settings.pomodoroTaskFontSize) pt")
+                    Text(model.pomodoroStatus)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 }
-                Slider(value: model.pomodoroTaskFontSizeBinding, in: 7...16, step: 1)
             }
-            editableMinutesRow("专注时长", binding: model.focusMinutesBinding)
-            editableMinutesRow("短休息", binding: model.shortBreakMinutesBinding)
-            editableMinutesRow("长休息", binding: model.longBreakMinutesBinding)
-            HStack {
-                Button(model.pomodoroAction) {
-                    Task { await model.togglePomodoro() }
+            Section("完成夸夸") {
+                Toggle("每完成一个时间段进行夸夸", isOn: model.pomodoroPraiseEnabledBinding)
+                if model.settings.pomodoroPraiseEnabled {
+                    Picker("内容来源", selection: model.pomodoroPraiseSourceBinding) {
+                        ForEach(PraiseSource.allCases) { source in
+                            Text(source.title).tag(source)
+                        }
+                    }
+                    Text("任何界面下，每完成一个时间阶段都会显示夸夸内容约 12 秒，然后恢复正常卡片。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Button("跳过") {
-                    Task { await model.skipPomodoro() }
+            }
+            Section("全局快捷键") {
+                shortcutBindingRow("开始 / 暂停", action: .togglePomodoro)
+                shortcutBindingRow("跳过", action: .skipPomodoro)
+                shortcutBindingRow("重置", action: .resetPomodoro)
+                HStack {
+                    if recordingShortcutAction != nil {
+                        Text("正在录制…按下新的快捷键（Esc 取消）")
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                    } else {
+                        Text("快捷键在系统范围内生效，无需额外权限。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("恢复初始快捷键") { showRestoreShortcutsConfirm = true }
+                        .controlSize(.small)
                 }
-                Button("重置") {
-                    Task { await model.resetPomodoro() }
-                }
-                Spacer()
-                Text(model.pomodoroStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
-        Section("完成夸夸") {
-            Toggle("每完成一个时间段进行夸夸", isOn: model.pomodoroPraiseEnabledBinding)
-            if model.settings.pomodoroPraiseEnabled {
-                Picker("内容来源", selection: model.pomodoroPraiseSourceBinding) {
-                    ForEach(PraiseSource.allCases) { source in
-                        Text(source.title).tag(source)
-                    }
-                }
-                Text("任何界面下，每完成一个时间阶段都会显示夸夸内容约 12 秒，然后恢复正常卡片。")
+        .confirmationDialog("恢复初始快捷键？", isPresented: $showRestoreShortcutsConfirm,
+                            titleVisibility: .visible) {
+            Button("恢复默认组合", role: .destructive) { model.resetPomodoroShortcuts() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("开始/暂停、跳过、重置三个快捷键将恢复为默认组合：⌃⌥Space · ⌃⌥→ · ⌃⌥⌫。")
+        }
+        .onDisappear { cancelShortcutRecording() }
+    }
+
+    /// 全局快捷键设置行：当前组合 + 录制按钮
+    private func shortcutBindingRow(_ title: String, action: GlobalHotkeyManager.Action) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            if recordingShortcutAction == action {
+                Text("按下新快捷键…（Esc 取消）")
                     .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            } else {
+                Text(GlobalHotkeyManager.shortcutHint(for: action))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+            Button(recordingShortcutAction == action ? "取消" : "录制") {
+                if recordingShortcutAction == action {
+                    cancelShortcutRecording()
+                } else {
+                    startShortcutRecording(action)
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    /// 开始录制：挂本地按键监听，捕获下一个有效组合（Esc 取消；无修饰键的非功能键忽略；冲突拒绝）
+    private func startShortcutRecording(_ action: GlobalHotkeyManager.Action) {
+        cancelShortcutRecording()
+        recordingShortcutAction = action
+        recordingMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { // Esc
+                self.cancelShortcutRecording()
+                return nil
+            }
+            if (event.charactersIgnoringModifiers ?? "").isEmpty { return nil }
+            var mods: UInt32 = 0
+            let flags = event.modifierFlags
+            if flags.contains(.control) { mods |= GlobalShortcut.controlKey }
+            if flags.contains(.option) { mods |= GlobalShortcut.optionKey }
+            if flags.contains(.shift) { mods |= GlobalShortcut.shiftKey }
+            if flags.contains(.command) { mods |= GlobalShortcut.cmdKey }
+            let keyCode = UInt32(event.keyCode)
+            // 无修饰键且非功能键：拒绝（避免占用普通输入，Carbon 也无法注册）
+            if mods == 0 && !GlobalShortcut.isFunctionKey(keyCode) { return nil }
+            let newShortcut = GlobalShortcut(keyCode: keyCode, modifiers: mods)
+            let others: [GlobalHotkeyManager.Action] = [.togglePomodoro, .skipPomodoro, .resetPomodoro]
+            if let conflict = others.first(where: { $0 != action && self.model.shortcut(for: $0) == newShortcut }) {
+                self.shortcutConflictText = "「\(self.shortcutActionTitle(conflict))」已绑定到 \(newShortcut.displayString)。请更换组合。"
+                self.showShortcutConflict = true
+                self.cancelShortcutRecording()
+                return nil
+            }
+            self.model.setShortcut(newShortcut, for: action)
+            self.cancelShortcutRecording()
+            return nil
+        }
+    }
+
+    private func cancelShortcutRecording() {
+        if let monitor = recordingMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        recordingMonitor = nil
+        recordingShortcutAction = nil
+    }
+
+    private func shortcutActionTitle(_ action: GlobalHotkeyManager.Action) -> String {
+        switch action {
+        case .togglePomodoro: return "开始/暂停"
+        case .skipPomodoro: return "跳过"
+        case .resetPomodoro: return "重置"
         }
     }
 
@@ -1990,6 +2198,7 @@ struct SettingsView: View {
                     value: model.dynamicUploadBinding, in: 2...60)
             Toggle("显示 CPU", isOn: model.showCpuBinding)
             Toggle("显示内存", isOn: model.showMemoryBinding)
+            Toggle("显示磁盘", isOn: model.showDiskBinding)
             Toggle("显示网络", isOn: model.showNetworkBinding)
             if model.settings.showNetwork {
                 Picker("网络显示方式", selection: model.networkChartBinding) {
@@ -2029,6 +2238,16 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if model.settings.customImageClock != .none {
+                Picker("字体", selection: model.clockFontBinding) {
+                    ForEach(ClockFont.allCases) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+                Picker("字体粗细", selection: model.clockFontWeightBinding) {
+                    ForEach(ClockFontWeight.allCases) { weight in
+                        Text(weight.title).tag(weight)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("时钟字号")
@@ -2037,13 +2256,43 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: model.clockFontSizeBinding, in: 18...56, step: 1)
+                    Slider(value: model.clockFontSizeBinding, in: 18...96, step: 1)
                 }
-                Picker("字体粗细", selection: model.clockFontWeightBinding) {
-                    ForEach(ClockFontWeight.allCases) { weight in
-                        Text(weight.title).tag(weight)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("X 偏移")
+                        Spacer()
+                        Text("\(model.settings.clockOffsetX) px")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
+                    Slider(value: model.clockOffsetXBinding, in: -60...60, step: 1)
+                        // 双击滑块恢复默认偏移 0（与拖动互不干扰）
+                        .simultaneousGesture(
+                            TapGesture(count: 2).onEnded {
+                                model.settings.clockOffsetX = 0
+                            }
+                        )
                 }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("Y 偏移")
+                        Spacer()
+                        Text("\(model.settings.clockOffsetY) px")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: model.clockOffsetYBinding, in: -80...80, step: 1)
+                        // 双击滑块恢复默认偏移 0（与拖动互不干扰）
+                        .simultaneousGesture(
+                            TapGesture(count: 2).onEnded {
+                                model.settings.clockOffsetY = 0
+                            }
+                        )
+                }
+                Text("横向布局为时间+日期整组，竖向布局为小时+分钟两行整组；X 正值向右、Y 正值向下。双击滑块可将偏移恢复为 0。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("Pixel 锁屏风格数字；竖向布局为第一行小时、第二行分钟，每行两位数字横向排布。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -2066,6 +2315,12 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Button("恢复默认样式") {
+                    model.resetClockOverlay()
+                }
+                Text("恢复为默认字体（Helvetica Neue · 纤细）、36pt、HH:mm、无偏移；叠加开关与布局保持不变。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         recentImagesSection
@@ -2263,7 +2518,6 @@ struct HelpIcon: View {
 
 struct Sidebar: View {
     @Binding var selection: Panel
-    @Binding var sidebarVisible: Bool
     @ObservedObject var model: AppModel
 
     /// 用户手动展开的设备分组（默认全部收起；只记录被展开的 ID）
@@ -2303,24 +2557,13 @@ struct Sidebar: View {
                         .padding(.vertical, 24)
                         .padding(.horizontal, 8)
                     } else {
-                        ForEach(model.enabledDevices(for: .keyboard)) { device in
-                            deviceInstanceGroup(icon: "keyboard", title: device.name,
-                                                isExpanded: deviceExpandedBinding(device.id),
-                                                panels: keyboardPanels(for: device.id),
-                                                switchType: .keyboard, deviceID: device.id,
-                                                emptyHint: keyboardHasNoCards(device.id) ? "尚未添加卡片，去卡片管理添加" : nil)
-                        }
-                        ForEach(model.enabledDevices(for: .oracle)) { device in
-                            deviceInstanceGroup(icon: "sparkles", title: device.name,
-                                                isExpanded: deviceExpandedBinding(device.id),
-                                                panels: [.oracleCanvas, .buttonControl],
-                                                switchType: .oracle, deviceID: device.id)
-                        }
-                        ForEach(model.enabledDevices(for: .excerpt)) { device in
-                            deviceInstanceGroup(icon: "quote.opening", title: device.name,
-                                                isExpanded: deviceExpandedBinding(device.id),
-                                                panels: [.excerptCanvas],
-                                                switchType: .excerpt, deviceID: device.id)
+                        // 所有已启用设备按类型顺序平铺；设备之间插入分隔线
+                        ForEach(Array(sidebarDevices.enumerated()), id: \.element.device.id) { index, entry in
+                            if index > 0 {
+                                Divider()
+                                    .padding(.vertical, 3)
+                            }
+                            deviceGroup(for: entry.type, device: entry.device)
                         }
                     }
                 }
@@ -2334,9 +2577,40 @@ struct Sidebar: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.top, 14) // 与中栏 headerBar 顶部内边距一致，保证「自动轮播」下分隔线与头部分隔线对齐
+        // 系统给侧栏与详情列各自留了不同的顶部间距，导致侧栏首行下方的分隔线
+        // 比详情标题栏下方分隔线低约 20pt——用负上边距把设备列表整体上移对齐两条分隔线
+        // （负 padding 只作用于滚动区内容，底部固定项仍贴底）
+        .padding(.top, -6)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+    }
+
+    /// 所有已启用设备按类型顺序（键盘 → 先知 → 摘录）平铺，供设备间分隔线遍历
+    private var sidebarDevices: [(type: DeviceType, device: ManagedDevice)] {
+        DeviceType.allCases.flatMap { type in
+            model.enabledDevices(for: type).map { (type, $0) }
+        }
+    }
+
+    /// 单台设备的可展开分组（按设备类型挂对应功能项）
+    private func deviceGroup(for type: DeviceType, device: ManagedDevice) -> some View {
+        switch type {
+        case .keyboard:
+            return AnyView(deviceInstanceGroup(icon: "keyboard", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id),
+                                               panels: keyboardPanels(for: device.id),
+                                               switchType: .keyboard, deviceID: device.id,
+                                               emptyHint: keyboardHasNoCards(device.id) ? "尚未添加卡片，去卡片管理添加" : nil))
+        case .oracle:
+            return AnyView(deviceInstanceGroup(icon: "sparkles", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id),
+                                               panels: [.oracleCanvas, .buttonControl],
+                                               switchType: .oracle, deviceID: device.id))
+        case .excerpt:
+            return AnyView(deviceInstanceGroup(icon: "quote.opening", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id),
+                                               panels: [.excerptCanvas],
+                                               switchType: .excerpt, deviceID: device.id))
+        }
     }
 
     /// 设备分组展开状态（默认全部收起；展开某台设备时自动收起其他所有设备 = 手风琴效果）
@@ -2353,7 +2627,8 @@ struct Sidebar: View {
     }
 
     /// 单台设备的可展开分组：标题 = 设备名，下面挂该设备的卡片功能；
-    /// 点击任意功能项先切到这台设备再打开对应页面
+    /// 点击任意功能项先切到这台设备再打开对应页面。
+    /// 展开的二级菜单整体向右缩进（图标与文字一起），与设备名层级拉开。
     private func deviceInstanceGroup(icon: String, title: String, isExpanded: Binding<Bool>,
                                      panels: [Panel], switchType: DeviceType?, deviceID: UUID?,
                                      emptyHint: String? = nil) -> some View {
@@ -2361,8 +2636,10 @@ struct Sidebar: View {
             ForEach(panels) { panel in
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
                     cardRotationRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
                 } else {
                     sidebarRow(panel, switchingTo: switchType, deviceID: deviceID)
+                        .padding(.leading, Self.submenuIndent)
                 }
             }
             if let emptyHint {
@@ -2377,6 +2654,7 @@ struct Sidebar: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(.leading, Self.submenuIndent)
             }
         } label: {
             Button {
@@ -2384,14 +2662,15 @@ struct Sidebar: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: icon)
-                        .frame(width: 18, height: 18)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 22, height: 22)
                     Text(title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 5)
                 .padding(.horizontal, 2)
                 .contentShape(Rectangle())
             }
@@ -2400,6 +2679,9 @@ struct Sidebar: View {
         .font(.system(size: 12))
         .padding(.horizontal, 2)
     }
+
+    /// 设备二级菜单相对设备名的缩进宽度（图标与文字整体右移）
+    private static let submenuIndent: CGFloat = 16
 
     /// 「卡片轮换」行：左侧打开轮换设置页，右侧是该键盘设备的自动轮播开关
     private func cardRotationRow(_ deviceID: UUID) -> some View {
@@ -2462,11 +2744,15 @@ struct Sidebar: View {
                     // 选中态用光斑增亮表达，不再需要高亮框；浅色模式下不显示光晕
                     ZStack {
                         if let glow = model.sidebarArtworkGlow, model.settings.softwareIsDark {
+                            let glowColor = Color(nsColor: glow)
                             Circle()
-                                .fill(Color(nsColor: glow))
+                                .fill(glowColor)
                                 .frame(width: 144, height: 144)
                                 .blur(radius: 48)
                                 .opacity(isSelected ? 1.0 : 0.5)
+                                // 点亮/变暗与换曲变色均做动画衔接，不生硬跳变
+                                .animation(.easeInOut(duration: 0.6), value: isSelected)
+                                .animation(.easeInOut(duration: 0.6), value: glowColor)
                         }
                         ZStack {
                             if let artwork = model.sidebarArtwork {
@@ -2550,8 +2836,6 @@ struct MiniSidebar: View {
     @Binding var selection: Panel
     @ObservedObject var model: AppModel
 
-    private let railWidth: CGFloat = 48
-
     var body: some View {
         VStack(spacing: 2) {
             // 设备图标：每类设备一个入口（点击进入对应画板），不展示具体设备功能；
@@ -2571,32 +2855,39 @@ struct MiniSidebar: View {
                 selection = .nowPlaying
             } label: {
                 ZStack {
-                    // 选中态用光斑增亮表达，不再需要高亮描边；浅色模式下不显示光晕
+                    // 光晕层不被封面圆角裁切（与完整侧栏同一效果），选中态增亮/换曲变色带动画
                     if let glow = model.sidebarArtworkGlow, model.settings.softwareIsDark {
+                        let glowColor = Color(nsColor: glow)
                         Circle()
-                            .fill(Color(nsColor: glow))
+                            .fill(glowColor)
                             .frame(width: 88, height: 88)
                             .blur(radius: 32)
                             .opacity(selection == .nowPlaying ? 1.0 : 0.5)
+                            // 点亮/变暗与换曲变色均做动画衔接，不生硬跳变
+                            .animation(.easeInOut(duration: 0.6), value: selection == .nowPlaying)
+                            .animation(.easeInOut(duration: 0.6), value: glowColor)
                     }
-                    if let artwork = model.sidebarArtwork {
-                        Image(nsImage: artwork)
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Color.secondary.opacity(0.14)
-                        Image(systemName: "music.note")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+                    ZStack {
+                        if let artwork = model.sidebarArtwork {
+                            Image(nsImage: artwork)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            Color.secondary.opacity(0.14)
+                            Image(systemName: "music.note")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .frame(width: 44, height: 44) // 与展开模式正在播放封面一致
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    )
                 }
-                .frame(width: 36, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-                )
+                .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .help(model.nowPlayingSummary)
@@ -2610,13 +2901,7 @@ struct MiniSidebar: View {
         .padding(.top, 14) // 贴近红绿灯的留白，与完整侧栏一致
         .padding(.bottom, 8)
         .padding(.horizontal, 5)
-        .frame(width: railWidth)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(width: 1)
-        }
+        .frame(maxWidth: .infinity)
     }
 
     /// 设备图标按钮：点击进入该设备对应的画板页面
@@ -2625,8 +2910,9 @@ struct MiniSidebar: View {
         return Button {
             selection = panel
         } label: {
+            // 图标大小与展开模式设备分组图标一致（15pt semibold / 22×22 视觉）
             Image(systemName: icon)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 15, weight: .semibold))
                 .frame(width: 36, height: 30)
                 .contentShape(Rectangle())
                 .background(
@@ -2644,8 +2930,9 @@ struct MiniSidebar: View {
         return Button {
             selection = panel
         } label: {
+            // 图标大小与展开模式底部固定项一致（12pt / 18×18 视觉）
             Image(systemName: panel.icon)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 12))
                 .frame(width: 36, height: 30)
                 .contentShape(Rectangle())
                 .background(
@@ -2659,71 +2946,60 @@ struct MiniSidebar: View {
     }
 }
 
-/// 侧边栏右边缘的拖拽手柄：像调整窗口大小一样，悬停变左右箭头光标，按住拖动调整宽度
-struct SidebarResizeHandle: View {
-    @ObservedObject var model: AppModel
-    @State private var dragStartWidth: CGFloat?
-    @State private var isHovering = false
-
-    var body: some View {
-        ZStack {
-            Rectangle().fill(Color.clear)
-            Rectangle()
-                .fill(isHovering ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.12))
-                .frame(width: 1)
-        }
-        .frame(width: 8)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovering = hovering
-            if hovering {
-                NSCursor.resizeLeftRight.push()
-            } else if dragStartWidth == nil {
-                // 拖拽中不重置光标（防止指针略出手柄区时光标闪回箭头）
-                NSCursor.pop()
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    if dragStartWidth == nil {
-                        dragStartWidth = CGFloat(model.settings.sidebarWidth)
-                        model.beginSidebarResize()
-                    }
-                    let newWidth = (dragStartWidth ?? 168) + value.translation.width
-                    model.setSidebarWidth(Int(newWidth))
-                }
-                .onEnded { _ in
-                    dragStartWidth = nil
-                    model.finishSidebarResize()
-                }
-        )
-    }
-}
-
 // MARK: - 实时预览
 
 struct PreviewPanel: View {
     @ObservedObject var model: AppModel
 
+    /// 预览按设计尺寸 210×640 完整渲染，再按实际可用空间整体等比缩放——
+    /// 无论窗口如何缩放（宽或高），预览永远完整可见，绝不被裁切或隐藏
+    private static let designWidth: CGFloat = 210
+    private static let designHeight: CGFloat = 640
+
     var body: some View {
+        GeometryReader { geo in
+            let scale = min(1,
+                            geo.size.width / Self.designWidth,
+                            geo.size.height / Self.designHeight)
+            previewContent
+                .frame(width: Self.designWidth, height: Self.designHeight, alignment: .top)
+                .scaleEffect(scale, anchor: .top)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+        }
+        .frame(minWidth: 70, idealWidth: 210, maxWidth: 210)
+    }
+
+    private var previewContent: some View {
         VStack(spacing: 8) {
             Text("实时预览")
                 .font(.headline)
             if let image = model.previewImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(.quaternary, lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
-                    .padding(.horizontal, 8)
+                // 手机框按画布实际比例精确缩放：frame 比例与图片一致，内容完整铺满描边内部，
+                // 不再因 aspect-fit 在非等比容器中左右留出细缝
+                GeometryReader { geo in
+                    let imgW = CGFloat(image.size.width)
+                    let imgH = CGFloat(image.size.height)
+                    let scale = min(geo.size.width / imgW, geo.size.height / imgH)
+                    let w = max(imgW * scale, 1)
+                    let h = max(imgH * scale, 1)
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: w, height: h)
+                        .clipShape(RoundedRectangle(cornerRadius: 18 * scale, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18 * scale, style: .continuous)
+                                .stroke(.quaternary, lineWidth: 1)
+                        }
+                        .shadow(color: .black.opacity(0.15), radius: 12 * scale, y: 4 * scale)
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 8)
             } else {
                 ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Text("142 × 428 · JPEG")
                 .font(.caption2)
@@ -2731,7 +3007,6 @@ struct PreviewPanel: View {
             Text("当前模式：\(model.settings.displayMode.title)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
         }
         .padding(.top, 18) // 沉浸式标题栏留白
     }
@@ -2970,6 +3245,9 @@ extension AppModel {
     var showUptimeBinding: Binding<Bool> {
         Binding(get: { self.settings.showUptime }, set: { self.settings.showUptime = $0 })
     }
+    var showDiskBinding: Binding<Bool> {
+        Binding(get: { self.settings.showDisk }, set: { self.settings.showDisk = $0 })
+    }
     var networkChartBinding: Binding<Bool> {
         Binding(get: { self.settings.networkChart }, set: { self.settings.networkChart = $0 })
     }
@@ -2994,6 +3272,17 @@ extension AppModel {
     var clockFontWeightBinding: Binding<ClockFontWeight> {
         Binding(get: { self.settings.clockFontWeight },
                 set: { self.settings.clockFontWeight = $0 })
+    }
+    var clockFontBinding: Binding<ClockFont> {
+        Binding(get: { self.settings.clockFont }, set: { self.settings.clockFont = $0 })
+    }
+    var clockOffsetXBinding: Binding<Double> {
+        Binding(get: { Double(self.settings.clockOffsetX) },
+                set: { self.settings.clockOffsetX = Int($0.rounded()) })
+    }
+    var clockOffsetYBinding: Binding<Double> {
+        Binding(get: { Double(self.settings.clockOffsetY) },
+                set: { self.settings.clockOffsetY = Int($0.rounded()) })
     }
     /// 时间格式预设：0=HH:mm 1=H:mm 2=HH:mm:ss 3=hh:mm 4=自定义
     var clockFormatPresetBinding: Binding<Int> {
@@ -3100,6 +3389,11 @@ extension AppModel {
         Binding(get: { self.settings.canvasNowPlayingSmartBg },
                 set: { self.settings.canvasNowPlayingSmartBg = $0 })
     }
+    /// 画板「千问额度」模块显示方式（百分比 / 额度数值）
+    var qwenQuotaShowPercentBinding: Binding<Bool> {
+        Binding(get: { self.settings.qwenQuotaShowPercent },
+                set: { self.settings.qwenQuotaShowPercent = $0 })
+    }
     /// 口袋先知画板「正在播放」横向排布开关
     var oracleNowPlayingHorizontalBinding: Binding<Bool> {
         Binding(get: { self.settings.oracleNowPlayingHorizontal },
@@ -3136,6 +3430,11 @@ extension AppModel {
     func excerptQuoteCategoryBinding(for category: ExcerptQuoteCategory) -> Binding<Bool> {
         Binding(get: { self.settings.excerptQuoteCategories.contains(category.rawValue) },
                 set: { isOn in self.setExcerptQuoteCategory(category, enabled: isOn) })
+    }
+    /// 摘录语录显示出处绑定
+    var showExcerptSourceBinding: Binding<Bool> {
+        Binding(get: { self.settings.showExcerptSource },
+                set: { self.settings.showExcerptSource = $0 })
     }
     /// Emoji 壁纸：表情串绑定
     var emojiWallpaperTextBinding: Binding<String> {

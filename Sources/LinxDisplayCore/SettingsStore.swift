@@ -3,7 +3,8 @@ import Foundation
 
 /// 应用设置。属性变更时通过 onChange 回调通知持久化。
 public final class AppSettings: ObservableObject {
-    @Published public var endpoint = "http://192.168.31.71/image/upload" {
+    /// 键盘推送地址（设备管理添加键盘时按 IP 自动补全 http://<IP>/image/upload；默认为空）
+    @Published public var endpoint = "" {
         didSet { onChange() }
     }
     /// 用量数据统一刷新周期（秒）：Codex 用量与千问办公额度一次并行调取，供所有功能共享
@@ -30,6 +31,10 @@ public final class AppSettings: ObservableObject {
     }
     /// 千问办公额度百分比基线：用户手动抓取的「100%」额度值（持久化；之后按 当前/基线 算剩余百分比）
     @Published public var qwenQuotaBaseline: Double? {
+        didSet { onChange() }
+    }
+    /// 千问办公额度基线的采样日（yyyy-MM-dd，本地时区）：跨天后自动以当天额度重新采样基线
+    @Published public var qwenQuotaBaselineDay: String? {
         didSet { onChange() }
     }
     @Published public var displayMode: DisplayMode = .codex {
@@ -76,7 +81,7 @@ public final class AppSettings: ObservableObject {
     @Published public var softwareIsDark = true {
         didSet { onChange() }
     }
-    /// 侧边栏宽度（像素，140–280）
+    /// 侧边栏宽度（像素，48–320）
     @Published public var sidebarWidth = 168 {
         didSet { onChange() }
     }
@@ -105,6 +110,9 @@ public final class AppSettings: ObservableObject {
     @Published public var showUptime = true {
         didSet { onChange() }
     }
+    @Published public var showDisk = false {
+        didSet { onChange() }
+    }
     /// 网络板块显示方式：false = 数字速率，true = 折线图
     @Published public var networkChart = false {
         didSet { onChange() }
@@ -123,12 +131,24 @@ public final class AppSettings: ObservableObject {
     @Published public var customImageClock: CustomImageClockOverlay = .none {
         didSet { onChange() }
     }
-    /// 时钟字号（横向时间使用；竖向数字按比例派生）
+    /// 时钟字号（横向时间使用；竖向数字按比例派生；上限 96pt）
     @Published public var clockFontSize = 36 {
         didSet { onChange() }
     }
     /// 叠加时钟字体粗细（Pixel 锁屏风格，默认纤细）
     @Published public var clockFontWeight: ClockFontWeight = .thin {
+        didSet { onChange() }
+    }
+    /// 叠加时钟字体家族（默认 Helvetica Neue，Pixel 锁屏风格）
+    @Published public var clockFont: ClockFont = .helveticaNeue {
+        didSet { onChange() }
+    }
+    /// 时钟叠加水平偏移（px，正值向右；横向布局作用于时间+日期整组）
+    @Published public var clockOffsetX = 0 {
+        didSet { onChange() }
+    }
+    /// 时钟叠加垂直偏移（px，正值向下）
+    @Published public var clockOffsetY = 0 {
         didSet { onChange() }
     }
     /// 时钟时间格式（DateFormatter 模式，如 HH:mm / hh:mm / HH:mm:ss）
@@ -200,6 +220,10 @@ public final class AppSettings: ObservableObject {
     /// 摘录语录启用的分类（ExcerptQuoteCategory.rawValue 数组，默认全选；
     /// 勾选为空时轮换池回退全部，避免无语录可显示）
     @Published public var excerptQuoteCategories: [Int] = ExcerptQuoteCategory.allCases.map(\.rawValue) {
+        didSet { onChange() }
+    }
+    /// 摘录语录显示出处：开启后在时钟位置显示语录出处并隐藏时钟（无确切出处的语录不显示）
+    @Published public var showExcerptSource = false {
         didSet { onChange() }
     }
     /// Emoji 壁纸：用户提供的 emoji 表情串
@@ -299,6 +323,10 @@ public final class AppSettings: ObservableObject {
     @Published public var canvasModuleMargins: [Int: Int] = [:] {
         didSet { onChange() }
     }
+    /// 画板「千问额度」模块显示方式：true = 百分比为大字（与其他模块一致），false = 额度数值为大字
+    @Published public var qwenQuotaShowPercent = true {
+        didSet { onChange() }
+    }
     /// 番茄钟：每完成一个时间段是否显示夸夸
     @Published public var pomodoroPraiseEnabled = false {
         didSet { onChange() }
@@ -309,6 +337,16 @@ public final class AppSettings: ObservableObject {
     }
     /// 番茄钟：任务名称字号
     @Published public var pomodoroTaskFontSize = 9 {
+        didSet { onChange() }
+    }
+    /// 番茄钟：全局快捷键（开始/暂停 · 跳过 · 重置），可自定义、可恢复默认
+    @Published public var pomodoroToggleShortcut = GlobalShortcut.defaultToggle {
+        didSet { onChange() }
+    }
+    @Published public var pomodoroSkipShortcut = GlobalShortcut.defaultSkip {
+        didSet { onChange() }
+    }
+    @Published public var pomodoroResetShortcut = GlobalShortcut.defaultReset {
         didSet { onChange() }
     }
 
@@ -339,17 +377,38 @@ public final class AppSettings: ObservableObject {
         return cleaned
     }
 
-    /// 模块的上下边距（0–40，越大越紧凑）
+    /// 模块的上下边距（0–40，越大越紧凑）。0 = 自适应调节模式：使用按模块类型的默认边距
     public func canvasMargin(for module: CanvasModule) -> Int {
+        // 手动设置过（>0）用手动值；未设置或值为 0 时回落自适应默认边距，
+        // 让画板布局默认就合理、用户通常无需手动调节
+        if let v = canvasModuleMargins[module.rawValue], v > 0 { return v }
+        return defaultCanvasMargin(for: module)
+    }
+
+    /// 模块手动设置的边距值（未设置/归零=自适应时为 0，供滑杆显示与判断）
+    public func manualCanvasMargin(for module: CanvasModule) -> Int {
         canvasModuleMargins[module.rawValue] ?? 0
+    }
+
+    /// 各模块的自适应默认边距：内容厚重/需要呼吸的模块给更大间距，
+    /// 纯文字紧凑模块给最小间距；用户手动设置过则覆盖默认值
+    public func defaultCanvasMargin(for module: CanvasModule) -> Int {
+        switch module {
+        case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
+        case .pomodoro: return 4
+        case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex: return 4
+        case .clock, .date, .text: return 2
+        }
     }
 
     public func setCanvasMargin(_ margin: Int, for module: CanvasModule) {
         let clamped = min(max(margin, 0), 40)
-        guard canvasModuleMargins[module.rawValue] != clamped else { return }
         if clamped == 0 {
-            canvasModuleMargins.removeValue(forKey: module.rawValue)
-        } else {
+            // 0 = 自适应调节模式：移除手动值，回落到该模块的自适应默认边距
+            if canvasModuleMargins[module.rawValue] != nil {
+                canvasModuleMargins.removeValue(forKey: module.rawValue)
+            }
+        } else if canvasModuleMargins[module.rawValue] != clamped {
             canvasModuleMargins[module.rawValue] = clamped
         }
     }
@@ -484,8 +543,14 @@ public final class AppSettings: ObservableObject {
         jpegQuality = min(max(jpegQuality, 50), 100)
         dynamicUploadSeconds = min(max(dynamicUploadSeconds, 2), 60)
         imageRotationSeconds = min(max(imageRotationSeconds, Int(RotationInterval.minSeconds)), Int(RotationInterval.maxSeconds))
-        clockFontSize = min(max(clockFontSize, 18), 56)
+        clockFontSize = min(max(clockFontSize, 18), 96)
+        clockOffsetX = min(max(clockOffsetX, -60), 60)
+        clockOffsetY = min(max(clockOffsetY, -80), 80)
         pomodoroTaskFontSize = min(max(pomodoroTaskFontSize, 7), 16)
+        // 快捷键钳制：键码 0–127、修饰键只保留 ⌘⇧⌥⌃
+        pomodoroToggleShortcut = pomodoroToggleShortcut.clamped()
+        pomodoroSkipShortcut = pomodoroSkipShortcut.clamped()
+        pomodoroResetShortcut = pomodoroResetShortcut.clamped()
         nowPlayingTitleSize = min(max(nowPlayingTitleSize, 7), 24)
         nowPlayingArtistSize = min(max(nowPlayingArtistSize, 6), 20)
         nowPlayingTimeSize = min(max(nowPlayingTimeSize, 10), 40)
@@ -495,7 +560,7 @@ public final class AppSettings: ObservableObject {
         oracleAutoPushMinutes = min(max(oracleAutoPushMinutes, 1), 1440)
         excerptAutoPushMinutes = min(max(excerptAutoPushMinutes, 1), 1440)
         cardRotationMinutes = min(max(cardRotationMinutes, 1), 60)
-        sidebarWidth = min(max(sidebarWidth, 140), 280)
+        sidebarWidth = min(max(sidebarWidth, 48), 320)
         // 轮换卡片列表：去重 + 过滤无效模式
         let validModes = Set(DisplayMode.allCases.map(\.rawValue))
         var cleanedModes: [Int] = []
@@ -555,24 +620,26 @@ public final class AppSettings: ObservableObject {
 
     private enum CodingKeys: String, CodingKey {
         case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, sspaiRandomPush, dynamicUploadSeconds, safeAreaHeight,
-             jpegQuality, qwenQuotaBaseline, displayMode, cardTheme, customImagePath, customImageName,
+             jpegQuality, qwenQuotaBaseline, qwenQuotaBaselineDay, displayMode, cardTheme, customImagePath, customImageName,
              oracleCanvasImagePath, oracleCanvasImageName, excerptCanvasImagePath, excerptCanvasImageName,
              customImageHistory,
              startWithSystem, codexCliPath, appearanceMode, backgroundTone,
              customBackgroundHex, accentTone, customAccentHex,
-             showCpu, showMemory, showNetwork, showUptime,
+             showCpu, showMemory, showNetwork, showUptime, showDisk,
              networkChart,
              imageRotationEnabled, imageRotationSeconds, imageRotationMode,
-             customImageClock, clockFontSize, clockTimeFormat, clockFontWeight,
+             customImageClock, clockFontSize, clockTimeFormat, clockFontWeight, clockFont,
+             clockOffsetX, clockOffsetY,
              canvasModules, canvasText,
              canvasClockFormat, canvasDateFormat, canvasNowPlayingCover, canvasNowPlayingSmartBg,
              oracleNowPlayingHorizontal, excerptNowPlayingHorizontal, canvasImageMode,
              canvasSspaiCount, oracleSspaiCount, excerptSspaiCount,
              canvasSspaiRandom, oracleSspaiRandom, excerptSspaiRandom,
-             excerptQuoteCategories,
+             excerptQuoteCategories, showExcerptSource,
              emojiWallpaperText, emojiWallpaperSize, emojiWallpaperLayout, emojiWallpaperSpacing,
-             canvasModuleMargins,
+             canvasModuleMargins, qwenQuotaShowPercent,
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
+             pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
              nowPlayingTitleSize, nowPlayingArtistSize,
              nowPlayingFooterVisible, nowPlayingTimeFormat, nowPlayingDateFormat,
              nowPlayingTimeSize, nowPlayingDateSize,
@@ -604,6 +671,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(safeAreaHeight, forKey: .safeAreaHeight)
         try container.encode(jpegQuality, forKey: .jpegQuality)
         try container.encodeIfPresent(qwenQuotaBaseline, forKey: .qwenQuotaBaseline)
+        try container.encodeIfPresent(qwenQuotaBaselineDay, forKey: .qwenQuotaBaselineDay)
         try container.encode(displayMode.rawValue, forKey: .displayMode)
         try container.encode(cardTheme.rawValue, forKey: .cardTheme)
         try container.encodeIfPresent(customImagePath, forKey: .customImagePath)
@@ -624,6 +692,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(showMemory, forKey: .showMemory)
         try container.encode(showNetwork, forKey: .showNetwork)
         try container.encode(showUptime, forKey: .showUptime)
+        try container.encode(showDisk, forKey: .showDisk)
         try container.encode(networkChart, forKey: .networkChart)
         try container.encode(imageRotationEnabled, forKey: .imageRotationEnabled)
         try container.encode(imageRotationSeconds, forKey: .imageRotationSeconds)
@@ -631,6 +700,9 @@ public final class AppSettings: ObservableObject {
         try container.encode(customImageClock.rawValue, forKey: .customImageClock)
         try container.encode(clockFontSize, forKey: .clockFontSize)
         try container.encode(clockFontWeight.rawValue, forKey: .clockFontWeight)
+        try container.encode(clockFont.rawValue, forKey: .clockFont)
+        try container.encode(clockOffsetX, forKey: .clockOffsetX)
+        try container.encode(clockOffsetY, forKey: .clockOffsetY)
         try container.encode(clockTimeFormat, forKey: .clockTimeFormat)
         try container.encode(canvasModules, forKey: .canvasModules)
         try container.encode(canvasText, forKey: .canvasText)
@@ -647,15 +719,20 @@ public final class AppSettings: ObservableObject {
         try container.encode(oracleSspaiRandom, forKey: .oracleSspaiRandom)
         try container.encode(excerptSspaiRandom, forKey: .excerptSspaiRandom)
         try container.encode(excerptQuoteCategories, forKey: .excerptQuoteCategories)
+        try container.encode(showExcerptSource, forKey: .showExcerptSource)
         try container.encode(emojiWallpaperText, forKey: .emojiWallpaperText)
         try container.encode(emojiWallpaperSize, forKey: .emojiWallpaperSize)
         try container.encode(emojiWallpaperLayout.rawValue, forKey: .emojiWallpaperLayout)
         try container.encode(emojiWallpaperSpacing, forKey: .emojiWallpaperSpacing)
         try container.encode(canvasImageMode.rawValue, forKey: .canvasImageMode)
         try container.encode(canvasModuleMargins, forKey: .canvasModuleMargins)
+        try container.encode(qwenQuotaShowPercent, forKey: .qwenQuotaShowPercent)
         try container.encode(pomodoroPraiseEnabled, forKey: .pomodoroPraiseEnabled)
         try container.encode(pomodoroPraiseSource.rawValue, forKey: .pomodoroPraiseSource)
         try container.encode(pomodoroTaskFontSize, forKey: .pomodoroTaskFontSize)
+        try container.encode(pomodoroToggleShortcut, forKey: .pomodoroToggleShortcut)
+        try container.encode(pomodoroSkipShortcut, forKey: .pomodoroSkipShortcut)
+        try container.encode(pomodoroResetShortcut, forKey: .pomodoroResetShortcut)
         try container.encode(nowPlayingTitleSize, forKey: .nowPlayingTitleSize)
         try container.encode(nowPlayingArtistSize, forKey: .nowPlayingArtistSize)
         try container.encode(nowPlayingFooterVisible, forKey: .nowPlayingFooterVisible)
@@ -720,6 +797,7 @@ extension AppSettings: Codable {
         safeAreaHeight = try container.decodeIfPresent(Int.self, forKey: .safeAreaHeight) ?? safeAreaHeight
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? jpegQuality
         qwenQuotaBaseline = try container.decodeIfPresent(Double.self, forKey: .qwenQuotaBaseline) ?? qwenQuotaBaseline
+        qwenQuotaBaselineDay = try container.decodeIfPresent(String.self, forKey: .qwenQuotaBaselineDay) ?? qwenQuotaBaselineDay
         if let raw = try container.decodeIfPresent(Int.self, forKey: .displayMode),
            let mode = DisplayMode(rawValue: raw) {
             displayMode = mode
@@ -755,6 +833,7 @@ extension AppSettings: Codable {
         showMemory = try container.decodeIfPresent(Bool.self, forKey: .showMemory) ?? showMemory
         showNetwork = try container.decodeIfPresent(Bool.self, forKey: .showNetwork) ?? showNetwork
         showUptime = try container.decodeIfPresent(Bool.self, forKey: .showUptime) ?? showUptime
+        showDisk = try container.decodeIfPresent(Bool.self, forKey: .showDisk) ?? showDisk
         networkChart = try container.decodeIfPresent(Bool.self, forKey: .networkChart) ?? networkChart
         imageRotationEnabled = try container.decodeIfPresent(Bool.self, forKey: .imageRotationEnabled) ?? imageRotationEnabled
         imageRotationSeconds = try container.decodeIfPresent(Int.self, forKey: .imageRotationSeconds) ?? imageRotationSeconds
@@ -771,6 +850,12 @@ extension AppSettings: Codable {
            let weight = ClockFontWeight(rawValue: raw) {
             clockFontWeight = weight
         }
+        if let raw = try container.decodeIfPresent(Int.self, forKey: .clockFont),
+           let font = ClockFont(rawValue: raw) {
+            clockFont = font
+        }
+        clockOffsetX = try container.decodeIfPresent(Int.self, forKey: .clockOffsetX) ?? clockOffsetX
+        clockOffsetY = try container.decodeIfPresent(Int.self, forKey: .clockOffsetY) ?? clockOffsetY
         clockTimeFormat = try container.decodeIfPresent(String.self, forKey: .clockTimeFormat) ?? clockTimeFormat
         canvasModules = try container.decodeIfPresent([Int].self, forKey: .canvasModules) ?? canvasModules
         canvasText = try container.decodeIfPresent(String.self, forKey: .canvasText) ?? canvasText
@@ -787,6 +872,7 @@ extension AppSettings: Codable {
         oracleSspaiRandom = try container.decodeIfPresent(Bool.self, forKey: .oracleSspaiRandom) ?? oracleSspaiRandom
         excerptSspaiRandom = try container.decodeIfPresent(Bool.self, forKey: .excerptSspaiRandom) ?? excerptSspaiRandom
         excerptQuoteCategories = try container.decodeIfPresent([Int].self, forKey: .excerptQuoteCategories) ?? excerptQuoteCategories
+        showExcerptSource = try container.decodeIfPresent(Bool.self, forKey: .showExcerptSource) ?? showExcerptSource
         emojiWallpaperText = try container.decodeIfPresent(String.self, forKey: .emojiWallpaperText) ?? emojiWallpaperText
         emojiWallpaperSize = try container.decodeIfPresent(Int.self, forKey: .emojiWallpaperSize) ?? emojiWallpaperSize
         if let raw = try container.decodeIfPresent(Int.self, forKey: .emojiWallpaperLayout),
@@ -798,13 +884,18 @@ extension AppSettings: Codable {
            let mode = CanvasImageMode(rawValue: raw) {
             canvasImageMode = mode
         }
-        canvasModuleMargins = try container.decodeIfPresent([Int: Int].self, forKey: .canvasModuleMargins) ?? [:]
+        canvasModuleMargins = (try container.decodeIfPresent([Int: Int].self, forKey: .canvasModuleMargins) ?? [:])
+            .filter { $0.value > 0 }   // 0 = 自适应模式：丢弃历史遗留的显式 0 条目
+        qwenQuotaShowPercent = try container.decodeIfPresent(Bool.self, forKey: .qwenQuotaShowPercent) ?? qwenQuotaShowPercent
         pomodoroPraiseEnabled = try container.decodeIfPresent(Bool.self, forKey: .pomodoroPraiseEnabled) ?? pomodoroPraiseEnabled
         if let raw = try container.decodeIfPresent(Int.self, forKey: .pomodoroPraiseSource),
            let source = PraiseSource(rawValue: raw) {
             pomodoroPraiseSource = source
         }
         pomodoroTaskFontSize = try container.decodeIfPresent(Int.self, forKey: .pomodoroTaskFontSize) ?? pomodoroTaskFontSize
+        pomodoroToggleShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroToggleShortcut) ?? .defaultToggle
+        pomodoroSkipShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroSkipShortcut) ?? .defaultSkip
+        pomodoroResetShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroResetShortcut) ?? .defaultReset
         nowPlayingTitleSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingTitleSize) ?? nowPlayingTitleSize
         nowPlayingArtistSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingArtistSize) ?? nowPlayingArtistSize
         nowPlayingFooterVisible = try container.decodeIfPresent(Bool.self, forKey: .nowPlayingFooterVisible) ?? nowPlayingFooterVisible
@@ -987,6 +1078,30 @@ public final class SettingsStore {
             let path = (item.path as NSString).resolvingSymlinksInPath
             guard path != keep, !item.hasDirectoryPath else { continue }
             try? FileManager.default.removeItem(at: item)
+        }
+    }
+
+    /// 恢复初始设定：把设置文件、番茄钟数据、自定义图片与图片缓存目录移入废纸篓
+    /// （带时间戳的子目录，可恢复；不永久删除）。下次保存时重新创建全新默认配置。
+    /// trashRoot 仅用于测试注入；默认使用系统废纸篓。
+    public func resetAllData(trashRoot: URL? = nil) {
+        let root = trashRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash", isDirectory: true)
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let trashDir = root.appendingPathComponent(
+            "多屏灵犀-恢复初始设定-\(stamp.string(from: Date()))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
+        // pomodoro 新旧路径指向同一文件，去重防第二次移动失败
+        let targets = [settingsURL, pomodoroURL, customImageURL, originalSettingsURL, historyDirectory]
+        var seen = Set<String>()
+        for target in targets {
+            let key = (target.path as NSString).resolvingSymlinksInPath
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            guard FileManager.default.fileExists(atPath: target.path) else { continue }
+            let dest = trashDir.appendingPathComponent(target.lastPathComponent)
+            try? FileManager.default.moveItem(at: target, to: dest)
         }
     }
 

@@ -201,16 +201,42 @@ public enum ScreenRenderer {
         var sections: [SystemSection] = []
         if settings.showCpu { sections.append(.cpu) }
         if settings.showMemory { sections.append(.memory) }
+        if settings.showDisk { sections.append(.disk) }
         if settings.showNetwork { sections.append(.network) }
         if settings.showUptime { sections.append(.uptime) }
         if sections.isEmpty { sections = [.cpu] }
 
         let regionTop = c.minY + 49 + 6
         let regionBottom = c.maxY - 15 - 30  // 预留页脚时间戳
-        let slotHeight = max(44, (regionBottom - regionTop) / CGFloat(sections.count))
 
-        for (index, section) in sections.enumerated() {
-            let slotTop = regionTop + CGFloat(index) * slotHeight
+        // 运行时间不占满槽位：与其他板块同显时只在底部占一条紧凑行，
+        // 其余板块均分剩余高度（避免运行时间挤占过多安全区）
+        let mainSections = sections.filter { $0 != .uptime }
+        let hasUptime = sections.contains(.uptime) && !mainSections.isEmpty
+        let uptimeBandH: CGFloat = hasUptime ? 20 : 0
+        let mainCount = max(mainSections.count, 1)
+        let mainBandH = max(regionBottom - regionTop - uptimeBandH, CGFloat(mainCount) * 44)
+        let slotHeight = mainBandH / CGFloat(mainCount)
+        let uptimeBandTop = regionTop + mainBandH
+
+        var mainIndex = 0
+        for section in sections {
+            if section == .uptime {
+                if hasUptime {
+                    // 底部紧凑单行（不参与均分）
+                    drawText(ctx, uptimeText(snapshot.uptime), size: 7.5, bold: false,
+                             color: colors.secondaryTextCG,
+                             in: rect(c.minX + 8, uptimeBandTop, c.maxX - c.minX - 16, uptimeBandH), align: .center)
+                } else {
+                    // 仅显示运行时间时，维持整槽居中
+                    drawText(ctx, uptimeText(snapshot.uptime), size: 7.5, bold: false,
+                             color: colors.secondaryTextCG,
+                             in: rect(c.minX + 8, regionTop, c.maxX - c.minX - 16, regionBottom - regionTop), align: .center)
+                }
+                continue
+            }
+            let slotTop = regionTop + CGFloat(mainIndex) * slotHeight
+            mainIndex += 1
             switch section {
             case .cpu:
                 let contentHeight: CGFloat = 48
@@ -235,6 +261,20 @@ public enum ScreenRenderer {
                              progress: snapshot.memoryPercent / 100,
                              accent: colors.secondaryAccentCG, background: colors.borderCG)
                 drawText(ctx, String(format: "%.1f / %.1f GB", toGiB(snapshot.usedMemoryBytes), toGiB(snapshot.totalMemoryBytes)),
+                         size: 7.5, bold: false, color: colors.secondaryTextCG,
+                         in: rect(c.minX + 8, sTop + 38, c.maxX - c.minX - 16, 17), align: .center)
+            case .disk:
+                let contentHeight: CGFloat = 56
+                let sTop = slotTop + max(0, (slotHeight - contentHeight) / 2)
+                drawText(ctx, "磁盘", size: 7.5, bold: false, color: colors.secondaryTextCG,
+                         in: rect(c.minX + 12, sTop, 38, 21), align: .left)
+                drawText(ctx, String(format: "%.0f%%", snapshot.diskPercent), size: 11, bold: true,
+                         color: colors.primaryTextCG,
+                         in: rect(c.minX + 46, sTop, c.maxX - c.minX - 58, 23), align: .right)
+                drawProgress(ctx, rect(c.minX + 12, sTop + 24, c.maxX - c.minX - 24, 7),
+                             progress: snapshot.diskPercent / 100,
+                             accent: colors.secondaryAccentCG, background: colors.borderCG)
+                drawText(ctx, String(format: "%.0f / %.0f GB", toGiB(snapshot.usedDiskBytes), toGiB(snapshot.totalDiskBytes)),
                          size: 7.5, bold: false, color: colors.secondaryTextCG,
                          in: rect(c.minX + 8, sTop + 38, c.maxX - c.minX - 16, 17), align: .center)
             case .network:
@@ -267,9 +307,7 @@ public enum ScreenRenderer {
                              in: rect(boxSkia.minX + 29, bodyTop + rowH, boxSkia.width - 37, rowH), align: .right)
                 }
             case .uptime:
-                drawText(ctx, uptimeText(snapshot.uptime), size: 7.5, bold: false,
-                         color: colors.secondaryTextCG,
-                         in: rect(c.minX + 8, slotTop, c.maxX - c.minX - 16, slotHeight), align: .center)
+                break // 运行时间已在循环内单独处理（底部紧凑行/仅此一项时整槽居中）
             }
         }
 
@@ -281,7 +319,7 @@ public enum ScreenRenderer {
         return try encode(ctx, quality: settings.jpegQuality)
     }
 
-    private enum SystemSection { case cpu, memory, network, uptime }
+    private enum SystemSection { case cpu, memory, disk, network, uptime }
 
     private static func uptimeText(_ uptime: TimeInterval) -> String {
         if uptime >= 86400 {
@@ -371,10 +409,11 @@ public enum ScreenRenderer {
             colors = ScreenThemes.get(.deepSpace) // 深色系，保证图上文字可读
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            // 背景模式：图片等比完整显示（contain，不裁剪不变形），其他模块叠加其上
+            // 背景模式：图片等比完整显示（contain，不裁剪不变形），忽略顶部安全区、铺满整个屏幕；
+            // 其他模块叠加其上
             drawImageContain(ctx, path: path,
-                             into: CGRect(x: 0, y: CGFloat(safe), width: CGFloat(width),
-                                          height: CGFloat(height) - CGFloat(safe)))
+                             into: CGRect(x: 0, y: 0, width: CGFloat(width),
+                                          height: CGFloat(height)))
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.5))
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
             c = CGRect(x: 9, y: CGFloat(safe) + 1, width: 124,
@@ -391,7 +430,7 @@ public enum ScreenRenderer {
         }
 
         drawHeader(ctx, card: c, title: "CANVAS", badge: "灵犀画板",
-                   accent: colors.accentCG, colors: colors)
+                   accent: colors.accentCG, colors: colors, badgeSize: 8)
         drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
                  color: colors.borderCG)
 
@@ -406,6 +445,13 @@ public enum ScreenRenderer {
                                 width: c.maxX - c.minX - 16, height: regionHeight)
             let bands = moduleBands(modules: modules, region: region, settings: settings,
                                     zeroHeightImageModule: useImageBackground)
+            // 灵犀画板强调色跟随封面：画板含「正在播放」模块且开启智能封面取色（有封面）时，
+            // 所有模块的进度条/百分比条强调色统一用封面生成的强调色（coverProgressAccent），
+            // 关闭开关或无封面时回退全局强调色
+            let accentOverride: CGColor? = coverArt.map { art in
+                let acc = coverProgressAccent(dominantColor(of: art))
+                return CGColor(red: acc.0, green: acc.1, blue: acc.2, alpha: 1)
+            }
             for (index, module) in modules.enumerated() {
                 drawCanvasModule(ctx, module, band: bands[index], colors: colors,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
@@ -413,7 +459,8 @@ public enum ScreenRenderer {
                                  codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
                                  now: now,
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
-                                 canvasCoverBgActive: coverArt != nil)
+                                 canvasCoverBgActive: coverArt != nil,
+                                 accentOverride: accentOverride)
             }
         }
         return try encode(ctx, quality: settings.jpegQuality)
@@ -431,7 +478,10 @@ public enum ScreenRenderer {
         let weights = modules.map { m -> CGFloat in
             if zeroHeightImageModule && m == .image { return 0 }
             let margin = settings.canvasMargin(for: m)
-            return max(0.25, 1.0 - CGFloat(margin) / 40.0)
+            let base = max(0.25, 1.0 - CGFloat(margin) / 40.0)
+            // 正在播放（含封面）需要更大高度：自适应/手动边距下都给予空间权重加成，
+            // 避免封面被压得过小（仍不足时渲染层自动转横向排布）
+            return m == .nowPlaying ? max(base * 1.4, 0.25) : base
         }
         var bands: [CGRect] = []
         if columns <= 1 || modules.count <= 1 {
@@ -686,7 +736,8 @@ public enum ScreenRenderer {
                                          fullWidth: Bool = false,
                                          deviceCanvas: Bool = false,
                                          nowPlayingHorizontal: Bool = false,
-                                         canvasImagePath: String? = nil) {
+                                         canvasImagePath: String? = nil,
+                                         accentOverride: CGColor? = nil) {
         let w = band.width
         switch module {
         case .clock:
@@ -711,24 +762,29 @@ public enum ScreenRenderer {
                      in: rect(band.minX, band.minY, w, band.height), align: .center)
         case .cpu:
             drawStatBand(ctx, band: band, label: "CPU", percent: system.cpuPercent,
-                         accent: colors.accentCG, colors: colors)
+                         accent: accentOverride ?? colors.accentCG, colors: colors)
         case .memory:
             drawStatBand(ctx, band: band, label: "内存", percent: system.memoryPercent,
-                         accent: colors.secondaryAccentCG, colors: colors)
+                         accent: accentOverride ?? colors.secondaryAccentCG, colors: colors)
+        case .disk:
+            drawDiskBand(ctx, band: band, colors: colors,
+                         accent: accentOverride ?? colors.secondaryAccentCG,
+                         percent: system.diskPercent, used: system.usedDiskBytes, total: system.totalDiskBytes)
         case .codex:
             let pct = codex.remainingPercent
             drawQuotaBand(ctx, band: band, label: "Codex", value: "\(pct)%",
-                          progress: Double(pct) / 100, accent: colors.accentCG, colors: colors)
+                          progress: Double(pct) / 100, accent: accentOverride ?? colors.accentCG, colors: colors)
         case .qwenQuota:
-            let numberText = qwenQuota.remainingCredits >= 100
-                ? String(format: "%.0f", qwenQuota.remainingCredits)
-                : String(format: "%.1f", qwenQuota.remainingCredits)
+            // 额度精确到两位小数；整数大字 + 小数（含小数点）半字号
+            let parts = quotaNumberParts(qwenQuota.remainingCredits)
             let unit = qwenQuota.unit.isEmpty ? "credits" : qwenQuota.unit
-            // 百分比仅在设置了手动基线后显示
-            let percentText = qwenQuota.trackedProgress.map { " · \(Int(($0 * 100).rounded()))%" } ?? ""
-            drawQuotaBand(ctx, band: band, label: "千问额度",
-                          value: "\(numberText) \(unit)\(percentText)",
-                          progress: qwenQuota.progress, accent: colors.secondaryAccentCG, colors: colors)
+            // 百分比在基线采样后显示（基线每日自动采样，额度回升时自动拉高）
+            let percentText = qwenQuota.trackedProgress.map { "\(Int(($0 * 100).rounded()))%" } ?? ""
+            drawQwenQuotaBand(ctx, band: band, whole: parts.whole, fraction: parts.fraction,
+                              unit: unit, percent: percentText,
+                              progress: qwenQuota.progress,
+                              accent: accentOverride ?? colors.secondaryAccentCG, colors: colors,
+                              showPercent: settings.qwenQuotaShowPercent)
         case .network:
             let rowH = max(band.height / 2, 10)
             drawText(ctx, "↓ " + formatRate(system.downloadBytesPerSecond), size: 10, bold: true,
@@ -765,8 +821,13 @@ public enum ScreenRenderer {
                 }
             }
             if settings.canvasNowPlayingCover, let art {
-                // 横向排布（跨单元占满整行，或墨水屏画板开启「横向排布」）：封面居左、歌名/歌手居右
-                if (fullWidth || nowPlayingHorizontal), band.width >= 120 {
+                // 竖排封面尺寸估算（封面在模块上方、文字在下方）：
+                // 空间不足时封面会被压得过小，此时自动转为横向排布（侧边栏式封面居左、歌名/歌手居右）
+                let verticalTextH = max(band.height * 0.32, 20)
+                let verticalCover = min(w - 4, max(band.height - verticalTextH - 4, 20))
+                let horizontalNeeded = verticalCover < 44
+                // 横向排布（占满整行 / 显式横向开关 / 竖排封面过小自动回退）：封面居左、歌名/歌手居右
+                if (fullWidth || nowPlayingHorizontal || horizontalNeeded), band.width >= 100 {
                     let coverSize = max(min(band.height - 4, w * 0.45), 16)
                     let coverX = band.minX + 2
                     let coverY = band.minY + (band.height - coverSize) / 2
@@ -777,10 +838,16 @@ public enum ScreenRenderer {
                     ctx.interpolationQuality = .high
                     ctx.draw(art, in: coverRect)
                     ctx.restoreGState()
-                    // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体
+                    // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体；
+                    // 键盘画板开启「智能封面取色背景」时封面描边用封面主色强调色（跟随封面）
                     if deviceCanvas {
                         strokeRound(ctx, coverRect, radius: 6,
                                     color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), width: 2)
+                    } else if nowPlayingSmartBg {
+                        let coverAccent = coverProgressAccent(dominantColor(of: art))
+                        strokeRound(ctx, coverRect, radius: 6,
+                                    color: CGColor(red: coverAccent.0, green: coverAccent.1,
+                                                   blue: coverAccent.2, alpha: 1), width: 1)
                     } else {
                         strokeRound(ctx, coverRect, radius: 6, color: colors.borderCG, width: 1)
                     }
@@ -856,10 +923,16 @@ public enum ScreenRenderer {
                     ctx.interpolationQuality = .high
                     ctx.draw(art, in: coverRect)
                     ctx.restoreGState()
-                    // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体
+                    // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体；
+                    // 键盘画板开启「智能封面取色背景」时封面描边用封面主色强调色（跟随封面）
                     if deviceCanvas {
                         strokeRound(ctx, coverRect, radius: 8,
                                     color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), width: 2)
+                    } else if nowPlayingSmartBg {
+                        let coverAccent = coverProgressAccent(dominantColor(of: art))
+                        strokeRound(ctx, coverRect, radius: 8,
+                                    color: CGColor(red: coverAccent.0, green: coverAccent.1,
+                                                   blue: coverAccent.2, alpha: 1), width: 1)
                     } else {
                         strokeRound(ctx, coverRect, radius: 8, color: colors.borderCG, width: 1)
                     }
@@ -899,14 +972,33 @@ public enum ScreenRenderer {
             }
             let seconds = max(0, Int(ceil(pomodoro.remaining)))
             let time = String(format: "%02d:%02d", seconds / 60, seconds % 60)
-            let h1 = max(band.height * 0.5, 10)
-            let h2 = max(band.height - h1, 6)
-            drawText(ctx, phaseText, size: max(min(h1 * 0.5, 11), 7), bold: false,
+            // 阶段标识与时间紧凑成块：空隙随模块高度自动缩窄（越挤空隙越小），
+            // 整块垂直居中保证上下外边缘充足；空间不足时整体收缩字号保持外边缘
+            var phaseSize = max(min(band.height * 0.28, 11), 7)
+            var timeSize = min(band.height * 0.42, 20)
+            let outer = min(max(band.height * 0.12, 2), 6)
+            let availH = max(band.height - outer * 2, 20)
+            let gap = min(max(band.height * 0.05, 2), 5)
+            var phaseRowH = phaseSize * 1.15
+            var timeRowH = timeSize * 1.25
+            var blockH = phaseRowH + gap + timeRowH
+            if blockH > availH {
+                let f = availH / blockH
+                phaseSize = max(phaseSize * f, 7)
+                timeSize = max(timeSize * f, 9)
+                phaseRowH = phaseSize * 1.15
+                timeRowH = timeSize * 1.25
+                blockH = phaseRowH + gap + timeRowH
+            }
+            let blockTop = band.minY + max((band.height - blockH) / 2, 0)
+            // 字形按 em 盒居中时视觉整体偏低约 0.35 倍字号（PingFang 大 ascent）：
+            // 各行绘制区上移该量补偿，使字形真正居中于所在行
+            drawText(ctx, phaseText, size: phaseSize, bold: false,
                      color: colors.secondaryTextCG,
-                     in: rect(band.minX, band.minY, w, h1), align: .center)
-            drawText(ctx, time, size: min(band.height * 0.45, 20), bold: true,
+                     in: rect(band.minX, blockTop - phaseSize * 0.35, w, phaseRowH), align: .center)
+            drawText(ctx, time, size: timeSize, bold: true,
                      color: colors.primaryTextCG,
-                     in: rect(band.minX, band.minY + h1, w, h2), align: .center)
+                     in: rect(band.minX, blockTop + phaseRowH + gap - timeSize * 0.35, w, timeRowH), align: .center)
         case .uptime:
             let text = uptimeText(system.uptime)
             var size = min(band.height * 0.45, 12)
@@ -945,10 +1037,12 @@ public enum ScreenRenderer {
         case .oracleText:
             drawQuoteBand(ctx, title: "先知", body: rotatingOracleText(now), band: band, colors: colors)
         case .excerptText:
-            // 摘录语录不显示「摘录」标题，正文占满整带；轮换池按勾选的分类过滤
-            drawQuoteBand(ctx, title: nil,
-                          body: rotatingExcerptText(now, categories: settings.excerptQuoteCategories),
-                          band: band, colors: colors)
+            // 摘录语录不显示「摘录」标题，正文占满整带；轮换池按勾选的分类过滤；
+            // 开启显示出处时底部加一行出处（替换时钟位置）
+            let quoteBody = rotatingExcerptText(now, categories: settings.excerptQuoteCategories)
+            let quoteSource = settings.showExcerptSource ? (excerptSource(for: quoteBody) ?? "") : ""
+            drawQuoteBand(ctx, title: nil, body: quoteBody,
+                          band: band, colors: colors, source: quoteSource)
         case .sspai:
             drawSspaiBand(ctx, articles: sspaiArticles, band: band, colors: colors,
                           deviceCanvas: deviceCanvas)
@@ -1015,9 +1109,11 @@ public enum ScreenRenderer {
     }
 
     /// 语录模块排版：title 非空且横带足够高时先画小标题再画正文；
-    /// 正文自适应字号 + 多行（长语录换行显示而不是缩成极小单行）
+    /// 正文自适应字号 + 多行（长语录换行显示而不是缩成极小单行）；
+    /// source 非空时正文区底部让出一行出处（摘录语录显示出处，替换时钟位置）
     private static func drawQuoteBand(_ ctx: CGContext, title: String?, body: String,
-                                      band: CGRect, colors: ScreenPalette) {
+                                      band: CGRect, colors: ScreenPalette,
+                                      source: String = "") {
         let w = band.width
         var bodyTop = band.minY
         var bodyHeight = band.height
@@ -1029,6 +1125,9 @@ public enum ScreenRenderer {
             bodyTop = band.minY + titleH
             bodyHeight = band.height - titleH
         }
+        // 预留底部出处行（语录出处）；非空时正文区让出该行
+        let sourceH: CGFloat = source.isEmpty ? 0 : min(max(band.height * 0.16, 11), 18)
+        if sourceH > 0 { bodyHeight -= sourceH }
         // 自适应字号 + 多行：从大到小尝试，换行后的行数×行高不超过正文区高度
         let maxWidth = w - 8
         let maxLines = bodyHeight >= 60 ? 3 : (bodyHeight >= 36 ? 2 : 1)
@@ -1052,6 +1151,18 @@ public enum ScreenRenderer {
             drawText(ctx, line, size: bodySize, bold: true, color: colors.primaryTextCG,
                      in: rect(band.minX, bodyTop + lineH * CGFloat(index), w, lineH),
                      align: .center)
+        }
+        // 出处行：小字号居中，超长自适应缩字号（摘录语录显示出处）
+        if sourceH > 0 {
+            let attribution = "—— " + source
+            var srcSize = min(sourceH * 0.62, 10)
+            var srcLine = wrapText(attribution, maxWidth: w - 6, size: srcSize).first ?? attribution
+            while srcSize > 6, measureTextWidth(srcLine, size: srcSize, bold: false) > w - 6 {
+                srcSize -= 0.5
+                srcLine = wrapText(attribution, maxWidth: w - 6, size: srcSize).first ?? attribution
+            }
+            drawText(ctx, srcLine, size: srcSize, bold: false, color: colors.secondaryTextCG,
+                     in: rect(band.minX, bodyTop + bodyHeight, w, sourceH), align: .center)
         }
     }
 
@@ -1140,6 +1251,68 @@ public enum ScreenRenderer {
             "塞翁失马，焉知非福。",
         ],
     ]
+
+    /// 摘录语录出处（按语录原文精确匹配；没有确切出处的语录不显示）——
+    /// 名人名言 → 作者（有出处的加书名/篇名），电影台词 → 电影名，诗词 → 作者《篇名》，谚语无确切出处留空
+    public static let excerptQuoteSources: [String: String] = [
+        // 名人名言
+        "知行合一，止于至善。": "王阳明",
+        "千里之行，始于足下。": "《老子》",
+        "学而不思则罔，思而不学则殆。": "《论语》",
+        "不积跬步，无以至千里。": "《荀子》",
+        "业精于勤，荒于嬉。": "韩愈",
+        "博观而约取，厚积而薄发。": "苏轼",
+        "路虽远，行则将至。": "《荀子》",
+        "知之者不如好之者，好之者不如乐之者。": "《论语》",
+        "工欲善其事，必先利其器。": "《论语》",
+        "天行健，君子以自强不息。": "《周易》",
+        "走自己的路，让别人说去吧。": "但丁",
+        "冬天来了，春天还会远吗？": "雪莱",
+        "书籍是人类进步的阶梯。": "高尔基",
+        "一个人可以被毁灭，但不能被打败。": "海明威",
+        "世上只有一种真正的英雄主义，那就是认清生活的真相之后依然热爱生活。": "罗曼·罗兰",
+        "天下难事，必作于易；天下大事，必作于细。": "《老子》",
+        "勿以恶小而为之，勿以善小而不为。": "《三国志》",
+        "人的一生应当这样度过：当他回首往事时，不因虚度年华而悔恨，也不因碌碌无为而羞耻。": "奥斯特洛夫斯基",
+        // 经典电影台词
+        "人生就像一盒巧克力，你永远不知道下一颗是什么味道。": "《阿甘正传》",
+        "希望是美好的，也许是人间至善，而美好的事物永不消逝。": "《肖申克的救赎》",
+        "做人如果没有梦想，那和咸鱼有什么分别？": "《少林足球》",
+        "曾经有一份真挚的爱情摆在我面前，我没有珍惜，等到失去的时候才后悔莫及。": "《大话西游》",
+        "能力越大，责任越大。": "《蜘蛛侠》",
+        "昨天是历史，明天是谜团，而今天是天赐的礼物。": "《功夫熊猫》",
+        "我命由我不由天。": "《哪吒之魔童降世》",
+        "有些鸟是注定不会被关在笼子里的，因为它们的每一片羽毛都闪耀着自由的光辉。": "《肖申克的救赎》",
+        "爱是唯一可以超越时间与空间的事物。": "《星际穿越》",
+        "不要温和地走进那个良夜。": "《星际穿越》",
+        "我们曾经仰望星空，思索我们在宇宙中的位置；而现在我们只顾低头，担心我们在尘世间的处境。": "《星际穿越》",
+        "牛顿第三定律：要想离开，必须留下点什么。": "《星际穿越》",
+        "一旦你为人父母，你就成了孩子未来的幽灵。": "《星际穿越》",
+        "墨菲定律并不是说坏事一定会发生，而是说会发生的事总会发生。": "《星际穿越》",
+        "既然是做梦，就干脆做大一点。": "《盗梦空间》",
+        "要么作为英雄而死，要么苟活到目睹自己变成恶棍。": "《蝙蝠侠：黑暗骑士》",
+        "人生总是这么苦么，还是只有童年苦？": "《这个杀手不太冷》",
+        "不管前方的路有多苦，只要走的方向正确，不管多么崎岖不平，都比站在原地更接近幸福。": "《千与千寻》",
+        "如果你有梦想的话，就要去捍卫它。": "《当幸福来敲门》",
+        "说好的一辈子，差一年，一个月，一天，一个时辰，都不算一辈子。": "《霸王别姬》",
+        // 诗词名句
+        "长风破浪会有时，直挂云帆济沧海。": "李白《行路难》",
+        "会当凌绝顶，一览众山小。": "杜甫《望岳》",
+        "人生自古谁无死，留取丹心照汗青。": "文天祥《过零丁洋》",
+        "海内存知己，天涯若比邻。": "王勃《送杜少府之任蜀州》",
+        "山重水复疑无路，柳暗花明又一村。": "陆游《游山西村》",
+        "沉舟侧畔千帆过，病树前头万木春。": "刘禹锡《酬乐天扬州初逢席上见赠》",
+        "天生我材必有用，千金散尽还复来。": "李白《将进酒》",
+        "问渠那得清如许，为有源头活水来。": "朱熹《观书有感》",
+        "少壮不努力，老大徒伤悲。": "《长歌行》",
+        "大鹏一日同风起，扶摇直上九万里。": "李白《上李邕》",
+        "宝剑锋从磨砺出，梅花香自苦寒来。": "《警世贤文》",
+    ]
+
+    /// 语录出处查询（无确切出处的返回 nil）
+    public static func excerptSource(for quote: String) -> String? {
+        excerptQuoteSources[quote]
+    }
 
     /// 全部摘录语录（各分类按枚举顺序拼接；兼容旧调用与默认全选池）
     public static var excerptQuotes: [String] {
@@ -1458,6 +1631,35 @@ public enum ScreenRenderer {
                      progress: p / 100, accent: accent, background: colors.borderCG)
     }
 
+    /// 磁盘占用模块（标签 + 百分比 + 进度条 + 已用/总容量小字；高度不足时省略容量行）
+    private static func drawDiskBand(_ ctx: CGContext, band: CGRect, colors: ScreenPalette,
+                                     accent: CGColor,
+                                     percent: Double, used: UInt64, total: UInt64) {
+        let p = min(max(percent, 0), 100)
+        let w = band.width
+        let capH: CGFloat = band.height >= 46 ? max(min(band.height * 0.22, 10), 7) : 0
+        let labelH = max((band.height - capH) * 0.55, 10)
+        drawText(ctx, "磁盘", size: 9, bold: false, color: colors.secondaryTextCG,
+                 in: rect(band.minX + 4, band.minY, w - 4, labelH), align: .left)
+        drawText(ctx, String(format: "%.0f%%", p), size: 12, bold: true, color: colors.primaryTextCG,
+                 in: rect(band.minX, band.minY, w - 4, labelH), align: .right)
+        let barY = band.minY + labelH
+        let barH = min(max(band.height - labelH - capH - 4, 3), 6)
+        drawProgress(ctx, rect(band.minX + 4, barY, w - 8, barH),
+                     progress: p / 100, accent: accent, background: colors.borderCG)
+        if capH > 0 {
+            let capText = String(format: "%.0f / %.0f GB", toGiB(used), toGiB(total))
+            var capSize = min(capH * 0.8, 8)
+            var capW = measureTextWidth(capText, size: capSize, bold: false)
+            if capW > w - 4 {
+                capSize = max(capSize * (w - 4) / capW, 6)
+                capW = measureTextWidth(capText, size: capSize, bold: false)
+            }
+            drawText(ctx, capText, size: capSize, bold: false, color: colors.tertiaryTextCG,
+                     in: rect(band.minX, barY + barH, w, capH), align: .center)
+        }
+    }
+
     /// 额度类模块（标签 + 自定义数值文本 + 剩余进度条）
     private static func drawQuotaBand(_ ctx: CGContext, band: CGRect, label: String, value: String,
                                       progress: Double, accent: CGColor, colors: ScreenPalette) {
@@ -1479,6 +1681,126 @@ public enum ScreenRenderer {
                      progress: p, accent: accent, background: colors.borderCG)
     }
 
+    /// 千问办公额度数值拆分为整数与小数两部分（精确到两位小数；小数部分渲染时字号减半）
+    public static func quotaNumberParts(_ credits: Double) -> (whole: String, fraction: String) {
+        let scaled = (credits * 100).rounded()
+        let whole = Int(scaled / 100)
+        let fraction = Int(scaled) % 100
+        return (String(whole), String(format: "%02d", fraction))
+    }
+
+    /// 绘制额度数值：整数部分大字 + 小数部分（含小数点）半字号，共享基线；
+    /// 可选右侧小字后缀（单位/百分比）；宽度不足时整体收缩字号。对齐方式支持左/右/居中。
+    private static func drawQuotaNumber(_ ctx: CGContext, whole: String, fraction: String,
+                                        suffix: String = "", size: CGFloat,
+                                        suffixSize: CGFloat = 9,
+                                        color: CGColor, in bounds: CGRect,
+                                        align: NSTextAlignment = .left) {
+        let wholeFontName = "PingFangSC-Semibold"
+        let fractionSize = max(size * 0.5, 6)
+        let wholeW0 = measureTextWidth(whole, size: size, bold: true)
+        let fractionW0 = measureTextWidth("." + fraction, size: fractionSize, bold: true)
+        let suffixW0 = suffix.isEmpty ? 0 : measureTextWidth(suffix, size: suffixSize, bold: false)
+        let gap: CGFloat = suffix.isEmpty ? 0 : 4
+        var total = wholeW0 + fractionW0 + gap + suffixW0
+        var wholeSize = size
+        var fracSize = fractionSize
+        if total > bounds.width, size > 7 {
+            wholeSize = max(size * bounds.width / total, 7)
+            fracSize = max(wholeSize * 0.5, 6)
+            total = measureTextWidth(whole, size: wholeSize, bold: true)
+                + measureTextWidth("." + fraction, size: fracSize, bold: true)
+                + gap + suffixW0
+        }
+        let wholeFont = CTFontCreateWithName(wholeFontName as CFString, wholeSize, nil)
+        let fractionFont = CTFontCreateWithName(wholeFontName as CFString, fracSize, nil)
+        let suffixFont = CTFontCreateWithName("PingFangSC-Regular" as CFString, suffixSize, nil)
+        let attrs = { (font: CTFont) -> [NSAttributedString.Key: Any] in [.font: font, .foregroundColor: color] }
+        let wholeLine = CTLineCreateWithAttributedString(NSAttributedString(string: whole, attributes: attrs(wholeFont)))
+        let fractionLine = CTLineCreateWithAttributedString(NSAttributedString(string: "." + fraction, attributes: attrs(fractionFont)))
+        let suffixLine = suffix.isEmpty ? nil
+            : CTLineCreateWithAttributedString(NSAttributedString(string: suffix, attributes: attrs(suffixFont)))
+        let wholeW = CGFloat(CTLineGetTypographicBounds(wholeLine, nil, nil, nil))
+        let fractionW = CGFloat(CTLineGetTypographicBounds(fractionLine, nil, nil, nil))
+        let suffixW = suffixLine.map { CGFloat(CTLineGetTypographicBounds($0, nil, nil, nil)) } ?? 0
+        let totalW = wholeW + fractionW + gap + suffixW
+        let ascent = CTFontGetAscent(wholeFont)
+        let descent = CTFontGetDescent(wholeFont)
+        let baselineY = bounds.midY - (ascent + descent) / 2
+        let startX: CGFloat
+        switch align {
+        case .right: startX = bounds.maxX - totalW
+        case .center: startX = bounds.midX - totalW / 2
+        default: startX = bounds.minX
+        }
+        ctx.textPosition = CGPoint(x: startX, y: baselineY)
+        CTLineDraw(wholeLine, ctx)
+        ctx.textPosition = CGPoint(x: startX + wholeW, y: baselineY)
+        CTLineDraw(fractionLine, ctx)
+        if let suffixLine {
+            ctx.textPosition = CGPoint(x: startX + wholeW + fractionW + gap, y: baselineY)
+            CTLineDraw(suffixLine, ctx)
+        }
+    }
+
+    /// 千问额度模块横带：标签 + 大字主指标（百分比或额度数值，可切换）+ 次级辅助行 + 进度条
+    private static func drawQwenQuotaBand(_ ctx: CGContext, band: CGRect,
+                                          whole: String, fraction: String,
+                                          unit: String, percent: String,
+                                          progress: Double, accent: CGColor, colors: ScreenPalette,
+                                          showPercent: Bool) {
+        let p = min(max(progress, 0), 1)
+        let w = band.width
+        if band.height >= 54 {
+            // 三行排布：第一行「千问」+ 大字主指标（showPercent=百分比，否则仅额度数字），
+            // 第二行次级信息、第三行进度条——标签与数值分行，彻底避免文本重叠
+            let labelH: CGFloat = 14
+            drawText(ctx, "千问", size: 9, bold: false, color: colors.secondaryTextCG,
+                     in: rect(band.minX + 4, band.minY, w - 4, labelH), align: .left)
+            let numberY = band.minY + labelH + 1
+            let numberH = max(band.height - labelH - 1 - 9, 12)
+            if showPercent {
+                if !percent.isEmpty {
+                    drawText(ctx, percent, size: 13, bold: true, color: colors.primaryTextCG,
+                             in: rect(band.minX + 4, band.minY, w - 4, labelH), align: .right)
+                }
+                drawQuotaNumber(ctx, whole: whole, fraction: fraction, suffix: unit, size: 11,
+                                color: colors.secondaryTextCG,
+                                in: rect(band.minX + 4, numberY, w - 8, numberH), align: .center)
+            } else {
+                // 额度数值模式：仅显示额度数字（无单位、无百分比），大字右对齐（数值区从标签后起算防向左溢出）
+                drawQuotaNumber(ctx, whole: whole, fraction: fraction, suffix: "", size: 13,
+                                color: colors.primaryTextCG,
+                                in: rect(band.minX + 48, numberY, max(w - 52, 20), numberH), align: .right)
+            }
+            let barY = band.minY + labelH + 1 + numberH
+            let barH = min(max(band.height - (barY - band.minY) - 2, 3), 6)
+            drawProgress(ctx, rect(band.minX + 4, barY, w - 8, barH),
+                         progress: p, accent: accent, background: colors.borderCG)
+        } else {
+            // 两行紧凑：标签左 + 大字指标右（showPercent=百分比，否则仅额度数字）；
+            // 防止右对齐数值向左溢出（数值区从标签后起算）
+            let labelH = max(band.height * 0.5, 10)
+            drawText(ctx, "千问", size: 9, bold: false, color: colors.secondaryTextCG,
+                     in: rect(band.minX + 4, band.minY, 44, labelH), align: .left)
+            let numberX = band.minX + 48
+            let numberW = max(w - 52, 20)
+            if showPercent {
+                if !percent.isEmpty {
+                    drawText(ctx, percent, size: 12, bold: true, color: colors.primaryTextCG,
+                             in: rect(numberX, band.minY, numberW, labelH), align: .right)
+                }
+            } else {
+                drawQuotaNumber(ctx, whole: whole, fraction: fraction, suffix: "", size: 12,
+                                color: colors.primaryTextCG,
+                                in: rect(numberX, band.minY, numberW, labelH), align: .right)
+            }
+            let barH = min(max(band.height - labelH - 4, 3), 6)
+            drawProgress(ctx, rect(band.minX + 4, band.minY + labelH, w - 8, barH),
+                         progress: p, accent: accent, background: colors.borderCG)
+        }
+    }
+
     public static func renderCustomImage(path: String, settings: AppSettings,
                                          now: Date = Date()) throws -> RenderResult {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
@@ -1487,11 +1809,11 @@ public enum ScreenRenderer {
         }
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
-        // 背景铺黑，内容区从顶部安全区下方开始
+        // 背景铺黑
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-
-        let target = rect(0, CGFloat(safe), CGFloat(width), CGFloat(height) - CGFloat(safe))
+        // 图片忽略全局顶部安全区，铺满整个屏幕显示范围（裁剪填充、不变形）
+        let target = rect(0, 0, CGFloat(width), CGFloat(height))
         let sourceRatio = CGFloat(original.width) / CGFloat(original.height)
         let targetRatio = target.width / target.height
         let crop: CGRect
@@ -1510,7 +1832,9 @@ public enum ScreenRenderer {
         drawClockOverlay(ctx, overlay: settings.customImageClock, safeArea: safe, now: now,
                          fontSize: CGFloat(settings.clockFontSize),
                          timeFormat: settings.clockTimeFormat,
-                         fontName: settings.clockFontWeight.fontName,
+                         fontName: settings.clockFont.fontName(weight: settings.clockFontWeight),
+                         offsetX: CGFloat(settings.clockOffsetX),
+                         offsetY: CGFloat(settings.clockOffsetY),
                          colors: settings.resolvedPalette)
         return try encode(ctx, quality: settings.jpegQuality)
     }
@@ -1521,11 +1845,12 @@ public enum ScreenRenderer {
     private static var overlayText: CGColor { CGColor(red: 1, green: 1, blue: 1, alpha: 1) }
     private static var overlayTextDim: CGColor { CGColor(red: 1, green: 1, blue: 1, alpha: 0.75) }
 
-    /// 在自定义图片上叠加时钟（跟随系统时间；无背景遮罩，字号/格式/字重可自定义）
+    /// 在自定义图片上叠加时钟（跟随系统时间；无背景遮罩，字体/字号/字重/偏移可自定义）
     private static func drawClockOverlay(_ ctx: CGContext, overlay: CustomImageClockOverlay,
                                          safeArea: CGFloat, now: Date,
                                          fontSize: CGFloat, timeFormat: String,
                                          fontName: String,
+                                         offsetX: CGFloat, offsetY: CGFloat,
                                          colors: ScreenPalette) {
         guard overlay != .none else { return }
         let calendar = Calendar.current
@@ -1534,13 +1859,14 @@ public enum ScreenRenderer {
         let weekdayIndex = min(max((comps.weekday ?? 1) - 1, 0), 6)
         let dateText = "\(comps.month ?? 0)月\(comps.day ?? 0)日 \(weekdays[weekdayIndex])"
         let timeText = clockTimeText(now, format: timeFormat)
-        let timeSize = max(min(fontSize, 56), 12)
+        let timeSize = max(min(fontSize, 96), 12)
 
         switch overlay {
         case .none:
             return
         case .horizontalTop, .horizontalBottom:
-            // 横向：细体大字号时间 + 小字日期（Google Pixel 锁屏时钟风格）；过宽时按比例收缩
+            // 横向：细体大字号时间 + 小字日期（Google Pixel 锁屏时钟风格）；过宽时按比例收缩；
+            // 偏移作用于时间+日期整组
             var size = timeSize
             var tw = measureTextWidth(timeText, fontName: fontName, size: size)
             let maxWidth = CGFloat(width) - 12
@@ -1549,20 +1875,22 @@ public enum ScreenRenderer {
                 tw = measureTextWidth(timeText, fontName: fontName, size: size)
             }
             let timeH = size * 1.22
-            let timeY = overlay == .horizontalTop
+            let timeY = (overlay == .horizontalTop
                 ? safeArea + 14
-                : CGFloat(height) - 14 - timeH
-            let tx = (CGFloat(width) - tw) / 2
+                : CGFloat(height) - 14 - timeH) + offsetY
+            let tx = (CGFloat(width) - tw) / 2 + offsetX
             let dateSize = max(6, size * 0.24)
             let dateY = overlay == .horizontalTop ? timeY + timeH + 4 : timeY - dateSize - 6
+            let dateW = measureTextWidth(dateText, size: dateSize, bold: false)
             drawTextShadowed(ctx, dateText, size: dateSize, bold: false, color: overlayTextDim,
-                             in: rect(0, dateY, CGFloat(width), dateSize + 5), align: .center)
+                             in: rect((CGFloat(width) - dateW) / 2 + offsetX, dateY, dateW, dateSize + 5),
+                             align: .left)
             drawTextShadowed(ctx, timeText, size: size, bold: false, color: overlayText,
                              in: rect(tx, timeY, tw, timeH), align: .left,
                              fontName: fontName)
         case .verticalLeft, .verticalCenter:
             // 竖向：第一行小时、第二行分钟，每行的两位数字横向排布（Pixel 细体）；
-            // 小时为白色、分钟为强调色
+            // 小时为白色、分钟为强调色；偏移作用于两行整组
             let parts = timeText.split(separator: ":").map(String.init)
             var hoursText = ""
             var minutesText = ""
@@ -1576,13 +1904,13 @@ public enum ScreenRenderer {
             }
             let glyphSize = max(timeSize * 0.78, 12)
             let rowH = glyphSize * 1.25
-            let startY = safeArea + 16
+            let startY = safeArea + 16 + offsetY
             func drawRow(_ text: String, y: CGFloat, color: CGColor) {
                 let rowW = max(measureTextWidth(text, fontName: fontName, size: glyphSize),
                                glyphSize)
                 let rowX: CGFloat = overlay == .verticalLeft
-                    ? 10
-                    : (CGFloat(width) - rowW) / 2
+                    ? 10 + offsetX
+                    : (CGFloat(width) - rowW) / 2 + offsetX
                 drawTextShadowed(ctx, text, size: glyphSize, bold: false, color: color,
                                  in: rect(rowX, y, rowW, rowH), align: .left,
                                  fontName: fontName)
@@ -1604,12 +1932,15 @@ public enum ScreenRenderer {
         return text
     }
 
-    /// 带轻量投影的文字（CG 坐标矩形；投影向右下偏 1px，提升任意底图上的可读性）
+    /// 带轻量投影的文字（CG 坐标矩形；投影向右下偏 1px，提升任意底图上的可读性）。
+    /// shadowAlpha/shadowOffset 可调淡（浅色背景页脚用淡投影，避免抢眼）
     private static func drawTextShadowed(_ ctx: CGContext, _ text: String, size: CGFloat, bold: Bool,
                                          color: CGColor, in boundsCG: CGRect, align: NSTextAlignment,
-                                         fontName: String? = nil) {
-        let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.55)
-        let shadow = CGRect(x: boundsCG.origin.x + 0.9, y: boundsCG.origin.y - 0.9,
+                                         fontName: String? = nil,
+                                         shadowAlpha: CGFloat = 0.55,
+                                         shadowOffset: CGFloat = 0.9) {
+        let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha)
+        let shadow = CGRect(x: boundsCG.origin.x + shadowOffset, y: boundsCG.origin.y - shadowOffset,
                             width: boundsCG.width, height: boundsCG.height)
         drawText(ctx, text, size: size, bold: bold, color: shadowColor, in: shadow, align: align,
                  fontName: fontName)
@@ -1632,11 +1963,11 @@ public enum ScreenRenderer {
         let top = c.minY + 49
         drawText(ctx, "剩余额度", size: 10, bold: true, color: colors.secondaryTextCG,
                  in: rect(c.minX + 9, top, c.maxX - c.minX - 18, 18), align: .center)
-        let numberText = quota.remainingCredits >= 100
-            ? String(format: "%.0f", quota.remainingCredits)
-            : String(format: "%.1f", quota.remainingCredits)
-        drawText(ctx, numberText, size: 30, bold: true, color: colors.primaryTextCG,
-                 in: rect(c.minX + 5, top + 16, c.maxX - c.minX - 10, 62), align: .center)
+        // 额度精确到两位小数：整数大字 + 小数（含小数点）半字号，整体居中
+        let parts = quotaNumberParts(quota.remainingCredits)
+        drawQuotaNumber(ctx, whole: parts.whole, fraction: parts.fraction, size: 30,
+                        color: colors.primaryTextCG,
+                        in: rect(c.minX + 5, top + 16, c.maxX - c.minX - 10, 62), align: .center)
         drawText(ctx, quota.unit.isEmpty ? "credits" : quota.unit, size: 8, bold: true,
                  color: colors.accentCG,
                  in: rect(c.minX + 5, top + 80, c.maxX - c.minX - 10, 16), align: .center)
@@ -1681,10 +2012,10 @@ public enum ScreenRenderer {
                                         now: Date = Date()) throws -> RenderResult {
         let artImage = artworkImage ?? (info.artwork.flatMap { decodeArtwork($0) })
         // 有封面时从封面取主色作为卡片背景；无封面回退主题配色
+        let coverDominant = artImage.map { dominantColor(of: $0) }
         let colors: ScreenPalette
-        if let artImage {
-            let dominant = dominantColor(of: artImage)
-            colors = artworkPalette(baseColor: dominant,
+        if let coverDominant {
+            colors = artworkPalette(baseColor: coverDominant,
                                     themeAccent: settings.resolvedPalette.accent)
         } else {
             colors = settings.resolvedPalette
@@ -1707,8 +2038,8 @@ public enum ScreenRenderer {
 
         // 封面主色光晕（画在最底层，头部文字与封面都叠在其上）：
         // 暗色封面提亮后，用单次高斯模糊生成平滑径向光晕——无分层色带，JPEG 压缩后依然干净
-        if let artImage {
-            drawCoverGlow(ctx, color: boostedGlowColor(dominantColor(of: artImage)),
+        if let artImage, let coverDominant {
+            drawCoverGlow(ctx, color: boostedGlowColor(coverDominant),
                           coverSkia: artSkia)
         }
 
@@ -1754,16 +2085,30 @@ public enum ScreenRenderer {
         drawAdaptiveText(ctx, subtitle, maxSize: CGFloat(settings.nowPlayingArtistSize), minSize: 5.5,
                          bold: false, color: colors.secondaryTextCG,
                          in: rect(c.minX + 10, infoTop + 20, c.maxX - c.minX - 20, 14), align: .center)
+        // 进度条强调色：有封面时从封面主色生成（深色封面提亮、浅色封面加深），不跟随全局强调色
+        let progressAccent: (CGFloat, CGFloat, CGFloat)
+        if let coverDominant {
+            progressAccent = coverProgressAccent(coverDominant)
+        } else {
+            progressAccent = colors.accent
+        }
         drawProgress(ctx, rect(c.minX + 14, infoTop + 42, c.maxX - c.minX - 28, 6),
-                     progress: info.progress, accent: accent, background: colors.borderCG)
+                     progress: info.progress,
+                     accent: CGColor(red: progressAccent.0, green: progressAccent.1,
+                                     blue: progressAccent.2, alpha: 1),
+                     background: colors.borderCG)
         let timeText = "\(formatClock(info.elapsedTime)) / \(formatClock(info.duration))"
         drawText(ctx, timeText, size: 8, bold: false, color: colors.secondaryTextCG,
                  in: rect(c.minX + 10, infoTop + 52, c.maxX - c.minX - 20, 14), align: .center)
 
         // 页脚：当前时间（上：时钟，下：日期）；格式与字号可自定义，也可整体隐藏。
-        // 各带高度随字号自适应，字号调小后行距同步收紧释放空间
+        // 各带高度随字号自适应，字号调小后行距同步收紧释放空间。
+        // 时间、日期与「当前时间」标签同样使用封面生成的强调色
         if footerVisible {
-            drawFooterClock(ctx, card: c, settings: settings, colors: colors, now: now, accent: accent)
+            drawFooterClock(ctx, card: c, settings: settings, colors: colors, now: now,
+                            accent: CGColor(red: progressAccent.0, green: progressAccent.1,
+                                            blue: progressAccent.2, alpha: 1),
+                            tintAll: true)
         }
 
         return try encode(ctx, quality: settings.jpegQuality)
@@ -1775,6 +2120,23 @@ public enum ScreenRenderer {
         guard lum < 0.4, lum > 0.01 else { return rgb }
         let factor = min(0.4 / lum, 4)
         return (min(rgb.0 * factor, 1), min(rgb.1 * factor, 1), min(rgb.2 * factor, 1))
+    }
+
+    /// 从封面主色生成进度条强调色：深色封面提亮、浅色封面加深，
+    /// 保证在封面底（=主色）上有足够对比；不跟随全局强调色。
+    /// 对比度增强：深色提亮到更高亮度、浅色加深到更低亮度，进度条更清晰可见
+    private static func coverProgressAccent(_ rgb: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
+        let lum = 0.299 * rgb.0 + 0.587 * rgb.1 + 0.114 * rgb.2
+        if lum < 0.5 {
+            // 深色封面：提亮到明显亮于背景（目标亮度 0.9 封顶）
+            let target = min(0.9, lum * 2.6)
+            let factor = lum > 0.02 ? target / lum : 4.0
+            return (min(rgb.0 * factor, 1), min(rgb.1 * factor, 1), min(rgb.2 * factor, 1))
+        } else {
+            // 浅色封面：加深到明显深于背景（亮度下限 0.25）
+            let factor = max(0.25, 0.36 - (lum - 0.5) * 0.15)
+            return (max(rgb.0 * factor, 0), max(rgb.1 * factor, 0), max(rgb.2 * factor, 0))
+        }
     }
 
     /// 复用的 Core Image 上下文（创建开销大，进程内共享）
@@ -1808,21 +2170,35 @@ public enum ScreenRenderer {
         ctx.restoreGState()
     }
 
-    /// 页脚时钟：当前时间（上：时钟，下：日期），格式/字号随设置、可整体隐藏
+    /// 页脚时钟：当前时间（上：时钟，下：日期），格式/字号随设置、可整体隐藏。
+    /// shadowed=true 时三行文字带轻量投影（浅色背景/无压暗遮罩时保证与底图分离可读），
+    /// shadowAlpha/shadowOffset 用于调淡投影
     private static func drawFooterClock(_ ctx: CGContext, card c: CGRect, settings: AppSettings,
-                                        colors: ScreenPalette, now: Date, accent: CGColor) {
+                                        colors: ScreenPalette, now: Date, accent: CGColor,
+                                        tintAll: Bool = false, shadowed: Bool = false,
+                                        shadowAlpha: CGFloat = 0.55,
+                                        shadowOffset: CGFloat = 0.9) {
         let bottom = c.maxY - 15
         let dateHeight = max(CGFloat(settings.nowPlayingDateSize) + 8, 18)
         let timeHeight = max(CGFloat(settings.nowPlayingTimeSize) + 10, 24)
         let labelTop = bottom - dateHeight - timeHeight - 16
-        drawText(ctx, "当前时间", size: 9, bold: true, color: colors.tertiaryTextCG,
-                 in: rect(c.minX + 9, labelTop, c.maxX - c.minX - 18, 16), align: .center)
-        drawText(ctx, formatDate(now, settings.nowPlayingTimeFormat), size: CGFloat(settings.nowPlayingTimeSize),
-                 bold: true, color: accent,
-                 in: rect(c.minX + 5, bottom - dateHeight - timeHeight, c.maxX - c.minX - 10, timeHeight), align: .center)
-        drawText(ctx, formatDate(now, settings.nowPlayingDateFormat), size: CGFloat(settings.nowPlayingDateSize),
-                 bold: true, color: colors.primaryTextCG,
-                 in: rect(c.minX + 5, bottom - dateHeight, c.maxX - c.minX - 10, dateHeight), align: .center)
+        func draw(_ text: String, size: CGFloat, bold: Bool, color: CGColor, in r: CGRect) {
+            if shadowed {
+                drawTextShadowed(ctx, text, size: size, bold: bold, color: color, in: r, align: .center,
+                                 shadowAlpha: shadowAlpha, shadowOffset: shadowOffset)
+            } else {
+                drawText(ctx, text, size: size, bold: bold, color: color, in: r, align: .center)
+            }
+        }
+        // tintAll=true 时「当前时间」标签与日期也用强调色（正在播放卡片跟随封面强调色）
+        draw("当前时间", size: 9, bold: true, color: tintAll ? accent : colors.tertiaryTextCG,
+             in: rect(c.minX + 9, labelTop, c.maxX - c.minX - 18, 16))
+        draw(formatDate(now, settings.nowPlayingTimeFormat), size: CGFloat(settings.nowPlayingTimeSize),
+             bold: true, color: accent,
+             in: rect(c.minX + 5, bottom - dateHeight - timeHeight, c.maxX - c.minX - 10, timeHeight))
+        draw(formatDate(now, settings.nowPlayingDateFormat), size: CGFloat(settings.nowPlayingDateSize),
+             bold: true, color: tintAll ? accent : colors.primaryTextCG,
+             in: rect(c.minX + 5, bottom - dateHeight, c.maxX - c.minX - 10, dateHeight))
     }
 
     /// 摘录语录键盘卡片：每分钟轮换一条语录（可手动指定语录），
@@ -1844,7 +2220,10 @@ public enum ScreenRenderer {
         let top = c.minY + 49
         let bottom = c.maxY - 15
         let footerVisible = settings.nowPlayingFooterVisible
-        let footerReserve: CGFloat = footerVisible ? 70 : 20
+        // 显示出处：开启后语录出处替换时钟位置并隐藏时钟（无确切出处的语录回退正常页脚）
+        let quoteSource = excerptSource(for: quote) ?? ""
+        let showsSource = settings.showExcerptSource && !quoteSource.isEmpty
+        let footerReserve: CGFloat = (footerVisible || showsSource) ? 70 : 20
         let region = CGRect(x: c.minX + 10, y: top,
                             width: c.maxX - c.minX - 20,
                             height: bottom - top - footerReserve)
@@ -1892,10 +2271,42 @@ public enum ScreenRenderer {
             }
         }
 
-        if footerVisible {
+        if showsSource {
+            drawQuoteSource(ctx, card: c, source: quoteSource, colors: colors)
+        } else if footerVisible {
             drawFooterClock(ctx, card: c, settings: settings, colors: colors, now: now, accent: accent)
         }
         return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    /// 语录出处页脚：替换时钟位置显示「—— 出处」，小字号自适应最多两行居中
+    private static func drawQuoteSource(_ ctx: CGContext, card c: CGRect, source: String,
+                                        colors: ScreenPalette) {
+        let bottom = c.maxY - 15
+        let blockH: CGFloat = 46
+        let blockTop = bottom - blockH
+        let maxWidth = c.maxX - c.minX - 16
+        let attribution = "—— " + source
+        var size: CGFloat = 11
+        var lines: [String] = []
+        while size >= 7 {
+            let wrapped = wrapText(attribution, maxWidth: maxWidth, size: size)
+            if wrapped.count <= 2, CGFloat(wrapped.count) * size * 1.3 <= blockH {
+                lines = wrapped
+                break
+            }
+            size -= 0.5
+        }
+        if lines.isEmpty {
+            lines = Array(wrapText(attribution, maxWidth: maxWidth, size: 7).prefix(2))
+            size = 7
+        }
+        let lineH = blockH / CGFloat(lines.count)
+        for (index, line) in lines.enumerated() {
+            drawText(ctx, line, size: size, bold: true, color: colors.primaryTextCG,
+                     in: rect(c.minX + 8, blockTop + CGFloat(index) * lineH,
+                              c.maxX - c.minX - 16, lineH), align: .center)
+        }
     }
 
     /// 按字符贪心换行：每行不超过 maxWidth；避免标点单独成行或落到行首
@@ -2053,16 +2464,19 @@ public enum ScreenRenderer {
                 let firstLineH = titleSize * 1.3
                 drawText(ctx, "\(index + 1)", size: min(rowH * 0.24, 11), bold: true, color: accent,
                          in: rect(c.minX + 6, y, 12, firstLineH), align: .center)
-                let titleH = CGFloat(lines.count) * titleSize * 1.3
+                let lineStep = titleSize * 1.25
+                let titleH = CGFloat(lines.count) * lineStep
                 for (li, line) in lines.enumerated() {
                     drawText(ctx, line, size: titleSize, bold: false, color: colors.primaryTextCG,
-                             in: rect(titleX, y + CGFloat(li) * titleSize * 1.25, titleW, titleSize * 1.3),
+                             in: rect(titleX, y + CGFloat(li) * lineStep, titleW, titleSize * 1.3),
                              align: .left)
                 }
                 if !article.author.isEmpty {
+                    // 作者紧贴标题下方绘制（作者区域高度=作者字号，不再在剩余整行空间垂直居中，
+                    // 避免标题与作者之间出现大段留白）
                     drawText(ctx, article.author, size: authorSize, bold: false,
                              color: colors.tertiaryTextCG,
-                             in: rect(titleX, y + titleH + 2, titleW, max(rowH - titleH - 2, 8)), align: .left)
+                             in: rect(titleX, y + titleH + 2, titleW, authorSize + 2), align: .left)
                 }
             }
         }
@@ -2096,18 +2510,98 @@ public enum ScreenRenderer {
             case .grid:
                 drawEmojiGrid(ctx, emojis: emojis, baseSize: baseSize, spacing: spacing)
             case .spiral:
-                drawEmojiSpiral(ctx, emojis: emojis, baseSize: baseSize, spacing: spacing)
+                // 开启底部时间显示时螺旋中心上移 1/4 屏高：时间遮罩区背景更干净，主体螺旋视觉居中于剩余空间
+                let spiralOffset: CGFloat = settings.nowPlayingFooterVisible ? CGFloat(height) / 4 : 0
+                drawEmojiSpiral(ctx, emojis: emojis, baseSize: baseSize, spacing: spacing,
+                                centerOffsetY: spiralOffset)
             }
         }
 
-        // 页脚时钟（复用「正在播放」的底部时间/日期开关）；底部叠半透明带保证时间可读
+        // 页脚时钟（复用「正在播放」的底部时间/日期开关）；时间背后用高斯模糊遮罩
+        // （毛玻璃效果，顶缘纵向 alpha 渐变平滑过渡），保证时间可读
         if settings.nowPlayingFooterVisible {
-            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.32))
-            ctx.fill(rect(0, CGFloat(height) - 96, CGFloat(width), 96))
-            drawFooterClock(ctx, card: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
-                            settings: settings, colors: colors, now: now, accent: colors.accentCG)
+            drawEmojiFooterBlur(ctx, settings: settings, now: now, colors: colors)
         }
         return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    /// Emoji 壁纸页脚遮罩：把时间/日期背后的 emoji 区域做高斯模糊（毛玻璃）+ 轻量压暗，
+    /// 顶缘用纵向 alpha 渐变平滑过渡（无硬边）；CoreImage 不可用时回退半透明深色带。
+    /// 模糊前 clampedToExtent 复制边缘像素：避免模糊在裁剪区四周采样到透明黑，
+    /// 产生屏幕左右/底部边缘的暗边（视觉上“边缘空缺”）
+    private static func drawEmojiFooterBlur(_ ctx: CGContext, settings: AppSettings,
+                                            now: Date, colors: ScreenPalette) {
+        let bottom = CGFloat(height) - 15
+        let dateH = max(CGFloat(settings.nowPlayingDateSize) + 8, 18)
+        let timeH = max(CGFloat(settings.nowPlayingTimeSize) + 10, 24)
+        let labelTop = bottom - dateH - timeH - 16
+        let bandTop = labelTop - 36                       // 遮罩加大：淡入区在文字上方完成，覆盖更宽底部区域
+        let bandH = CGFloat(height) - bandTop
+        let pad: CGFloat = 12                             // 顶部淡入透明段
+        let fadeH: CGFloat = 16                           // 顶缘淡入高度
+        let cropTop = bandTop - pad
+        let cropH = bandH + pad
+        let maskW = Int(CGFloat(width).rounded())
+        let maskH = Int(cropH.rounded())
+        // 浅色背景（浅色模式/浅色底色）下不加深遮罩，只保留毛玻璃模糊，
+        // 避免浅底上出现灰暗色块；深色背景才压暗保证文字可读
+        let bg = colors.background
+        let isLightBackground = 0.299 * bg.0 + 0.587 * bg.1 + 0.114 * bg.2 >= 0.5
+        let base = ctx.makeImage()
+        var blurredCG: CGImage?
+        if let base {
+            let ciImage = CIImage(cgImage: base)
+            // 边缘像素无限复制后再模糊：模糊不混入透明黑，四周无暗边
+            let filtered = ciImage.clampedToExtent().applyingGaussianBlur(sigma: 6)
+            // 只取底部条带（CIImage 坐标 y 向上：0 = 图像底部）
+            blurredCG = CIContext().createCGImage(filtered,
+                                                  from: CGRect(x: 0, y: 0,
+                                                               width: CGFloat(width), height: cropH))
+        }
+        guard let blurredCG else {
+            // 兜底：深色背景用半透明深色带保证时间可读；浅色背景轻微压暗（约 10%）
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: isLightBackground ? 0.10 : 0.32))
+            ctx.fill(rect(0, bandTop, CGFloat(width), bandH))
+            drawFooterClock(ctx, card: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
+                            settings: settings, colors: colors, now: now, accent: colors.accentCG,
+                            tintAll: true, shadowed: isLightBackground,
+                            shadowAlpha: isLightBackground ? 0.28 : 0.55,
+                            shadowOffset: isLightBackground ? 0.6 : 0.9)
+            return
+        }
+        // 纵向 alpha 渐变遮罩（灰度图）：pad 段完全透明 → fadeH 内线性淡入 → 其余不透明，
+        // 保证模糊区与未模糊壁纸之间平滑过渡、无生硬边缘
+        var bytes = [UInt8](repeating: 255, count: maskW * maskH)
+        for y in 0..<maskH {
+            let skiaY = cropTop + CGFloat(y)
+            let a: CGFloat
+            if skiaY <= bandTop { a = 0 }
+            else if skiaY >= bandTop + fadeH { a = 1 }
+            else { a = (skiaY - bandTop) / fadeH }
+            let v = UInt8((a * 255).rounded())
+            for x in 0..<maskW { bytes[y * maskW + x] = v }
+        }
+        let provider = CGDataProvider(data: Data(bytes) as CFData)!
+        let maskImage = CGImage(width: maskW, height: maskH, bitsPerComponent: 8, bitsPerPixel: 8,
+                                bytesPerRow: maskW, space: CGColorSpaceCreateDeviceGray(),
+                                bitmapInfo: CGBitmapInfo(), provider: provider, decode: nil,
+                                shouldInterpolate: true, intent: .defaultIntent)!
+        let bandCG = rect(0, cropTop, CGFloat(width), cropH)
+        ctx.saveGState()
+        ctx.clip(to: bandCG, mask: maskImage)
+        ctx.interpolationQuality = .high
+        ctx.draw(blurredCG, in: bandCG)
+        // 轻量压暗（同一渐变遮罩生效）：深色背景 0.22 保证文字可读，
+        // 浅色背景只加约 0.10 轻微压暗（不突兀、也不与背景完全融合）
+        let tintAlpha: CGFloat = isLightBackground ? 0.10 : 0.22
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: tintAlpha))
+        ctx.fill(bandCG)
+        ctx.restoreGState()
+        drawFooterClock(ctx, card: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
+                        settings: settings, colors: colors, now: now, accent: colors.accentCG,
+                        tintAll: true, shadowed: isLightBackground,
+                        shadowAlpha: isLightBackground ? 0.28 : 0.55,
+                        shadowOffset: isLightBackground ? 0.6 : 0.9)
     }
 
     // MARK: - Emoji 壁纸布局（居中排列、间隔可调；均为确定性纯数学排布，多次渲染一致）
@@ -2175,27 +2669,31 @@ public enum ScreenRenderer {
         }
     }
 
-    /// 螺旋：从屏幕中心向外呈漩涡状排布，中间小、越靠边缘越大，间隔影响疏密
+    /// 螺旋：从屏幕中心向外呈漩涡状排布，中间小、越靠边缘越大，间隔影响疏密。
+    /// centerOffsetY > 0 时中心整体上移该量（开启底部时间显示时，给时间遮罩区留出更干净的背景）
     private static func drawEmojiSpiral(_ ctx: CGContext, emojis: [Character],
-                                        baseSize: CGFloat, spacing: CGFloat) {
+                                        baseSize: CGFloat, spacing: CGFloat,
+                                        centerOffsetY: CGFloat = 0) {
         let w = CGFloat(width)
         let h = CGFloat(height)
         let cx = w / 2
-        let cy = h / 2
-        let halfW = w / 2
-        let halfH = h / 2
-        let maxR: CGFloat = (halfW * halfW + halfH * halfH).squareRoot()
-        // 加大中心与边缘的大小对比：中心更小、边缘更大
-        let minSize = baseSize * 0.26
-        let maxSize = baseSize * 1.85
-        // 阿基米德螺线：半径随角度线性增长，增长速率由间隔控制（间隔越大圈越疏）
+        let cy = h / 2 - centerOffsetY
+        // 最大半径按新中心到最远屏幕角的距离计算：中心上移后仍铺满全屏、不留空区
+        let maxR: CGFloat = max(
+            (cx * cx + cy * cy).squareRoot(),
+            ((w - cx) * (w - cx) + cy * cy).squareRoot(),
+            (cx * cx + (h - cy) * (h - cy)).squareRoot(),
+            ((w - cx) * (w - cx) + (h - cy) * (h - cy)).squareRoot()
+        )
+        // 加大中心与边缘的大小对比（中心更小、边缘更大，变化更剧烈）
+        let minSize = baseSize * 0.2
+        let maxSize = baseSize * 2.2
         let twoPi: CGFloat = 2 * CGFloat.pi
-        let radialGrowth = max((baseSize + spacing) / twoPi, baseSize * 0.16)
         var theta: CGFloat = 0
         var r: CGFloat = 0
         var index = 0
         var placed = 0
-        while r <= maxR, placed < 400 {
+        while r <= maxR, placed < 2000 {
             let x = cx + r * cos(theta)
             let y = cy + r * sin(theta)
             let t: CGFloat = min(r / maxR, 1)
@@ -2206,10 +2704,16 @@ public enum ScreenRenderer {
                 index += 1
             }
             placed += 1
-            // 沿螺线前进：弧长 ≈ 当前字号 + 间隔
-            let arcStep = max(size + spacing, minSize + spacing)
-            theta += arcStep / max(r, arcStep)
-            r = radialGrowth * theta
+            // 中心紧密、边缘舒展、渐变过渡：弧长步进与每圈半径增量都随该处表情尺寸自适应
+            // （≈ 直径 + 间隔）——相邻表情、相邻圈刚好衔接，消除中心放射状大空隙。
+            // 密度系数仅作用于中心区（t<0.35，中心 ≈1.9× 步长 ≈ 密度约一半、渐变回落），
+            // 外圈保持贴合排列不变——整体既不过密、也不回退到稀疏
+            let effSpacing = spacing * (0.35 + 0.65 * t)
+            let boost = 1 + 0.9 * max(0, 1 - t / 0.35)
+            let step = max(size + effSpacing, minSize + effSpacing) * boost
+            let dTheta = step / max(r, step)
+            theta += dTheta
+            r += step * (dTheta / twoPi)
         }
     }
 
@@ -2415,14 +2919,16 @@ public enum ScreenRenderer {
 
     private static func drawHeader(_ ctx: CGContext, card: CGRect, title: String, badge: String,
                                    accent: CGColor, colors: ScreenPalette, titleSize: CGFloat = 10,
-                                   dotColor: CGColor? = nil) {
+                                   dotColor: CGColor? = nil, badgeSize: CGFloat = 6) {
         let center = CGPoint(x: card.minX + 13.5, y: CGFloat(height) - (card.minY + 18.5))
         ctx.setFillColor(dotColor ?? accent)
         ctx.fillEllipse(in: CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7))
         drawText(ctx, title, size: titleSize, bold: true, color: colors.primaryTextCG,
                  in: rect(card.minX + 22, card.minY + 8, 62, 25), align: .left)
-        drawText(ctx, badge, size: 6, bold: true, color: accent,
-                 in: rect(card.maxX - 43, card.minY + 10, 33, 20), align: .right)
+        // 徽标右对齐（右缘距卡片 10pt），绘制区宽度按实际文字自适应，放大字号时不截断
+        let badgeW = max(33, measureTextWidth(badge, size: badgeSize, bold: true) + 2)
+        drawText(ctx, badge, size: badgeSize, bold: true, color: accent,
+                 in: rect(card.maxX - 10 - badgeW, card.minY + 10, badgeW, 20), align: .right)
     }
 
     /// 负载状态指示灯颜色：低负载绿 / 适中黄 / 高负载红（以 CPU 使用率为依据）

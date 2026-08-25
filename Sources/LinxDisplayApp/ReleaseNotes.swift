@@ -10,6 +10,20 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.4.0", date: "2026-08-25", notes: [
+            "侧边栏重构：改为系统标准分栏（NavigationSplitView），分隔条可拖拽调整宽度；支持折叠为纯图标窄栏，展开/收起带弹簧动画；专辑封面光晕点亮/变暗平滑过渡。",
+            "预览面板优化：窗口任意缩放时右侧键盘预览始终完整显示、绝不裁切；预览与键盘实际显示严格一致。",
+            "系统监控新增磁盘空间：键盘系统监控卡片与三个画板均支持磁盘占用显示（使用量与总容量）。",
+            "灵犀画板千问额度模块：显示方式可切换（百分比 / 额度数值，仅显示数字）；模块标签精简为「千问」。",
+            "灵犀画板正在播放模块：空间权重提升，封面在自适应间距下不会被压小；竖排封面空间不足时自动转为横向排布（封面居左、歌名歌手居右，与侧边栏一致）。",
+            "画板模块上下边距改为自适应模式：滑杆归零即恢复该模块的自动间距（时钟/日期=2、CPU/内存等=4、正在播放/图片=6），不再需要逐个手动调。",
+            "画板模块列表：整条标签栏（图标+名称+空白区）都可点击展开/收起设置，不再局限于右侧小箭头。",
+            "画板番茄钟模块：阶段标识与时间紧凑成块并居中，空隙随模块高度自动缩窄，拥挤时自动收缩字号保证外边缘。",
+            "Emoji 壁纸：底部时间改为高斯模糊毛玻璃遮罩（深色背景压暗、浅色背景轻微压暗+文字淡投影，边缘平滑过渡）；螺旋排列中心更紧密且渐变过渡、大小变化更剧烈；开启底部时间时螺旋中心自动上移，时间区域背景更干净。",
+            "自定义图片：忽略全局顶部安全区，图片铺满整个键盘屏幕显示范围。",
+            "番茄钟全局快捷键：开始/暂停、跳过、重置三个快捷键可自定义绑定（点击录制、Esc 取消、冲突检测），可一键恢复默认组合（带确认提示）。",
+            "其他细节：画板标头徽标字号调整、千问额度模块三行排布防重叠等。",
+        ]),
         ReleaseNote(id: "1.3.1", date: "2026-08-23", notes: [
             "自定义图像模块解耦：键盘与墨水屏画板互相独立设定——先知/摘录画板可各自独立选择与替换图片（按各自屏幕比例裁切，先知 1:1、摘录 296:152），互不串扰；键盘「背景」模式下图片模块不再占用模块高度，可容纳更多模块。",
             "少数派推荐：键盘卡片最多显示三条（推荐优先、不足时以最新文章补齐）；文章多于三条时可开启「进入本页随机推送三条」，每次进入随机抽取并推送到键盘。",
@@ -55,14 +69,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.3.1"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.4.0"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
 
-    /// 当前短版本号（如 1.3.0，不含构建号），用于与 GitHub 最新版本比较
+    /// 当前短版本号（如 1.4.0，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.3.1"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.4.0"
     }
 }

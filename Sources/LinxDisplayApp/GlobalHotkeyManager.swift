@@ -1,8 +1,9 @@
 import Carbon.HIToolbox
 import Foundation
+import LinxDisplayCore
 
 /// 全局番茄钟快捷键（系统范围内生效，基于 Carbon RegisterEventHotKey）。
-/// ⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置
+/// 默认 ⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置，可在番茄钟设置中自定义
 final class GlobalHotkeyManager {
 
     enum Action {
@@ -11,28 +12,34 @@ final class GlobalHotkeyManager {
         case resetPomodoro
     }
 
-    // 快捷键组合与键码
-    static let toggleKeyCode: UInt32 = 49        // Space
-    static let skipKeyCode: UInt32 = 124         // →
-    static let resetKeyCode: UInt32 = 51         // ⌫ (Delete)
-    static let modifiers: UInt32 = UInt32(controlKey) | UInt32(optionKey) // ⌃⌥
-
     private static let signature: OSType = 0x4C78_4448 // "LxDH"
+    private static var handler: ((Action) -> Void)?
+    private static var currentShortcuts: [Action: GlobalShortcut] = [:]
     private static var actionByID: [UInt32: Action] = [:]
     private static var hotKeyRefs: [EventHotKeyRef?] = []
-    private static var handler: ((Action) -> Void)?
     private static var installed = false
 
-    /// 安装事件处理器并注册全部快捷键。返回注册成功的数量。
-    @discardableResult
-    static func install(handler: @escaping (Action) -> Void) -> Int {
+    /// 安装事件处理器并用当前组合注册全部快捷键。
+    static func install(handler: @escaping (Action) -> Void,
+                        shortcuts: [Action: GlobalShortcut]) {
         self.handler = handler
+        apply(shortcuts: shortcuts)
+    }
+
+    /// 按新组合重新注册；组合未变化时跳过（onChange 高频触发时无开销）。
+    static func apply(shortcuts: [Action: GlobalShortcut]) {
+        guard shortcuts != currentShortcuts else { return }
+        for ref in hotKeyRefs {
+            if let ref { UnregisterEventHotKey(ref) }
+        }
+        hotKeyRefs.removeAll()
+        actionByID.removeAll()
+        currentShortcuts = shortcuts
         installEventHandlerIfNeeded()
-        var success = 0
-        if register(id: 1, keyCode: toggleKeyCode, action: .togglePomodoro) { success += 1 }
-        if register(id: 2, keyCode: skipKeyCode, action: .skipPomodoro) { success += 1 }
-        if register(id: 3, keyCode: resetKeyCode, action: .resetPomodoro) { success += 1 }
-        return success
+        var id: UInt32 = 1
+        for (action, shortcut) in shortcuts {
+            if register(id: id, shortcut: shortcut, action: action) { id += 1 }
+        }
     }
 
     static func uninstall() {
@@ -41,25 +48,22 @@ final class GlobalHotkeyManager {
         }
         hotKeyRefs.removeAll()
         actionByID.removeAll()
+        currentShortcuts.removeAll()
         handler = nil
     }
 
     static func shortcutHint(for action: Action) -> String {
-        switch action {
-        case .togglePomodoro: return "⌃⌥Space"
-        case .skipPomodoro: return "⌃⌥→"
-        case .resetPomodoro: return "⌃⌥⌫"
-        }
+        currentShortcuts[action]?.displayString ?? ""
     }
 
     // MARK: - 内部
 
     @discardableResult
-    private static func register(id: UInt32, keyCode: UInt32, action: Action) -> Bool {
+    private static func register(id: UInt32, shortcut: GlobalShortcut, action: Action) -> Bool {
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: signature, id: id)
         let status = RegisterEventHotKey(
-            keyCode, modifiers, hotKeyID,
+            shortcut.keyCode, shortcut.modifiers, hotKeyID,
             GetApplicationEventTarget(), 0, &ref)
         guard status == noErr, let ref else { return false }
         actionByID[id] = action

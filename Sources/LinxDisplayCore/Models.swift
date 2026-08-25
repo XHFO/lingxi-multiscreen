@@ -77,6 +77,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case excerptText = 13
     /// 少数派推荐文章（三个画板通用）
     case sspai = 14
+    /// 磁盘占用（系统监控磁盘用量；三个画板通用）
+    case disk = 15
 
     public var id: Int { rawValue }
 
@@ -97,6 +99,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .oracleText: return "先知语录"
         case .excerptText: return "摘录语录"
         case .sspai: return "少数派推荐"
+        case .disk: return "磁盘占用"
         }
     }
 
@@ -117,6 +120,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .oracleText: return "sparkles"
         case .excerptText: return "quote.opening"
         case .sspai: return "newspaper"
+        case .disk: return "internaldrive"
         }
     }
 
@@ -696,6 +700,79 @@ public enum ClockFontWeight: Int, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// 叠加时钟字体家族（按字重解析为具体 PostScript 字体名）
+public enum ClockFont: Int, CaseIterable, Identifiable, Codable {
+    case helveticaNeue = 0   // 默认，Pixel 锁屏风格
+    case pingfang = 1        // 苹方
+    case songti = 2          // 宋体
+    case kaiti = 3           // 楷体
+    case timesNewRoman = 4   // Times New Roman
+    case courier = 5         // Courier New
+    case menlo = 6           // Menlo 等宽
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .helveticaNeue: return "Helvetica Neue"
+        case .pingfang: return "苹方 PingFang"
+        case .songti: return "宋体 Songti"
+        case .kaiti: return "楷体 Kaiti"
+        case .timesNewRoman: return "Times New Roman"
+        case .courier: return "Courier New"
+        case .menlo: return "Menlo 等宽"
+        }
+    }
+
+    /// 按字重解析为具体 PostScript 字体名；无对应字重的家族回退到最接近的字重
+    public func fontName(weight: ClockFontWeight) -> String {
+        switch self {
+        case .helveticaNeue:
+            switch weight {
+            case .ultraLight: return "HelveticaNeue-UltraLight"
+            case .thin: return "HelveticaNeue-Thin"
+            case .light: return "HelveticaNeue-Light"
+            case .regular: return "HelveticaNeue-Regular"
+            case .medium: return "HelveticaNeue-Medium"
+            }
+        case .pingfang:
+            switch weight {
+            case .ultraLight: return "PingFangSC-Ultralight"
+            case .thin: return "PingFangSC-Thin"
+            case .light: return "PingFangSC-Light"
+            case .regular: return "PingFangSC-Regular"
+            case .medium: return "PingFangSC-Medium"
+            }
+        case .songti:
+            switch weight {
+            case .ultraLight, .thin, .light: return "STSongti-SC-Light"
+            case .regular: return "STSongti-SC-Regular"
+            case .medium: return "STSongti-SC-Bold"
+            }
+        case .kaiti:
+            switch weight {
+            case .medium: return "STKaitiSC-Bold"
+            default: return "STKaitiSC-Regular"
+            }
+        case .timesNewRoman:
+            switch weight {
+            case .medium: return "TimesNewRomanPS-BoldMT"
+            default: return "TimesNewRomanPSMT"
+            }
+        case .courier:
+            switch weight {
+            case .medium: return "CourierNewPS-BoldMT"
+            default: return "CourierNewPSMT"
+            }
+        case .menlo:
+            switch weight {
+            case .medium: return "Menlo-Bold"
+            default: return "Menlo-Regular"
+            }
+        }
+    }
+}
+
 /// 口袋先知按键信号控制的设备（display mode 会把按键回传给当前连接的客户端）
 public enum Rand0ButtonTarget: Int, CaseIterable, Identifiable, Codable {
     case oracle = 0
@@ -842,6 +919,11 @@ public struct DeviceSettings: Codable, Equatable {
     public var clockFontSize: Int?
     public var clockTimeFormat: String?
     public var clockFontWeight: ClockFontWeight?
+    public var clockFont: ClockFont?
+    /// 时钟叠加水平偏移（px，正值向右）
+    public var clockOffsetX: Int?
+    /// 时钟叠加垂直偏移（px，正值向下）
+    public var clockOffsetY: Int?
     public var customImageClock: CustomImageClockOverlay?
     public var imageRotationEnabled: Bool?
     public var imageRotationSeconds: Int?
@@ -928,6 +1010,9 @@ public struct DeviceSettings: Codable, Equatable {
             d.clockFontSize = s.clockFontSize
             d.clockTimeFormat = s.clockTimeFormat
             d.clockFontWeight = s.clockFontWeight
+            d.clockFont = s.clockFont
+            d.clockOffsetX = s.clockOffsetX
+            d.clockOffsetY = s.clockOffsetY
             d.customImageClock = s.customImageClock
             d.imageRotationEnabled = s.imageRotationEnabled
             d.imageRotationSeconds = s.imageRotationSeconds
@@ -1016,6 +1101,9 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = clockFontSize { s.clockFontSize = v }
             if let v = clockTimeFormat { s.clockTimeFormat = v }
             if let v = clockFontWeight { s.clockFontWeight = v }
+            if let v = clockFont { s.clockFont = v }
+            if let v = clockOffsetX { s.clockOffsetX = v }
+            if let v = clockOffsetY { s.clockOffsetY = v }
             if let v = customImageClock { s.customImageClock = v }
             if let v = imageRotationEnabled { s.imageRotationEnabled = v }
             if let v = imageRotationSeconds { s.imageRotationSeconds = v }
@@ -1212,6 +1300,9 @@ public struct SystemSnapshot {
     public var memoryPercent: Double
     public var usedMemoryBytes: UInt64
     public var totalMemoryBytes: UInt64
+    public var diskPercent: Double
+    public var usedDiskBytes: UInt64
+    public var totalDiskBytes: UInt64
     public var downloadBytesPerSecond: Double
     public var uploadBytesPerSecond: Double
     public var uptime: TimeInterval
@@ -1219,12 +1310,16 @@ public struct SystemSnapshot {
 
     public init(cpuPercent: Double, memoryPercent: Double,
                 usedMemoryBytes: UInt64, totalMemoryBytes: UInt64,
+                diskPercent: Double = 0, usedDiskBytes: UInt64 = 0, totalDiskBytes: UInt64 = 0,
                 downloadBytesPerSecond: Double, uploadBytesPerSecond: Double,
                 uptime: TimeInterval, sampledAt: Date) {
         self.cpuPercent = cpuPercent
         self.memoryPercent = memoryPercent
         self.usedMemoryBytes = usedMemoryBytes
         self.totalMemoryBytes = totalMemoryBytes
+        self.diskPercent = diskPercent
+        self.usedDiskBytes = usedDiskBytes
+        self.totalDiskBytes = totalDiskBytes
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.uploadBytesPerSecond = uploadBytesPerSecond
         self.uptime = uptime
@@ -1233,6 +1328,7 @@ public struct SystemSnapshot {
 
     public static let empty = SystemSnapshot(
         cpuPercent: 0, memoryPercent: 0, usedMemoryBytes: 0, totalMemoryBytes: 0,
+        diskPercent: 0, usedDiskBytes: 0, totalDiskBytes: 0,
         downloadBytesPerSecond: 0, uploadBytesPerSecond: 0,
         uptime: ProcessInfo.processInfo.systemUptime, sampledAt: Date()
     )
@@ -1246,5 +1342,70 @@ public struct NetworkSample: Equatable {
     public init(downloadBytesPerSecond: Double, uploadBytesPerSecond: Double) {
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.uploadBytesPerSecond = uploadBytesPerSecond
+    }
+}
+
+// MARK: - 全局快捷键
+
+/// 全局快捷键组合（Carbon 虚拟键码 + 修饰键掩码），可持久化。
+/// 修饰键位与 Carbon 一致：⌘=0x0100 ⇧=0x0200 ⌥=0x0800 ⌃=0x1000
+public struct GlobalShortcut: Codable, Equatable {
+    public var keyCode: UInt32
+    public var modifiers: UInt32
+
+    public static let cmdKey: UInt32 = 0x0100
+    public static let shiftKey: UInt32 = 0x0200
+    public static let optionKey: UInt32 = 0x0800
+    public static let controlKey: UInt32 = 0x1000
+
+    public init(keyCode: UInt32, modifiers: UInt32) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+
+    /// 番茄钟默认组合：⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置
+    public static let defaultToggle = GlobalShortcut(keyCode: 49, modifiers: controlKey | optionKey)
+    public static let defaultSkip = GlobalShortcut(keyCode: 124, modifiers: controlKey | optionKey)
+    public static let defaultReset = GlobalShortcut(keyCode: 51, modifiers: controlKey | optionKey)
+
+    /// 功能键键码（可无修饰键注册全局快捷键）
+    public static func isFunctionKey(_ keyCode: UInt32) -> Bool {
+        [64, 79, 80, 96, 97, 98, 99, 100, 101, 103, 105, 106, 107, 109, 111, 113, 118, 120, 122].contains(keyCode)
+    }
+
+    /// 显示字符串（如 ⌃⌥Space / ⌘1 / ⌃⌥→）
+    public var displayString: String {
+        var s = ""
+        if modifiers & GlobalShortcut.controlKey != 0 { s += "⌃" }
+        if modifiers & GlobalShortcut.optionKey != 0 { s += "⌥" }
+        if modifiers & GlobalShortcut.shiftKey != 0 { s += "⇧" }
+        if modifiers & GlobalShortcut.cmdKey != 0 { s += "⌘" }
+        return s + Self.symbol(for: keyCode)
+    }
+
+    private static let keySymbols: [UInt32: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V",
+        11: "B", 12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T",
+        18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9", 26: "7", 27: "-",
+        28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P", 36: "Return",
+        37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M",
+        47: ".", 48: "Tab", 49: "Space", 50: "`", 51: "⌫", 53: "Esc", 117: "⌦",
+        64: "F17", 79: "F18", 80: "F19", 96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8",
+        101: "F9", 103: "F11", 105: "F13", 106: "F16", 107: "F14", 109: "F10", 111: "F12",
+        113: "F15", 118: "F4", 120: "F2", 122: "F1",
+        115: "Home", 116: "PgUp", 119: "End", 121: "PgDn", 123: "←", 124: "→", 125: "↓", 126: "↑"
+    ]
+
+    private static func symbol(for keyCode: UInt32) -> String {
+        keySymbols[keyCode] ?? "键\(keyCode)"
+    }
+}
+
+extension GlobalShortcut {
+    /// 钳制：键码 0–127，修饰键只保留 ⌘⇧⌥⌃
+    func clamped() -> GlobalShortcut {
+        GlobalShortcut(keyCode: min(keyCode, 127),
+                       modifiers: modifiers & (GlobalShortcut.cmdKey | GlobalShortcut.shiftKey
+                                               | GlobalShortcut.optionKey | GlobalShortcut.controlKey))
     }
 }

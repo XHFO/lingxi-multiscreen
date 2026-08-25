@@ -123,6 +123,18 @@ func testRenderCustomImage() throws {
     let decoded = decodeJPEG(result.data)
     checkEqual(decoded.width, 142, "自定义图片宽度")
     checkEqual(decoded.height, 428, "自定义图片高度")
+
+    // 自定义图片忽略全局顶部安全区：图片铺满全屏，顶部（原安全区位置）也应显示图片色而非黑色
+    let safeSettings = AppSettings()
+    safeSettings.safeAreaHeight = 56
+    let fillResult = try ScreenRenderer.renderCustomImage(path: tempURL.path, settings: safeSettings)
+    let fillImg = fillResult.image
+    let fillData = fillImg.dataProvider!.data! as Data
+    let fbpr = fillImg.bytesPerRow
+    let topLum = 0.299 * Double(fillData[10 * fbpr + 71 * 4])
+        + 0.587 * Double(fillData[10 * fbpr + 71 * 4 + 1])
+        + 0.114 * Double(fillData[10 * fbpr + 71 * 4 + 2])
+    check(topLum > 40, "自定义图片应铺满顶部、忽略安全区（顶部亮度 \(topLum)）")
     print("  自定义图片居中裁剪渲染通过")
 }
 
@@ -245,8 +257,10 @@ func testSystemMonitor() {
     let snapshot = monitor.sample()
     check(snapshot.totalMemoryBytes > 0, "内存总量应大于 0")
     check(snapshot.memoryPercent >= 0 && snapshot.memoryPercent <= 100, "内存占用应在 0-100%")
+    check(snapshot.totalDiskBytes > 0, "磁盘总量应大于 0")
+    check(snapshot.diskPercent >= 0 && snapshot.diskPercent <= 100, "磁盘占用应在 0-100%")
     check(snapshot.uptime > 0, "运行时间应大于 0")
-    print("  系统监控采样通过（CPU \(Int(snapshot.cpuPercent.rounded()))% / 内存 \(Int(snapshot.memoryPercent.rounded()))%）")
+    print("  系统监控采样通过（CPU \(Int(snapshot.cpuPercent.rounded()))% / 内存 \(Int(snapshot.memoryPercent.rounded()))% / 磁盘 \(Int(snapshot.diskPercent.rounded()))%）")
 }
 
 // MARK: - 设置与工具
@@ -561,6 +575,37 @@ func testQuotaParse() throws {
     tracked.trackedProgress = 0.75
     check(abs(tracked.progress - 0.75) < 0.001, "跟踪进度应优先于百分比口径")
 
+    // 基线自动采样：首次采样、跨天重新采样、额度回升拉高基线、额度为 0 不动基线
+    let day1 = "2026-08-24"
+    let day2 = "2026-08-25"
+    let first = QuotaBaselineSampler.sample(baseline: nil, baselineDay: nil, remaining: 2061.9, today: day1)
+    check(first.baseline == 2061.9 && first.day == day1, "首次采样应以当前额度为基线")
+    let sameDayDown = QuotaBaselineSampler.sample(baseline: 2061.9, baselineDay: day1, remaining: 1500, today: day1)
+    check(sameDayDown.baseline == 2061.9 && sameDayDown.day == day1, "同日额度下降不应动基线")
+    let sameDayUp = QuotaBaselineSampler.sample(baseline: 1500, baselineDay: day1, remaining: 2500, today: day1)
+    check(sameDayUp.baseline == 2500 && sameDayUp.day == day1, "同日额度回升超过基线应拉高基线")
+    let nextDay = QuotaBaselineSampler.sample(baseline: 1500, baselineDay: day1, remaining: 2000, today: day2)
+    check(nextDay.baseline == 2000 && nextDay.day == day2, "跨天应以当天额度重新采样")
+    let zeroRemaining = QuotaBaselineSampler.sample(baseline: 2000, baselineDay: day1, remaining: 0, today: day2)
+    check(zeroRemaining.baseline == 2000 && zeroRemaining.day == day1, "额度为 0 不应动基线")
+    let zeroFirst = QuotaBaselineSampler.sample(baseline: nil, baselineDay: nil, remaining: 0, today: day1)
+    check(zeroFirst.baseline == nil && zeroFirst.day == nil, "额度为 0 且无基线时保持未设置")
+    check(QuotaBaselineSampler.dayKey(Date()).count == 10, "基线日键应为 yyyy-MM-dd 格式")
+
+    // 额度数值两位小数拆分（整数/小数，供半字号小数渲染）
+    let n1 = ScreenRenderer.quotaNumberParts(2270.2671)
+    checkEqual(n1.whole, "2270", "额度整数部分")
+    checkEqual(n1.fraction, "27", "额度小数部分（两位小数）")
+    let n2 = ScreenRenderer.quotaNumberParts(88.5)
+    checkEqual(n2.whole, "88", "88.5 整数部分")
+    checkEqual(n2.fraction, "50", "88.5 小数部分补零")
+    let n3 = ScreenRenderer.quotaNumberParts(10.999)
+    checkEqual(n3.whole, "11", "四舍五入进位整数部分")
+    checkEqual(n3.fraction, "00", "四舍五入进位小数部分")
+    let n4 = ScreenRenderer.quotaNumberParts(0)
+    checkEqual(n4.whole, "0", "零值整数部分")
+    checkEqual(n4.fraction, "00", "零值小数部分")
+
     // 百分比显示：不同剩余进度渲染出不同的「剩余 %」
     let q100 = quota
     var q75 = quota
@@ -747,7 +792,7 @@ func testNowPlaying() throws {
     check(artResult.data.count <= ScreenRenderer.maximumFileSize, "带封面 JPEG 大小")
     checkEqual(decodeJPEG(artResult.data).width, 142, "带封面宽度")
 
-    // 页脚顺序：上=时钟(强调色)，下=日期(主色)
+    // 页脚顺序：上=时钟(强调色)，下=日期(强调色)——正在播放页脚跟随封面/全局强调色
     let footImg = noArt.image
     let fp = footImg.dataProvider!.data! as Data
     let fbpr = footImg.bytesPerRow
@@ -762,17 +807,17 @@ func testNowPlaying() throws {
         }
     }
     check(accentInTimeBand > 20, "页脚上方应为时钟（强调色像素），实际 \(accentInTimeBand)")
-    var whiteInDateBand = 0
+    var accentInDateBand = 0
     for sy in 382...402 {
         var sx = 30
         while sx < 112 {
             let i = sy * fbpr + sx * 4
             let r = Int(fp[i]); let g = Int(fp[i + 1]); let b = Int(fp[i + 2])
-            if r > 200 && g > 200 && b > 200 { whiteInDateBand += 1 }
+            if g > 150 && g > r + 20 && g > b { accentInDateBand += 1 }
             sx += 2
         }
     }
-    check(whiteInDateBand > 20, "页脚下方应为日期（主色像素），实际 \(whiteInDateBand)")
+    check(accentInDateBand > 20, "页脚下方应为日期（强调色像素），实际 \(accentInDateBand)")
 
     // 歌名自适应字号逻辑
     let shortSize = ScreenRenderer.adaptiveFontSize("短标题", maxSize: 10, minSize: 5.5, bold: true, maxWidth: 104)
@@ -926,7 +971,8 @@ func testNowPlaying() throws {
     pngClamp.clamped()
     checkEqual(pngClamp.jpegQuality, 100, "JPEG 质量上界钳制 100")
 
-    // 字号调小后底部行距应收紧（行间距释放出来）：「当前时间」行随字号缩小而贴近底部时间
+    // 字号调小后底部行距应收紧（行间距释放出来）：「当前时间」行随字号缩小而贴近底部时间。
+    // 用无封面渲染：页脚文字为全局强调色（绿）、背景深色、无封面光晕干扰，可按强调色唯一定位
     func footerLabelTop(_ result: RenderResult) -> Int {
         let img = result.image
         let w = img.width, h = img.height
@@ -935,12 +981,13 @@ func testNowPlaying() throws {
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
         let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
-        for y in 300..<400 {
+        for y in 315..<400 {
             var matches = 0
             for x in 45...95 {
                 let i = (y * w + x) * 4
                 let r = Int(p[i]), g = Int(p[i + 1]), b = Int(p[i + 2])
-                if r > 130 && g > 130 && b > 130 && abs(r - g) < 25 && abs(g - b) < 30 { matches += 1 }
+                // 绿色强调色（无封面时页脚跟随全局强调色）
+                if g > 150 && g > r + 20 && g > b { matches += 1 }
             }
             if matches >= 4 { return y }
         }
@@ -949,11 +996,11 @@ func testNowPlaying() throws {
     footerSettings.nowPlayingFooterVisible = true
     footerSettings.nowPlayingTimeSize = 22
     footerSettings.nowPlayingDateSize = 17
-    let footerDefault = try ScreenRenderer.renderNowPlaying(withArt, settings: footerSettings)
+    let footerDefault = try ScreenRenderer.renderNowPlaying(.sample, settings: footerSettings)
     let labelDefault = footerLabelTop(footerDefault)
     footerSettings.nowPlayingTimeSize = 12
     footerSettings.nowPlayingDateSize = 8
-    let footerSmall = try ScreenRenderer.renderNowPlaying(withArt, settings: footerSettings)
+    let footerSmall = try ScreenRenderer.renderNowPlaying(.sample, settings: footerSettings)
     let labelSmall = footerLabelTop(footerSmall)
     check(labelDefault > 0 && labelSmall > labelDefault + 8,
           "字号调小后底部「当前时间」行应随之上移收紧（default=\(labelDefault) small=\(labelSmall)）")
@@ -1020,6 +1067,14 @@ func testSystemToggleLayouts() throws {
     settings.showCpu = false; settings.showMemory = false; settings.showNetwork = true; settings.showUptime = false
     check(try render().data.count > 0, "仅网络渲染")
 
+    // 仅运行时间（无其他板块时整槽居中渲染）
+    settings.showCpu = false; settings.showMemory = false; settings.showNetwork = false; settings.showUptime = true
+    check(try render().data.count > 0, "仅运行时间渲染")
+
+    // 运行时间 + CPU + 内存 + 网络：运行时间压缩为底部紧凑行，其余板块均分剩余（默认全开即覆盖该路径）
+    settings.showCpu = true; settings.showMemory = true; settings.showNetwork = true; settings.showUptime = true
+    check(try render().data.count > 0, "运行时间紧凑行渲染")
+
     // 全关 → 至少回退一项
     settings.showCpu = false; settings.showMemory = false; settings.showNetwork = false; settings.showUptime = false
     check(try render().data.count > 0, "全关渲染（回退 CPU）")
@@ -1027,6 +1082,23 @@ func testSystemToggleLayouts() throws {
     // CPU + 网络
     settings.showCpu = true; settings.showMemory = false; settings.showNetwork = true; settings.showUptime = false
     check(try render().data.count > 0, "CPU+网络渲染")
+
+    // 仅磁盘（含磁盘用量数据）
+    let diskSystem = SystemSnapshot(cpuPercent: 0, memoryPercent: 0,
+                                    usedMemoryBytes: 0, totalMemoryBytes: 0,
+                                    diskPercent: 68,
+                                    usedDiskBytes: 340 * 1024 * 1024 * 1024,
+                                    totalDiskBytes: 500 * 1024 * 1024 * 1024,
+                                    downloadBytesPerSecond: 0, uploadBytesPerSecond: 0,
+                                    uptime: 0, sampledAt: Date())
+    let diskSettings = AppSettings()
+    diskSettings.showCpu = false; diskSettings.showMemory = false
+    diskSettings.showNetwork = false; diskSettings.showUptime = false
+    diskSettings.showDisk = true
+    let diskRender = try ScreenRenderer.renderSystem(diskSystem, settings: diskSettings)
+    check(diskRender.data.count > 0, "仅磁盘渲染")
+    checkEqual(decodeJPEG(diskRender.data).width, 142, "仅磁盘宽度")
+    checkEqual(decodeJPEG(diskRender.data).height, 428, "仅磁盘高度")
     print("  系统监控动态排版通过")
 }
 
@@ -1225,13 +1297,14 @@ func testNetworkChart() throws {
     let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
     checkEqual(decoded.networkChart, true, "networkChart 往返")
 
-    // 回归：网络文字必须绘制在网络盒子带内（skia y 262-302，x 30-130）。
+    // 回归：网络文字必须绘制在网络盒子带内（skia 语义：网络是最后一个主板块，盒子带位于内存之下、
+    // 运行时间紧凑行之上，对应图像行约 268-350、x 30-130）。
     // 此前 CG/Skia 坐标混用导致文字画到 CPU/内存板块、盒内为空（堆叠问题根因）。
     let image = r1.image
     let pxData = image.dataProvider!.data! as Data
     let bpr = image.bytesPerRow
     var boxBright = 0
-    for sy in 262...302 {
+    for sy in 268...350 {
         var sx = 30
         while sx < 130 {
             let i = sy * bpr + sx * 4
@@ -1446,6 +1519,67 @@ func testClockOverlay() throws {
     let decoded2 = try JSONDecoder().decode(AppSettings.self, from: data2)
     checkEqual(decoded2.clockFontSize, 44, "时钟字号往返")
     checkEqual(decoded2.clockTimeFormat, "HH:mm:ss", "时钟格式往返")
+
+    // 字体家族：枚举数量/标题/字重映射、设置往返、不同字体渲染不同
+    checkEqual(ClockFont.allCases.count, 7, "时钟字体数量")
+    checkEqual(ClockFont.pingfang.fontName(weight: .thin), "PingFangSC-Thin", "苹方纤细字体名")
+    checkEqual(ClockFont.songti.fontName(weight: .regular), "STSongti-SC-Regular", "宋体常规字体名")
+    checkEqual(ClockFont.songti.fontName(weight: .medium), "STSongti-SC-Bold", "宋体中粗回退粗体")
+    checkEqual(ClockFont.menlo.fontName(weight: .regular), "Menlo-Regular", "Menlo 常规字体名")
+    checkEqual(AppSettings().clockFont, .helveticaNeue, "时钟字体默认 Helvetica Neue")
+    let fontRT = AppSettings()
+    fontRT.clockFont = .songti
+    let fontDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(fontRT))
+    checkEqual(fontDecoded.clockFont, .songti, "时钟字体设置往返")
+    settings.customImageClock = .verticalCenter
+    settings.clockFontWeight = .regular
+    settings.clockFont = .helveticaNeue
+    let hnRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    settings.clockFont = .songti
+    let songtiRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(hnRender.data != songtiRender.data, "不同字体应改变渲染")
+
+    // 偏移设置：X/Y 往返、钳制、偏移改变渲染
+    let offRT = AppSettings()
+    offRT.clockOffsetX = 24
+    offRT.clockOffsetY = -16
+    let offDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(offRT))
+    checkEqual(offDecoded.clockOffsetX, 24, "时钟 X 偏移往返")
+    checkEqual(offDecoded.clockOffsetY, -16, "时钟 Y 偏移往返")
+    let offClamp = AppSettings()
+    offClamp.clockOffsetX = 99
+    offClamp.clockOffsetY = -200
+    offClamp.clockFontSize = 200
+    offClamp.clamped()
+    checkEqual(offClamp.clockOffsetX, 60, "X 偏移上界钳制")
+    checkEqual(offClamp.clockOffsetY, -80, "Y 偏移下界钳制")
+    checkEqual(offClamp.clockFontSize, 96, "时钟字号上界提到 96")
+    settings.clockFont = .helveticaNeue
+    settings.clockOffsetX = 0
+    settings.clockOffsetY = 0
+    let noOffset = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    settings.clockOffsetX = 20
+    let xOffset = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    settings.clockOffsetX = 0
+    settings.clockOffsetY = 30
+    let yOffset = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(noOffset.data != xOffset.data, "X 偏移应改变渲染")
+    check(noOffset.data != yOffset.data, "Y 偏移应改变渲染")
+
+    // 设备快照：字体/偏移随键盘设备捕获与套用
+    let devSrc = AppSettings()
+    devSrc.clockFont = .menlo
+    devSrc.clockOffsetX = -12
+    devSrc.clockOffsetY = 40
+    let devCap = DeviceSettings.capture(from: devSrc, type: .keyboard)
+    checkEqual(devCap.clockFont, .menlo, "键盘快照-时钟字体")
+    checkEqual(devCap.clockOffsetX, -12, "键盘快照-时钟 X 偏移")
+    checkEqual(devCap.clockOffsetY, 40, "键盘快照-时钟 Y 偏移")
+    let devTgt = AppSettings()
+    devCap.apply(to: devTgt, type: .keyboard)
+    checkEqual(devTgt.clockFont, .menlo, "键盘套用-时钟字体")
+    checkEqual(devTgt.clockOffsetX, -12, "键盘套用-时钟 X 偏移")
+    checkEqual(devTgt.clockOffsetY, 40, "键盘套用-时钟 Y 偏移")
     print("  时钟叠加通过")
 }
 
@@ -1560,6 +1694,14 @@ func testCanvas() throws {
                                              customText: "", settings: settings,
                                              now: fixed.addingTimeInterval(120))
     check(c1.data != c3.data, "时钟模块跨分钟渲染应不同")
+
+    // 磁盘模块渲染（标签+百分比+进度条+已用/总容量小字）
+    let diskCanvas = try ScreenRenderer.renderCanvas(modules: [.disk], system: system,
+                                                     nowPlaying: np, pomodoro: pomodoro,
+                                                     customText: "", settings: AppSettings(), now: fixed)
+    checkEqual(diskCanvas.image.width, 142, "磁盘模块画板宽度")
+    checkEqual(diskCanvas.image.height, 428, "磁盘模块画板高度")
+    check(diskCanvas.data.count <= ScreenRenderer.maximumFileSize, "磁盘模块画板大小")
 
     // 设置往返
     let rt = AppSettings()
@@ -1770,6 +1912,50 @@ func testCanvasCustomization() throws {
     let npSizeArtist = try render()
     check(npSizeBase.data != npSizeArtist.data, "画板歌手字号调整应改变渲染")
 
+    // 正在播放模块空间不足时自动转横向排布（侧边栏式封面居左）：
+    // 高条带保持竖排大封面居中；多模块短条带自动横排、封面居左、中部无封面
+    func countRedPixels(_ result: RenderResult, _ xs: ClosedRange<Int>, _ ys: ClosedRange<Int>) -> Int {
+        let img = result.image
+        let w = img.width, h = img.height
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        var count = 0
+        for y in ys {
+            for x in xs {
+                let i = (y * w + x) * 4
+                let r = Int(p[i]), g = Int(p[i + 1]), b = Int(p[i + 2])
+                if r > 200 && g < 130 && b < 130 { count += 1 }
+            }
+        }
+        return count
+    }
+    var tallS = AppSettings()
+    tallS.canvasModules = [CanvasModule.nowPlaying.rawValue, CanvasModule.clock.rawValue]
+    tallS.canvasNowPlayingCover = true
+    tallS.canvasNowPlayingSmartBg = false
+    let tallRender = try ScreenRenderer.renderCanvas(modules: tallS.canvasModuleList, system: system,
+                                                     nowPlaying: npWithArt, pomodoro: pomodoro,
+                                                     customText: "", settings: tallS, now: fixed)
+    var shortS = AppSettings()
+    shortS.canvasModules = [CanvasModule.nowPlaying.rawValue, CanvasModule.clock.rawValue,
+                            CanvasModule.cpu.rawValue, CanvasModule.memory.rawValue,
+                            CanvasModule.network.rawValue, CanvasModule.disk.rawValue,
+                            CanvasModule.codex.rawValue, CanvasModule.qwenQuota.rawValue]
+    shortS.canvasNowPlayingCover = true
+    shortS.canvasNowPlayingSmartBg = false
+    let shortRender = try ScreenRenderer.renderCanvas(modules: shortS.canvasModuleList, system: system,
+                                                      nowPlaying: npWithArt, pomodoro: pomodoro,
+                                                      customText: "", settings: shortS, now: fixed)
+    let tallCenter = countRedPixels(tallRender, 46...95, 104...200)
+    let shortLeft = countRedPixels(shortRender, 19...66, 104...150)
+    let shortCenter = countRedPixels(shortRender, 67...95, 104...150)
+    check(tallCenter > 200, "高条带应保持竖排大封面居中（red=\(tallCenter)）")
+    check(shortLeft > 200, "短条带应自动转横向排布、封面居左（red=\(shortLeft)）")
+    check(shortCenter < 5, "短条带横排时中部应无封面（red=\(shortCenter)）")
+
     // 墨水屏画板「正在播放」：不使用智能取色背景（保持手动底色）；横向排布开关只影响所属画板
     s.oracleCanvasModules = [CanvasModule.nowPlaying.rawValue]
     s.canvasNowPlayingCover = true
@@ -1851,6 +2037,9 @@ func testCanvasCustomization() throws {
     rt.canvasNowPlayingArtistSize = 16
     rt.oracleBackgroundMode = .light
     rt.canvasImageMode = .overlay
+    rt.qwenQuotaBaseline = 2061.9
+    rt.qwenQuotaBaselineDay = "2026-08-24"
+    rt.qwenQuotaShowPercent = false
     let data = try JSONEncoder().encode(rt)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
     checkEqual(decoded.canvasClockFormat, "hh:mm a", "画板时钟格式往返")
@@ -1870,6 +2059,10 @@ func testCanvasCustomization() throws {
     checkEqual(decoded.canvasNowPlayingArtistSize, 16, "画板歌手信息字号往返")
     checkEqual(decoded.oracleBackgroundMode, .light, "先知画板底色模式往返")
     checkEqual(decoded.canvasImageMode, .overlay, "画板图像模式往返")
+    checkEqual(decoded.qwenQuotaBaseline, 2061.9, "千问额度基线往返")
+    checkEqual(decoded.qwenQuotaBaselineDay, "2026-08-24", "千问额度基线采样日往返")
+    checkEqual(decoded.qwenQuotaShowPercent, false, "千问额度显示方式往返")
+    checkEqual(AppSettings().qwenQuotaShowPercent, true, "千问额度显示方式默认百分比")
 
     // 字号钳制：越界值钳制到合法范围
     let sizeClamp = AppSettings()
@@ -1931,6 +2124,37 @@ func testCanvasQuotaModules() throws {
                                              codex: usage, qwenQuota: quota2)
     check(r.data != r3.data, "不同千问额度数值渲染应不同")
 
+    // 显示方式切换：百分比（默认）与额度数值渲染结果应不同
+    var valueSettings = settings
+    valueSettings.qwenQuotaShowPercent = false
+    let r4 = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
+                                             nowPlaying: np, pomodoro: pomodoro,
+                                             customText: "", settings: valueSettings,
+                                             codex: usage, qwenQuota: quota2)
+    check(r3.data != r4.data, "千问额度显示方式切换渲染应不同")
+
+    // 标头徽标字号：8pt 下「灵犀画板」文字占 x∈[91,123]，徽标行（y 68–86）x∈[90,100] 应出现强调色像素
+    // （6pt 时徽标仅占 x∈[99,123]，该区域左侧无强调色；放大后必然命中）
+    func badgeAccentCount(_ result: RenderResult) -> Int {
+        let img = result.image
+        let w = img.width, h = img.height
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        var count = 0
+        for y in 68...86 {
+            for x in 90...100 {
+                let i = (y * w + x) * 4
+                let r = Int(p[i]), g = Int(p[i + 1]), b = Int(p[i + 2])
+                if g > 150 && g > r + 20 && g > b { count += 1 }
+            }
+        }
+        return count
+    }
+    check(badgeAccentCount(r) > 3, "画板标头徽标放大：x∈[90,100] 徽标行应出现强调色像素")
+
     // 十二种模块全渲染（含新额度模块）不崩溃
     settings.canvasModules = CanvasModule.allCases.map(\.rawValue)
     let all = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
@@ -1948,10 +2172,20 @@ func testCanvasModuleMargins() throws {
     let settings = AppSettings()
     settings.setCanvasMargin(20, for: .clock)
     checkEqual(settings.canvasMargin(for: .clock), 20, "设置边距")
+    checkEqual(settings.manualCanvasMargin(for: .clock), 20, "手动边距读取")
     settings.setCanvasMargin(99, for: .clock)
     checkEqual(settings.canvasMargin(for: .clock), 40, "边距上界钳制 40")
+    // 归零 = 自适应调节模式：移除手动值，回落到该模块默认自适应边距
     settings.setCanvasMargin(0, for: .clock)
-    checkEqual(settings.canvasMargin(for: .clock), 0, "边距归零移除")
+    checkEqual(settings.canvasMargin(for: .clock), 2, "边距归零回落到自适应默认 2")
+    checkEqual(settings.manualCanvasMargin(for: .clock), 0, "归零后手动值为 0（自适应）")
+
+    // 自适应默认边距：未设置时按模块类型给默认值（用户通常无需手动调节）
+    let def = AppSettings()
+    checkEqual(def.canvasMargin(for: .clock), 2, "时钟默认边距 2")
+    checkEqual(def.canvasMargin(for: .cpu), 4, "CPU 默认边距 4")
+    checkEqual(def.canvasMargin(for: .nowPlaying), 6, "正在播放默认边距 6")
+    checkEqual(def.canvasMargin(for: .image), 6, "图像默认边距 6")
 
     // 加权渲染：边距不同渲染结果不同
     let system = SystemSnapshot(cpuPercent: 35, memoryPercent: 62,
@@ -1981,6 +2215,12 @@ func testCanvasModuleMargins() throws {
     let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
     checkEqual(decoded.canvasModuleMargins[0], 15, "边距字典往返 clock")
     checkEqual(decoded.canvasModuleMargins[2], 30, "边距字典往返 cpu")
+    // 0 = 自适应：编码/解码丢弃显式 0 条目
+    let rtZero = AppSettings()
+    rtZero.canvasModuleMargins = [0: 0, 2: 30]
+    let decodedZero = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rtZero))
+    checkEqual(decodedZero.canvasModuleMargins[0], nil, "边距 0 条目解码时丢弃（自适应）")
+    checkEqual(decodedZero.canvasModuleMargins[2], 30, "非零边距保留")
     print("  画板模块边距通过")
 }
 
@@ -2655,6 +2895,28 @@ func testCanvasOracleExcerpt() async throws {
     checkEqual(partialCard.image.height, 428, "部分分类语录卡片高度")
     check(partialCard.data.count <= ScreenRenderer.maximumFileSize, "部分分类语录卡片大小")
 
+    // 显示语录出处：出处查询（有出处的返回来源、谚语/未知语录返回空）、设置往返与默认关闭、开启后渲染替换时钟
+    checkEqual(ScreenRenderer.excerptSource(for: "能力越大，责任越大。"), "《蜘蛛侠》", "语录出处查询-电影")
+    checkEqual(ScreenRenderer.excerptSource(for: "天生我材必有用，千金散尽还复来。"), "李白《将进酒》", "语录出处查询-诗词")
+    checkEqual(ScreenRenderer.excerptSource(for: "走自己的路，让别人说去吧。"), "但丁", "语录出处查询-名人名言")
+    check(ScreenRenderer.excerptSource(for: "塞翁失马，焉知非福。") == nil, "谚语无确切出处应返回空")
+    check(ScreenRenderer.excerptSource(for: "不存在的语录") == nil, "未知语录出处返回空")
+    let sourceRT = AppSettings()
+    sourceRT.showExcerptSource = true
+    let sourceDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(sourceRT))
+    check(sourceDecoded.showExcerptSource, "显示语录出处往返为开启")
+    check(!AppSettings().showExcerptSource, "显示语录出处默认关闭")
+    let sourceSettings = AppSettings()
+    sourceSettings.showExcerptSource = true
+    let noSourceCard = try ScreenRenderer.renderExcerptQuote(quote: "能力越大，责任越大。",
+                                                             settings: AppSettings(), now: fixed)
+    let sourceCard = try ScreenRenderer.renderExcerptQuote(quote: "能力越大，责任越大。",
+                                                           settings: sourceSettings, now: fixed)
+    checkEqual(sourceCard.image.width, 142, "显示出处语录卡片宽度")
+    checkEqual(sourceCard.image.height, 428, "显示出处语录卡片高度")
+    check(sourceCard.data.count <= ScreenRenderer.maximumFileSize, "显示出处语录卡片大小")
+    check(sourceCard.data != noSourceCard.data, "显示出处应改变语录卡片渲染（出处替换时钟）")
+
     // 少数派推荐：客户端解析（优先编辑推荐、按推荐时间倒序）+ 卡片渲染 + 模式/设置
     let sspaiJSON = """
     {"list":[
@@ -3005,6 +3267,78 @@ func testEmojiWallpaper() throws {
     let noFooter = try ScreenRenderer.renderEmojiWallpaper(settings: sFooter, now: fixed).data
     check(withFooter != noFooter, "页脚时钟开关应改变壁纸")
 
+    // 高斯模糊遮罩：底部条带被遮罩改变；遮罩顶缘淡入区上方（Skia y=300，默认字号 bandTop≈314）
+    // 像素应与无遮罩完全一致——证明遮罩从上方开始平滑淡入、无硬边覆盖
+    let blurFooterOn = AppSettings(); blurFooterOn.emojiWallpaperLayout = .grid; blurFooterOn.nowPlayingFooterVisible = true
+    let blurOn = try ScreenRenderer.renderEmojiWallpaper(settings: blurFooterOn, now: fixed)
+    let blurFooterOff = AppSettings(); blurFooterOff.emojiWallpaperLayout = .grid; blurFooterOff.nowPlayingFooterVisible = false
+    let blurOff = try ScreenRenderer.renderEmojiWallpaper(settings: blurFooterOff, now: fixed)
+    let aboveOn = pixelAt(blurOn.image, 71, 300)
+    let aboveOff = pixelAt(blurOff.image, 71, 300)
+    check(abs(aboveOn.0 - aboveOff.0) < 0.02 && abs(aboveOn.1 - aboveOff.1) < 0.02
+          && abs(aboveOn.2 - aboveOff.2) < 0.02,
+          "遮罩淡入区上方像素应与无遮罩一致（平滑过渡起点）")
+    let bandOn = pixelAt(blurOn.image, 71, 390)
+    let bandOff = pixelAt(blurOff.image, 71, 390)
+    check(abs(bandOn.0 - bandOff.0) > 0.02 || abs(bandOn.1 - bandOff.1) > 0.02
+          || abs(bandOn.2 - bandOff.2) > 0.02,
+          "底部条带应被高斯模糊遮罩改变")
+
+    // 时间的强调色效果应用到日期与「当前时间」标签：
+    // 用不含绿色的 emoji 背景（避免背景误判），日期行（y≈388–412）应出现强调色像素
+    let tintOn = AppSettings()
+    tintOn.emojiWallpaperLayout = .grid
+    tintOn.emojiWallpaperText = "🔴🟣"
+    tintOn.emojiWallpaperSize = 40
+    tintOn.nowPlayingFooterVisible = true
+    let tintRender = try ScreenRenderer.renderEmojiWallpaper(settings: tintOn, now: fixed)
+    let tintImg = tintRender.image
+    let tintCtx = CGContext(data: nil, width: tintImg.width, height: tintImg.height, bitsPerComponent: 8,
+                            bytesPerRow: tintImg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    tintCtx.draw(tintImg, in: CGRect(x: 0, y: 0, width: tintImg.width, height: tintImg.height))
+    let tp = tintCtx.data!.assumingMemoryBound(to: UInt8.self)
+    var dateAccent = 0
+    for y in 388..<413 {
+        for x in 30..<112 {
+            let i = (y * tintImg.width + x) * 4
+            let r = Int(tp[i]), g = Int(tp[i + 1]), b = Int(tp[i + 2])
+            if g > 150 && g > r + 20 && g > b { dateAccent += 1 }
+        }
+    }
+    check(dateAccent > 10, "日期应使用强调色（与时间一致）（count=\(dateAccent)）")
+
+    // 浅色模式下遮罩不加深：带页脚浅色渲染的遮罩带平均亮度应与无页脚渲染相近（无压暗）。
+    // 若误加 0.22 压暗，亮度会降到约 78%
+    let lightOn = AppSettings()
+    lightOn.emojiWallpaperLayout = .grid
+    lightOn.emojiWallpaperText = "🔴🟣"
+    lightOn.emojiWallpaperSize = 40
+    lightOn.backgroundTone = .light
+    lightOn.nowPlayingFooterVisible = true
+    let lightOnRender = try ScreenRenderer.renderEmojiWallpaper(settings: lightOn, now: fixed)
+    lightOn.nowPlayingFooterVisible = false
+    let lightOffRender = try ScreenRenderer.renderEmojiWallpaper(settings: lightOn, now: fixed)
+    func avgLum(_ img: CGImage, _ y0: Int, _ y1: Int) -> Double {
+        let data = img.dataProvider!.data! as Data
+        let bpr = img.bytesPerRow
+        var sum = 0.0, n = 0.0
+        for y in y0..<y1 {
+            for x in 4..<138 {
+                let i = y * bpr + x * 4
+                sum += 0.299 * Double(data[i]) + 0.587 * Double(data[i + 1]) + 0.114 * Double(data[i + 2])
+                n += 1
+            }
+        }
+        return sum / n
+    }
+    let lightBandOn = avgLum(lightOnRender.image, 322, 338)
+    let lightBandOff = avgLum(lightOffRender.image, 322, 338)
+    // 浅色模式遮罩只轻微压暗（约 0.10 → 亮度 ≈90%）：不低于 85%（排除误用深色 0.22 压暗），
+    // 且确实比无遮罩略暗（排除完全不加深）
+    check(lightBandOn > lightBandOff * 0.85 && lightBandOn < lightBandOff,
+          "浅色模式遮罩应轻微压暗约 10%（on=\(lightBandOn) off=\(lightBandOff)）")
+
     // 设置往返与钳制
     let rt = AppSettings()
     rt.emojiWallpaperText = "🌸🦋"
@@ -3194,6 +3528,28 @@ func testDeviceManagement() throws {
     checkEqual(reloaded.devices.count, 1, "设备档案往返")
     checkEqual(reloaded.devices[0].name, "临时", "设备名往返-删除测试")
     checkEqual(fresh.devices.isEmpty, true, "全新设置无设备")
+
+    // 恢复初始设定：设置/番茄钟/自定义图片/图片缓存移入废纸篓，重新加载为全新默认
+    let resetBase = FileManager.default.temporaryDirectory.appendingPathComponent("linx-reset-test-\(UUID().uuidString)")
+    let resetStore = SettingsStore(dataDirectory: resetBase)
+    let resetSettings = AppSettings()
+    resetSettings.devices = [tmpDevice]
+    resetSettings.customImagePath = "/tmp/测试图.png"
+    resetStore.save(resetSettings)
+    try FileManager.default.createDirectory(at: resetStore.historyDirectory, withIntermediateDirectories: true)
+    try Data([1, 2, 3]).write(to: resetStore.historyDirectory.appendingPathComponent("hist.png"))
+    try Data([4, 5]).write(to: resetStore.customImageURL)
+    check(FileManager.default.fileExists(atPath: resetStore.settingsURL.path), "重置前设置文件存在")
+    check(FileManager.default.fileExists(atPath: resetStore.customImageURL.path), "重置前自定义图片存在")
+    check(FileManager.default.fileExists(atPath: resetStore.historyDirectory.path), "重置前图片缓存存在")
+    let resetTrash = resetBase.appendingPathComponent("trash")
+    resetStore.resetAllData(trashRoot: resetTrash)
+    check(!FileManager.default.fileExists(atPath: resetStore.settingsURL.path), "重置后设置文件已清除")
+    check(!FileManager.default.fileExists(atPath: resetStore.customImageURL.path), "重置后自定义图片已清除")
+    check(!FileManager.default.fileExists(atPath: resetStore.historyDirectory.path), "重置后图片缓存目录已清除")
+    let resetReloaded = resetStore.load()
+    check(resetReloaded.devices.isEmpty, "重置后重新加载为全新默认（无设备）")
+    check(resetReloaded.customImagePath == nil, "重置后自定义图片路径已清空")
     print("  设备管理通过")
 }
 
@@ -3208,10 +3564,10 @@ func testSidebarSettings() throws {
     let clamp = AppSettings()
     clamp.sidebarWidth = 999
     clamp.clamped()
-    checkEqual(clamp.sidebarWidth, 280, "侧边栏宽度上界钳制")
-    clamp.sidebarWidth = 50
+    checkEqual(clamp.sidebarWidth, 320, "侧边栏宽度上界钳制")
+    clamp.sidebarWidth = 20
     clamp.clamped()
-    checkEqual(clamp.sidebarWidth, 140, "侧边栏宽度下界钳制")
+    checkEqual(clamp.sidebarWidth, 48, "侧边栏宽度下界钳制")
     // 键盘设备可见卡片列表（卡片管理）：编码往返 + 缺键回退 nil + 设备快照捕获套用
     let hiddenRT = AppSettings()
     hiddenRT.keyboardCardPanels = ["codex", "pomodoro"]
@@ -3318,6 +3674,8 @@ Task {
         try testDeviceManagement()
         try testPraiseAndTaskFont()
         try testSidebarSettings()
+        try testPomodoroCentering()
+        try testGlobalShortcuts()
         await testUsageDataAggregator()
         try testNowPlaying()
         await testNowPlayingLiveFetch()
@@ -3337,4 +3695,164 @@ Task {
         exit(1)
     }
 }
+
+// MARK: - 全局快捷键
+
+func testGlobalShortcuts() throws {
+    // 默认组合与显示
+    checkEqual(GlobalShortcut.defaultToggle.keyCode, 49, "默认开始/暂停键码 Space")
+    checkEqual(GlobalShortcut.defaultSkip.keyCode, 124, "默认跳过键码 →")
+    checkEqual(GlobalShortcut.defaultReset.keyCode, 51, "默认重置键码 ⌫")
+    checkEqual(GlobalShortcut.defaultToggle.modifiers,
+               GlobalShortcut.controlKey | GlobalShortcut.optionKey, "默认修饰键 ⌃⌥")
+    checkEqual(GlobalShortcut.defaultToggle.displayString, "⌃⌥Space", "默认显示字符串")
+    checkEqual(GlobalShortcut(keyCode: 124, modifiers: GlobalShortcut.controlKey | GlobalShortcut.optionKey).displayString,
+               "⌃⌥→", "方向键显示")
+    checkEqual(GlobalShortcut(keyCode: 18, modifiers: GlobalShortcut.cmdKey).displayString, "⌘1", "⌘1 显示")
+    checkEqual(GlobalShortcut(keyCode: 122, modifiers: 0).displayString, "F1", "功能键显示")
+
+    // 设置往返
+    let rt = AppSettings()
+    rt.pomodoroToggleShortcut = GlobalShortcut(keyCode: 18, modifiers: GlobalShortcut.cmdKey) // ⌘1
+    rt.pomodoroSkipShortcut = GlobalShortcut(keyCode: 26, modifiers: GlobalShortcut.controlKey | GlobalShortcut.shiftKey)
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt))
+    checkEqual(decoded.pomodoroToggleShortcut.keyCode, 18, "快捷键往返 keyCode")
+    checkEqual(decoded.pomodoroToggleShortcut.modifiers, GlobalShortcut.cmdKey, "快捷键往返 modifiers")
+    checkEqual(decoded.pomodoroSkipShortcut.keyCode, 26, "跳过快捷键往返")
+    checkEqual(decoded.pomodoroResetShortcut, GlobalShortcut.defaultReset, "未修改项保留默认")
+
+    // 钳制：键码越界回落、修饰键只保留 ⌘⇧⌥⌃
+    var clamp = AppSettings()
+    clamp.pomodoroToggleShortcut = GlobalShortcut(keyCode: 999, modifiers: 0xFFFF)
+    clamp.clamped()
+    checkEqual(clamp.pomodoroToggleShortcut.keyCode, 127, "快捷键键码上界钳制")
+    checkEqual(clamp.pomodoroToggleShortcut.modifiers, 0x1B00, "快捷键修饰键掩码钳制")
+
+    // 恢复默认
+    var d = AppSettings()
+    d.pomodoroSkipShortcut = GlobalShortcut(keyCode: 18, modifiers: GlobalShortcut.cmdKey)
+    d.pomodoroSkipShortcut = .defaultSkip
+    checkEqual(d.pomodoroSkipShortcut.keyCode, 124, "恢复默认跳过")
+    print("  全局快捷键通过")
+}
+
+// MARK: - 番茄钟模块居中
+
+func testPomodoroCentering() throws {
+    let fixed = Date(timeIntervalSince1970: 1_752_000_000)
+    let system = SystemSnapshot(cpuPercent: 0, memoryPercent: 0,
+                                usedMemoryBytes: 0, totalMemoryBytes: 0,
+                                downloadBytesPerSecond: 0, uploadBytesPerSecond: 0,
+                                uptime: 0, sampledAt: Date())
+    let np = NowPlayingInfo.sample
+    let pomo = PomodoroSnapshot(phase: .focus, effectivePhase: .focus, taskName: "任务",
+                                remaining: 1500, duration: 1500, completedFocusSessions: 1,
+                                endsAt: Date().addingTimeInterval(1500))
+    let ps = AppSettings()
+    ps.canvasModules = [CanvasModule.pomodoro.rawValue]
+    let r = try ScreenRenderer.renderCanvas(modules: ps.canvasModuleList, system: system,
+                                            nowPlaying: np, pomodoro: pomo,
+                                            customText: "", settings: ps, now: fixed)
+    // 单模块时番茄钟带为 103...409（安全区 56 + 标头 46 / 卡底 10），带中心 256；
+    // 内容包围盒（亮色文字像素，避开卡片边框列 x=9/133）中心应贴近带中心
+    let img = r.image
+    let w = img.width, h = img.height
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+    let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
+    var minY = 428, maxY = 0
+    for y in 103..<409 {
+        for x in 12..<130 {
+            let i = (y * w + x) * 4
+            if Int(p[i]) + Int(p[i + 1]) + Int(p[i + 2]) > 200 {
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+            }
+        }
+    }
+    check(minY < maxY, "番茄钟内容应存在")
+    let center = (minY + maxY) / 2
+    check(abs(center - 256) <= 6, "番茄钟内容应居中于模块带（min=\(minY) max=\(maxY) center=\(center) 期望 256）")
+
+    // 阶段标识与时间紧凑成块：两段文字间空隙小（旧版两行均分空隙极大）
+    func brightSegments(_ img: CGImage, _ yRange: Range<Int>) -> [(Int, Int)] {
+        let w = img.width
+        let ctx = CGContext(data: nil, width: w, height: img.height, bitsPerComponent: 8,
+                            bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: img.height))
+        let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        var segments: [(Int, Int)] = []
+        var segStart = -1
+        for y in yRange {
+            var count = 0
+            for x in 12..<130 {
+                let i = (y * w + x) * 4
+                if Int(p[i]) + Int(p[i + 1]) + Int(p[i + 2]) > 200 { count += 1 }
+            }
+            if count > 0 && segStart < 0 { segStart = y }
+            if count == 0 && segStart >= 0 { segments.append((segStart, y - 1)); segStart = -1 }
+        }
+        if segStart >= 0 { segments.append((segStart, yRange.upperBound - 1)) }
+        return segments
+    }
+    let tallSegs = brightSegments(r.image, 103..<409)
+    checkEqual(tallSegs.count, 2, "番茄钟高条带应为两段文字（阶段+时间）")
+    if tallSegs.count == 2 {
+        check(tallSegs[1].0 - tallSegs[0].1 - 1 <= 12,
+              "阶段与时间空隙应紧凑（空隙=\(tallSegs[1].0 - tallSegs[0].1 - 1)px）")
+    }
+
+    // 拥挤场景：多模块短条带应自动缩窄空隙、收缩字号保持外边缘
+    var crowded = AppSettings()
+    crowded.canvasModules = [CanvasModule.pomodoro.rawValue, CanvasModule.clock.rawValue,
+                             CanvasModule.cpu.rawValue, CanvasModule.memory.rawValue,
+                             CanvasModule.network.rawValue, CanvasModule.disk.rawValue,
+                             CanvasModule.codex.rawValue, CanvasModule.qwenQuota.rawValue]
+    let crowdedRender = try ScreenRenderer.renderCanvas(modules: crowded.canvasModuleList, system: system,
+                                                        nowPlaying: np, pomodoro: pomo,
+                                                        customText: "", settings: crowded, now: fixed)
+    let shortSegs = brightSegments(crowdedRender.image, 105..<139)
+    checkEqual(shortSegs.count, 2, "番茄钟短条带仍为两段文字（阶段+时间）")
+    if shortSegs.count == 2 {
+        let gap = shortSegs[1].0 - shortSegs[0].1 - 1
+        let span = shortSegs[1].1 - shortSegs[0].0 + 1
+        check(gap <= 10, "短条带阶段与时间空隙应更窄（空隙=\(gap)px）")
+        check(span <= 32, "短条带内容应收缩以适应模块（span=\(span)px）")
+    }
+    print("  番茄钟居中通过")
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 dispatchMain()

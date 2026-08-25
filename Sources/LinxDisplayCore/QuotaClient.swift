@@ -65,6 +65,38 @@ public struct QwenWorkQuota: Equatable {
     )
 }
 
+/// 额度百分比基线采样器：每日定期采样、更新、刷新基线。
+///
+/// 规则：
+/// - 首次采样或跨天（基线日 != 今天）时，以当前剩余额度重新采样为基线（每日刷新）；
+/// - 同一日内剩余额度回升超过基线（如每日赠送积分入账、套餐升级）时，把基线自动拉高到当前额度，
+///   避免百分比基数低于实际额度导致显示失真；
+/// - 剩余额度为 0 时不动基线（避免把基线清零使百分比失去参照）。
+public enum QuotaBaselineSampler {
+    /// 按规则更新基线，返回 (基线, 基线采样日)。
+    public static func sample(baseline: Double?, baselineDay: String?,
+                              remaining: Double, today: String) -> (baseline: Double?, day: String?) {
+        guard remaining > 0 else { return (baseline, baselineDay) }
+        if baseline == nil || baselineDay != today {
+            // 首次采样或新的一天：以当前额度重新采样
+            return (remaining, today)
+        }
+        if remaining > baseline! {
+            // 同日额度回升超过基线（每日赠送积分入账）：把基线拉高到当前额度
+            return (remaining, today)
+        }
+        return (baseline, baselineDay)
+    }
+
+    /// 本地时区下的「yyyy-MM-dd」天键，用于判断是否跨天。
+    public static func dayKey(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+}
+
 public enum QuotaError: Error, LocalizedError {
     case configNotFound
     case unreachable
