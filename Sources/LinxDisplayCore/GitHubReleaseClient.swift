@@ -20,43 +20,48 @@ public enum GitHubReleaseError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreachable: return "无法连接 GitHub，请检查网络。"
-        case .invalidResponse: return "GitHub 返回了无法识别的内容。"
+        case .invalidResponse: return "检查过于频繁，请稍后再试。"
         }
     }
 }
 
-/// GitHub 仓库 Release 客户端：拉取最新版本用于更新提醒
+/// GitHub 仓库 Release 客户端：拉取最新版本用于更新提醒。
+/// 用网页端点 https://github.com/<repo>/releases/latest（302 → /releases/tag/<版本>）
+/// 提取版本号——不依赖匿名 API（限流 60 次/时/IP 常耗尽 403），国内访问更稳
 public enum GitHubReleaseClient {
     /// 多屏灵犀的 GitHub 仓库
     public static let repo = "XHFO/lingxi-multiscreen"
 
-    /// 拉取最新 Release（tag 形如 v1.3.0）
+    /// 拉取最新 Release（tag 形如 v1.5.0）。URLSession 默认跟随重定向，
+    /// 直接取 response.url（最终地址）解析 tag
     public static func fetchLatestRelease(timeout: TimeInterval = 10) async throws -> GitHubReleaseInfo {
-        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else {
+        guard let url = URL(string: "https://github.com/\(repo)/releases/latest") else {
             throw GitHubReleaseError.invalidResponse
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        // GitHub API 强制要求 User-Agent
         request.setValue("LingxiMultiScreen", forHTTPHeaderField: "User-Agent")
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let data: Data
+        let response: URLResponse
         do {
-            (data, _) = try await URLSession.shared.data(for: request)
+            (_, response) = try await URLSession.shared.data(for: request)
         } catch {
             throw GitHubReleaseError.unreachable
         }
-        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let tag = obj["tag_name"] as? String else {
+        // 重定向后 response.url 即最终地址（https://github.com/<repo>/releases/tag/<版本>）
+        guard let finalURL = response.url,
+              let tag = extractTag(from: finalURL) else {
             throw GitHubReleaseError.invalidResponse
         }
-        var published: Date?
-        if let iso = obj["published_at"] as? String {
-            published = ISO8601DateFormatter().date(from: iso)
-        }
-        var html: URL?
-        if let s = obj["html_url"] as? String { html = URL(string: s) }
-        return GitHubReleaseInfo(tag: tag, publishedAt: published, htmlURL: html)
+        return GitHubReleaseInfo(tag: tag, publishedAt: nil, htmlURL: finalURL)
+    }
+
+    /// 从 /releases/tag/<版本> 的 URL 提取版本号（取尾段，兼容查询/锚点/尾斜杠）
+    public static func extractTag(from url: URL) -> String? {
+        let path = url.path
+        guard let range = path.range(of: "/releases/tag/") else { return nil }
+        return String(path[range.upperBound...])
+            .split(separator: "/").first
+            .map(String.init)
     }
 
     /// 版本号比较：v1.3.0 → 1.3.0 逐段数值比较；返回 latest 是否比 current 新

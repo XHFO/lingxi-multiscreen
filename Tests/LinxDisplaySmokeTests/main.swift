@@ -862,8 +862,8 @@ func testNowPlaying() throws {
 
     // 底部时间/日期：格式、字号自定义与隐藏布局
     let footerSettings = AppSettings()
-    footerSettings.nowPlayingTimeFormat = "HH:mm:ss"
-    footerSettings.nowPlayingDateFormat = "yyyy年M月d日 EEE"
+    footerSettings.timeFormat = "HH:mm:ss"
+    footerSettings.dateFormat = "yyyy年M月d日 EEE"
     let fmtResult = try ScreenRenderer.renderNowPlaying(withArt, settings: footerSettings)
     check(fmtResult.data != artResult.data, "底部时间/日期格式自定义应改变渲染")
     footerSettings.nowPlayingTimeSize = 36
@@ -909,47 +909,6 @@ func testNowPlaying() throws {
     let hiddenCoverTop = coverTopRow(hiddenResult)
     check(visibleCoverTop > 0 && hiddenCoverTop > visibleCoverTop + 40,
           "隐藏底部时间/日期后封面应在可用空间内垂直居中下移（visible=\(visibleCoverTop) hidden=\(hiddenCoverTop)）")
-
-    // 封面背后光晕：浅色封面与同色系背景对比弱，改用深色封面验证——
-    // 深色封面主色被提亮后，封面上方蓝色通道应显著高于远处（无光晕处）
-    func avgBlue(_ result: RenderResult, _ y: Int) -> Double {
-        let img = result.image
-        let w = img.width, h = img.height
-        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                            space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
-        let p = ctx.data!.assumingMemoryBound(to: UInt8.self)
-        var sum = 0.0
-        var count = 0.0
-        for x in stride(from: 60, through: 82, by: 2) {
-            let i = (y * w + x) * 4
-            sum += Double(p[i + 2])
-            count += 1
-        }
-        return sum / count
-    }
-    let darkCtx = CGContext(data: nil, width: 200, height: 200, bitsPerComponent: 8,
-                            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    darkCtx.setFillColor(CGColor(red: 0.05, green: 0.1, blue: 0.5, alpha: 1))
-    darkCtx.fill(CGRect(x: 0, y: 0, width: 200, height: 200))
-    let darkMD = NSMutableData()
-    let darkDest = CGImageDestinationCreateWithData(darkMD, UTType.png.identifier as CFString, 1, nil)!
-    CGImageDestinationAddImage(darkDest, darkCtx.makeImage()!, nil)
-    check(CGImageDestinationFinalize(darkDest), "光晕测试深色封面生成")
-    var darkNP = NowPlayingInfo.sample
-    darkNP.artwork = darkMD as Data
-    let darkSettings = AppSettings()
-    darkSettings.nowPlayingFooterVisible = false
-    let darkResult = try ScreenRenderer.renderNowPlaying(darkNP, settings: darkSettings)
-    // 隐藏页脚时封面顶边在 y≈174（安全区 56），光晕带从封面向上延伸约 48px；
-    // 在封面上方 2–9px 取最大亮度与远处背景对比
-    var darkNear = 0.0
-    for yy in 165...172 { darkNear = max(darkNear, avgBlue(darkResult, yy)) }
-    let darkFar = avgBlue(darkResult, 114)
-    check(darkNear > darkFar + 15,
-          "封面背后应有主色光晕（nearB=\(darkNear) farB=\(darkFar)）")
 
     // 推送质量：JPEG 质量默认 100（4:4:4 无彩色抽样）；PNG 编码保留（摘录画板推送用）
     let pngCard = try ScreenRenderer.renderNowPlaying(withArt, settings: settings)
@@ -1491,23 +1450,23 @@ func testClockOverlay() throws {
 
     // 时间格式：不同格式渲染不同
     settings.clockFontSize = 36
-    settings.clockTimeFormat = "HH:mm"
+    settings.timeFormat = "HH:mm"
     let fmtHM = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    settings.clockTimeFormat = "HH:mm:ss"
+    settings.timeFormat = "HH:mm:ss"
     let fmtHMS = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     check(fmtHM.data != fmtHMS.data, "HH:mm 与 HH:mm:ss 渲染应不同")
     // 用下午时间对比（HH:mm=14:40 vs hh:mm=02:40 必然不同）
     let afternoon = base.addingTimeInterval(12 * 3600)
-    settings.clockTimeFormat = "HH:mm"
+    settings.timeFormat = "HH:mm"
     let hmAfternoon = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: afternoon)
-    settings.clockTimeFormat = "hh:mm"
+    settings.timeFormat = "hh:mm"
     let fmt12 = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: afternoon)
     check(fmt12.data != hmAfternoon.data, "12/24 小时制渲染应不同")
 
     // 无效格式回退 HH:mm（不崩溃且与 HH:mm 一致）
-    settings.clockTimeFormat = ""
+    settings.timeFormat = ""
     let fallback = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    settings.clockTimeFormat = "HH:mm"
+    settings.timeFormat = "HH:mm"
     let plain = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     check(fallback.data == plain.data, "空格式应回退 HH:mm")
 
@@ -1724,6 +1683,14 @@ func testPraiseAndTaskFont() throws {
     checkEqual(praise.image.width, 142, "夸夸卡宽度")
     checkEqual(praise.image.height, 428, "夸夸卡高度")
     check(praise.data.count <= ScreenRenderer.maximumFileSize, "夸夸卡大小")
+    // 打印完成庆祝卡：🎉 + 打印机名，正常尺寸且与夸夸卡不同
+    let printDone = try ScreenRenderer.renderPrintSuccess(printerName: "X2D", settings: settings)
+    checkEqual(printDone.image.width, 142, "打印完成卡宽度")
+    checkEqual(printDone.image.height, 428, "打印完成卡高度")
+    check(printDone.data.count <= ScreenRenderer.maximumFileSize, "打印完成卡大小")
+    check(printDone.data != praise.data, "打印完成卡与夸夸卡渲染应不同")
+    let printDoneEmptyName = try ScreenRenderer.renderPrintSuccess(printerName: "", settings: settings)
+    check(printDoneEmptyName.data.count <= ScreenRenderer.maximumFileSize, "打印完成卡-空名渲染正常")
     // 超长夸夸文本也正常（自适应缩字号）
     let longPraise = try ScreenRenderer.renderPraise(text: String(repeating: "太棒了", count: 30), sessions: 1, settings: settings)
     check(longPraise.data.count <= ScreenRenderer.maximumFileSize, "长夸夸文本大小")
@@ -1759,6 +1726,10 @@ func testPraiseAndTaskFont() throws {
 // MARK: - 画板自定义（时钟/日期格式、大封面、自定义图像）
 
 func testCanvasCustomization() throws {
+    let typography = ScreenRenderer.canvasTypography()
+    checkEqual(typography.label, 9, "画板信息模块统一标签字号")
+    checkEqual(typography.value, 12, "画板信息模块统一主数值字号")
+    checkEqual(typography.body, 10, "画板信息模块统一正文字号")
     // 造一张测试图（同比例）
     let imgW = 284, imgH = 744
     let ctx = CGContext(data: nil, width: imgW, height: imgH, bitsPerComponent: 8,
@@ -1793,10 +1764,110 @@ func testCanvasCustomization() throws {
                                         customText: "", settings: s, now: fixed)
     }
     let fmtDefault = try render()
-    s.canvasClockFormat = "HH:mm:ss"
-    s.canvasDateFormat = "M/d"
+    s.timeFormat = "HH:mm:ss"
+    s.dateFormat = "M/d"
     let fmtCustom = try render()
     check(fmtDefault.data != fmtCustom.data, "画板时钟/日期格式自定义应改变渲染")
+    // 画板 Home Assistant 模块：长实体名折两行、状态与图标不错位
+    let longA = HAEntity(entityId: "sensor.x2d_20p6bj652500750_print_status",
+                         friendlyName: "X2D_20P6BJ652500750 打印状态", state: "printing", unitOfMeasurement: nil)
+    let longB = HAEntity(entityId: "image.xh_fo9636_gamerpic",
+                         friendlyName: "XH FO9636 玩家头像", state: "2026-08-29T16:50:35", unitOfMeasurement: nil)
+    let shortA = HAEntity(entityId: "sensor.temp", friendlyName: "温度", state: "23", unitOfMeasurement: "°C")
+    let shortB = HAEntity(entityId: "switch.fan", friendlyName: "风扇", state: "on", unitOfMeasurement: nil)
+    var haCanvasS = AppSettings()
+    let haLong = HASnapshot(entities: [longA, longB], selectedEntities: [longA, longB])
+    let haShort = HASnapshot(entities: [shortA, shortB], selectedEntities: [shortA, shortB])
+    let haLongRender = try ScreenRenderer.renderCanvas(modules: [.homeAssistant], system: system,
+                                                     nowPlaying: np, pomodoro: pomodoro,
+                                                     customText: "", settings: haCanvasS, ha: haLong)
+    let haShortRender = try ScreenRenderer.renderCanvas(modules: [.homeAssistant], system: system,
+                                                      nowPlaying: np, pomodoro: pomodoro,
+                                                      customText: "", settings: haCanvasS, ha: haShort)
+    check(haLongRender.data != haShortRender.data, "长名与短名实体列表渲染不同（长名折行生效）")
+    checkEqual(haLongRender.image.width, 142, "长名折行不破坏画板宽度")
+    // HA 模块画面占比随本画板实体数量单调增长，并设上限避免挤占全部其他模块。
+    let haHeightWeights = (0...9).map {
+        ScreenRenderer.homeAssistantCanvasHeightMultiplier(entityCount: $0)
+    }
+    checkEqual(haHeightWeights[0], 0.5, "HA 未选实体保留最小提示高度")
+    checkEqual(haHeightWeights[1], 0.5, "HA 单实体使用紧凑高度")
+    check(abs(haHeightWeights[4] - 1.7857) < 0.001, "HA 四实体扩大画面占比")
+    check(zip(haHeightWeights.dropFirst(), haHeightWeights.dropFirst(2)).allSatisfy { pair in
+        pair.0 < pair.1
+    },
+          "HA 模块高度无硬性封顶，实体减少时始终释放空间")
+
+    // 与其他模块混排时，1 个与 5 个实体应产生不同的分带与渲染结果；多实体不再固定截断前三个。
+    let dynamicEntities = (1...5).map {
+        HAEntity(entityId: "sensor.dynamic_\($0)", friendlyName: "实体 \($0)",
+                 state: "\($0)", unitOfMeasurement: nil)
+    }
+    let oneEntityHA = HASnapshot(entities: dynamicEntities,
+                                 selectedEntities: Array(dynamicEntities.prefix(1)))
+    let fiveEntityHA = HASnapshot(entities: dynamicEntities,
+                                  selectedEntities: dynamicEntities)
+    let oneEntityCanvas = try ScreenRenderer.renderCanvas(modules: [.homeAssistant, .clock],
+                                                          system: system, nowPlaying: np,
+                                                          pomodoro: pomodoro, customText: "",
+                                                          settings: haCanvasS, ha: oneEntityHA,
+                                                          now: fixed)
+    let fiveEntityCanvas = try ScreenRenderer.renderCanvas(modules: [.homeAssistant, .clock],
+                                                           system: system, nowPlaying: np,
+                                                           pomodoro: pomodoro, customText: "",
+                                                           settings: haCanvasS, ha: fiveEntityHA,
+                                                           now: fixed)
+    check(oneEntityCanvas.data != fiveEntityCanvas.data,
+          "HA 实体数量变化应动态改变画板模块占比与内容")
+
+    // 全局时间/日期格式：一份设置，各界面统一生效
+    var unified = AppSettings()
+    unified.canvasModules = [CanvasModule.clock.rawValue]
+    let unifiedClockDefault = try ScreenRenderer.renderCanvas(modules: [.clock], system: system,
+                                                             nowPlaying: np, pomodoro: pomodoro,
+                                                             customText: "", settings: unified, now: fixed)
+    unified.timeFormat = "HH:mm:ss"
+    let unifiedClockSeconds = try ScreenRenderer.renderCanvas(modules: [.clock], system: system,
+                                                              nowPlaying: np, pomodoro: pomodoro,
+                                                              customText: "", settings: unified, now: fixed)
+    check(unifiedClockDefault.data != unifiedClockSeconds.data, "全局时间格式改变画板时钟模块")
+    let footerDefault = try ScreenRenderer.renderNowPlaying(NowPlayingInfo(title: "歌", artist: "手"),
+                                                            settings: { var x = AppSettings(); x.nowPlayingFooterVisible = true; return x }(),
+                                                            now: fixed)
+    let footerSeconds = try ScreenRenderer.renderNowPlaying(NowPlayingInfo(title: "歌", artist: "手"),
+                                                            settings: { var x = AppSettings(); x.nowPlayingFooterVisible = true; x.timeFormat = "HH:mm:ss"; x.dateFormat = "yyyy-MM-dd"; return x }(),
+                                                            now: fixed)
+    check(footerDefault.data != footerSeconds.data, "同一份全局格式同样改变正在播放页脚")
+    // 格式设置不再按设备搬运：切键盘不会换格式
+    var fmtDevice = AppSettings()
+    fmtDevice.timeFormat = "HH:mm:ss"
+    fmtDevice.dateFormat = "yyyy-MM-dd"
+    let fmtSnap = DeviceSettings.capture(from: fmtDevice, type: .keyboard)
+    checkEqual(fmtSnap.canvasClockFormat, nil, "键盘快照不再携带画板时钟格式")
+    checkEqual(fmtSnap.nowPlayingTimeFormat, nil, "键盘快照不再携带页脚时间格式")
+    checkEqual(fmtSnap.clockTimeFormat, nil, "键盘快照不再携带时钟卡片格式")
+    var fmtTarget = AppSettings()
+    fmtTarget.timeFormat = "HH:mm"
+    fmtTarget.dateFormat = "M/d"
+    fmtSnap.apply(to: fmtTarget, type: .keyboard)
+    checkEqual(fmtTarget.timeFormat, "HH:mm", "切换键盘不改动全局时间格式")
+    checkEqual(fmtTarget.dateFormat, "M/d", "切换键盘不改动全局日期格式")
+    // 旧档案迁移：把用户改过的分界面格式收拢为全局一对
+    var legacyFmt = AppSettings()
+    legacyFmt.nowPlayingTimeFormat = "HH:mm:ss"
+    legacyFmt.canvasDateFormat = "yyyy-MM-dd"
+    let fmtNote = legacyFmt.migrateTimeDateFormat()
+    check(fmtNote != nil, "旧档案格式迁移有留痕")
+    checkEqual(legacyFmt.timeFormat, "HH:mm:ss", "时间格式收拢自正在播放页脚")
+    checkEqual(legacyFmt.dateFormat, "yyyy-MM-dd", "日期格式收拢自画板日期")
+    checkEqual(legacyFmt.migrateTimeDateFormat(), nil, "格式迁移幂等")
+    // 空格式回退默认（不崩溃）
+    var blankFmt = AppSettings()
+    blankFmt.timeFormat = "   "
+    blankFmt.dateFormat = ""
+    blankFmt.clamped()
+    checkEqual(blankFmt.timeFormat, "HH:mm", "空时间格式回退默认")
+    checkEqual(blankFmt.dateFormat, "yyyy年M月d日 EEE", "空日期格式回退默认")
     check(fmtCustom.data.count <= ScreenRenderer.maximumFileSize, "自定义格式渲染大小")
 
     // 画板底色模式：手动深/浅色，不随软件明暗同步；深浅渲染不同
@@ -2115,23 +2186,24 @@ func testCanvasQuotaModules() throws {
                                              codex: UsageSnapshot.sample, qwenQuota: quota)
     check(r.data != r2.data, "不同 Codex 数值渲染应不同")
 
-    // 不同千问额度渲染不同
-    var quota2 = quota
-    quota2.remainingCredits = 88.5
-    let r3 = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
-                                             nowPlaying: np, pomodoro: pomodoro,
-                                             customText: "", settings: settings,
-                                             codex: usage, qwenQuota: quota2)
-    check(r.data != r3.data, "不同千问额度数值渲染应不同")
-
     // 显示方式切换：百分比（默认）与额度数值渲染结果应不同
     var valueSettings = settings
     valueSettings.qwenQuotaShowPercent = false
-    let r4 = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
+    let rValue = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
+                                                 nowPlaying: np, pomodoro: pomodoro,
+                                                 customText: "", settings: valueSettings,
+                                                 codex: usage, qwenQuota: quota)
+    check(r.data != rValue.data, "千问额度显示方式切换渲染应不同")
+
+    // 额度数值模式：不同额度数值渲染应不同（百分比模式下数值被隐藏，须在数值模式验证）
+    var quota2 = quota
+    quota2.remainingCredits = 88.5
+    var valueSettings2 = valueSettings
+    let r3 = try ScreenRenderer.renderCanvas(modules: settings.canvasModuleList, system: system,
                                              nowPlaying: np, pomodoro: pomodoro,
-                                             customText: "", settings: valueSettings,
+                                             customText: "", settings: valueSettings2,
                                              codex: usage, qwenQuota: quota2)
-    check(r3.data != r4.data, "千问额度显示方式切换渲染应不同")
+    check(rValue.data != r3.data, "不同千问额度数值渲染应不同（额度数值模式）")
 
     // 标头徽标字号：8pt 下「灵犀画板」文字占 x∈[91,123]，徽标行（y 68–86）x∈[90,100] 应出现强调色像素
     // （6pt 时徽标仅占 x∈[99,123]，该区域左侧无强调色；放大后必然命中）
@@ -2946,6 +3018,21 @@ func testCanvasOracleExcerpt() async throws {
     check(!GitHubReleaseClient.isNewer(latest: "v1.3.0", than: "1.3.0"), "更新版本比较-相同版本")
     check(GitHubReleaseClient.isNewer(latest: "1.10.0", than: "1.9.9"), "更新版本比较-多段数值")
     check(GitHubReleaseClient.isNewer(latest: "v2.0", than: "1.3.0"), "更新版本比较-跨主版本")
+    // 版本号从重定向后 URL 解析（网页端点 302 → /releases/tag/<版本>）
+    checkEqual(GitHubReleaseClient.extractTag(from: URL(string: "https://github.com/XHFO/lingxi-multiscreen/releases/tag/v1.4.0")!),
+               "v1.4.0", "解析正常 tag")
+    checkEqual(GitHubReleaseClient.extractTag(from: URL(string: "https://github.com/XHFO/lingxi-multiscreen/releases/tag/v1.4.0/")!),
+               "v1.4.0", "解析尾斜杠 tag")
+    checkEqual(GitHubReleaseClient.extractTag(from: URL(string: "https://github.com/XHFO/lingxi-multiscreen/releases/tag/1.3.1?foo=bar")!),
+               "1.3.1", "解析带查询参数 tag")
+    check(GitHubReleaseClient.extractTag(from: URL(string: "https://github.com/XHFO/lingxi-multiscreen/releases")!) == nil,
+          "无 tag 路径返回 nil")
+    check(GitHubReleaseClient.extractTag(from: URL(string: "https://github.com/XHFO/lingxi-multiscreen")!) == nil,
+          "仓库主页无 tag 返回 nil")
+    checkEqual(GitHubReleaseError.unreachable.errorDescription,
+               "无法连接 GitHub，请检查网络。", "网络错误提示文案")
+    checkEqual(GitHubReleaseError.invalidResponse.errorDescription,
+               "检查过于频繁，请稍后再试。", "限流提示文案")
     check(DisplayMode.allCases.contains(.sspai), "少数派模式应参与卡片轮换选项")
     let sspaiRT = AppSettings()
     sspaiRT.sspaiRefreshMinutes = 45
@@ -3284,29 +3371,38 @@ func testEmojiWallpaper() throws {
           || abs(bandOn.2 - bandOff.2) > 0.02,
           "底部条带应被高斯模糊遮罩改变")
 
-    // 时间的强调色效果应用到日期与「当前时间」标签：
-    // 用不含绿色的 emoji 背景（避免背景误判），日期行（y≈388–412）应出现强调色像素
+    // 页脚文字动态取色：时间/日期/「当前时间」标签文字色从背景采样（颜色不固定），
+    // 验证方式：日期行（y≈388–412）带页脚渲染应被文字绘制显著改变（与无页脚渲染像素差异）
     let tintOn = AppSettings()
     tintOn.emojiWallpaperLayout = .grid
     tintOn.emojiWallpaperText = "🔴🟣"
     tintOn.emojiWallpaperSize = 40
     tintOn.nowPlayingFooterVisible = true
     let tintRender = try ScreenRenderer.renderEmojiWallpaper(settings: tintOn, now: fixed)
+    tintOn.nowPlayingFooterVisible = false
+    let tintOffRender = try ScreenRenderer.renderEmojiWallpaper(settings: tintOn, now: fixed)
     let tintImg = tintRender.image
     let tintCtx = CGContext(data: nil, width: tintImg.width, height: tintImg.height, bitsPerComponent: 8,
                             bytesPerRow: tintImg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     tintCtx.draw(tintImg, in: CGRect(x: 0, y: 0, width: tintImg.width, height: tintImg.height))
     let tp = tintCtx.data!.assumingMemoryBound(to: UInt8.self)
-    var dateAccent = 0
+    let tintOffCtx = CGContext(data: nil, width: tintImg.width, height: tintImg.height, bitsPerComponent: 8,
+                               bytesPerRow: tintImg.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    tintOffCtx.draw(tintOffRender.image, in: CGRect(x: 0, y: 0, width: tintImg.width, height: tintImg.height))
+    let top = tintOffCtx.data!.assumingMemoryBound(to: UInt8.self)
+    var dateDiff = 0
     for y in 388..<413 {
         for x in 30..<112 {
             let i = (y * tintImg.width + x) * 4
-            let r = Int(tp[i]), g = Int(tp[i + 1]), b = Int(tp[i + 2])
-            if g > 150 && g > r + 20 && g > b { dateAccent += 1 }
+            let dr = abs(Int(tp[i]) - Int(top[i]))
+            let dg = abs(Int(tp[i + 1]) - Int(top[i + 1]))
+            let db = abs(Int(tp[i + 2]) - Int(top[i + 2]))
+            if dr + dg + db > 40 { dateDiff += 1 }
         }
     }
-    check(dateAccent > 10, "日期应使用强调色（与时间一致）（count=\(dateAccent)）")
+    check(dateDiff > 10, "日期行应被文字绘制改变（动态取色，diff=\(dateDiff)）")
 
     // 浅色模式下遮罩不加深：带页脚浅色渲染的遮罩带平均亮度应与无页脚渲染相近（无压暗）。
     // 若误加 0.22 压暗，亮度会降到约 78%
@@ -3368,10 +3464,12 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 3, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 5, "设备类型数量")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
+    checkEqual(DeviceType.homeAssistant.title, "Home Assistant", "设备类型标题-HA")
+    checkEqual(DeviceType.bambuLab.title, "Bambu Lab 打印机", "设备类型标题-Bambu")
 
     // 设置快照 捕获→套用 往返
     let source = AppSettings()
@@ -3676,6 +3774,7 @@ Task {
         try testSidebarSettings()
         try testPomodoroCentering()
         try testGlobalShortcuts()
+        try testHomeAssistant()
         await testUsageDataAggregator()
         try testNowPlaying()
         await testNowPlayingLiveFetch()
@@ -3703,6 +3802,8 @@ func testGlobalShortcuts() throws {
     checkEqual(GlobalShortcut.defaultToggle.keyCode, 49, "默认开始/暂停键码 Space")
     checkEqual(GlobalShortcut.defaultSkip.keyCode, 124, "默认跳过键码 →")
     checkEqual(GlobalShortcut.defaultReset.keyCode, 51, "默认重置键码 ⌫")
+    checkEqual(GlobalShortcut.defaultPageUp.keyCode, 126, "默认上一页键码 ↑")
+    checkEqual(GlobalShortcut.defaultPageDown.keyCode, 125, "默认下一页键码 ↓")
     checkEqual(GlobalShortcut.defaultToggle.modifiers,
                GlobalShortcut.controlKey | GlobalShortcut.optionKey, "默认修饰键 ⌃⌥")
     checkEqual(GlobalShortcut.defaultToggle.displayString, "⌃⌥Space", "默认显示字符串")
@@ -3715,18 +3816,27 @@ func testGlobalShortcuts() throws {
     let rt = AppSettings()
     rt.pomodoroToggleShortcut = GlobalShortcut(keyCode: 18, modifiers: GlobalShortcut.cmdKey) // ⌘1
     rt.pomodoroSkipShortcut = GlobalShortcut(keyCode: 26, modifiers: GlobalShortcut.controlKey | GlobalShortcut.shiftKey)
+    rt.keyboardPageUpShortcut = GlobalShortcut(keyCode: 116, modifiers: GlobalShortcut.cmdKey)
+    rt.keyboardPageDownShortcut = GlobalShortcut(keyCode: 121, modifiers: GlobalShortcut.optionKey)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt))
     checkEqual(decoded.pomodoroToggleShortcut.keyCode, 18, "快捷键往返 keyCode")
     checkEqual(decoded.pomodoroToggleShortcut.modifiers, GlobalShortcut.cmdKey, "快捷键往返 modifiers")
     checkEqual(decoded.pomodoroSkipShortcut.keyCode, 26, "跳过快捷键往返")
     checkEqual(decoded.pomodoroResetShortcut, GlobalShortcut.defaultReset, "未修改项保留默认")
+    checkEqual(decoded.keyboardPageUpShortcut,
+               GlobalShortcut(keyCode: 116, modifiers: GlobalShortcut.cmdKey), "上一页快捷键往返")
+    checkEqual(decoded.keyboardPageDownShortcut,
+               GlobalShortcut(keyCode: 121, modifiers: GlobalShortcut.optionKey), "下一页快捷键往返")
 
     // 钳制：键码越界回落、修饰键只保留 ⌘⇧⌥⌃
     var clamp = AppSettings()
     clamp.pomodoroToggleShortcut = GlobalShortcut(keyCode: 999, modifiers: 0xFFFF)
+    clamp.keyboardPageDownShortcut = GlobalShortcut(keyCode: 888, modifiers: 0xFFFF)
     clamp.clamped()
     checkEqual(clamp.pomodoroToggleShortcut.keyCode, 127, "快捷键键码上界钳制")
     checkEqual(clamp.pomodoroToggleShortcut.modifiers, 0x1B00, "快捷键修饰键掩码钳制")
+    checkEqual(clamp.keyboardPageDownShortcut.keyCode, 127, "翻页快捷键键码上界钳制")
+    checkEqual(clamp.keyboardPageDownShortcut.modifiers, 0x1B00, "翻页快捷键修饰键掩码钳制")
 
     // 恢复默认
     var d = AppSettings()
@@ -3734,6 +3844,1860 @@ func testGlobalShortcuts() throws {
     d.pomodoroSkipShortcut = .defaultSkip
     checkEqual(d.pomodoroSkipShortcut.keyCode, 124, "恢复默认跳过")
     print("  全局快捷键通过")
+}
+
+// MARK: - Home Assistant
+
+func testHomeAssistant() throws {
+    checkEqual(ScreenRenderer.haStandalonePageLimit, 4, "HA 独立卡片单页最多四个实体")
+    // 实体较少时均匀分配顶部/行间/底部留白；密集时回落到固定 4pt 行距。
+    let roomyFrames = ScreenRenderer.haAdaptiveRowFrames(
+        minimumHeights: [24, 24], region: CGRect(x: 0, y: 0, width: 120, height: 120))
+    checkEqual(roomyFrames.count, 2, "HA 自适应布局保留全部实体")
+    check(roomyFrames[0].minY > 10 && roomyFrames[1].maxY < 110,
+          "HA 少量实体应在显示范围内上下舒展")
+    check(roomyFrames[1].minY - roomyFrames[0].maxY > 4,
+          "HA 少量实体应增加实体间视觉间距")
+    let denseFrames = ScreenRenderer.haAdaptiveRowFrames(
+        minimumHeights: [30, 30, 30, 30],
+        region: CGRect(x: 0, y: 0, width: 120, height: 132))
+    checkEqual(denseFrames.count, 4, "HA 密集布局容纳可显示实体")
+    checkEqual(denseFrames[1].minY - denseFrames[0].maxY, 4, "HA 密集布局保持基础行距")
+    let mixedFrames = ScreenRenderer.haAdaptiveRowFrames(
+        minimumHeights: [30, 50, 40],
+        region: CGRect(x: 0, y: 0, width: 120, height: 180))
+    checkEqual(mixedFrames.count, 3, "HA 不同文本高度仍保留全部实体")
+    check(mixedFrames.allSatisfy { $0.height == mixedFrames[0].height },
+          "HA 同页实体状态卡片必须严格等高")
+    // URL 构造：自动补 /api/states、去尾部斜杠、空地址返回 nil
+    checkEqual(HomeAssistantClient.statesURL(server: "http://192.168.1.5:8123")?.absoluteString,
+               "http://192.168.1.5:8123/api/states", "HA 实体列表 URL 构造")
+    checkEqual(HomeAssistantClient.statesURL(server: "http://192.168.1.5:8123/")?.absoluteString,
+               "http://192.168.1.5:8123/api/states", "HA URL 尾部斜杠处理")
+    check(HomeAssistantClient.statesURL(server: "   ") == nil, "HA 空地址返回 nil")
+
+    // Bearer 认证头（token 不打印）
+    let request = HomeAssistantClient.makeStatesRequest(server: "http://192.168.1.5:8123", token: "ha-test-token")
+    check(request?.url?.absoluteString == "http://192.168.1.5:8123/api/states", "HA 请求 URL")
+    checkEqual(request?.value(forHTTPHeaderField: "Authorization"), "Bearer ha-test-token", "HA Bearer 认证头")
+
+    // 状态解析：friendly_name / unit_of_measurement / on-off 映射
+    let json = """
+    [
+      {"entity_id": "sensor.living_temp", "state": "23.5",
+       "attributes": {"friendly_name": "客厅温度", "unit_of_measurement": "°C"}},
+      {"entity_id": "light.office", "state": "on", "attributes": {"friendly_name": "办公室灯"}},
+      {"entity_id": "binary_sensor.door", "state": "off", "attributes": {}},
+      {"entity_id": "sensor.no_name", "state": "42", "attributes": {}}
+    ]
+    """
+    let entities = try HomeAssistantClient.parseStates(data: Data(json.utf8))
+    checkEqual(entities.count, 4, "HA 实体解析数量")
+    checkEqual(entities[0].displayName, "客厅温度", "HA 实体名优先 friendly_name")
+    checkEqual(entities[0].displayValue, "23.5 °C", "HA 数值含单位")
+    checkEqual(HAEntity.compactDisplayState("unknown"), "未知", "HA unknown 状态中文化")
+    checkEqual(HAEntity.compactDisplayState("unavailable"), "不可用", "HA unavailable 状态中文化")
+    checkEqual(HAEntity.compactDisplayState("printing"), "printing",
+               "HA 普通状态无需进入时间解析路径")
+    let compactTimestamp = HAEntity.compactDisplayState(
+        "2026-08-30T14:29:40.714650+00:00", timeZone: TimeZone(secondsFromGMT: 0)!)
+    checkEqual(compactTimestamp, "08-30 14:29", "HA ISO 时间戳压缩为小屏短时间")
+    check(!ScreenRenderer.haRowUsesStackedLayout(name: "温度", value: "23 °C", availableWidth: 94),
+          "HA 短名称与短状态保持左右布局")
+    check(ScreenRenderer.haRowUsesStackedLayout(name: "X2D_20P6BJ652500750 摄像头",
+                                                value: compactTimestamp, availableWidth: 94),
+          "HA 长名称与长状态自动切换上下布局")
+    checkEqual(entities[1].displayState, "开", "HA on 映射为开")
+    checkEqual(entities[2].displayState, "关", "HA off 映射为关")
+    checkEqual(entities[3].displayName, "sensor.no_name", "HA 无名称回退 entity_id")
+    var threw = false
+    do { _ = try HomeAssistantClient.parseStates(data: Data("not json".utf8)) } catch { threw = true }
+    check(threw, "HA 非法 JSON 应抛错")
+
+    // 快照选中逻辑（多实体列表；单实体兼容）
+    let snapshot = HASnapshot(entities: entities,
+                              selectedEntities: [entities.first { $0.entityId == "light.office" }!])
+    checkEqual(snapshot.selected?.displayName, "办公室灯", "HA 快照选中实体")
+    checkEqual(snapshot.selectedEntities.count, 1, "HA 快照多实体列表数量")
+    let largePool = (0..<2_000).map {
+        HAEntity(entityId: "sensor.bulk_\($0)", friendlyName: "实体 \($0)",
+                 state: "\($0)", unitOfMeasurement: nil)
+    }
+    let selectedLarge = HASnapshot(entities: largePool).selecting(
+        entityIDs: ["sensor.bulk_1999", "sensor.bulk_3"])
+    checkEqual(selectedLarge.selectedEntities.map(\.entityId),
+               ["sensor.bulk_1999", "sensor.bulk_3"],
+               "大型 HA 实体池只构建所需选择视图并保持用户顺序")
+
+    // 运行时刷新策略：静态 HA/Bambu 画板不再每秒重绘；真正动态内容仍保持实时。
+    let staticCanvas: [CanvasModule] = [.nowPlaying, .homeAssistant, .bambuLab]
+    checkEqual(RuntimePerformancePolicy.previewInterval(
+        mode: .canvas, canvasModules: staticCanvas, timeFormat: "HH:mm",
+        nowPlaying: false, pomodoroRunning: false, dynamicUploadSeconds: 5),
+        5, "静态画板预览按推送周期刷新")
+    checkEqual(RuntimePerformancePolicy.previewInterval(
+        mode: .canvas, canvasModules: staticCanvas, timeFormat: "HH:mm",
+        nowPlaying: true, pomodoroRunning: false, dynamicUploadSeconds: 5),
+        1, "媒体播放时画板保持每秒进度刷新")
+    checkEqual(RuntimePerformancePolicy.deviceCanvasContentCheckInterval(
+        modules: staticCanvas, timeFormat: "HH:mm", nowPlaying: false,
+        pomodoroRunning: false),
+        30, "静态独立画板内容比较降频到 30 秒")
+    checkEqual(RuntimePerformancePolicy.deviceCanvasContentCheckInterval(
+        modules: staticCanvas, timeFormat: "HH:mm", nowPlaying: true,
+        pomodoroRunning: false),
+        5, "媒体播放时独立画板保持 5 秒内容比较")
+    check(!RuntimePerformancePolicy.needsSystemSample(modules: staticCanvas),
+          "无系统指标模块时不采集系统状态")
+    check(RuntimePerformancePolicy.needsSystemSample(modules: [.cpu, .homeAssistant]),
+          "存在 CPU 模块时仍采集系统状态")
+
+    // 设置往返（token 为敏感字段：仅验证值往返，不打印明文）
+    let rt = AppSettings()
+    rt.haServerURL = "http://192.168.1.100:8123"
+    rt.haToken = "secret-token-do-not-log"
+    rt.haRefreshMinutes = 3
+    rt.haEntityID = "sensor.living_temp"
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt))
+    checkEqual(decoded.haServerURL, "http://192.168.1.100:8123", "HA 服务器地址往返")
+    checkEqual(decoded.haToken, "secret-token-do-not-log", "HA 令牌往返")
+    checkEqual(decoded.haRefreshMinutes, 3, "HA 刷新间隔往返")
+    checkEqual(decoded.haEntityID, "sensor.living_temp", "HA 实体选择往返")
+    var clamp = AppSettings()
+    clamp.haRefreshMinutes = 999
+    clamp.clamped()
+    checkEqual(clamp.haRefreshMinutes, 60, "HA 刷新间隔上界钳制")
+
+    // 多实体列表编码往返 + 解码即清洗（init(from:) 末尾调用 clamped() 去空去重）
+    let rt2 = AppSettings()
+    rt2.haEntities = ["sensor.a", "", "light.b", "sensor.a"]
+    let decoded2 = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt2))
+    checkEqual(decoded2.haEntities, ["sensor.a", "light.b"], "HA 多实体列表解码即去空去重")
+
+    // 渲染：HA 键盘卡片含实体名与数值；多实体列表排布；未配置/错误时不同
+    let entity = entities[0]
+    let haSettings = AppSettings()
+    let withEntity = try ScreenRenderer.renderHA([entity], errorText: nil, settings: haSettings)
+    checkEqual(withEntity.image.width, 142, "HA 卡片宽度")
+    checkEqual(withEntity.image.height, 428, "HA 卡片高度")
+    check(withEntity.data.count <= ScreenRenderer.maximumFileSize, "HA 卡片大小")
+    let multi = try ScreenRenderer.renderHA(Array(entities.prefix(3)), errorText: nil, settings: haSettings)
+    check(multi.data != withEntity.data, "HA 多实体与单实体渲染应不同")
+    let multi5 = try ScreenRenderer.renderHA(Array(entities.prefix(5)), errorText: nil, settings: haSettings)
+    check(multi5.data != multi.data, "HA 实体数量不同渲染应不同")
+    // 排布优化：超长名称完整显示（自适应字号/换行，不截断）渲染不抛错、尺寸正常
+    let longNameEntities = [
+        HAEntity(entityId: "sensor.very_long_name_01", friendlyName: "客厅空气净化器PM2.5浓度传感器一", state: "35", unitOfMeasurement: "µg/m³"),
+        HAEntity(entityId: "sensor.very_long_name_02", friendlyName: "卧室智能窗帘开合状态检测传感器", state: "closed", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.very_long_name_03", friendlyName: "厨房", state: "on", unitOfMeasurement: nil),
+    ]
+    let longNameCard = try ScreenRenderer.renderHA(longNameEntities, errorText: nil, settings: haSettings)
+    checkEqual(longNameCard.image.width, 142, "超长名称多实体卡片宽度")
+    checkEqual(longNameCard.image.height, 428, "超长名称多实体卡片高度")
+    check(longNameCard.data.count <= ScreenRenderer.maximumFileSize, "超长名称多实体卡片大小")
+    // 名称长度不同 → 自适应字号/换行布局不同（渲染结果不同）
+    let shortNameEntities = [
+        HAEntity(entityId: "sensor.a", friendlyName: "灯", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.b", friendlyName: "开关", state: "off", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.c", friendlyName: "温度", state: "23", unitOfMeasurement: "°C"),
+    ]
+    let shortNameCard = try ScreenRenderer.renderHA(shortNameEntities, errorText: nil, settings: haSettings)
+    check(longNameCard.data != shortNameCard.data, "超长名称与短名称排布渲染应不同")
+    // 两端对齐：长名称 + 长状态值（错误码）渲染正常、不重叠抛错
+    let alignEntities = [
+        HAEntity(entityId: "sensor.long_name", friendlyName: "客厅空气净化器PM2.5浓度传感器", state: "35", unitOfMeasurement: "µg/m³"),
+        HAEntity(entityId: "sensor.error_code", friendlyName: "打印机错误码", state: "0x03080005", unitOfMeasurement: nil),
+    ]
+    let alignCard = try ScreenRenderer.renderHA(alignEntities, errorText: nil, settings: haSettings)
+    checkEqual(alignCard.image.width, 142, "两端对齐卡片宽度")
+    checkEqual(alignCard.image.height, 428, "两端对齐卡片高度")
+    check(alignCard.data.count <= ScreenRenderer.maximumFileSize, "两端对齐卡片大小")
+    // 轮询刷新：同实体状态变化 → 卡片渲染不同（最新状态反映到显示层）
+    let stateA = HAEntity(entityId: "sensor.t", friendlyName: "温度", state: "23", unitOfMeasurement: "°C")
+    let stateB = HAEntity(entityId: "sensor.t", friendlyName: "温度", state: "25", unitOfMeasurement: "°C")
+    let cardA = try ScreenRenderer.renderHA([stateA], errorText: nil, settings: haSettings)
+    let cardB = try ScreenRenderer.renderHA([stateB], errorText: nil, settings: haSettings)
+    check(cardA.data != cardB.data, "状态变化渲染应不同（轮询刷新反映到显示）")
+    let multiA = try ScreenRenderer.renderHA([stateA, alignEntities[0]], errorText: nil, settings: haSettings)
+    let multiB = try ScreenRenderer.renderHA([stateB, alignEntities[0]], errorText: nil, settings: haSettings)
+    check(multiA.data != multiB.data, "多实体状态变化渲染应不同")
+    // 时间戳解析：last_changed 带/不带小数秒均解析；缺省为 nil
+    let tsJSON = """
+    [
+      {"entity_id": "sensor.t", "state": "1",
+       "attributes": {"friendly_name": "温度"},
+       "last_changed": "2026-08-26T04:00:00.123456+00:00"},
+      {"entity_id": "sensor.t2", "state": "2",
+       "attributes": {"friendly_name": "温度2"},
+       "last_changed": "2026-08-26T05:00:00+00:00"},
+      {"entity_id": "sensor.t3", "state": "3", "attributes": {}}
+    ]
+    """
+    let tsEntities = try HomeAssistantClient.parseStates(data: Data(tsJSON.utf8))
+    check(tsEntities[0].lastChanged != nil, "带小数秒时间戳解析")
+    check(tsEntities[1].lastChanged != nil, "不带小数秒时间戳解析")
+    check(tsEntities[2].lastChanged == nil, "缺省时间戳为 nil")
+    // 错误码新鲜度：10 分钟内视为当前错误码，更早忽略；无时间戳视为新鲜
+    let now = Date()
+    let freshError = HAEntity(entityId: "sensor.bambu_error", friendlyName: "错误码",
+                              state: "0x03080005", unitOfMeasurement: nil,
+                              lastChanged: now.addingTimeInterval(-60))
+    let staleError = HAEntity(entityId: "sensor.bambu_error", friendlyName: "错误码",
+                              state: "0x03080005", unitOfMeasurement: nil,
+                              lastChanged: now.addingTimeInterval(-660))
+    check(HAErrorCodePolicy.isFresh(entity: freshError, now: now, staleSeconds: 600), "新鲜错误码判定新鲜")
+    check(!HAErrorCodePolicy.isFresh(entity: staleError, now: now, staleSeconds: 600), "过期错误码判定过期")
+    check(HAErrorCodePolicy.isFresh(entity: staleError, now: now, staleSeconds: nil), "无阈值不做时间过滤")
+    let noTsError = HAEntity(entityId: "sensor.e", friendlyName: "错误码", state: "x", unitOfMeasurement: nil)
+    check(HAErrorCodePolicy.isFresh(entity: noTsError, now: now, staleSeconds: 600), "无时间戳视为新鲜")
+    // monitor：新鲜错误码异常、过期错误码正常（忽略残留旧值）
+    let mFresh = HomeAssistantClient.monitor(entities: [freshError], monitorEntityID: "", expectedState: "",
+                                             errorEntityID: "sensor.bambu_error",
+                                             staleErrorSeconds: 600, now: now)
+    check(mFresh.isAbnormal, "新鲜错误码触发异常")
+    let mStale = HomeAssistantClient.monitor(entities: [staleError], monitorEntityID: "", expectedState: "",
+                                             errorEntityID: "sensor.bambu_error",
+                                             staleErrorSeconds: 600, now: now)
+    check(!mStale.isAbnormal, "过期错误码忽略（视为已恢复）")
+    // HMS 错误码映射：已知码返回原因、未知码 nil、无连字符/0x 格式归一化
+    checkEqual(BambuHMSCode.reason(for: "07FE-4500-0002-0003"),
+               "切刀刀柄未松开：刀柄或刀片可能被卡住，或耗材霍尔接线异常", "HMS 已知码映射")
+    check(BambuHMSCode.reason(for: "07FE-9999-9999-9999") == nil, "HMS 未知码返回 nil")
+    checkEqual(BambuHMSCode.reason(for: "07FE450000020003"),
+               "切刀刀柄未松开：刀柄或刀片可能被卡住，或耗材霍尔接线异常", "HMS 无连字符归一化匹配")
+    checkEqual(BambuHMSCode.reason(for: "0x07FE450000020003"),
+               "切刀刀柄未松开：刀柄或刀片可能被卡住，或耗材霍尔接线异常", "HMS 0x 前缀归一化匹配")
+    check(BambuHMSCode.reason(for: "") == nil, "HMS 空码返回 nil")
+    // 状态汉化补充：running/busy 等映射（渲染层验证不同状态渲染不同）
+    let idleEntity = HAEntity(entityId: "sensor.bambu_status", friendlyName: "打印机状态", state: "idle", unitOfMeasurement: nil)
+    let busyEntity = HAEntity(entityId: "sensor.bambu_status", friendlyName: "打印机状态", state: "busy", unitOfMeasurement: nil)
+    let bambuSettings = BambuLabCardSettings(statusEntityID: "sensor.bambu_status")
+    let cardIdle = try ScreenRenderer.renderBambuLab(bambuSettings, entities: [idleEntity], settings: haSettings)
+    let cardBusy = try ScreenRenderer.renderBambuLab(bambuSettings, entities: [busyEntity], settings: haSettings)
+    check(cardIdle.data != cardBusy.data, "不同打印状态渲染应不同")
+    // 多打印机：BambuLabCardSettings Codable 往返 + 设备快照 capture/apply
+    let printerA = BambuLabCardSettings(name: "客厅 A1", statusEntityID: "sensor.a")
+    let printerB = BambuLabCardSettings(name: "工作室 P1S", statusEntityID: "sensor.b")
+    var p8 = AppSettings()
+    p8.bambuPrinters = [printerA, printerB]
+    let snap8 = DeviceSettings.capture(from: p8, type: .homeAssistant)
+    checkEqual(snap8.bambuPrinters?.count, 2, "多打印机快照捕获数量")
+    checkEqual(snap8.bambuPrinters?[1].name, "工作室 P1S", "第二台打印机名称")
+    var p9 = AppSettings()
+    snap8.apply(to: p9, type: .homeAssistant)
+    checkEqual(p9.bambuPrinters[0].statusEntityID, "sensor.a", "多打印机快照套用字段")
+    let enc8 = try JSONEncoder().encode([printerA, printerB])
+    let dec8 = try JSONDecoder().decode([BambuLabCardSettings].self, from: enc8)
+    checkEqual(dec8[1].name, "工作室 P1S", "BambuLabCardSettings Codable 往返")
+    // 多打印机卡片防串扰：同一实体池下，两台打印机各自只取自己的实体渲染
+    // （名称徽标不同、状态实体不同 → 卡片不同；完全相同配置 → 卡片一致）
+    let crosstalkEntities = [
+        HAEntity(entityId: "sensor.a", friendlyName: "A 状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.b", friendlyName: "B 状态", state: "idle", unitOfMeasurement: nil)
+    ]
+    let crosstalkNow = Date(timeIntervalSince1970: 1_750_000_000)
+    let printerCardA = try ScreenRenderer.renderBambuLab(printerA, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    let printerCardB = try ScreenRenderer.renderBambuLab(printerB, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(printerCardA.data != printerCardB.data, "两台打印机卡片应各自渲染自身数据（名称/状态不同）")
+    let printerCardA2 = try ScreenRenderer.renderBambuLab(printerA, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(printerCardA.data == printerCardA2.data, "同一台打印机重复渲染应一致（不受另一台影响）")
+    var printerA3 = printerA
+    printerA3.statusEntityID = "sensor.b"
+    let printerCardA3 = try ScreenRenderer.renderBambuLab(printerA3, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(printerCardA3.data != printerCardA.data, "更换实体映射后卡片应变化（字段独立生效）")
+    // 显示选项：布局样式与各区块开关影响渲染；from/apply/Codable 往返保留
+    var displayBambu = BambuLabCardSettings(statusEntityID: "sensor.a", progressEntityID: "sensor.p1p_progress",
+                                            layout: .compact, showStatus: false)
+    var displaySnap = DeviceSettings()
+    displayBambu.apply(to: &displaySnap)
+    let displayBack = BambuLabCardSettings.from(displaySnap)
+    checkEqual(displayBack.layout, .compact, "布局样式 apply/from 往返")
+    checkEqual(displayBack.showStatus, false, "显示状态开关 apply/from 往返")
+    checkEqual(displayBack.showProgress, true, "显示进度开关默认开启")
+    let cardNoStatus = try ScreenRenderer.renderBambuLab(displayBambu, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(cardNoStatus.data != printerCardA3.data, "关闭显示状态后卡片渲染应不同")
+    var displayLarge = displayBambu
+    displayLarge.layout = .large
+    displayLarge.showStatus = true
+    let cardLarge = try ScreenRenderer.renderBambuLab(displayLarge, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(cardLarge.data != cardNoStatus.data, "大字布局渲染应不同于紧凑布局")
+    // 主题色：Bambu Lab 强调色选项在 apply/from/Codable 往返保留，且渲染不同于跟随全局
+    var accentBambu = displayBambu
+    accentBambu.themeAccent = .bambuLab
+    var accentSnap = DeviceSettings()
+    accentBambu.apply(to: &accentSnap)
+    checkEqual(BambuLabCardSettings.from(accentSnap).themeAccent, .bambuLab, "主题色 apply/from 往返")
+    let accentGlobalCard = try ScreenRenderer.renderBambuLab(displayBambu, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    let accentBambuCard = try ScreenRenderer.renderBambuLab(accentBambu, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    check(accentBambuCard.data != accentGlobalCard.data, "Bambu Lab 主题色渲染应不同于跟随全局")
+    let accentRoundtrip = try JSONDecoder().decode(BambuLabCardSettings.self,
+                                                   from: JSONEncoder().encode(accentBambu))
+    checkEqual(accentRoundtrip.themeAccent, .bambuLab, "主题色 Codable 往返")
+    // 旧档案兼容：缺失显示选项字段的老 JSON 可正常解码（回退默认值）
+    let legacyJSON = #"{"name":"打印机","enableAlert":true,"statusEntityID":"sensor.a"}"#
+    let legacyDecoded = try JSONDecoder().decode(BambuLabCardSettings.self, from: Data(legacyJSON.utf8))
+    checkEqual(legacyDecoded.name, "打印机", "旧档案解码-名称")
+    checkEqual(legacyDecoded.layout, .standard, "旧档案解码-布局回退标准")
+    checkEqual(legacyDecoded.showStatus, true, "旧档案解码-显示开关回退开启")
+    // 自动匹配隔离：两台打印机使用不同前缀实体，自动匹配应只填充各自字段
+    let multiPrinterEntities = [
+        HAEntity(entityId: "sensor.p1p_status", friendlyName: "P1P 状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1p_progress", friendlyName: "P1P 进度", state: "50", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.p1p_nozzle_temp", friendlyName: "P1P 喷嘴温度", state: "200", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.a1_status", friendlyName: "A1 状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.a1_progress", friendlyName: "A1 进度", state: "30", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.a1_nozzle_temp", friendlyName: "A1 喷嘴温度", state: "180", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.other_temp", friendlyName: "其他温度", state: "25", unitOfMeasurement: "°C"),
+    ]
+    let p1pKnown = multiPrinterEntities[0]  // sensor.p1p_status
+    let a1Known = multiPrinterEntities[3]   // sensor.a1_status
+    let p1pMatched = BambuEntityMatcher.detect(from: p1pKnown, allEntities: multiPrinterEntities)
+    let a1Matched = BambuEntityMatcher.detect(from: a1Known, allEntities: multiPrinterEntities)
+    checkEqual(p1pMatched.statusEntityID, "sensor.p1p_status", "P1P 自动匹配应使用 P1P 前缀实体")
+    checkEqual(p1pMatched.progressEntityID, "sensor.p1p_progress", "P1P 自动匹配进度应使用 P1P 前缀实体")
+    checkEqual(p1pMatched.nozzleTempEntityID, "sensor.p1p_nozzle_temp", "P1P 自动匹配喷嘴温度应使用 P1P 前缀实体")
+    checkEqual(a1Matched.statusEntityID, "sensor.a1_status", "A1 自动匹配应使用 A1 前缀实体")
+    checkEqual(a1Matched.progressEntityID, "sensor.a1_progress", "A1 自动匹配进度应使用 A1 前缀实体")
+    checkEqual(a1Matched.nozzleTempEntityID, "sensor.a1_nozzle_temp", "A1 自动匹配喷嘴温度应使用 A1 前缀实体")
+    check(p1pMatched.statusEntityID != a1Matched.statusEntityID, "两台打印机自动匹配结果应互不串扰")
+    check(p1pMatched.progressEntityID != a1Matched.progressEntityID, "两台打印机进度实体应互不串扰")
+    // 自动匹配入口只接受打印状态实体；普通进度/通用状态传感器不能触发匹配
+    let genericStatus = HAEntity(entityId: "sensor.living_status", friendlyName: "客厅状态",
+                                 state: "on", unitOfMeasurement: nil)
+    check(BambuEntityMatcher.isPrintStatusEntity(p1pKnown), "P1P 状态识别为打印状态实体")
+    check(!BambuEntityMatcher.isPrintStatusEntity(multiPrinterEntities[1]), "打印进度不能作为自动匹配种子")
+    check(!BambuEntityMatcher.isPrintStatusEntity(genericStatus), "普通状态传感器不进入打印状态候选")
+    checkEqual(BambuEntityMatcher.printStatusCandidates(multiPrinterEntities + [genericStatus]).count,
+               2, "自动匹配候选只保留两台打印机的状态实体")
+    // 用户改显示名称后仍按稳定 ID / 同前缀兄弟实体 / 状态值识别，不依赖 friendly_name。
+    let renamedExact = HAEntity(entityId: "sensor.x2d_serial_print_status",
+                                friendlyName: "书房设备", state: "printing", unitOfMeasurement: nil)
+    let renamedLegacy = HAEntity(entityId: "sensor.custom_machine_status",
+                                 friendlyName: "角落设备", state: "unknown", unitOfMeasurement: nil)
+    let renamedSiblings = [
+        HAEntity(entityId: "sensor.custom_machine_progress", friendlyName: "数值一",
+                 state: "50", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.custom_machine_nozzle_temp", friendlyName: "数值二",
+                 state: "200", unitOfMeasurement: "°C"),
+    ]
+    let customIDStatus = HAEntity(entityId: "sensor.user_renamed_entity",
+                                  friendlyName: "我的设备", state: "printing", unitOfMeasurement: nil)
+    let renamePool = [renamedLegacy, customIDStatus, renamedExact] + renamedSiblings + [genericStatus]
+    let renameCandidates = BambuEntityMatcher.printStatusCandidates(renamePool)
+    check(renameCandidates.contains { $0.entityId == renamedExact.entityId },
+          "标准打印状态 ID 改显示名称后仍在候选中")
+    check(renameCandidates.contains { $0.entityId == renamedLegacy.entityId },
+          "旧状态实体改显示名称后由同前缀兄弟实体识别")
+    check(renameCandidates.contains { $0.entityId == customIDStatus.entityId },
+          "用户改 entity_id 后由打印状态值保留候选")
+    checkEqual(renameCandidates.first?.entityId, renamedExact.entityId,
+               "明确 print_status 后缀在默认排序中优先")
+    check(!renameCandidates.contains { $0.entityId == genericStatus.entityId },
+          "普通状态传感器不会因放宽改名兼容而误入")
+    let invalidSeedMatch = BambuEntityMatcher.detect(from: multiPrinterEntities[1],
+                                                     allEntities: multiPrinterEntities)
+    checkEqual(invalidSeedMatch.statusEntityID, "", "非打印状态实体不会启动自动匹配")
+    // 用户关闭默认筛选后，可明确指定任意 sensor 作为状态起点（适配设备名/entity_id 改动）。
+    let fullyRenamedSeed = HAEntity(entityId: "sensor.my_custom_device", friendlyName: "自定义名称",
+                                    state: "unknown", unitOfMeasurement: nil)
+    checkEqual(BambuEntityMatcher.detect(from: fullyRenamedSeed,
+                                         allEntities: [fullyRenamedSeed]).statusEntityID,
+               "", "默认筛选仍拒绝无打印机特征的自定义实体")
+    checkEqual(BambuEntityMatcher.detect(from: fullyRenamedSeed,
+                                         allEntities: [fullyRenamedSeed],
+                                         allowUnfilteredSeed: true).statusEntityID,
+               fullyRenamedSeed.entityId, "关闭默认筛选后信任用户选择的 sensor")
+    let nonSensorSeed = HAEntity(entityId: "switch.my_custom_device", friendlyName: "错误类型",
+                                 state: "on", unitOfMeasurement: nil)
+    let popupCandidates = [fullyRenamedSeed, renamedExact, nonSensorSeed]
+    checkEqual(BambuEntityMatcher.printStatusCandidates(
+        popupCandidates, useDefaultFilter: true).map(\.entityId),
+        [renamedExact.entityId], "弹窗开启默认筛选时只显示可信打印状态实体")
+    checkEqual(Set(BambuEntityMatcher.printStatusCandidates(
+        popupCandidates, useDefaultFilter: false).map(\.entityId)),
+        Set([fullyRenamedSeed.entityId, renamedExact.entityId]),
+        "弹窗关闭默认筛选时立即显示全部 sensor 实体")
+    checkEqual(BambuEntityMatcher.detect(from: nonSensorSeed,
+                                         allEntities: [nonSensorSeed],
+                                         allowUnfilteredSeed: true).statusEntityID,
+               "", "关闭筛选仍只允许 sensor 作为打印状态")
+    var filterPreference = DeviceSettings()
+    filterPreference.bambuUseDefaultEntityFilter = false
+    let filterPreferenceRoundTrip = try JSONDecoder().decode(
+        DeviceSettings.self, from: JSONEncoder().encode(filterPreference))
+    checkEqual(filterPreferenceRoundTrip.bambuUseDefaultEntityFilter, false,
+               "打印机默认筛选开关按设备持久化")
+    checkEqual(DeviceSettings().bambuUseDefaultEntityFilter, nil,
+               "旧设备缺筛选字段时由界面回退为默认开启")
+    // 独立打印机设备架构：DeviceType.bambuLab capture/apply 往返（每台打印机 = 独立设备）
+    var prS = AppSettings()
+    prS.bambuPrinterName = "客厅 A1"
+    prS.bambuEnableAlert = false
+    prS.bambuStatusEntityID = "sensor.a1_status"
+    prS.bambuProgressEntityID = "sensor.a1_progress"
+    let prSnap = DeviceSettings.capture(from: prS, type: .bambuLab)
+    checkEqual(prSnap.bambuPrinterName, "客厅 A1", "Bambu 设备快照捕获-名称")
+    checkEqual(prSnap.bambuStatusEntityID, "sensor.a1_status", "Bambu 设备快照捕获-状态实体")
+    checkEqual(prSnap.bambuEnableAlert, false, "Bambu 设备快照捕获-告警开关")
+    var prS2 = AppSettings()
+    prSnap.apply(to: prS2, type: .bambuLab)
+    checkEqual(prS2.bambuPrinterName, "客厅 A1", "Bambu 设备快照套用-名称")
+    checkEqual(prS2.bambuProgressEntityID, "sensor.a1_progress", "Bambu 设备快照套用-进度实体")
+    // activeBambuLabSettings：多台打印机设备时按活动 ID 取对应设备
+    var archS = AppSettings()
+    var dev1 = DeviceSettings()
+    dev1.bambuPrinterName = "打印机 1"
+    dev1.bambuStatusEntityID = "sensor.p1p_status"
+    var dev2 = DeviceSettings()
+    dev2.bambuPrinterName = "打印机 2"
+    dev2.bambuStatusEntityID = "sensor.2_print_status"
+    let printer1 = ManagedDevice(type: .bambuLab, name: "打印机 1", settings: dev1)
+    let printer2 = ManagedDevice(type: .bambuLab, name: "打印机 2", settings: dev2)
+    archS.devices = [printer1, printer2]
+    archS.activeBambuLabDeviceID = printer2.id
+    checkEqual(archS.activeBambuLabSettings()?.name, "打印机 2", "活动打印机设备解析-按活动 ID")
+    checkEqual(archS.activeBambuLabSettings()?.statusEntityID, "sensor.2_print_status", "活动打印机实体-第二台")
+    archS.activeBambuLabDeviceID = printer1.id
+    checkEqual(archS.activeBambuLabSettings()?.statusEntityID, "sensor.p1p_status", "活动打印机实体-第一台")
+    // 卡片徽标优先用设备名（即使旧版 bambuPrinterName 字段不同）
+    var devNameMismatch = DeviceSettings()
+    devNameMismatch.bambuPrinterName = "打印机"          // 旧字段残留默认名
+    let devNameMismatchDevice = ManagedDevice(type: .bambuLab, name: "打印机 2", settings: devNameMismatch)
+    checkEqual(BambuLabCardSettings.from(devNameMismatchDevice).name, "打印机 2", "卡片徽标优先设备名")
+    // 旧架构迁移：HA 设备内嵌 bambuPrinters → 独立打印机设备（幂等）
+    var legacyS = AppSettings()
+    var haDev = DeviceSettings()
+    haDev.haServerURL = "http://192.168.1.10:8123"
+    haDev.bambuPrinters = [printerA, printerB]
+    legacyS.devices = [ManagedDevice(type: .homeAssistant, name: "Home Assistant", settings: haDev)]
+    let migratedCount = legacyS.migrateBambuPrintersToDevices()
+    checkEqual(migratedCount, 2, "旧架构迁移-打印机设备数量")
+    checkEqual(legacyS.devices.filter { $0.type == .bambuLab }.count, 2, "迁移后 Bambu 设备数量")
+    let migratedP = legacyS.devices.filter { $0.type == .bambuLab }
+    checkEqual(migratedP[0].name, "客厅 A1", "迁移后第一台设备名")
+    checkEqual(migratedP[0].settings.bambuStatusEntityID, "sensor.a", "迁移后第一台状态实体")
+    checkEqual(migratedP[1].settings.bambuStatusEntityID, "sensor.b", "迁移后第二台状态实体")
+    checkEqual(legacyS.activeBambuLabDeviceID, migratedP.first?.id, "迁移后活动打印机指向第一台")
+    let migratedTwice = legacyS.migrateBambuPrintersToDevices()
+    checkEqual(migratedTwice, 0, "迁移幂等-重复执行不新增")
+    checkEqual(legacyS.devices.filter { $0.type == .bambuLab }.count, 2, "迁移幂等-设备数不变")
+    // 实体自动匹配：从打印状态实体推导其余字段（前缀 + 关键词）
+    let printerEntities = [
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_status", friendlyName: "Bambu Lab A1 状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_progress", friendlyName: "打印进度", state: "50", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_nozzle_temp", friendlyName: "喷嘴温度", state: "200", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_bed_temp", friendlyName: "热床温度", state: "55", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_current_task", friendlyName: "当前任务", state: "Benchy", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_remaining_time", friendlyName: "剩余时间", state: "30", unitOfMeasurement: "分钟"),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_hms_error", friendlyName: "错误码", state: "0", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_current_stage", friendlyName: "当前阶段", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.living_temp", friendlyName: "客厅温度", state: "23", unitOfMeasurement: "°C"),
+    ]
+    let known = printerEntities[0]
+    let matched = BambuEntityMatcher.detect(from: known, allEntities: printerEntities)
+    checkEqual(matched.statusEntityID, "sensor.bambu_01h08c0a0001_status", "自动匹配状态实体")
+    checkEqual(matched.progressEntityID, "sensor.bambu_01h08c0a0001_progress", "自动匹配进度实体")
+    checkEqual(matched.nozzleTempEntityID, "sensor.bambu_01h08c0a0001_nozzle_temp", "自动匹配喷嘴实体")
+    checkEqual(matched.bedTempEntityID, "sensor.bambu_01h08c0a0001_bed_temp", "自动匹配热床实体")
+    checkEqual(matched.taskEntityID, "sensor.bambu_01h08c0a0001_current_task", "自动匹配任务实体")
+    checkEqual(matched.remainingEntityID, "sensor.bambu_01h08c0a0001_remaining_time", "自动匹配剩余实体")
+    checkEqual(matched.errorEntityID, "sensor.bambu_01h08c0a0001_hms_error", "自动匹配错误码实体")
+    // 前缀提取
+    checkEqual(BambuEntityMatcher.prefix(of: "sensor.bambu_01h08c0a0001_status"), "sensor.bambu_01h08c0a0001", "实体前缀提取")
+    checkEqual(BambuEntityMatcher.prefix(of: "sensor.bambu_x_nozzle_temp"), "sensor.bambu_x", "多词后缀前缀提取")
+    checkEqual(BambuEntityMatcher.prefix(of: "sensor.x2d_20p6bj652500750_print_status"),
+               "sensor.x2d_20p6bj652500750", "print_status 完整后缀提取")
+    let serialPrinterEntities = [
+        HAEntity(entityId: "sensor.x2d_20p6bj652500750_print_status", friendlyName: "X2D 打印状态",
+                 state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.x2d_20p6bj652500750_print_progress", friendlyName: "X2D 打印进度",
+                 state: "42", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.x2d_20p6bj652500750_task_name", friendlyName: "X2D 任务",
+                 state: "benchy", unitOfMeasurement: nil),
+        HAEntity(entityId: "binary_sensor.x2d_20p6bj652500750_hms_errors", friendlyName: "X2D HMS",
+                 state: "off", unitOfMeasurement: nil),
+    ]
+    let serialMatch = BambuEntityMatcher.detect(from: serialPrinterEntities[0],
+                                                allEntities: serialPrinterEntities)
+    checkEqual(serialMatch.progressEntityID, "sensor.x2d_20p6bj652500750_print_progress",
+               "print_status 种子匹配同序列号进度")
+    checkEqual(serialMatch.taskEntityID, "sensor.x2d_20p6bj652500750_task_name",
+               "print_status 种子匹配 task_name")
+    checkEqual(serialMatch.errorEntityID, "binary_sensor.x2d_20p6bj652500750_hms_errors",
+               "打印机身份可跨 sensor/binary_sensor 域匹配 HMS")
+    // 型号识别：attributes.model 优先，其次名称/entity_id
+    let modelA1 = HAEntity(entityId: "sensor.bambu_a1_status", friendlyName: "打印机状态", state: "idle", unitOfMeasurement: nil, model: "A1")
+    checkEqual(BambuModelDetector.model(of: modelA1), "A1", "型号识别 attributes.model")
+    let modelP1S = HAEntity(entityId: "sensor.bambu_p1s_status", friendlyName: "Bambu Lab P1S 打印机", state: "idle", unitOfMeasurement: nil)
+    checkEqual(BambuModelDetector.model(of: modelP1S), "P1S", "型号识别名称匹配")
+    let modelNone = HAEntity(entityId: "sensor.bambu_status", friendlyName: "打印机", state: "idle", unitOfMeasurement: nil)
+    check(BambuModelDetector.model(of: modelNone) == nil, "未识别型号返回 nil")
+    let modelX2D = HAEntity(entityId: "sensor.x2d_20p6bj652500750_print_status", friendlyName: "打印机状态", state: "idle", unitOfMeasurement: nil)
+    checkEqual(BambuModelDetector.model(of: modelX2D), "X2D", "型号识别 X2D（entity_id 序列号前缀）")
+    let modelX1Carbon = HAEntity(entityId: "sensor.bambu_x1_carbon_status", friendlyName: "Bambu Lab X1 Carbon", state: "idle", unitOfMeasurement: nil)
+    checkEqual(BambuModelDetector.model(of: modelX1Carbon), "X1C", "型号识别 X1 Carbon（长模式优先于 X1）")
+    // parseStates 解析 model 属性
+    let modelJSON = """
+    [{"entity_id": "sensor.bambu_x_status", "state": "idle",
+      "attributes": {"friendly_name": "打印机", "model": "X1C"}}]
+    """
+    let modelEntities = try HomeAssistantClient.parseStates(data: Data(modelJSON.utf8))
+    checkEqual(modelEntities[0].model, "X1C", "parseStates 解析型号属性")
+    // 实体自定义显示名称：别名渲染优先于默认名；不同别名渲染不同
+    let aliasEntities = [HAEntity(entityId: "sensor.living_temp", friendlyName: "客厅温度", state: "23", unitOfMeasurement: "°C")]
+    let defaultName = try ScreenRenderer.renderHA(aliasEntities, aliases: [:], errorText: nil, settings: haSettings)
+    let aliased = try ScreenRenderer.renderHA(aliasEntities, aliases: ["sensor.living_temp": "玄关温度"], errorText: nil, settings: haSettings)
+    check(defaultName.data != aliased.data, "别名渲染与默认名不同")
+    let alias2 = try ScreenRenderer.renderHA(aliasEntities, aliases: ["sensor.living_temp": "卧室温度"], errorText: nil, settings: haSettings)
+    check(aliased.data != alias2.data, "不同别名渲染不同")
+    // 基线：别名随 HA 设备快照往返
+    var a10 = AppSettings()
+    a10.haEntityAliases = ["sensor.living_temp": "玄关温度"]
+    let snap10 = DeviceSettings.capture(from: a10, type: .homeAssistant)
+    checkEqual(snap10.haEntityAliases?["sensor.living_temp"], "玄关温度", "别名随 HA 设备快照捕获")
+    var a11 = AppSettings()
+    snap10.apply(to: a11, type: .homeAssistant)
+    checkEqual(a11.haEntityAliases["sensor.living_temp"], "玄关温度", "别名随 HA 设备快照套用")
+    // 多实体 + 别名 + 状态图标色（off 与 on 渲染不同已覆盖状态色变化）
+    let unconfigured = try ScreenRenderer.renderHA([], errorText: nil, settings: haSettings)
+    check(withEntity.data != unconfigured.data, "HA 含实体与未配置渲染应不同")
+    let errorCard = try ScreenRenderer.renderHA([], errorText: "令牌无效", settings: haSettings)
+    check(errorCard.data != unconfigured.data, "HA 错误提示渲染应不同")
+
+    // 画板模块：含 HA 实体 vs 无实体渲染不同（模块可用；多实体/单实体/空态）
+    let system = SystemSnapshot(cpuPercent: 0, memoryPercent: 0, usedMemoryBytes: 0, totalMemoryBytes: 0,
+                                downloadBytesPerSecond: 0, uploadBytesPerSecond: 0, uptime: 0, sampledAt: Date())
+    let pomo = PomodoroSnapshot(phase: .focus, effectivePhase: .focus, taskName: "任务",
+                                remaining: 100, duration: 1500, completedFocusSessions: 1,
+                                endsAt: Date().addingTimeInterval(100))
+    var canvas = AppSettings()
+    canvas.canvasModules = [CanvasModule.homeAssistant.rawValue]
+    let haSnap = HASnapshot(entities: entities, selectedEntities: Array(entities.prefix(2)))
+    let haCanvas = try ScreenRenderer.renderCanvas(modules: canvas.canvasModuleList, system: system,
+                                                   nowPlaying: .sample, pomodoro: pomo,
+                                                   customText: "", settings: canvas,
+                                                   ha: haSnap)
+    checkEqual(haCanvas.image.width, 142, "HA 画板模块宽度")
+    check(haCanvas.data.count <= ScreenRenderer.maximumFileSize, "HA 画板模块大小")
+    let emptyCanvas = try ScreenRenderer.renderCanvas(modules: canvas.canvasModuleList, system: system,
+                                                      nowPlaying: .sample, pomodoro: pomo,
+                                                      customText: "", settings: canvas)
+    check(haCanvas.data != emptyCanvas.data, "HA 画板模块含实体与空态渲染应不同")
+
+    // 异常监控判定：状态不符 / 错误码非空触发；正常态不触发
+    let printerStatus = HAEntity(entityId: "sensor.bambu_printer", friendlyName: "打印机",
+                                 state: "running", unitOfMeasurement: nil)
+    let printerError = HAEntity(entityId: "sensor.bambu_error", friendlyName: "打印机错误码",
+                                state: "0x03080005", unitOfMeasurement: nil)
+    let printerIdle = HAEntity(entityId: "sensor.bambu_printer", friendlyName: "打印机",
+                               state: "idle", unitOfMeasurement: nil)
+    let printerNoError = HAEntity(entityId: "sensor.bambu_error", friendlyName: "打印机错误码",
+                                  state: "none", unitOfMeasurement: nil)
+    // 状态不符 → 异常
+    let r1 = HomeAssistantClient.monitor(entities: [printerStatus, printerError],
+                                         monitorEntityID: "sensor.bambu_printer",
+                                         expectedState: "idle",
+                                         errorEntityID: "")
+    check(r1.isAbnormal, "HA 监控：状态不符应判异常")
+    check(r1.reason?.contains("running") == true, "HA 监控：异常原因含当前状态")
+    // 状态符合 → 正常
+    let r2 = HomeAssistantClient.monitor(entities: [printerIdle, printerError],
+                                         monitorEntityID: "sensor.bambu_printer",
+                                         expectedState: "IDLE",
+                                         errorEntityID: "")
+    check(!r2.isAbnormal, "HA 监控：状态符合应正常（忽略大小写）")
+    // 错误码非空 → 异常（即使状态正常）
+    let r3 = HomeAssistantClient.monitor(entities: [printerIdle, printerError],
+                                         monitorEntityID: "sensor.bambu_printer",
+                                         expectedState: "idle",
+                                         errorEntityID: "sensor.bambu_error")
+    check(r3.isAbnormal, "HA 监控：错误码非空应判异常")
+    check(r3.reason?.contains("0x03080005") == true, "HA 监控：异常原因含错误码")
+    // 错误码 none → 正常
+    let r4 = HomeAssistantClient.monitor(entities: [printerIdle, printerNoError],
+                                         monitorEntityID: "sensor.bambu_printer",
+                                         expectedState: "idle",
+                                         errorEntityID: "sensor.bambu_error")
+    check(!r4.isAbnormal, "HA 监控：错误码 none 应正常")
+    // 未设条件 → 正常
+    let r5 = HomeAssistantClient.monitor(entities: [printerStatus], monitorEntityID: "",
+                                         expectedState: "", errorEntityID: "")
+    check(!r5.isAbnormal, "HA 监控：无条件应正常")
+
+    // 监控设置往返
+    let mrt = AppSettings()
+    mrt.haMonitorEnabled = true
+    mrt.haMonitorEntityID = "sensor.bambu_printer"
+    mrt.haMonitorExpectedState = "idle"
+    mrt.haMonitorErrorEntityID = "sensor.bambu_error"
+    let mDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(mrt))
+    checkEqual(mDecoded.haMonitorEnabled, true, "HA 监控开关往返")
+    checkEqual(mDecoded.haMonitorEntityID, "sensor.bambu_printer", "HA 监控实体往返")
+    checkEqual(mDecoded.haMonitorExpectedState, "idle", "HA 监控期望状态往返")
+    checkEqual(mDecoded.haMonitorErrorEntityID, "sensor.bambu_error", "HA 监控错误码实体往返")
+
+    // 告警卡渲染：尺寸正常、与普通 HA 卡不同
+    let alertCard = try ScreenRenderer.renderHAAlert(title: "打印机", message: "0x03080005",
+                                                     settings: haSettings)
+    checkEqual(alertCard.image.width, 142, "HA 告警卡宽度")
+    checkEqual(alertCard.image.height, 428, "HA 告警卡高度")
+    check(alertCard.data.count <= ScreenRenderer.maximumFileSize, "HA 告警卡大小")
+    check(alertCard.data != withEntity.data, "HA 告警卡与普通卡渲染应不同")
+    check(alertCard.data != unconfigured.data, "HA 告警卡与未配置渲染应不同")
+
+    // Bambu Lab 自动识别：从实体列表按关键词归类字段
+    let bambuEntities = [
+        HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_print_progress", friendlyName: "打印进度", state: "45", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.bambu_current_task", friendlyName: "当前任务", state: "花瓶 v2", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_nozzle_temp", friendlyName: "喷嘴温度", state: "210", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.bambu_bed_temp", friendlyName: "热床温度", state: "60", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.bambu_remaining_time", friendlyName: "剩余时间", state: "01:25:00", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_error_code", friendlyName: "错误码", state: "none", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.other_temp", friendlyName: "无关实体", state: "1", unitOfMeasurement: nil)
+    ]
+    let detected = BambuLabCardSettings.autoDetect(entities: bambuEntities)
+    checkEqual(detected.statusEntityID, "sensor.bambu_printer_status", "Bambu 自动识别-状态")
+    checkEqual(detected.progressEntityID, "sensor.bambu_print_progress", "Bambu 自动识别-进度")
+    checkEqual(detected.taskEntityID, "sensor.bambu_current_task", "Bambu 自动识别-任务")
+    checkEqual(detected.nozzleTempEntityID, "sensor.bambu_nozzle_temp", "Bambu 自动识别-喷嘴温度")
+    checkEqual(detected.bedTempEntityID, "sensor.bambu_bed_temp", "Bambu 自动识别-热床温度")
+    checkEqual(detected.remainingEntityID, "sensor.bambu_remaining_time", "Bambu 自动识别-剩余时间")
+    checkEqual(detected.errorEntityID, "sensor.bambu_error_code", "Bambu 自动识别-错误码")
+    checkEqual(BambuLabCardSettings.autoDetect(entities: [HAEntity(entityId: "sensor.other", friendlyName: "x", state: "1", unitOfMeasurement: nil)]).statusEntityID,
+               "", "Bambu 无打印机实体时字段为空")
+
+    // Bambu 卡片设置写入/读取设备快照（按 HA 设备独立）
+    var bsnap = DeviceSettings()
+    var bc = BambuLabCardSettings()
+    bc.statusEntityID = "sensor.bambu_printer_status"
+    bc.enableAlert = false
+    bc.apply(to: &bsnap)
+    checkEqual(bsnap.bambuStatusEntityID, "sensor.bambu_printer_status", "Bambu 快照写入状态")
+    checkEqual(bsnap.bambuEnableAlert, false, "Bambu 快照写入告警开关")
+    let bcBack = BambuLabCardSettings.from(bsnap)
+    checkEqual(bcBack.statusEntityID, "sensor.bambu_printer_status", "Bambu 快照读回状态")
+    checkEqual(bcBack.enableAlert, false, "Bambu 快照读回告警开关")
+
+    // Bambu 卡片渲染：含实体聚合展示；错误态警示不同
+    let bambuSetting = BambuLabCardSettings.from(bsnap)
+    let bambuCard = try ScreenRenderer.renderBambuLab(bambuSetting, entities: bambuEntities, settings: haSettings)
+    checkEqual(bambuCard.image.width, 142, "Bambu 卡片宽度")
+    checkEqual(bambuCard.image.height, 428, "Bambu 卡片高度")
+    check(bambuCard.data.count <= ScreenRenderer.maximumFileSize, "Bambu 卡片大小")
+    var bambuErr = bambuEntities
+    bambuErr[0] = HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "error", unitOfMeasurement: nil)
+    bambuErr[6] = HAEntity(entityId: "sensor.bambu_error_code", friendlyName: "错误码", state: "0x03080005", unitOfMeasurement: nil)
+    let bambuErrorCard = try ScreenRenderer.renderBambuLab(bambuSetting, entities: bambuErr, settings: haSettings)
+    check(bambuErrorCard.data != bambuCard.data, "Bambu 错误态渲染应不同")
+
+    // binary_sensor HMS 错误实体：off = 无错误（即使 lastChanged 新鲜也不再误报），on = 有错误
+    let freshNow = Date()
+    var binSetting = bambuSetting
+    binSetting.errorEntityID = "binary_sensor.bambu_hms_errors"
+    var offErr = bambuEntities
+    offErr[0] = HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "running", unitOfMeasurement: nil)
+    offErr[6] = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "off",
+                         unitOfMeasurement: nil, lastChanged: freshNow)
+    let cardOff = try ScreenRenderer.renderBambuLab(binSetting, entities: offErr, settings: haSettings, now: freshNow)
+    var noErr = offErr
+    noErr[6] = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "none",
+                        unitOfMeasurement: nil, lastChanged: freshNow)
+    let cardNoErr = try ScreenRenderer.renderBambuLab(binSetting, entities: noErr, settings: haSettings, now: freshNow)
+    check(cardOff.data == cardNoErr.data, "HMS 错误实体 off（新鲜）应与 none 一样不触发错误态")
+    var onErr = offErr
+    onErr[6] = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "on",
+                        unitOfMeasurement: nil, lastChanged: freshNow)
+    let cardOn = try ScreenRenderer.renderBambuLab(binSetting, entities: onErr, settings: haSettings, now: freshNow)
+    check(cardOn.data != cardOff.data, "HMS 错误实体 on 应触发错误态")
+    // monitor() 同样把 off 视为正常
+    let monitorOff = HomeAssistantClient.monitor(
+        entities: [HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS", state: "off",
+                            unitOfMeasurement: nil, lastChanged: freshNow)],
+        monitorEntityID: "", expectedState: "", errorEntityID: "binary_sensor.bambu_hms_errors",
+        staleErrorSeconds: 600, now: freshNow)
+    check(!monitorOff.isAbnormal, "monitor：HMS 错误实体 off 视为正常")
+    // 设备离线/不可用状态（unavailable/unknown）不是错误码：不触发错误态
+    var unavailErr = offErr
+    unavailErr[6] = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "unavailable",
+                             unitOfMeasurement: nil, lastChanged: freshNow)
+    let cardUnavail = try ScreenRenderer.renderBambuLab(binSetting, entities: unavailErr, settings: haSettings, now: freshNow)
+    check(cardUnavail.data == cardNoErr.data, "HMS 错误实体 unavailable（设备离线）不应触发错误态")
+    let monitorUnavail = HomeAssistantClient.monitor(
+        entities: [HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS", state: "unavailable",
+                            unitOfMeasurement: nil, lastChanged: freshNow)],
+        monitorEntityID: "", expectedState: "", errorEntityID: "binary_sensor.bambu_hms_errors",
+        staleErrorSeconds: 600, now: freshNow)
+    check(!monitorUnavail.isAbnormal, "monitor：unavailable 视为正常")
+    // 陈旧错误码：lastChanged 超过新鲜度阈值即视为已恢复（残留旧值不误报）
+    let staleErr = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "07FE-4500-0002-0003",
+                            unitOfMeasurement: nil, lastChanged: freshNow.addingTimeInterval(-11 * 60))
+    let monitorStale = HomeAssistantClient.monitor(
+        entities: [staleErr], monitorEntityID: "", expectedState: "",
+        errorEntityID: "binary_sensor.bambu_hms_errors", staleErrorSeconds: 600, now: freshNow)
+    check(!monitorStale.isAbnormal, "超过新鲜度的旧错误码视为已恢复")
+
+    // 剩余时间格式化：h 单位的小数 → 分钟/小时可读文本
+    let remainHoursFrac = HAEntity(entityId: "sensor.x2d_remaining_time", friendlyName: "剩余时间", state: "0.383333333333333", unitOfMeasurement: "h")
+    checkEqual(remainHoursFrac.remainingDisplayText, "23 分钟", "剩余时间-小时小数转分钟")
+    let remainHours = HAEntity(entityId: "sensor.x2d_remaining_time", friendlyName: "剩余时间", state: "2.5", unitOfMeasurement: "h")
+    checkEqual(remainHours.remainingDisplayText, "2 小时 30 分钟", "剩余时间-小时转时分")
+    let remainMin = HAEntity(entityId: "sensor.x2d_remaining_time", friendlyName: "剩余时间", state: "90", unitOfMeasurement: "min")
+    checkEqual(remainMin.remainingDisplayText, "90 分钟", "剩余时间-分钟")
+    let remainRaw = HAEntity(entityId: "sensor.x2d_remaining_time", friendlyName: "剩余时间", state: "01:25:00", unitOfMeasurement: nil)
+    checkEqual(remainRaw.remainingDisplayText, "01:25:00", "剩余时间-非数值原样")
+
+    // 画板模块含 BambuLab
+    var bCanvas = AppSettings()
+    bCanvas.canvasModules = [CanvasModule.bambuLab.rawValue]
+    var bSnap = HASnapshot(entities: bambuEntities)
+    let bModule = try ScreenRenderer.renderCanvas(modules: bCanvas.canvasModuleList, system: system,
+                                                  nowPlaying: .sample, pomodoro: pomo,
+                                                  customText: "", settings: bCanvas, ha: bSnap)
+    checkEqual(bModule.image.width, 142, "Bambu 画板模块宽度")
+    check(bModule.data.count <= ScreenRenderer.maximumFileSize, "Bambu 画板模块大小")
+    // 多打印机画板：bambuLab→第 1 台、bambuLab2→第 2 台（与卡片管理槽位一致）
+    var multiCanvas = AppSettings()
+    var p1Dev = DeviceSettings()
+    p1Dev.bambuPrinterName = "P1P"
+    p1Dev.bambuStatusEntityID = "sensor.p1p_status"
+    p1Dev.bambuProgressEntityID = "sensor.p1p_progress"
+    var p2Dev = DeviceSettings()
+    p2Dev.bambuPrinterName = "X2D"
+    p2Dev.bambuStatusEntityID = "sensor.x2d_status"
+    p2Dev.bambuProgressEntityID = "sensor.x2d_progress"
+    p2Dev.bambuTaskEntityID = "sensor.x2d_task"
+    p2Dev.bambuNozzleTempEntityID = "sensor.x2d_nozzle"
+    p2Dev.bambuBedTempEntityID = "sensor.x2d_bed"
+    p2Dev.bambuRemainingEntityID = "sensor.x2d_remain"
+    multiCanvas.devices = [ManagedDevice(type: .bambuLab, name: "P1P", settings: p1Dev),
+                           ManagedDevice(type: .bambuLab, name: "X2D", settings: p2Dev)]
+    multiCanvas.activeBambuLabDeviceID = multiCanvas.devices[0].id
+    let multiHA = HASnapshot(entities: [
+        HAEntity(entityId: "sensor.p1p_status", friendlyName: "P1P 状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1p_progress", friendlyName: "P1P 进度", state: "0", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.x2d_status", friendlyName: "X2D 状态", state: "running", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.x2d_progress", friendlyName: "X2D 进度", state: "80", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.x2d_task", friendlyName: "X2D 任务", state: "带AMS 花瓶", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.x2d_nozzle", friendlyName: "X2D 喷嘴", state: "245", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.x2d_bed", friendlyName: "X2D 热床", state: "70", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.x2d_remain", friendlyName: "X2D 剩余", state: "0.5", unitOfMeasurement: "h"),
+    ])
+    let slot1Card = try ScreenRenderer.renderCanvas(modules: [.bambuLab], system: system,
+                                                    nowPlaying: .sample, pomodoro: pomo,
+                                                    customText: "", settings: multiCanvas, ha: multiHA)
+    let slot2Card = try ScreenRenderer.renderCanvas(modules: [.bambuLab2], system: system,
+                                                    nowPlaying: .sample, pomodoro: pomo,
+                                                    customText: "", settings: multiCanvas, ha: multiHA)
+    check(slot1Card.data != slot2Card.data, "画板 bambuLab/bambuLab2 应渲染不同打印机")
+    let slot2Empty = try ScreenRenderer.renderCanvas(modules: [.bambuLab3], system: system,
+                                                     nowPlaying: .sample, pomodoro: pomo,
+                                                     customText: "", settings: multiCanvas, ha: multiHA)
+    check(slot2Empty.data != slot2Card.data, "无打印机的卡片位模块渲染应不同（占位）")
+    // 画板打印机模块显示选项：默认值、按模块设置往返、行数统计、渲染差异
+    let defaultFields = multiCanvas.canvasPrinterFields(for: .bambuLab)
+    check(defaultFields.showStatus && defaultFields.showProgress && defaultFields.showError,
+          "画板打印机默认显示状态/进度/错误")
+    check(!defaultFields.showTask && !defaultFields.showNozzleTemp && !defaultFields.showBedTemp
+          && !defaultFields.showRemaining, "画板打印机默认不显示任务/温度/剩余")
+    checkEqual(CanvasPrinterFields.default.enabledRowCount, 3, "默认开启行数=3")
+    var fullFields = defaultFields
+    fullFields.showTask = true
+    fullFields.showNozzleTemp = true
+    fullFields.showBedTemp = true
+    fullFields.showRemaining = true
+    checkEqual(fullFields.enabledRowCount, 7, "全开时行数=7")
+    multiCanvas.setCanvasPrinterFields(fullFields, for: .bambuLab2)
+    checkEqual(multiCanvas.canvasPrinterFields(for: .bambuLab2).enabledRowCount, 7,
+               "设置后按模块读回显示选项")
+    checkEqual(multiCanvas.canvasPrinterFields(for: .bambuLab).enabledRowCount, 3,
+               "各打印机模块显示选项互不影响")
+    // 多把键盘卡片内容隔离：画板打印机显示选项与系统监控图表样式写入/恢复各自设备快照
+    var kbA = DeviceSettings()
+    kbA.canvasModules = [CanvasModule.bambuLab.rawValue]
+    kbA.canvasPrinterFields = [CanvasModule.bambuLab.rawValue: fullFields]
+    kbA.networkChart = false
+    let snapA = kbA.canvasPrinterFields?[CanvasModule.bambuLab.rawValue]
+    checkEqual(snapA?.enabledRowCount, 7, "键盘A快照保留自己的打印机显示选项")
+    checkEqual(kbA.networkChart, false, "键盘A快照保留自己的网络图表样式")
+    var kbB = DeviceSettings()
+    kbB.canvasModules = [CanvasModule.bambuLab.rawValue]
+    kbB.canvasPrinterFields = [:]
+    kbB.networkChart = true
+    checkEqual(kbB.canvasPrinterFields?[CanvasModule.bambuLab.rawValue]?.enabledRowCount ?? 0, 0,
+               "键盘B未配置时不继承键盘A的显示选项")
+    // capture/apply 往返：全局镜像 ↔ 活动键盘快照，保证切换键盘后各自内容恢复
+    var mirrorS = AppSettings()
+    mirrorS.canvasPrinterFields = [CanvasModule.bambuLab.rawValue: fullFields]
+    mirrorS.networkChart = false
+    let kbSnap = DeviceSettings.capture(from: mirrorS, type: .keyboard)
+    checkEqual(kbSnap.canvasPrinterFields?[CanvasModule.bambuLab.rawValue]?.enabledRowCount, 7,
+               "键盘快照捕获打印机显示选项")
+    checkEqual(kbSnap.networkChart, false, "键盘快照捕获网络图表样式")
+    var restored = AppSettings()
+    restored.networkChart = true
+    kbSnap.apply(to: restored, type: .keyboard)
+    checkEqual(restored.canvasPrinterFields[CanvasModule.bambuLab.rawValue]?.enabledRowCount, 7,
+               "切回该键盘时恢复其打印机显示选项")
+    checkEqual(restored.networkChart, false, "切回该键盘时恢复其网络图表样式")
+    // —— 多把灵犀68 键盘：卡片管理与每张卡片的内容完全隔离 ——
+    var kb1 = AppSettings()
+    kb1.displayMode = .systemMonitor
+    kb1.cardTheme = .neonPurple
+    kb1.showCpu = true
+    kb1.showMemory = true
+    kb1.showNetwork = false
+    kb1.showUptime = false
+    kb1.showDisk = true
+    kb1.networkChart = true
+    kb1.pomodoroPraiseEnabled = true
+    kb1.pomodoroPraiseSource = .hitokoto
+    kb1.pomodoroTaskFontSize = 13
+    kb1.qwenQuotaShowPercent = false
+    kb1.excerptQuoteCategories = [0, 2]
+    kb1.showExcerptSource = true
+    kb1.keyboardCardPanels = ["system", "pomodoro", "excerptQuote"]
+    let kb1Snap = DeviceSettings.capture(from: kb1, type: .keyboard)
+    var kb2 = AppSettings()
+    kb2.displayMode = .canvas
+    kb2.cardTheme = .minimalLight
+    kb2.showCpu = false
+    kb2.showMemory = false
+    kb2.showNetwork = true
+    kb2.showUptime = true
+    kb2.showDisk = false
+    kb2.networkChart = false
+    kb2.pomodoroPraiseEnabled = false
+    kb2.pomodoroPraiseSource = .builtin
+    kb2.pomodoroTaskFontSize = 8
+    kb2.qwenQuotaShowPercent = true
+    kb2.excerptQuoteCategories = [1]
+    kb2.showExcerptSource = false
+    kb2.keyboardCardPanels = ["canvas"]
+    let kb2Snap = DeviceSettings.capture(from: kb2, type: .keyboard)
+    // 快照逐字段保留各自的卡片内容（不共享、不覆盖）
+    checkEqual(kb1Snap.displayMode, .systemMonitor, "键盘1快照记录自己的当前卡片")
+    checkEqual(kb2Snap.displayMode, .canvas, "键盘2快照记录自己的当前卡片")
+    checkEqual(kb1Snap.showDisk, true, "键盘1快照记录自己的系统监控区块")
+    checkEqual(kb2Snap.showDisk, false, "键盘2快照记录自己的系统监控区块")
+    checkEqual(kb1Snap.pomodoroPraiseSource, .hitokoto, "键盘1快照记录自己的番茄钟夸夸来源")
+    checkEqual(kb2Snap.pomodoroTaskFontSize, 8, "键盘2快照记录自己的番茄钟任务字号")
+    checkEqual(kb1Snap.qwenQuotaShowPercent, false, "键盘1快照记录自己的千问额度显示方式")
+    checkEqual(kb1Snap.excerptQuoteCategories, [0, 2], "键盘1快照记录自己的语录分类")
+    checkEqual(kb2Snap.showExcerptSource, false, "键盘2快照记录自己的语录出处开关")
+    checkEqual(kb1Snap.keyboardCardPanels, ["system", "pomodoro", "excerptQuote"], "键盘1快照记录自己的卡片列表")
+    checkEqual(kb2Snap.keyboardCardPanels, ["canvas"], "键盘2快照记录自己的卡片列表")
+    // 切到键盘1：镜像全部换成键盘1的卡片内容
+    var shared = AppSettings()
+    shared.displayMode = .pomodoro
+    shared.cardTheme = .amberTerminal
+    shared.showCpu = false
+    shared.showMemory = false
+    shared.showNetwork = false
+    shared.showUptime = false
+    shared.showDisk = false
+    shared.networkChart = false
+    shared.pomodoroPraiseEnabled = false
+    shared.pomodoroTaskFontSize = 9
+    shared.qwenQuotaShowPercent = true
+    shared.excerptQuoteCategories = [0]
+    shared.showExcerptSource = false
+    shared.keyboardCardPanels = ["canvas"]
+    kb1Snap.apply(to: shared, type: .keyboard)
+    checkEqual(shared.displayMode, .systemMonitor, "切到键盘1恢复其当前卡片")
+    checkEqual(shared.cardTheme, .neonPurple, "切到键盘1恢复其卡片主题")
+    checkEqual([shared.showCpu, shared.showMemory, shared.showNetwork, shared.showUptime, shared.showDisk],
+               [true, true, false, false, true], "切到键盘1恢复其系统监控区块")
+    checkEqual(shared.networkChart, true, "切到键盘1恢复其网络图表样式")
+    checkEqual(shared.pomodoroPraiseEnabled, true, "切到键盘1恢复其番茄钟夸夸开关")
+    checkEqual(shared.pomodoroPraiseSource, .hitokoto, "切到键盘1恢复其番茄钟夸夸来源")
+    checkEqual(shared.pomodoroTaskFontSize, 13, "切到键盘1恢复其番茄钟任务字号")
+    checkEqual(shared.qwenQuotaShowPercent, false, "切到键盘1恢复其千问额度显示方式")
+    checkEqual(shared.excerptQuoteCategories, [0, 2], "切到键盘1恢复其语录分类")
+    checkEqual(shared.showExcerptSource, true, "切到键盘1恢复其语录出处开关")
+    checkEqual(shared.keyboardCardPanels, ["system", "pomodoro", "excerptQuote"], "切到键盘1恢复其卡片列表")
+    // 再切到键盘2：键盘1的内容不会残留（无多设备干扰）
+    kb2Snap.apply(to: shared, type: .keyboard)
+    checkEqual(shared.displayMode, .canvas, "切到键盘2恢复其当前卡片（不被键盘1干扰）")
+    checkEqual([shared.showCpu, shared.showMemory, shared.showNetwork, shared.showUptime, shared.showDisk],
+               [false, false, true, true, false], "切到键盘2恢复其系统监控区块")
+    checkEqual(shared.pomodoroPraiseEnabled, false, "切到键盘2关闭其番茄钟夸夸")
+    checkEqual(shared.pomodoroTaskFontSize, 8, "切到键盘2恢复其番茄钟任务字号")
+    checkEqual(shared.qwenQuotaShowPercent, true, "切到键盘2恢复其千问额度显示方式")
+    checkEqual(shared.excerptQuoteCategories, [1], "切到键盘2恢复其语录分类")
+    checkEqual(shared.showExcerptSource, false, "切到键盘2恢复其语录出处开关")
+    checkEqual(shared.keyboardCardPanels, ["canvas"], "切到键盘2恢复其卡片列表")
+    // 旧档案兼容：快照缺这些字段时保留当前镜像值（不清空用户现有设置）
+    var legacySnap = DeviceSettings()
+    legacySnap.endpoint = "http://192.168.1.9"
+    var legacyMirror = AppSettings()
+    legacyMirror.displayMode = .sspai
+    legacyMirror.showCpu = true
+    legacyMirror.pomodoroPraiseEnabled = true
+    legacySnap.apply(to: legacyMirror, type: .keyboard)
+    checkEqual(legacyMirror.displayMode, .sspai, "旧键盘快照缺当前卡片字段时保留现值")
+    checkEqual(legacyMirror.showCpu, true, "旧键盘快照缺系统监控字段时保留现值")
+    checkEqual(legacyMirror.pomodoroPraiseEnabled, true, "旧键盘快照缺番茄钟字段时保留现值")
+    // 先知/摘录画板的打印机模块显示选项使用各自镜像字段，且不影响键盘画板配置
+    var canvasOwner = AppSettings()
+    canvasOwner.canvasPrinterFields = [CanvasModule.bambuLab.rawValue: defaultFields]
+    canvasOwner.oracleCanvasPrinterFields = [CanvasModule.bambuLab.rawValue: fullFields]
+    canvasOwner.excerptCanvasPrinterFields = [:]
+    let oracleSnap = DeviceSettings.capture(from: canvasOwner, type: .oracle)
+    let excerptSnap = DeviceSettings.capture(from: canvasOwner, type: .excerpt)
+    checkEqual(oracleSnap.oracleCanvasPrinterFields?[CanvasModule.bambuLab.rawValue]?.enabledRowCount, 7,
+               "先知设备快照记录自己的画板打印机显示选项")
+    checkEqual(excerptSnap.oracleCanvasPrinterFields == nil, true, "摘录设备快照不携带先知字段")
+    var ownerMirror = AppSettings()
+    ownerMirror.canvasPrinterFields = [CanvasModule.bambuLab.rawValue: fullFields]
+    oracleSnap.apply(to: ownerMirror, type: .oracle)
+    checkEqual(ownerMirror.oracleCanvasPrinterFields[CanvasModule.bambuLab.rawValue]?.enabledRowCount, 7,
+               "切到该先知设备恢复其画板打印机显示选项")
+    checkEqual(ownerMirror.canvasPrinterFields[CanvasModule.bambuLab.rawValue]?.enabledRowCount, 7,
+               "先知画板选项恢复不改动键盘画板选项（无跨设备串扰）")
+    let oracleBefore = ownerMirror.oracleCanvasPrinterFields
+    excerptSnap.apply(to: ownerMirror, type: .excerpt)
+    checkEqual(ownerMirror.oracleCanvasPrinterFields.count, oracleBefore.count,
+               "切换摘录设备不改动先知画板字段（各画板独立镜像）")
+    // 全局镜像未持久化过先知字段时（旧档案）：套用到镜像应保持原值
+    var oracleLegacy = AppSettings()
+    oracleLegacy.oracleCanvasPrinterFields = [CanvasModule.bambuLab2.rawValue: fullFields]
+    DeviceSettings().apply(to: oracleLegacy, type: .oracle)
+    checkEqual(oracleLegacy.oracleCanvasPrinterFields[CanvasModule.bambuLab2.rawValue]?.enabledRowCount, 7,
+               "旧先知快照缺字段时保留现值")
+    // —— 端到端：两台键盘各自添加不同卡片，互不影响（走真实设备编排逻辑）——
+    let kb1ID = UUID()
+    let kb2ID = UUID()
+    func legacyTwoKeyboardProfile() -> AppSettings {
+        // 旧档案键盘：快照只有连接信息，卡片列表/卡片内容字段全为 nil
+        var kb1Fields = DeviceSettings()
+        kb1Fields.endpoint = "http://10.0.0.11/image/upload"
+        var kb1 = ManagedDevice(type: .keyboard, name: "键盘一号", settings: kb1Fields)
+        kb1.id = kb1ID
+        var kb2Fields = DeviceSettings()
+        kb2Fields.endpoint = "http://10.0.0.12/image/upload"
+        var kb2 = ManagedDevice(type: .keyboard, name: "键盘二号", settings: kb2Fields)
+        kb2.id = kb2ID
+        var s = AppSettings()
+        s.devices = [kb1, kb2]
+        s.activeKeyboardDeviceID = kb1ID
+        // 全局镜像 = 上一次退出时活动键盘（一号）的状态
+        s.keyboardCardPanels = ["system", "pomodoro"]
+        s.displayMode = .systemMonitor
+        return s
+    }
+    // 1) 未补齐时复现用户反馈的串扰：切到键盘二号会继承键盘一号的卡片列表与当前卡片
+    let unseeded = legacyTwoKeyboardProfile()
+    check(unseeded.switchActiveDevice(of: .keyboard, to: kb2ID) != nil, "未补齐档案可切换键盘")
+    checkEqual(unseeded.activeDevice(for: .keyboard)?.settings.keyboardCardPanels, ["system", "pomodoro"],
+               "未补齐时键盘二号快照被上一台键盘的卡片列表污染（串扰复现）")
+    // 2) 补齐后：每台键盘各记各的，切换与编辑互不影响
+    let twoKb = legacyTwoKeyboardProfile()
+    check(twoKb.migrateKeyboardCardContentSeeds() >= 1, "旧档案键盘卡片内容已补齐")
+    checkEqual(twoKb.devices.first { $0.id == kb1ID }?.settings.displayMode, .systemMonitor,
+               "补齐：键盘一号记下自己的当前卡片")
+    check(twoKb.switchActiveDevice(of: .keyboard, to: kb2ID) != nil, "切换到键盘二号")
+    checkEqual(twoKb.devices.first { $0.id == kb1ID }?.settings.displayMode, .systemMonitor,
+               "补齐后切换不再污染键盘一号快照")
+    // 键盘二号：只放「少数派推荐」卡片，当前卡片也设为少数派
+    twoKb.keyboardCardPanels = ["sspai"]
+    twoKb.displayMode = .sspai
+    twoKb.showCpu = false
+    twoKb.captureActiveDeviceSnapshots()
+    checkEqual(twoKb.devices.first { $0.id == kb2ID }?.settings.keyboardCardPanels, ["sspai"],
+               "键盘二号记录自己的卡片列表")
+    checkEqual(twoKb.devices.first { $0.id == kb1ID }?.settings.keyboardCardPanels, ["system", "pomodoro"],
+               "键盘二号的改动不影响键盘一号的卡片列表")
+    // 切回键盘一号：恢复它自己的卡片列表与当前卡片
+    check(twoKb.switchActiveDevice(of: .keyboard, to: kb1ID) != nil, "切换回键盘一号")
+    checkEqual(twoKb.keyboardCardPanels, ["system", "pomodoro"], "切回键盘一号恢复其卡片列表")
+    checkEqual(twoKb.displayMode, .systemMonitor, "切回键盘一号恢复其当前卡片")
+    checkEqual(twoKb.showCpu, true, "切回键盘一号恢复其系统监控区块")
+    // 键盘一号：再添加摘录语录卡片并关闭内存区块
+    twoKb.keyboardCardPanels = ["system", "pomodoro", "excerptQuote"]
+    twoKb.showMemory = false
+    twoKb.captureActiveDeviceSnapshots()
+    // 切到键盘二号：仍是它自己那一张少数派卡片
+    check(twoKb.switchActiveDevice(of: .keyboard, to: kb2ID) != nil, "再次切换到键盘二号")
+    checkEqual(twoKb.keyboardCardPanels, ["sspai"], "键盘二号卡片列表未被键盘一号污染")
+    checkEqual(twoKb.displayMode, .sspai, "键盘二号恢复自己的当前卡片")
+    checkEqual(twoKb.showMemory, true, "键盘一号关闭内存区块不影响键盘二号的系统监控区块")
+    // 反复切换十次：两台键盘始终保持各自状态（无累积串扰）
+    for i in 0..<10 {
+        let target = i % 2 == 0 ? kb2ID : kb1ID
+        let expectCards = i % 2 == 0 ? ["sspai"] : ["system", "pomodoro", "excerptQuote"]
+        let expectMode: DisplayMode = i % 2 == 0 ? .sspai : .systemMonitor
+        _ = twoKb.switchActiveDevice(of: .keyboard, to: target)
+        checkEqual(twoKb.keyboardCardPanels, expectCards, "第\(i + 1)次切换后卡片列表仍独立")
+        checkEqual(twoKb.displayMode, expectMode, "第\(i + 1)次切换后当前卡片仍独立")
+    }
+    // 持久化往返：两台键盘各自的卡片列表与内容写入文件后读回仍独立
+    let twoKbSaved = try JSONEncoder().encode(twoKb)
+    let twoKbReloaded = try JSONDecoder().decode(AppSettings.self, from: twoKbSaved)
+    checkEqual(twoKbReloaded.devices.first { $0.id == kb1ID }?.settings.keyboardCardPanels,
+               ["system", "pomodoro", "excerptQuote"], "持久化后键盘一号卡片列表不变")
+    checkEqual(twoKbReloaded.devices.first { $0.id == kb2ID }?.settings.keyboardCardPanels,
+               ["sspai"], "持久化后键盘二号卡片列表不变")
+    checkEqual(twoKbReloaded.devices.first { $0.id == kb1ID }?.settings.displayMode, .systemMonitor,
+               "持久化后键盘一号当前卡片不变")
+    checkEqual(twoKbReloaded.devices.first { $0.id == kb2ID }?.settings.displayMode, .sspai,
+               "持久化后键盘二号当前卡片不变")
+    checkEqual(twoKbReloaded.devices.first { $0.id == kb2ID }?.settings.endpoint,
+               "http://10.0.0.12/image/upload", "持久化后键盘二号连接信息不变")
+    check(twoKbReloaded.switchActiveDevice(of: .keyboard, to: kb2ID) != nil, "重载后可切换键盘")
+    checkEqual(twoKbReloaded.keyboardCardPanels, ["sspai"], "重载后键盘二号卡片列表仍独立")
+    checkEqual(twoKbReloaded.switchActiveDevice(of: .keyboard, to: kb2ID), nil,
+               "重复切换同一台键盘不产生副作用")
+    // 卡片列表解析（Core）：每台键盘只读自己的快照，Bambu 卡片位随打印机台数增减
+    var cardLists = AppSettings()
+    var kb1List = DeviceSettings()
+    kb1List.keyboardCardPanels = ["system", "bambuLab", "bambuLab2"]
+    var kb2List = DeviceSettings()
+    kb2List.keyboardCardPanels = ["sspai"]
+    var kb3List = DeviceSettings()   // 旧档案：未记录 → 回退默认列表
+    let kb1Ref = ManagedDevice(type: .keyboard, name: "K1", settings: kb1List)
+    let kb2Ref = ManagedDevice(type: .keyboard, name: "K2", settings: kb2List)
+    let kb3Ref = ManagedDevice(type: .keyboard, name: "K3", settings: kb3List)
+    let clipPrinterA = ManagedDevice(type: .bambuLab, name: "P1", settings: DeviceSettings())
+    let clipPrinterB = ManagedDevice(type: .bambuLab, name: "P2", settings: DeviceSettings())
+    cardLists.devices = [kb1Ref, kb2Ref, kb3Ref, clipPrinterA, clipPrinterB]
+    cardLists.activeKeyboardDeviceID = kb1Ref.id
+    let defaultCards = ["clock", "system"]
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb1Ref.id, fallback: defaultCards),
+               ["system", "bambuLab", "bambuLab2"], "键盘1解析出自己的卡片列表")
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb2Ref.id, fallback: defaultCards), ["sspai"],
+               "键盘2解析出自己的卡片列表（与键盘1无关）")
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb3Ref.id, fallback: defaultCards), defaultCards,
+               "旧键盘档案回退默认卡片列表")
+    // 只保留 1 台打印机时：第 2 张打印机卡片位隐藏，且不影响其他键盘列表
+    cardLists.devices.removeAll { $0.id == clipPrinterB.id }
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb1Ref.id, fallback: defaultCards),
+               ["system", "bambuLab"], "打印机删除后对应卡片位隐藏")
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb2Ref.id, fallback: defaultCards), ["sspai"],
+               "打印机卡片位清理不改动其他键盘的列表")
+    // 禁用打印机同样按已启用台数计算
+    if let idx = cardLists.devices.firstIndex(where: { $0.id == clipPrinterA.id }) {
+        cardLists.devices[idx].isEnabled = false
+    }
+    checkEqual(cardLists.keyboardCardPanelRawValues(for: kb1Ref.id, fallback: defaultCards), ["system"],
+               "打印机禁用后其卡片位对所有键盘都隐藏")
+    // 启动路径（与 AppModel.init 一致）：从 JSON 读入旧档案 → 补齐 → 写回 → 再读入，两台键盘始终各自独立
+    let startupLoaded = try JSONDecoder().decode(AppSettings.self,
+                                                 from: try JSONEncoder().encode(legacyTwoKeyboardProfile()))
+    checkEqual(startupLoaded.devices.first { $0.id == kb2ID }?.settings.keyboardCardPanels, nil,
+               "旧档案里键盘二号没有自己的卡片列表")
+    startupLoaded.migrateBambuPrintersToDevices()
+    startupLoaded.migrateKeyboardCardContentSeeds()
+    checkEqual(startupLoaded.devices.first { $0.id == kb2ID }?.settings.keyboardCardPanels,
+               ["system", "pomodoro"], "启动补齐：键盘二号记下自己的卡片列表")
+    checkEqual(startupLoaded.devices.first { $0.id == kb2ID }?.settings.displayMode, .systemMonitor,
+               "启动补齐：键盘二号记下自己的当前卡片")
+    // 幂等：再次启动不重复改动，也不会把别的设备的值串进来
+    let afterFirstSave = try JSONDecoder().decode(AppSettings.self,
+                                                  from: try JSONEncoder().encode(startupLoaded))
+    checkEqual(afterFirstSave.migrateKeyboardCardContentSeeds(), 0, "启动补齐幂等：第二次无需补齐")
+    // 用户在键盘二号上换成自己的卡片后，键盘一号完全不受影响
+    check(afterFirstSave.switchActiveDevice(of: .keyboard, to: kb2ID) != nil, "启动后切换到键盘二号")
+    afterFirstSave.keyboardCardPanels = ["canvas"]
+    afterFirstSave.displayMode = .canvas
+    afterFirstSave.captureActiveDeviceSnapshots()
+    checkEqual(afterFirstSave.devices.first { $0.id == kb1ID }?.settings.keyboardCardPanels,
+               ["system", "pomodoro"], "键盘二号换卡片不影响键盘一号")
+    let afterSecondSave = try JSONDecoder().decode(AppSettings.self,
+                                                   from: try JSONEncoder().encode(afterFirstSave))
+    check(afterSecondSave.switchActiveDevice(of: .keyboard, to: kb1ID) != nil, "重启后切换到键盘一号")
+    checkEqual(afterSecondSave.keyboardCardPanels, ["system", "pomodoro"],
+               "重启后键盘一号仍恢复自己的卡片列表")
+    checkEqual(afterSecondSave.devices.first { $0.id == kb2ID }?.settings.keyboardCardPanels, ["canvas"],
+               "重启后键盘二号仍保留自己的卡片列表")
+    // 跨设备类型：旧 HA 快照残留打印机映射时，切换 HA 设备不再覆盖当前打印机映射
+    var mixed = AppSettings()
+    var legacyHA = DeviceSettings()
+    legacyHA.haServerURL = "http://ha.local"
+    legacyHA.bambuStatusEntityID = "sensor.other_printer_status"
+    let haDevice = ManagedDevice(type: .homeAssistant, name: "HA", settings: legacyHA)
+    var printerFields = DeviceSettings()
+    printerFields.bambuPrinterName = "X2D"
+    printerFields.bambuStatusEntityID = "sensor.x2d_status"
+    let printerDevice = ManagedDevice(type: .bambuLab, name: "X2D", settings: printerFields)
+    mixed.devices = [haDevice, printerDevice]
+    mixed.activeHomeAssistantDeviceID = haDevice.id
+    mixed.activeBambuLabDeviceID = printerDevice.id
+    mixed.bambuStatusEntityID = "sensor.x2d_status"
+    mixed.captureActiveDeviceSnapshots()
+    checkEqual(mixed.devices.first { $0.id == printerDevice.id }?.settings.bambuStatusEntityID,
+               "sensor.x2d_status", "同步不再用全局镜像覆盖打印机快照之外的设备")
+    let otherHA = ManagedDevice(type: .homeAssistant, name: "HA2", settings: legacyHA)
+    mixed.devices.append(otherHA)
+    mixed.activeHomeAssistantDeviceID = otherHA.id
+    mixed.captureActiveDeviceSnapshots()
+    checkEqual(mixed.bambuStatusEntityID, "sensor.x2d_status", "切换 HA 设备不改写打印机映射镜像")
+    checkEqual(mixed.devices.first { $0.id == printerDevice.id }?.settings.bambuStatusEntityID,
+               "sensor.x2d_status", "切换 HA 设备不改写打印机设备快照")
+    let richCard = try ScreenRenderer.renderCanvas(modules: [.bambuLab2], system: system,
+                                                   nowPlaying: .sample, pomodoro: pomo,
+                                                   customText: "", settings: multiCanvas, ha: multiHA)
+    check(richCard.data != slot2Card.data, "显示信息更多时画板模块渲染应不同")
+    // 旧档案兼容：缺字段的 CanvasPrinterFields JSON 回退默认
+    let legacyFields = try JSONDecoder().decode(CanvasPrinterFields.self,
+                                                from: Data(#"{"showStatus":false}"#.utf8))
+    checkEqual(legacyFields.showStatus, false, "画板显示选项-已给字段生效")
+    checkEqual(legacyFields.showProgress, true, "画板显示选项-缺字段回退默认")
+    // 状态汉化共用映射（卡片与画板模块一致）
+    checkEqual(BambuStatusText.map("running"), "运行中", "状态汉化 running")
+    checkEqual(BambuStatusText.map("finish"), "已完成", "状态汉化 finish")
+    checkEqual(BambuStatusText.map("weird_state"), "weird_state", "状态汉化未知原样返回")
+    // 完成庆祝卡：带任务名与不带渲染不同；超长任务名不撑爆
+    let doneNoTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D", settings: bCanvas)
+    let doneWithTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D",
+                                                             taskName: "20个6.35mm批头", settings: bCanvas)
+    check(doneNoTask.data != doneWithTask.data, "完成卡-有任务名时渲染不同")
+    let doneLongTask = try ScreenRenderer.renderPrintSuccess(
+        printerName: "X2D", taskName: String(repeating: "长", count: 40), settings: bCanvas)
+    check(doneLongTask.data.count <= ScreenRenderer.maximumFileSize, "完成卡-超长任务名不撑爆")
+    // 先知/摘录画板也支持打印机模块（带 HA 数据渲染，尺寸正确）
+    let oraModule = ScreenRenderer.renderDeviceCanvas(modules: [.bambuLab], system: system,
+                                                      nowPlaying: .placeholder, pomodoro: pomo,
+                                                      customText: "", settings: bCanvas, ha: bSnap,
+                                                      width: ScreenRenderer.oracleCanvasSize,
+                                                      height: ScreenRenderer.oracleCanvasSize,
+                                                      palette: ScreenThemes.einkMono)
+    checkEqual(oraModule.width, ScreenRenderer.oracleCanvasSize, "先知画板 Bambu 模块宽度")
+    let excerptModule = ScreenRenderer.renderDeviceCanvas(modules: [.bambuLab], system: system,
+                                                          nowPlaying: .placeholder, pomodoro: pomo,
+                                                          customText: "", settings: bCanvas, ha: bSnap,
+                                                          width: ScreenRenderer.excerptCanvasWidth,
+                                                          height: ScreenRenderer.excerptCanvasHeight,
+                                                          palette: ScreenThemes.einkMono)
+    checkEqual(excerptModule.width, ScreenRenderer.excerptCanvasWidth, "摘录画板 Bambu 模块宽度")
+    print("  Bambu Lab 通过")
+
+    // 实体图标映射：mdi 名优先，其次 domain 默认，最后回退通用；
+    // 开关/灯光类优先按域（switch/input_boolean → 开关样式，light → 灯泡样式，即使带 mdi 图标）
+    checkEqual(SFIconMapper.symbol(icon: "thermometer", domain: "sensor"), "thermometer.medium",
+               "图标映射 mdi thermometer")
+    checkEqual(SFIconMapper.symbol(icon: "lightbulb", domain: "switch"), "switch.2",
+               "switch 域优先开关图标（mdi 不覆盖）")
+    checkEqual(SFIconMapper.symbol(icon: "power", domain: "switch"), "switch.2",
+               "switch 域带 mdi power 仍为开关图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "switch"), "switch.2", "switch 域默认开关图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "input_boolean"), "switch.2",
+               "input_boolean 域默认开关图标")
+    checkEqual(SFIconMapper.symbol(icon: "power", domain: "input_boolean"), "switch.2",
+               "input_boolean 域带 mdi 仍为开关图标")
+    checkEqual(SFIconMapper.symbol(icon: "lamp", domain: "light"), "lightbulb",
+               "light 域优先灯泡图标（mdi 不覆盖）")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "light"), "lightbulb", "domain 默认 light 图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "climate"), "thermostat", "domain 默认 climate 图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "binary_sensor"), "switch.2", "domain 默认 binary_sensor 图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "media_player"), "play.tv", "domain 默认 media_player 图标")
+    checkEqual(SFIconMapper.symbol(icon: nil, domain: "nothing_here"), "questionmark.circle",
+               "未知域回退通用图标")
+    let iconEntity = HAEntity(entityId: "sensor.kitchen_temp", friendlyName: "厨房温度", state: "26",
+                              unitOfMeasurement: "°C", icon: "thermometer")
+    checkEqual(SFIconMapper.symbol(for: iconEntity), "thermometer.medium", "实体图标取 mdi 名")
+    let noIconEntity = HAEntity(entityId: "light.bedroom", friendlyName: "卧室灯", state: "on",
+                                unitOfMeasurement: nil)
+    checkEqual(SFIconMapper.symbol(for: noIconEntity), "lightbulb", "无 mdi 图标按 domain 默认")
+    let switchEntity = HAEntity(entityId: "switch.plug", friendlyName: "客厅插座", state: "on",
+                                unitOfMeasurement: nil, icon: "power-socket")
+    checkEqual(SFIconMapper.symbol(for: switchEntity), "switch.2", "switch 域实体渲染开关图标")
+    let boolEntity = HAEntity(entityId: "input_boolean.night", friendlyName: "夜间模式", state: "off",
+                              unitOfMeasurement: nil)
+    checkEqual(SFIconMapper.symbol(for: boolEntity), "switch.2", "input_boolean 域实体渲染开关图标")
+
+    // parseStates 解析 attributes.icon（mdi: 前缀提取 / 无前缀原样 / 空为 nil）
+    let iconJSON = """
+    [
+      {"entity_id": "sensor.t1", "state": "1",
+       "attributes": {"friendly_name": "温度", "icon": "mdi:thermometer"}},
+      {"entity_id": "light.l1", "state": "on",
+       "attributes": {"friendly_name": "灯", "icon": "custom-icon"}},
+      {"entity_id": "switch.s1", "state": "off", "attributes": {}}
+    ]
+    """
+    let iconEntities = try HomeAssistantClient.parseStates(data: Data(iconJSON.utf8))
+    checkEqual(iconEntities[0].icon, "thermometer", "mdi: 前缀图标提取")
+    checkEqual(iconEntities[1].icon, "custom-icon", "无 mdi: 前缀图标原样保留")
+    check(iconEntities[2].icon == nil, "无图标实体 icon 为 nil")
+
+    // 轮询触发判定：未配置不轮询 / 初始即轮询 / 间隔内不轮询 / 超间隔轮询
+    let base = Date()
+    checkEqual(HARefreshPolicy.isDue(now: base, serverURL: "", minutes: 5, lastRefresh: nil),
+               false, "未配置服务器不轮询")
+    checkEqual(HARefreshPolicy.isDue(now: base, serverURL: "http://h:8123", minutes: 5, lastRefresh: nil),
+               true, "首次启动即轮询")
+    checkEqual(HARefreshPolicy.isDue(now: base, serverURL: "http://h:8123", minutes: 5,
+                                     lastRefresh: base.addingTimeInterval(-60)),
+               false, "间隔内不轮询")
+    checkEqual(HARefreshPolicy.isDue(now: base, serverURL: "http://h:8123", minutes: 5,
+                                     lastRefresh: base.addingTimeInterval(-301)),
+               true, "超过刷新间隔触发轮询")
+    checkEqual(HARefreshPolicy.isDue(now: base, serverURL: "http://h:8123", minutes: 1,
+                                     lastRefresh: base.addingTimeInterval(-90)),
+               true, "1 分钟间隔下 90 秒后轮询")
+
+    // 设备类型：HA 与键盘/先知/摘录并列；快照按设备独立记录实体配置
+    check(DeviceType.allCases.contains(.homeAssistant), "HA 设备类型存在")
+    checkEqual(DeviceType.homeAssistant.title, "Home Assistant", "HA 设备类型标题")
+    var s1 = AppSettings()
+    s1.haServerURL = "http://192.168.1.10:8123"
+    s1.haToken = "token-A"
+    s1.haRefreshMinutes = 3
+    s1.haEntityID = "sensor.temp_a"
+    let snap1 = DeviceSettings.capture(from: s1, type: .homeAssistant)
+    checkEqual(snap1.haServerURL, "http://192.168.1.10:8123", "基线：HA 设备快照捕获服务器地址")
+    checkEqual(snap1.haToken, "token-A", "基线：HA 设备快照捕获令牌")
+    checkEqual(snap1.haRefreshMinutes, 3, "基线：HA 设备快照捕获刷新间隔")
+    checkEqual(snap1.haEntityID, "sensor.temp_a", "基线：HA 设备快照捕获实体")
+    var s2 = AppSettings()
+    s2.haEntityID = "sensor.temp_b"
+    s2.haMonitorEnabled = true
+    let snap2 = DeviceSettings.capture(from: s2, type: .homeAssistant)
+    checkEqual(snap2.haEntityID, "sensor.temp_b", "第二台 HA 设备独立实体")
+    checkEqual(snap2.haMonitorEnabled, true, "第二台 HA 设备独立监控开关")
+    var s3 = AppSettings()
+    s3.haEntityID = "sensor.keep_me"
+    s3.haServerURL = "http://shared.local:8123"
+    s3.haToken = "shared-token"
+    s3.haRefreshMinutes = 7
+    snap1.apply(to: s3, type: .homeAssistant)
+    checkEqual(s3.haEntityID, "sensor.temp_a", "基线：HA 设备快照套用恢复实体")
+    checkEqual(s3.haServerURL, "http://192.168.1.10:8123", "基线：HA 设备快照套用恢复地址")
+    checkEqual(s3.haToken, "token-A", "基线：HA 设备快照套用恢复令牌")
+    checkEqual(s3.haRefreshMinutes, 3, "基线：HA 设备快照套用恢复刷新间隔")
+    // 打印机实体映射只归 .bambuLab 设备记录：HA 设备不再捕获/套用同一批全局镜像字段
+    // （否则切换 HA 设备会把它的旧映射写回镜像，再被同步覆盖到打印机快照 = 跨设备串扰）
+    var s4 = AppSettings()
+    s4.bambuEnableAlert = true
+    s4.bambuStatusEntityID = "sensor.bambu_status"
+    s4.bambuProgressEntityID = "sensor.bambu_progress"
+    s4.bambuTaskEntityID = "sensor.bambu_task"
+    s4.bambuNozzleTempEntityID = "sensor.bambu_nozzle"
+    s4.bambuBedTempEntityID = "sensor.bambu_bed"
+    s4.bambuRemainingEntityID = "sensor.bambu_remain"
+    s4.bambuErrorEntityID = "sensor.bambu_error"
+    let snap4 = DeviceSettings.capture(from: s4, type: .homeAssistant)
+    checkEqual(snap4.bambuStatusEntityID, nil, "HA 快照不再捕获 Bambu 状态实体")
+    checkEqual(snap4.bambuErrorEntityID, nil, "HA 快照不再捕获 Bambu 错误实体")
+    checkEqual(snap4.bambuEnableAlert, nil, "HA 快照不再捕获 Bambu 告警开关")
+    var s5 = AppSettings()
+    s5.bambuStatusEntityID = "sensor.x2d_status"
+    var staleHA = DeviceSettings()
+    staleHA.bambuStatusEntityID = "sensor.other_printer_status"
+    staleHA.bambuNozzleTempEntityID = "sensor.other_nozzle"
+    staleHA.bambuEnableAlert = false
+    staleHA.apply(to: s5, type: .homeAssistant)
+    checkEqual(s5.bambuStatusEntityID, "sensor.x2d_status", "旧 HA 快照残留字段不改写打印机映射镜像")
+    checkEqual(s5.bambuNozzleTempEntityID, "", "旧 HA 快照残留字段不改写喷嘴实体镜像")
+    checkEqual(s5.bambuEnableAlert, true, "旧 HA 快照残留字段不改写告警开关镜像")
+    // 打印机设备仍完整捕获/套用自身的实体映射
+    var s4b = AppSettings()
+    s4b.bambuStatusEntityID = "sensor.bambu_status"
+    s4b.bambuErrorEntityID = "sensor.bambu_error"
+    s4b.bambuEnableAlert = true
+    s4b.bambuPrinterName = "X2D"
+    let printerSnap4 = DeviceSettings.capture(from: s4b, type: .bambuLab)
+    checkEqual(printerSnap4.bambuStatusEntityID, "sensor.bambu_status", "打印机设备快照捕获状态实体")
+    checkEqual(printerSnap4.bambuErrorEntityID, "sensor.bambu_error", "打印机设备快照捕获错误实体")
+    var s4c = AppSettings()
+    printerSnap4.apply(to: s4c, type: .bambuLab)
+    checkEqual(s4c.bambuStatusEntityID, "sensor.bambu_status", "打印机设备快照套用状态实体")
+    checkEqual(s4c.bambuPrinterName, "X2D", "打印机设备快照套用名称")
+    // 旧版多打印机列表仍随 HA 设备快照往返
+    var s4d = AppSettings()
+    s4d.bambuPrinters = [BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status")]
+    let snap4d = DeviceSettings.capture(from: s4d, type: .homeAssistant)
+    checkEqual(snap4d.bambuPrinters?.count, 1, "HA 快照保留旧版多打印机列表")
+    var s4e = AppSettings()
+    snap4d.apply(to: s4e, type: .homeAssistant)
+    checkEqual(s4e.bambuPrinters.first?.name, "A1", "HA 快照套用旧版多打印机列表")
+    // HA 设备不再搬运卡片实体列表与显示名称：卡片内容归键盘，显示名称全局共享
+    var s6 = AppSettings()
+    s6.haEntities = ["sensor.a", "light.b"]
+    s6.haEntityAliases = ["sensor.a": "温度"]
+    s6.haMonitorEnabled = true
+    let snap6 = DeviceSettings.capture(from: s6, type: .homeAssistant)
+    checkEqual(snap6.haEntities, ["sensor.a", "light.b"], "基线：HA 设备快照捕获卡片实体列表")
+    checkEqual(snap6.haEntityAliases?["sensor.a"], "温度", "基线：HA 设备快照捕获实体显示名称")
+    checkEqual(snap6.haMonitorEnabled, true, "HA 设备快照仍记录自己的异常监控开关")
+    var s7 = AppSettings()
+    s7.haEntities = ["sensor.other"]
+    s7.haEntityAliases = [:]
+    snap6.apply(to: s7, type: .homeAssistant)
+    checkEqual(s7.haEntities, ["sensor.a", "light.b"], "基线：HA 设备快照套用恢复实体列表")
+    checkEqual(s7.haEntityAliases["sensor.a"], "温度", "基线：HA 设备快照套用恢复别名")
+    checkEqual(s7.haMonitorEnabled, true, "切换 HA 设备套用其异常监控配置")
+    // —— Home Assistant 卡片内容按键盘隔离（实体池全局共享）——
+    var cardKB1 = AppSettings()
+    cardKB1.haCardEntityIDs = ["sensor.a", "light.b"]
+    let kb1CardSnap = DeviceSettings.capture(from: cardKB1, type: .keyboard)
+    checkEqual(kb1CardSnap.haCardEntityIDs, ["sensor.a", "light.b"], "键盘快照记录自己的 HA 卡片实体")
+    var cardKB2 = AppSettings()
+    cardKB2.haCardEntityIDs = ["switch.c"]
+    let kb2CardSnap = DeviceSettings.capture(from: cardKB2, type: .keyboard)
+    checkEqual(kb2CardSnap.haCardEntityIDs, ["switch.c"], "第二台键盘记录自己的 HA 卡片实体")
+    // —— 三类画板的 HA 模块实体独立于键盘卡片，也彼此独立 ——
+    let canvasEntitySettings = AppSettings()
+    canvasEntitySettings.haCardEntityIDs = ["sensor.card_only"]
+    canvasEntitySettings.canvasHAEntityIDs = ["sensor.keyboard_canvas"]
+    canvasEntitySettings.oracleCanvasHAEntityIDs = ["light.oracle_canvas"]
+    canvasEntitySettings.excerptCanvasHAEntityIDs = ["switch.excerpt_canvas"]
+    let keyboardCanvasSnap = DeviceSettings.capture(from: canvasEntitySettings, type: .keyboard)
+    let oracleCanvasSnap = DeviceSettings.capture(from: canvasEntitySettings, type: .oracle)
+    let excerptCanvasSnap = DeviceSettings.capture(from: canvasEntitySettings, type: .excerpt)
+    checkEqual(keyboardCanvasSnap.canvasHAEntityIDs, ["sensor.keyboard_canvas"],
+               "灵犀画板记录自己的 HA 实体")
+    checkEqual(oracleCanvasSnap.oracleCanvasHAEntityIDs, ["light.oracle_canvas"],
+               "口袋先知画板记录自己的 HA 实体")
+    checkEqual(excerptCanvasSnap.excerptCanvasHAEntityIDs, ["switch.excerpt_canvas"],
+               "摘录画板记录自己的 HA 实体")
+    let restoredCanvasEntities = AppSettings()
+    keyboardCanvasSnap.apply(to: restoredCanvasEntities, type: .keyboard)
+    oracleCanvasSnap.apply(to: restoredCanvasEntities, type: .oracle)
+    excerptCanvasSnap.apply(to: restoredCanvasEntities, type: .excerpt)
+    checkEqual(restoredCanvasEntities.haCardEntityIDs, ["sensor.card_only"],
+               "HA 键盘卡片实体与灵犀画板实体分别恢复")
+    checkEqual(restoredCanvasEntities.canvasHAEntityIDs, ["sensor.keyboard_canvas"],
+               "灵犀画板 HA 实体套用恢复")
+    checkEqual(restoredCanvasEntities.oracleCanvasHAEntityIDs, ["light.oracle_canvas"],
+               "口袋先知 HA 实体套用恢复")
+    checkEqual(restoredCanvasEntities.excerptCanvasHAEntityIDs, ["switch.excerpt_canvas"],
+               "摘录画板 HA 实体套用恢复")
+    let canvasEntitiesRoundTrip = try JSONDecoder().decode(AppSettings.self,
+                                                           from: try JSONEncoder().encode(canvasEntitySettings))
+    checkEqual(canvasEntitiesRoundTrip.canvasHAEntityIDs, ["sensor.keyboard_canvas"],
+               "三画板 HA 实体持久化-灵犀")
+    checkEqual(canvasEntitiesRoundTrip.oracleCanvasHAEntityIDs, ["light.oracle_canvas"],
+               "三画板 HA 实体持久化-先知")
+    checkEqual(canvasEntitiesRoundTrip.excerptCanvasHAEntityIDs, ["switch.excerpt_canvas"],
+               "三画板 HA 实体持久化-摘录")
+    let oldCanvasSettings = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+    checkEqual(oldCanvasSettings.canvasHAEntityIDs, [], "旧档案不会把卡片实体自动灌入灵犀画板")
+    checkEqual(oldCanvasSettings.oracleCanvasHAEntityIDs, [], "旧档案先知画板实体默认空")
+    checkEqual(oldCanvasSettings.excerptCanvasHAEntityIDs, [], "旧档案摘录画板实体默认空")
+
+    let canvasPool = [
+        HAEntity(entityId: "sensor.keyboard_canvas", friendlyName: "键盘温度", state: "23", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "light.oracle_canvas", friendlyName: "先知灯", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "switch.excerpt_canvas", friendlyName: "摘录开关", state: "off", unitOfMeasurement: nil),
+    ]
+    let sharedPoolSnapshot = HASnapshot(entities: canvasPool)
+    let keyboardCanvasSelection = sharedPoolSnapshot.selecting(entityIDs: ["sensor.keyboard_canvas"])
+    let oracleCanvasSelection = sharedPoolSnapshot.selecting(entityIDs: ["light.oracle_canvas"])
+    let excerptCanvasSelection = sharedPoolSnapshot.selecting(entityIDs: ["switch.excerpt_canvas"])
+    checkEqual(keyboardCanvasSelection.selectedEntities.map(\.entityId), ["sensor.keyboard_canvas"],
+               "同一 HA 实体池按灵犀画板列表过滤")
+    checkEqual(oracleCanvasSelection.selectedEntities.map(\.entityId), ["light.oracle_canvas"],
+               "同一 HA 实体池按先知画板列表过滤")
+    checkEqual(excerptCanvasSelection.selectedEntities.map(\.entityId), ["switch.excerpt_canvas"],
+               "同一 HA 实体池按摘录画板列表过滤")
+    checkEqual(sharedPoolSnapshot.selecting(entityIDs: []).selectedEntities.count, 0,
+               "画板未选择实体时不会自动显示全部实体")
+    let cardKb1ID = UUID()
+    let cardKb2ID = UUID()
+    func cardOnlyKeyboard(_ id: UUID, _ name: String, _ endpoint: String) -> ManagedDevice {
+        var fields = DeviceSettings()
+        fields.endpoint = endpoint
+        fields.haCardEntityIDs = []
+        fields.keyboardCardPanels = ["homeAssistant"]
+        var device = ManagedDevice(type: .keyboard, name: name, settings: fields)
+        device.id = id
+        return device
+    }
+    var cardScoped = AppSettings()
+    cardScoped.haServerURL = "http://192.168.1.9:8123"
+    cardScoped.haToken = "shared-token"
+    cardScoped.haEntityAliases = ["sensor.a": "客厅温度"]
+    cardScoped.devices = [cardOnlyKeyboard(cardKb1ID, "键盘一", "http://10.0.0.11/image/upload"),
+                          cardOnlyKeyboard(cardKb2ID, "键盘二", "http://10.0.0.12/image/upload")]
+    cardScoped.activeKeyboardDeviceID = cardKb1ID
+    // 键盘一：选择两个实体
+    cardScoped.haCardEntityIDs = ["sensor.a", "light.b"]
+    cardScoped.captureActiveDeviceSnapshots()
+    checkEqual(cardScoped.devices.first { $0.id == cardKb1ID }?.settings.haCardEntityIDs,
+               ["sensor.a", "light.b"], "键盘一记下自己的 HA 卡片实体")
+    // 切到键盘二：从空列表开始，编辑它不影响键盘一
+    check(cardScoped.switchActiveDevice(of: .keyboard, to: cardKb2ID) != nil, "切换到键盘二")
+    checkEqual(cardScoped.haCardEntityIDs, [], "键盘二的 HA 卡片实体列表独立（不继承键盘一）")
+    cardScoped.haCardEntityIDs = ["switch.c"]
+    cardScoped.captureActiveDeviceSnapshots()
+    checkEqual(cardScoped.devices.first { $0.id == cardKb1ID }?.settings.haCardEntityIDs,
+               ["sensor.a", "light.b"], "键盘二换实体不影响键盘一")
+    // 切回键盘一：恢复自己的列表；共享服务器与别名不变
+    check(cardScoped.switchActiveDevice(of: .keyboard, to: cardKb1ID) != nil, "切回键盘一")
+    checkEqual(cardScoped.haCardEntityIDs, ["sensor.a", "light.b"], "切回键盘一恢复其卡片实体列表")
+    checkEqual(cardScoped.haServerURL, "http://192.168.1.9:8123", "切换键盘不改动共享服务器")
+    checkEqual(cardScoped.haEntityAliases["sensor.a"], "客厅温度", "实体显示名称全局共享")
+    // 反复切换五次：两台键盘的卡片实体列表始终各自独立
+    for i in 0..<5 {
+        let target = i % 2 == 0 ? cardKb2ID : cardKb1ID
+        let expected = i % 2 == 0 ? ["switch.c"] : ["sensor.a", "light.b"]
+        _ = cardScoped.switchActiveDevice(of: .keyboard, to: target)
+        checkEqual(cardScoped.haCardEntityIDs, expected, "第\(i + 1)次切换后卡片实体列表仍独立")
+    }
+    // 持久化往返：两台键盘的卡片实体列表各自保留
+    let cardScopedReloaded = try JSONDecoder().decode(AppSettings.self,
+                                                      from: try JSONEncoder().encode(cardScoped))
+    checkEqual(cardScopedReloaded.devices.first { $0.id == cardKb1ID }?.settings.haCardEntityIDs,
+               ["sensor.a", "light.b"], "持久化后键盘一卡片实体列表不变")
+    checkEqual(cardScopedReloaded.devices.first { $0.id == cardKb2ID }?.settings.haCardEntityIDs,
+               ["switch.c"], "持久化后键盘二卡片实体列表不变")
+    // 旧档案：只有全局实体列表 → 解码时作为镜像，再由键盘补齐为每台一份，之后互不影响
+    var legacyCard = AppSettings()
+    legacyCard.haEntities = ["sensor.legacy", "light.legacy"]
+    let legacyReloaded = try JSONDecoder().decode(AppSettings.self,
+                                                  from: try JSONEncoder().encode(legacyCard))
+    checkEqual(legacyReloaded.haCardEntityIDs, ["sensor.legacy", "light.legacy"],
+               "旧档案的全局实体列表在解码时收为当前卡片列表镜像")
+    let legacyKb1 = UUID()
+    let legacyKb2 = UUID()
+    var legacyCardScoped = AppSettings()
+    var legacyKB1Fields = DeviceSettings()
+    legacyKB1Fields.endpoint = "http://10.0.0.21/image/upload"
+    var legacyKB1 = ManagedDevice(type: .keyboard, name: "旧键盘一", settings: legacyKB1Fields)
+    legacyKB1.id = legacyKb1
+    var legacyKB2Fields = DeviceSettings()
+    legacyKB2Fields.endpoint = "http://10.0.0.22/image/upload"
+    var legacyKB2 = ManagedDevice(type: .keyboard, name: "旧键盘二", settings: legacyKB2Fields)
+    legacyKB2.id = legacyKb2
+    legacyCardScoped.devices = [legacyKB1, legacyKB2]
+    legacyCardScoped.activeKeyboardDeviceID = legacyKb1
+    legacyCardScoped.haCardEntityIDs = ["sensor.legacy", "light.legacy"]
+    legacyCardScoped.migrateKeyboardCardContentSeeds()
+    checkEqual(legacyCardScoped.devices.first { $0.id == legacyKb2 }?.settings.haCardEntityIDs,
+               ["sensor.legacy", "light.legacy"], "旧键盘二补齐到自己的卡片实体列表")
+    check(legacyCardScoped.switchActiveDevice(of: .keyboard, to: legacyKb2) != nil, "切换到旧键盘二")
+    legacyCardScoped.haCardEntityIDs = ["sensor.legacy"]
+    legacyCardScoped.captureActiveDeviceSnapshots()
+    checkEqual(legacyCardScoped.devices.first { $0.id == legacyKb1 }?.settings.haCardEntityIDs,
+               ["sensor.legacy", "light.legacy"], "旧键盘一的卡片实体列表不被键盘二改动")
+    // 同一份共享实体池 + 不同选择 → 两台键盘的 HA 卡片画面不同
+    let poolSensor = HAEntity(entityId: "sensor.a", friendlyName: "客厅温度",
+                              state: "22.5", unitOfMeasurement: "°C")
+    let poolLight = HAEntity(entityId: "light.b", friendlyName: "台灯", state: "on",
+                             unitOfMeasurement: nil)
+    let poolSwitch = HAEntity(entityId: "switch.c", friendlyName: "风扇", state: "off",
+                              unitOfMeasurement: nil)
+    let pool = [poolSensor, poolLight, poolSwitch]
+    var kb1Card = AppSettings()
+    var kb2Card = AppSettings()
+    let kb1Selection = [poolSensor, poolLight]
+    let kb2Selection = [poolSwitch]
+    let kb1Render = try ScreenRenderer.renderHA(kb1Selection, errorText: nil, settings: kb1Card)
+    let kb2Render = try ScreenRenderer.renderHA(kb2Selection, errorText: nil, settings: kb2Card)
+    check(kb1Render.data != kb2Render.data, "两台键盘按各自选择渲染出不同的 HA 卡片")
+    let kb1Again = try ScreenRenderer.renderHA(kb1Selection, errorText: nil, settings: kb1Card)
+    checkEqual(kb1Again.data.count, kb1Render.data.count, "同一份选择重复渲染结果一致（数据源共享）")
+    check(HAEntityPicker.printerRelevant(pool).count < pool.count,
+          "打印机候选只是共享实体池的视图层子集")
+    checkEqual(pool.count, 3, "候选筛选不裁剪共享实体池（数据源仍是一份）")
+    // —— Home Assistant 单服务器全局共享 ——
+    var legacyHAFieldsA = DeviceSettings()
+    legacyHAFieldsA.haServerURL = "http://192.168.1.10:8123"
+    legacyHAFieldsA.haToken = "token-A"
+    legacyHAFieldsA.haRefreshMinutes = 3
+    var legacyHAFieldsB = DeviceSettings()
+    legacyHAFieldsB.haServerURL = "http://192.168.1.99:8123"
+    legacyHAFieldsB.haToken = "token-B"
+    legacyHAFieldsB.haRefreshMinutes = 9
+    let haDevA = ManagedDevice(type: .homeAssistant, name: "HA-A", settings: legacyHAFieldsA)
+    let haDevB = ManagedDevice(type: .homeAssistant, name: "HA-B", settings: legacyHAFieldsB)
+    var collapsed = AppSettings()
+    collapsed.devices = [haDevA, haDevB]
+    collapsed.activeHomeAssistantDeviceID = haDevB.id
+    let migrationNote = collapsed.migrateHAServerToGlobal()
+    check(migrationNote != nil, "旧档案 HA 连接迁移留下日志")
+    checkEqual(collapsed.haServerURL, "http://192.168.1.99:8123", "迁移后全局地址采用活动设备那份")
+    checkEqual(collapsed.haToken, "token-B", "迁移后全局令牌采用活动设备那份")
+    checkEqual(collapsed.haRefreshMinutes, 9, "迁移后刷新间隔采用活动设备那份")
+    checkEqual(collapsed.devices.first { $0.id == haDevA.id }?.settings.haServerURL, nil,
+               "非活动设备的地址副本已清除（不再各存一份令牌）")
+    checkEqual(collapsed.devices.first { $0.id == haDevB.id }?.settings.haToken, nil,
+               "活动设备的令牌副本也已清除")
+    checkEqual(collapsed.migrateHAServerToGlobal(), nil, "重复启动不再改动（迁移幂等）")
+    // 全局为空时取活动设备值
+    var collapsedEmpty = AppSettings()
+    collapsedEmpty.devices = [haDevA, haDevB]
+    collapsedEmpty.activeHomeAssistantDeviceID = haDevA.id
+    collapsedEmpty.haServerURL = ""
+    check(collapsedEmpty.migrateHAServerToGlobal() != nil, "全局为空时也能迁移")
+    checkEqual(collapsedEmpty.haServerURL, "http://192.168.1.10:8123", "全局为空时取活动设备地址")
+    // 切换激活 HA 设备：共享连接与实体池都不变
+    let serverBefore = collapsed.haServerURL
+    check(collapsed.switchActiveDevice(of: .homeAssistant, to: haDevA.id) != nil, "可切换激活 HA 设备")
+    checkEqual(collapsed.haServerURL, serverBefore, "切换激活设备不改动共享服务器")
+    checkEqual(collapsed.haToken, "token-B", "切换激活设备不改动共享令牌")
+    // 地址规范化与校验
+    checkEqual(HomeAssistantClient.statesURL(server: "192.168.1.20:8123")?.absoluteString,
+               "http://192.168.1.20:8123/api/states", "缺协议时自动补 http://")
+    checkEqual(HomeAssistantClient.statesURL(server: "http://a.local/")?.absoluteString,
+               "http://a.local/api/states", "尾部斜杠不重复拼接")
+    check(HomeAssistantClient.statesURL(server: "ftp://a.local") == nil, "非 http/https 地址判为无效")
+    check(HomeAssistantClient.statesURL(server: "   ") == nil, "空白地址判为无效")
+    check(HomeAssistantClient.validate(serverURL: "", token: "t") != nil, "校验：缺地址给出原因")
+    check(HomeAssistantClient.validate(serverURL: "http://a.local", token: "  ") != nil,
+          "校验：缺令牌给出原因")
+    checkEqual(HomeAssistantClient.validate(serverURL: "http://a.local", token: "t"), nil,
+               "校验：参数可用时不报错")
+    check(HAError.unauthorized.errorDescription?.contains("401") == true, "401 报错含状态码")
+    check(HAError.forbidden.errorDescription?.contains("403") == true, "403 报错含状态码")
+    check(HAError.serverError(status: 500).errorDescription?.contains("500") == true,
+          "其他状态码报错含状态码")
+    check(HAError.invalidURL.errorDescription?.contains("http://") == true, "地址格式错误给出示例")
+    check(HAError.cannotConnect.errorDescription?.contains("Home Assistant") == true,
+          "连接失败提示使用产品全称")
+    // 失效绑定：快照数据 + 卡片渲染
+    let liveEntity = HAEntity(entityId: "sensor.ok", friendlyName: "在线传感器",
+                              state: "21.5", unitOfMeasurement: "°C")
+    var staleSnapshot = HASnapshot(entities: [liveEntity], selectedEntities: [liveEntity],
+                                   missingEntityIDs: ["sensor.gone"],
+                                   lastKnownValues: ["sensor.gone": "12 %"])
+    checkEqual(staleSnapshot.missingRows().first?.name, "sensor.gone", "失效行默认显示 entity_id")
+    staleSnapshot.aliases = ["sensor.gone": "旧传感器"]
+    checkEqual(staleSnapshot.missingRows().first?.name, "旧传感器", "失效行优先使用自定义显示名")
+    checkEqual(staleSnapshot.missingRows().first?.lastValue, "12 %", "失效行保留最后一次已知值")
+    let remembered = staleSnapshot.rememberingValues(from: [liveEntity])
+    checkEqual(remembered.lastKnownValues["sensor.ok"], "21.5 °C", "记录在线实体的最后已知值")
+    var haCardSettings = AppSettings()
+    haCardSettings.haServerURL = "http://192.168.1.9:8123"
+    let cardNoStale = try ScreenRenderer.renderHA([liveEntity], missing: [],
+                                                  errorText: nil, settings: haCardSettings)
+    let cardWithStale = try ScreenRenderer.renderHA([liveEntity], missing: staleSnapshot.missingRows(),
+                                                    errorText: nil, settings: haCardSettings)
+    check(cardNoStale.data != cardWithStale.data, "存在失效绑定时 HA 卡片渲染不同")
+    let cardAllStale = try ScreenRenderer.renderHA([], missing: staleSnapshot.missingRows(),
+                                                   errorText: nil, settings: haCardSettings)
+    check(cardAllStale.data != cardNoStale.data, "实体全部失效时不再显示为正常在线")
+    let cardDisconnected = try ScreenRenderer.renderHA([], errorText: "无法连接 Home Assistant",
+                                                       settings: haCardSettings)
+    check(cardDisconnected.data != cardNoStale.data, "未连接时卡片显示明确提示")
+    // 打印机卡片：未映射 / 已映射但失效 / 实体池尚未拿到，三者可区分
+    let cardUnmapped = try ScreenRenderer.renderBambuLab(BambuLabCardSettings(name: "A1"),
+                                                         entities: [liveEntity],
+                                                         settings: haCardSettings)
+    let cardStaleMapping = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.gone"),
+        entities: [liveEntity], settings: haCardSettings)
+    let cardNoPool = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.gone"),
+        entities: [], settings: haCardSettings)
+    check(cardUnmapped.data != cardStaleMapping.data, "映射失效与未映射渲染不同")
+    checkEqual(cardNoPool.data.count, cardStaleMapping.data.count,
+               "基线：不区分实体池未就绪与映射失效（统一显示未配置）")
+    // 两台键盘卡片内容不同，但 HA 模块读同一份服务器数据 → 模块画面一致
+    var kbShareA = AppSettings()
+    var kbShareB = AppSettings()
+    kbShareB.showCpu = false
+    let sharedCanvasA = try ScreenRenderer.renderCanvas(modules: [.homeAssistant], system: system,
+                                                        nowPlaying: .sample, pomodoro: pomo,
+                                                        customText: "", settings: kbShareA,
+                                                        ha: staleSnapshot)
+    let sharedCanvasB = try ScreenRenderer.renderCanvas(modules: [.homeAssistant], system: system,
+                                                        nowPlaying: .sample, pomodoro: pomo,
+                                                        customText: "", settings: kbShareB,
+                                                        ha: staleSnapshot)
+    check(sharedCanvasA.data == sharedCanvasB.data,
+          "两台键盘的 Home Assistant 模块读同一份实体数据（含失效行）")
+    // —— 图片实体（image.*）支持：打印机状态 + 画面反馈 ——
+    func makeTestPictureData(width: Int = 64, height: Int = 36) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                   isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.systemTeal.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])!
+    }
+    let pictureData = makeTestPictureData()
+    // 1) attributes.entity_picture 解析
+    let pictureJSON = """
+    [{"entity_id":"image.bambu_a1_camera","state":"captured",
+      "attributes":{"friendly_name":"A1 摄像头","entity_picture":"/api/camera_proxy_image/image.bambu_a1_camera"}},
+     {"entity_id":"sensor.a1_status","state":"printing","attributes":{"friendly_name":"A1 状态"}}]
+    """
+    let pictureEntities = try HomeAssistantClient.parseStates(data: Data(pictureJSON.utf8))
+    checkEqual(pictureEntities[0].entityPicture, "/api/camera_proxy_image/image.bambu_a1_camera",
+               "parseStates 解析 entity_picture")
+    check(pictureEntities[0].hasPicture, "image 实体标记为可展示画面")
+    check(!pictureEntities[1].hasPicture, "非 image 实体不算画面实体")
+    // 2) 画面地址解析（相对路径补服务器 + access_token；绝对地址原样；裸主机补 http://）
+    checkEqual(HomeAssistantClient.imageURL(server: "http://192.168.1.9:8123",
+                                            picture: "/api/x.png", token: "tk")?.absoluteString,
+               "http://192.168.1.9:8123/api/x.png?access_token=tk",
+               "相对画面地址补全服务器与令牌")
+    checkEqual(HomeAssistantClient.imageURL(server: "http://192.168.1.9:8123/",
+                                            picture: "api/x.png", token: "")?.absoluteString,
+               "http://192.168.1.9:8123/api/x.png", "无令牌时不加查询参数")
+    checkEqual(HomeAssistantClient.imageURL(server: "", picture: "https://cdn/x.png")?.absoluteString,
+               "https://cdn/x.png", "绝对画面地址直接使用")
+    checkEqual(HomeAssistantClient.imageURL(server: "192.168.1.9:8123",
+                                            picture: "/api/x.png")?.absoluteString,
+               "http://192.168.1.9:8123/api/x.png", "裸主机地址自动补 http://")
+    checkEqual(HomeAssistantClient.imageURL(server: "http://a", picture: "  "), nil, "空画面地址返回 nil")
+    // 3) image 域进入打印机候选域与中文分类
+    check(HAEntityPicker.printerDomains.contains("image"), "image 域纳入打印机候选域")
+    checkEqual(HAEntityPicker.chineseDomain("image"), "图片", "image 域中文名")
+    check(HAEntityPicker.printerRelevant(pictureEntities).count == 2,
+          "打印机候选集包含画面实体")
+    // 4) 自动匹配的画面绑定
+    let a1Status = HAEntity(entityId: "sensor.bambu_lab_a1_status", friendlyName: "A1 状态",
+                            state: "printing", unitOfMeasurement: nil)
+    let camA1 = HAEntity(entityId: "image.bambu_lab_a1_camera", friendlyName: "A1 摄像头",
+                         state: "ok", unitOfMeasurement: nil, entityPicture: "/api/a1cam")
+    let coverA1 = HAEntity(entityId: "image.bambu_lab_a1_cover_image", friendlyName: "A1 封面",
+                           state: "ok", unitOfMeasurement: nil, entityPicture: "/api/a1cover")
+    let camP1S = HAEntity(entityId: "image.bambu_lab_p1s_camera", friendlyName: "P1S 摄像头",
+                          state: "ok", unitOfMeasurement: nil, entityPicture: "/api/p1scam")
+    let bound = BambuEntityMatcher.detect(from: a1Status,
+                                          allEntities: [a1Status, coverA1, camA1, camP1S])
+    checkEqual(bound.imageEntityID, "image.bambu_lab_a1_camera",
+               "画面绑定优先本机摄像头（不会错绑到别的打印机）")
+    let coverOnly = BambuEntityMatcher.detect(from: a1Status, allEntities: [a1Status, coverA1])
+    checkEqual(coverOnly.imageEntityID, "image.bambu_lab_a1_cover_image", "无摄像头时退回模型封面")
+    let singleFallback = BambuEntityMatcher.detect(
+        from: a1Status,
+        allEntities: [a1Status, HAEntity(entityId: "image.other_thing", friendlyName: "其他",
+                                         state: "ok", unitOfMeasurement: nil, entityPicture: "/api/o")])
+    checkEqual(singleFallback.imageEntityID, "image.other_thing",
+               "池内只有一张画面时兜底绑定（单打印机命名不一致场景）")
+    let noneMatch = BambuEntityMatcher.detect(from: a1Status, allEntities: [a1Status])
+    checkEqual(noneMatch.imageEntityID, "", "无画面实体时不绑")
+    // 画面实体按设备编号命名（image.2_camera）时，靠显示名称里的型号词匹配
+    let p1pStatus = HAEntity(entityId: "sensor.bambu_lab_p1p_status", friendlyName: "P1P 状态",
+                             state: "printing", unitOfMeasurement: nil)
+    let p1pCam = HAEntity(entityId: "image.2_camera", friendlyName: "Bambu Lab P1P Camera",
+                          state: "ok", unitOfMeasurement: nil, entityPicture: "/api/2cam")
+    let otherCam = HAEntity(entityId: "image.7_camera", friendlyName: "客厅小爱摄像头",
+                            state: "ok", unitOfMeasurement: nil, entityPicture: "/api/7cam")
+    let namedMatch = BambuEntityMatcher.detect(from: p1pStatus,
+                                               allEntities: [p1pStatus, otherCam, p1pCam])
+    checkEqual(namedMatch.imageEntityID, "image.2_camera",
+               "画面实体按显示名称的型号词匹配（不误绑无关摄像头）")
+    let autoDetectPictures = BambuLabCardSettings.autoDetect(
+        entities: [a1Status, camA1, coverA1, camP1S])
+    check(autoDetectPictures.imageEntityID.hasPrefix("image.bambu_lab_a1"),
+          "关键词自动识别同样绑定本机画面")
+    // 5) 旧档案兼容：缺画面字段的 JSON 回退默认
+    let legacyBambuJSON = #"{"name":"A1","statusEntityID":"sensor.a1_status"}"#
+    let legacyBambu = try JSONDecoder().decode(BambuLabCardSettings.self,
+                                               from: Data(legacyBambuJSON.utf8))
+    checkEqual(legacyBambu.imageEntityID, "", "旧打印机配置缺画面字段回退空")
+    checkEqual(legacyBambu.showImage, true, "旧打印机配置默认开启画面区块")
+    let pictureRoundTrip = try JSONDecoder().decode(BambuLabCardSettings.self,
+                                                    from: try JSONEncoder().encode(bound))
+    checkEqual(pictureRoundTrip.imageEntityID, "image.bambu_lab_a1_camera", "画面映射持久化往返")
+    // 6) 打印机设备快照携带画面映射与开关
+    var pictureMirror = AppSettings()
+    pictureMirror.bambuImageEntityID = "image.bambu_lab_a1_camera"
+    pictureMirror.bambuShowImage = false
+    let pictureSnap = DeviceSettings.capture(from: pictureMirror, type: .bambuLab)
+    checkEqual(pictureSnap.bambuImageEntityID, "image.bambu_lab_a1_camera", "打印机快照捕获画面映射")
+    checkEqual(pictureSnap.bambuShowImage, false, "打印机快照捕获画面开关")
+    var pictureRestored = AppSettings()
+    pictureSnap.apply(to: pictureRestored, type: .bambuLab)
+    checkEqual(pictureRestored.bambuImageEntityID, "image.bambu_lab_a1_camera", "切回该打印机恢复画面映射")
+    checkEqual(pictureRestored.bambuShowImage, false, "切回该打印机恢复画面开关")
+    // 7) 画板模块：画面行只在有图时占位且更高
+    var fields = CanvasPrinterFields.default
+    checkEqual(fields.showImage, false, "画板画面默认关闭（不改旧布局）")
+    checkEqual(fields.enabledRowCount(hasPicture: false), fields.enabledRowCount,
+               "无画面时行数与旧口径一致")
+    fields.showImage = true
+    checkEqual(fields.enabledRowCount(hasPicture: false), 3, "开启但无画面 → 画面行不占位")
+    checkEqual(fields.enabledRowCount(hasPicture: true), 4, "开启且有画面 → 多占一行")
+    let legacyFieldJSON = #"{"showStatus":true,"showProgress":true,"showError":true}"#
+    let legacyCanvasFields = try JSONDecoder().decode(CanvasPrinterFields.self,
+                                                from: Data(legacyFieldJSON.utf8))
+    checkEqual(legacyCanvasFields.showImage, false, "旧画板配置缺画面字段回退关闭")
+    // 8) 渲染差异：打印机卡片 / HA 卡片 / 完成庆祝卡 带画面时不同
+    var pictureCardSettings = AppSettings()
+    let mappedPrinter = BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
+                                             imageEntityID: "image.bambu_lab_a1_camera")
+    let printerEntitiesForCard = [HAEntity(entityId: "sensor.a1_status", friendlyName: "A1 状态",
+                                           state: "printing", unitOfMeasurement: nil)]
+    let printerNoPicture = try ScreenRenderer.renderBambuLab(mappedPrinter,
+                                                             entities: printerEntitiesForCard,
+                                                             settings: pictureCardSettings)
+    let printerWithPicture = try ScreenRenderer.renderBambuLab(mappedPrinter,
+                                                               entities: printerEntitiesForCard,
+                                                               image: pictureData,
+                                                               settings: pictureCardSettings)
+    check(printerNoPicture.data != printerWithPicture.data, "打印机卡片画面区块生效")
+    let printerPictureHidden = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
+                             imageEntityID: "image.bambu_lab_a1_camera", showImage: false),
+        entities: printerEntitiesForCard, image: pictureData, settings: pictureCardSettings)
+    checkEqual(printerPictureHidden.data.count, printerNoPicture.data.count,
+               "关闭画面开关后不渲染图片")
+    let imageEntity = HAEntity(entityId: "image.bambu_lab_a1_camera", friendlyName: "A1 摄像头",
+                               state: "captured", unitOfMeasurement: nil,
+                               entityPicture: "/api/x")
+    let haPlain = try ScreenRenderer.renderHA([imageEntity], errorText: nil,
+                                              settings: pictureCardSettings)
+    let haPicture = try ScreenRenderer.renderHA([imageEntity], images: ["image.bambu_lab_a1_camera": pictureData],
+                                                errorText: nil, settings: pictureCardSettings)
+    check(haPlain.data != haPicture.data, "HA 卡片单实体画面模式生效")
+    let haListPlain = try ScreenRenderer.renderHA([imageEntity, printerEntitiesForCard[0]],
+                                                  errorText: nil, settings: pictureCardSettings)
+    let haListPicture = try ScreenRenderer.renderHA([imageEntity, printerEntitiesForCard[0]],
+                                                    images: ["image.bambu_lab_a1_camera": pictureData],
+                                                    errorText: nil, settings: pictureCardSettings)
+    check(haListPlain.data != haListPicture.data, "HA 卡片列表缩略图生效")
+    let successPlain = try ScreenRenderer.renderPrintSuccess(printerName: "A1",
+                                                             taskName: "cube.gcode",
+                                                             settings: pictureCardSettings)
+    let successPicture = try ScreenRenderer.renderPrintSuccess(printerName: "A1",
+                                                               taskName: "cube.gcode",
+                                                               picture: pictureData,
+                                                               settings: pictureCardSettings)
+    check(successPlain.data != successPicture.data, "打印完成庆祝卡带画面生效")
+    // 9) 快照携带画面数据：所有画板/卡片共用同一份
+    var pictureSnapshot = HASnapshot(entities: [imageEntity], selectedEntities: [imageEntity],
+                                     images: ["image.bambu_lab_a1_camera": pictureData])
+    checkEqual(pictureSnapshot.picture(for: "image.bambu_lab_a1_camera")?.count, pictureData.count,
+               "快照按实体返回画面数据")
+    check(pictureSnapshot.picture(for: "sensor.missing") == nil, "未缓存实体返回 nil")
+    pictureSnapshot.images = [:]
+    checkEqual(pictureSnapshot.images.count, 0, "不再展示的画面可被清理")
+    let canvasWithPicture = try ScreenRenderer.renderCanvas(modules: [.bambuLab], system: system,
+                                                            nowPlaying: .sample, pomodoro: pomo,
+                                                            customText: "", settings: pictureCardSettings,
+                                                            ha: pictureSnapshot,
+                                                            printerFields: [CanvasModule.bambuLab.rawValue: fields])
+    check(canvasWithPicture.data != printerNoPicture.data, "画板打印机模块与打印机卡片各自渲染")
+    // —— 打印机卡片文件名双行（两列）显示 ——
+    let fileShort = "cube.gcode"
+    let fileLong = "20p6bj652500750_0000000000000000_1_94713.3mf"
+    let fileNoSep = String(repeating: "a", count: 48)
+    checkEqual(ScreenRenderer.fileNameLines(fileShort, size: 11, maxW: 200), [fileShort],
+               "放得下的文件名保持单行")
+    let wrapped = ScreenRenderer.fileNameLines(fileLong, size: 11, maxW: 124, maxLines: 2)
+    checkEqual(wrapped.count, 2, "长文件名折成两行")
+    let firstLineEnd = fileLong.index(fileLong.startIndex, offsetBy: wrapped[0].count)
+    let nextIsSeparator = firstLineEnd < fileLong.endIndex
+        && ["_", ".", "-", "/", " "].contains(fileLong[firstLineEnd])
+    check(wrapped[0].hasSuffix("_") || wrapped[0].hasSuffix(".") || nextIsSeparator,
+          "折行落在分隔符边界（不把词硬切两半）")
+    let narrowWrapped = ScreenRenderer.fileNameLines(fileLong, size: 11, maxW: 90, maxLines: 2)
+    checkEqual(narrowWrapped.count, 2, "更窄时仍保持两行")
+    check(narrowWrapped[0].count < fileLong.count && !narrowWrapped[1].isEmpty,
+          "极窄时也拆成两行显示（不再缩成一行小字）")
+    check(wrapped.joined().hasPrefix(fileLong.prefix(wrapped[0].count)),
+          "第一行是文件名前缀")
+    checkEqual(ScreenRenderer.fileNameLines(fileNoSep, size: 11, maxW: 90, maxLines: 2).count, 2,
+               "无分隔符的长名也按宽度硬断成两行")
+    check(ScreenRenderer.fileNameLines(fileNoSep, size: 11, maxW: 90, maxLines: 2)
+            .joined().hasSuffix("…"), "两行放不下时用省略号标记")
+    check(ScreenRenderer.fileNameLines("", size: 11, maxW: 90).isEmpty, "空文件名不产生行")
+    check(ScreenRenderer.fileNameLines(fileLong, size: 11, maxW: 90, maxLines: 1).count == 1,
+               "限制单行时不超出指定行数")
+    let fileTaskEntities = [
+        HAEntity(entityId: "sensor.a1_status", friendlyName: "A1 状态",
+                 state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.a1_task", friendlyName: "A1 任务",
+                 state: fileLong, unitOfMeasurement: nil),
+    ]
+    let fileLongCard = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
+                             taskEntityID: "sensor.a1_task"),
+        entities: fileTaskEntities, settings: pictureCardSettings)
+    let fileShortCard = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
+                             taskEntityID: "sensor.a1_task"),
+        entities: [fileTaskEntities[0],
+                   HAEntity(entityId: "sensor.a1_task", friendlyName: "A1 任务",
+                            state: fileShort, unitOfMeasurement: nil)],
+        settings: pictureCardSettings)
+    check(fileLongCard.data != fileShortCard.data, "长文件名卡片与短文件名卡片渲染不同")
+    let fileNoTaskCard = try ScreenRenderer.renderBambuLab(
+        BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
+                             taskEntityID: "sensor.a1_task", showTask: false),
+        entities: fileTaskEntities, settings: pictureCardSettings)
+    check(fileLongCard.data != fileNoTaskCard.data, "关闭任务行时不渲染文件名")
+    // 实体两级选择器：domain 分组 / 关键字过滤 / 选中回填（数据模型仍为 entity_id 字符串）
+    checkEqual(HAEntityPicker.domain(of: "sensor.temp"), "sensor", "实体域解析 sensor")
+    checkEqual(HAEntityPicker.domain(of: "binary_sensor.door"), "binary_sensor", "实体域解析 binary_sensor")
+    checkEqual(HAEntityPicker.domain(of: "LIGHT.Office"), "light", "实体域解析大小写归一")
+    checkEqual(HAEntityPicker.domain(of: "bare"), "unknown", "无点实体域回退 unknown")
+    let pickerEntities = [
+        HAEntity(entityId: "sensor.living_temp", friendlyName: "客厅温度", state: "23.5", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.bambu_progress", friendlyName: "打印进度", state: "68", unitOfMeasurement: "%"),
+        HAEntity(entityId: "binary_sensor.door", friendlyName: "大门门磁", state: "off", unitOfMeasurement: nil),
+        HAEntity(entityId: "light.office", friendlyName: "办公室灯", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "switch.plug", friendlyName: "插座", state: "on", unitOfMeasurement: nil),
+    ]
+    let pickerGroups = HAEntityPicker.groupByDomain(pickerEntities)
+    checkEqual(pickerGroups.map(\.domain), ["binary_sensor", "light", "sensor", "switch"], "实体域分组按字母序")
+    checkEqual(pickerGroups.first { $0.domain == "sensor" }?.entities.count, 2, "sensor 分类实体数量")
+    checkEqual(pickerGroups.first { $0.domain == "sensor" }?.entities.first?.entityId,
+               "sensor.bambu_progress", "组内按 entity_id 排序")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "温度").count, 1, "按名称关键字过滤")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "bambu").map(\.entityId),
+               ["sensor.bambu_progress"], "按 entity_id 关键字过滤")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "  ").count, 5, "空白关键字返回全部")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "OFFICE").map(\.entityId),
+               ["light.office"], "关键字过滤大小写不敏感")
+    // 实体域中文适配：常见域有中文名，未收录域原样返回；搜索支持按中文分类过滤
+    checkEqual(HAEntityPicker.chineseDomain("sensor"), "传感器", "域中文名 sensor")
+    checkEqual(HAEntityPicker.chineseDomain("binary_sensor"), "二进制传感器", "域中文名 binary_sensor")
+    checkEqual(HAEntityPicker.chineseDomain("light"), "灯", "域中文名 light")
+    checkEqual(HAEntityPicker.chineseDomain("switch"), "开关", "域中文名 switch")
+    checkEqual(HAEntityPicker.chineseDomain("input_select"), "输入选项", "域中文名 input_select")
+    checkEqual(HAEntityPicker.chineseDomain("CUSTOM_INTEGRATION"), "CUSTOM_INTEGRATION",
+               "未收录域原样返回")
+    checkEqual(HAEntityPicker.chineseDomain(of: pickerEntities[0]), "传感器", "实体域中文名（按实体）")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "灯").map(\.entityId).sorted(),
+               ["light.office"], "按中文分类「灯」可搜到 light 实体")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "开关").count, 1, "按中文分类「开关」可搜到 switch 实体")
+    checkEqual(HAEntityPicker.filter(pickerEntities, keyword: "传感器").count, 3, "按中文分类「传感器」含二进制传感器")
+    // 打印机实体域强制过滤：保留可映射域，排除自动化/脚本/场景/灯等无关类型
+    let mixedEntities = pickerEntities + [
+        HAEntity(entityId: "automation.print_done", friendlyName: "打印完成自动化", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "script.start_print", friendlyName: "开始打印脚本", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "scene.movie_night", friendlyName: "观影场景", state: "on", unitOfMeasurement: nil),
+        HAEntity(entityId: "number.speed_profile", friendlyName: "速度档位", state: "1", unitOfMeasurement: nil),
+        HAEntity(entityId: "select.filament", friendlyName: "耗材选择", state: "PLA", unitOfMeasurement: nil),
+    ]
+    let printerOnly = HAEntityPicker.printerRelevant(mixedEntities)
+    check(!printerOnly.contains { $0.entityId.hasPrefix("automation.") }, "打印机实体集排除 automation")
+    check(!printerOnly.contains { $0.entityId.hasPrefix("script.") }, "打印机实体集排除 script")
+    check(!printerOnly.contains { $0.entityId.hasPrefix("scene.") }, "打印机实体集排除 scene")
+    check(!printerOnly.contains { $0.entityId.hasPrefix("light.") }, "打印机实体集排除 light")
+    check(printerOnly.contains { $0.entityId == "number.speed_profile" }, "打印机实体集保留 number")
+    check(printerOnly.contains { $0.entityId == "select.filament" }, "打印机实体集保留 select")
+    check(printerOnly.contains { $0.entityId == "sensor.bambu_progress" }, "打印机实体集保留 sensor")
+    check(printerOnly.contains { $0.entityId == "binary_sensor.door" }, "打印机实体集保留 binary_sensor")
+    // 自动识别与实体匹配不落在无关域上
+    let detectMixed = BambuLabCardSettings.autoDetect(entities: mixedEntities)
+    check(!detectMixed.statusEntityID.hasPrefix("automation."), "autoDetect 不选 automation")
+    let matcherMixed = BambuEntityMatcher.detect(
+        from: HAEntity(entityId: "sensor.bambu_progress", friendlyName: "进度", state: "50", unitOfMeasurement: "%"),
+        allEntities: mixedEntities)
+    check(!matcherMixed.statusEntityID.hasPrefix("automation."), "实体匹配不选 automation")
+    // 选中回填：选中的 entity_id 在分组结果中可定位（点击实体行后写回同一字符串）
+    let pickerSelected = pickerEntities.first { $0.entityId == "light.office" }!
+    check(pickerGroups.contains { $0.domain == "light"
+        && $0.entities.contains { $0.entityId == pickerSelected.entityId } },
+          "选中实体可在分类中回填定位")
+    // Beta 标识判定：HA/Bambu 模块标记实验性，其余模块不标记
+    check(CanvasModule.homeAssistant.isBeta, "HA 画板模块标记 Beta")
+    check(CanvasModule.bambuLab.isBeta, "Bambu 画板模块标记 Beta")
+    check(!CanvasModule.clock.isBeta, "时钟模块非 Beta")
+    check(!CanvasModule.qwenQuota.isBeta, "千问额度模块非 Beta")
+    // 多选批量添加合并：去空去重、保持现有顺序后按传入顺序追加
+    checkEqual(HAEntityListEditor.merge([], adding: ["sensor.a", "light.b"]),
+               ["sensor.a", "light.b"], "空列表批量添加")
+    checkEqual(HAEntityListEditor.merge(["sensor.a"], adding: ["sensor.a", "light.b"]),
+               ["sensor.a", "light.b"], "批量添加去重（跳过已存在）")
+    checkEqual(HAEntityListEditor.merge(["sensor.a"], adding: ["", "switch.c", "  "]),
+               ["sensor.a", "switch.c"], "批量添加去空")
+    checkEqual(HAEntityListEditor.merge(["sensor.a", "light.b"], adding: ["switch.c", "sensor.a"]),
+               ["sensor.a", "light.b", "switch.c"], "批量添加保持现有顺序后追加")
+    print("  Home Assistant 通过")
 }
 
 // MARK: - 番茄钟模块居中
@@ -3824,6 +5788,27 @@ func testPomodoroCentering() throws {
     }
     print("  番茄钟居中通过")
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

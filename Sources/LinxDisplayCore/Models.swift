@@ -13,6 +13,18 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
     case excerptQuote = 7
     case sspai = 8
     case emojiWallpaper = 9
+    case homeAssistant = 10
+    case bambuLab = 11
+    case bambuLab2 = 12
+    case bambuLab3 = 13
+    case bambuLab4 = 14
+    case bambuLab5 = 15
+
+    /// Bambu 卡片位对应的打印机序号（0..4；非 Bambu 卡片返回 nil）
+    public var bambuSlotIndex: Int? {
+        let offset = rawValue - DisplayMode.bambuLab.rawValue
+        return (0...4).contains(offset) ? offset : nil
+    }
 
     public var id: Int { rawValue }
 
@@ -28,6 +40,12 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
         case .excerptQuote: return "摘录语录"
         case .sspai: return "少数派推荐"
         case .emojiWallpaper: return "Emoji 壁纸"
+        case .homeAssistant: return "Home Assistant"
+        case .bambuLab: return "Bambu Lab 打印机"
+        case .bambuLab2: return "Bambu Lab 打印机 2"
+        case .bambuLab3: return "Bambu Lab 打印机 3"
+        case .bambuLab4: return "Bambu Lab 打印机 4"
+        case .bambuLab5: return "Bambu Lab 打印机 5"
         }
     }
 }
@@ -79,6 +97,15 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case sspai = 14
     /// 磁盘占用（系统监控磁盘用量；三个画板通用）
     case disk = 15
+    /// Home Assistant 实体状态（三个画板通用）
+    case homeAssistant = 16
+    /// Bambu Lab 打印机状态（三个画板通用，映射到 Home Assistant 设备实体）；
+    /// 与卡片管理一致，每台打印机一个独立模块（bambuLab→第 1 台、bambuLab2→第 2 台…）
+    case bambuLab = 17
+    case bambuLab2 = 18
+    case bambuLab3 = 19
+    case bambuLab4 = 20
+    case bambuLab5 = 21
 
     public var id: Int { rawValue }
 
@@ -100,6 +127,12 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .excerptText: return "摘录语录"
         case .sspai: return "少数派推荐"
         case .disk: return "磁盘占用"
+        case .homeAssistant: return "Home Assistant"
+        case .bambuLab: return "Bambu Lab 打印机"
+        case .bambuLab2: return "Bambu Lab 打印机 2"
+        case .bambuLab3: return "Bambu Lab 打印机 3"
+        case .bambuLab4: return "Bambu Lab 打印机 4"
+        case .bambuLab5: return "Bambu Lab 打印机 5"
         }
     }
 
@@ -121,6 +154,27 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .excerptText: return "quote.opening"
         case .sspai: return "newspaper"
         case .disk: return "internaldrive"
+        case .homeAssistant: return "house"
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return "printer"
+        }
+    }
+
+    /// 是否为实验性功能（Home Assistant / Bambu Lab，界面显示 Beta 徽标）
+    public var isBeta: Bool {
+        self == .homeAssistant || self == .bambuLab
+            || self == .bambuLab2 || self == .bambuLab3
+            || self == .bambuLab4 || self == .bambuLab5
+    }
+
+    /// Bambu 打印机模块对应的卡片位（0..4；非 Bambu 模块返回 nil）
+    public var bambuSlotIndex: Int? {
+        switch self {
+        case .bambuLab: return 0
+        case .bambuLab2: return 1
+        case .bambuLab3: return 2
+        case .bambuLab4: return 3
+        case .bambuLab5: return 4
+        default: return nil
         }
     }
 
@@ -135,6 +189,128 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     /// 摘录画板可选模块（含摘录语录，不含先知语录）
     public static let excerptPanelModules: [CanvasModule] =
         [.excerptText] + allCases.filter { $0 != .oracleText && $0 != .excerptText }
+}
+
+/// 高频刷新策略集中在纯数据层，避免 UI 每秒无条件重绘整张卡片。
+public enum RuntimePerformancePolicy {
+    private static let systemModules: Set<CanvasModule> =
+        [.cpu, .memory, .network, .disk, .uptime]
+
+    public static func needsSystemSample(modules: [CanvasModule]) -> Bool {
+        !systemModules.isDisjoint(with: modules)
+    }
+
+    /// 当前卡片预览所需的刷新间隔。真正按秒变化的内容仍保持 1 秒；
+    /// 静态 HA / 打印机 /额度等内容随动态推送周期刷新，避免主线程空转。
+    public static func previewInterval(mode: DisplayMode,
+                                       canvasModules: [CanvasModule],
+                                       timeFormat: String,
+                                       nowPlaying: Bool,
+                                       pomodoroRunning: Bool,
+                                       dynamicUploadSeconds: Int) -> TimeInterval {
+        switch mode {
+        case .systemMonitor:
+            return 1
+        case .pomodoro:
+            return pomodoroRunning ? 1 : 10
+        case .nowPlaying:
+            return nowPlaying ? 1 : 10
+        case .canvas:
+            if needsSystemSample(modules: canvasModules) { return 1 }
+            if canvasModules.contains(.pomodoro), pomodoroRunning { return 1 }
+            if canvasModules.contains(.nowPlaying), nowPlaying { return 1 }
+            if canvasModules.contains(.clock), timeFormat.contains("s") { return 1 }
+            if canvasModules.contains(.clock) || canvasModules.contains(.date)
+                || canvasModules.contains(.uptime) {
+                return 30
+            }
+            return TimeInterval(max(5, dynamicUploadSeconds))
+        case .customImage:
+            return timeFormat.contains("s") ? 1 : 30
+        case .excerptQuote, .sspai:
+            return 30
+        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant,
+             .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+            return TimeInterval(max(5, dynamicUploadSeconds))
+        }
+    }
+
+    /// 独立墨水屏画板只在内容可能快速变化时每 5 秒比较一次；
+    /// 静态/分钟级内容降到 30 秒，仍能在一分钟内及时更新。
+    public static func deviceCanvasContentCheckInterval(modules: [CanvasModule],
+                                                        timeFormat: String,
+                                                        nowPlaying: Bool,
+                                                        pomodoroRunning: Bool) -> TimeInterval {
+        if needsSystemSample(modules: modules) { return 5 }
+        if modules.contains(.pomodoro), pomodoroRunning { return 5 }
+        if modules.contains(.nowPlaying), nowPlaying { return 5 }
+        if modules.contains(.clock), timeFormat.contains("s") { return 5 }
+        return 30
+    }
+}
+
+/// 画板打印机模块的显示信息选项（每个画板模块独立配置；决定模块内渲染哪些行）
+public struct CanvasPrinterFields: Codable, Equatable {
+    /// 工作状态（打印机名 + 状态大字）
+    public var showStatus: Bool
+    /// 打印进度条（含百分比）
+    public var showProgress: Bool
+    /// 当前任务名
+    public var showTask: Bool
+    /// 喷嘴温度
+    public var showNozzleTemp: Bool
+    /// 热床温度
+    public var showBedTemp: Bool
+    /// 剩余时间
+    public var showRemaining: Bool
+    /// 错误码 / 故障原因
+    public var showError: Bool
+    /// 画面（打印机摄像头快照 / 模型封面；默认关闭，开启且本轮拉到图片时占一行）
+    public var showImage: Bool
+
+    public init(showStatus: Bool = true, showProgress: Bool = true, showTask: Bool = false,
+                showNozzleTemp: Bool = false, showBedTemp: Bool = false,
+                showRemaining: Bool = false, showError: Bool = true, showImage: Bool = false) {
+        self.showStatus = showStatus
+        self.showProgress = showProgress
+        self.showTask = showTask
+        self.showNozzleTemp = showNozzleTemp
+        self.showBedTemp = showBedTemp
+        self.showRemaining = showRemaining
+        self.showError = showError
+        self.showImage = showImage
+    }
+
+    public static let `default` = CanvasPrinterFields()
+
+    /// 已开启的行数（用于把模块高度均分给各行；至少 1 行避免空白）
+    /// - Parameter hasPicture: 本轮是否真的拿到画面；没有画面时图片行不占位
+    public func enabledRowCount(hasPicture: Bool = false) -> Int {
+        var rows = [showStatus, showProgress, showTask, showNozzleTemp, showBedTemp,
+                    showRemaining, showError].filter { $0 }.count
+        if showImage && hasPicture { rows += 1 }
+        return max(1, rows)
+    }
+
+    /// 兼容旧调用：不区分是否含画面
+    public var enabledRowCount: Int { enabledRowCount() }
+
+    // 旧档案缺字段时回退默认选项
+    private enum CodingKeys: String, CodingKey {
+        case showStatus, showProgress, showTask, showNozzleTemp, showBedTemp, showRemaining, showError, showImage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        showStatus = try c.decodeIfPresent(Bool.self, forKey: .showStatus) ?? true
+        showProgress = try c.decodeIfPresent(Bool.self, forKey: .showProgress) ?? true
+        showTask = try c.decodeIfPresent(Bool.self, forKey: .showTask) ?? false
+        showNozzleTemp = try c.decodeIfPresent(Bool.self, forKey: .showNozzleTemp) ?? false
+        showBedTemp = try c.decodeIfPresent(Bool.self, forKey: .showBedTemp) ?? false
+        showRemaining = try c.decodeIfPresent(Bool.self, forKey: .showRemaining) ?? false
+        showError = try c.decodeIfPresent(Bool.self, forKey: .showError) ?? true
+        showImage = try c.decodeIfPresent(Bool.self, forKey: .showImage) ?? false
+    }
 }
 
 /// 摘录语录分类（可多选勾选，轮换池 = 所选分类的语录合集）
@@ -805,6 +981,8 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
     case keyboard = 0
     case oracle = 1
     case excerpt = 2
+    case homeAssistant = 3
+    case bambuLab = 4
 
     public var id: Int { rawValue }
 
@@ -813,6 +991,8 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
         case .keyboard: return "灵犀68 键盘"
         case .oracle: return "口袋先知"
         case .excerpt: return "摘录"
+        case .homeAssistant: return "Home Assistant"
+        case .bambuLab: return "Bambu Lab 打印机"
         }
     }
 }
@@ -890,6 +1070,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var customImageName: String?
     public var canvasModules: [Int]?
     public var canvasModuleMargins: [Int: Int]?
+    /// 画板打印机模块显示信息选项（key=CanvasModule.rawValue；每台画板设备独立，互不串扰）
+    public var canvasPrinterFields: [Int: CanvasPrinterFields]?
     public var canvasText: String?
     public var canvasClockFormat: String?
     public var canvasDateFormat: String?
@@ -909,6 +1091,38 @@ public struct DeviceSettings: Codable, Equatable {
     public var cardRotationModes: [Int]?
     /// 键盘设备侧栏可见卡片（有序；nil = 旧设备未配置，回退侧栏排序；[] = 无卡片，新设备默认）
     public var keyboardCardPanels: [String]?
+    /// 系统监控卡片：网络速率是否用折线图（键盘卡片内容，每台键盘独立）
+    public var networkChart: Bool?
+    /// 当前显示的卡片（每台键盘记住自己的卡片，切换设备互不干扰）
+    public var displayMode: DisplayMode?
+    /// 键盘卡片主题（每台键盘独立）
+    public var cardTheme: CardTheme?
+    /// 系统监控卡片显示区块（每台键盘独立）
+    public var showCpu: Bool?
+    public var showMemory: Bool?
+    public var showNetwork: Bool?
+    public var showUptime: Bool?
+    public var showDisk: Bool?
+    /// 番茄钟卡片内容（每台键盘独立；番茄钟全局快捷键仍为全局）
+    public var pomodoroPraiseEnabled: Bool?
+    public var pomodoroPraiseSource: PraiseSource?
+    public var pomodoroTaskFontSize: Int?
+    /// 千问额度卡片显示方式（每台键盘独立）
+    public var qwenQuotaShowPercent: Bool?
+    /// 摘录语录卡片内容（分类轮换池 / 是否显示出处；每台键盘独立）
+    public var excerptQuoteCategories: [Int]?
+    public var showExcerptSource: Bool?
+    /// Home Assistant 卡片：本键盘要显示的实体（有序；实体池全局共享，
+    /// 但每台键盘卡片展示哪些实体、按什么顺序展示互相独立）
+    public var haCardEntityIDs: [String]?
+    /// 三类画板各自的 HA 模块实体列表；nil 表示旧档案尚无此字段，[] 表示用户明确不显示实体。
+    public var canvasHAEntityIDs: [String]?
+    public var oracleCanvasHAEntityIDs: [String]?
+    public var excerptCanvasHAEntityIDs: [String]?
+    /// 口袋先知画板打印机模块显示选项（独立字段：不与键盘画板共用，避免同步时互相覆盖）
+    public var oracleCanvasPrinterFields: [Int: CanvasPrinterFields]?
+    /// 摘录画板打印机模块显示选项（同上）
+    public var excerptCanvasPrinterFields: [Int: CanvasPrinterFields]?
     public var nowPlayingTitleSize: Int?
     public var nowPlayingArtistSize: Int?
     public var nowPlayingFooterVisible: Bool?
@@ -967,6 +1181,51 @@ public struct DeviceSettings: Codable, Equatable {
     public var excerptSspaiCount: Int?
     public var excerptSspaiRandom: Bool?
     public var excerptNowPlayingHorizontal: Bool?
+    // Home Assistant（实体与异常监控按设备独立记录）
+    /// 旧档案字段：服务器地址/令牌/刷新间隔已收归全局共享配置（所有设备只有一个 Home Assistant 服务器），
+    /// 仅保留用于读取旧设置文件，不再随设备 capture/apply 搬运。
+    public var haServerURL: String?
+    public var haToken: String?
+    public var haRefreshMinutes: Int?
+    public var haEntityID: String?
+    /// 多实体列表（顺序即卡片显示顺序；旧版单实体 haEntityID 迁移为首项）
+    public var haEntities: [String]?
+    /// 实体自定义显示名称（entity_id → 别名；卡片渲染优先使用，未设置用默认名）
+    public var haEntityAliases: [String: String]?
+    public var haMonitorEnabled: Bool?
+    public var haMonitorEntityID: String?
+    public var haMonitorExpectedState: String?
+    public var haMonitorErrorEntityID: String?
+    // Bambu Lab 打印机卡片（字段实体映射 + 告警开关，按 HA 设备独立）
+    public var bambuPrinterName: String?
+    public var bambuEnableAlert: Bool?
+    public var bambuStatusEntityID: String?
+    public var bambuProgressEntityID: String?
+    public var bambuTaskEntityID: String?
+    public var bambuNozzleTempEntityID: String?
+    public var bambuBedTempEntityID: String?
+    public var bambuRemainingEntityID: String?
+    public var bambuErrorEntityID: String?
+    /// 自动匹配是否使用默认打印状态候选筛选；nil 兼容旧档案并视为开启。
+    /// 关闭后允许用户从全部 sensor 实体中指定改名后的打印状态实体。
+    public var bambuUseDefaultEntityFilter: Bool?
+    /// 画面实体（HA image.* 实体；打印机摄像头快照 / 模型封面等，卡片状态下方图片区块）
+    public var bambuImageEntityID: String?
+    /// 卡片布局样式（标准/紧凑/大字；详情页可切换，每台打印机独立）
+    public var bambuLayout: BambuCardLayout?
+    /// 卡片主题色（跟随全局 / Bambu Lab 强调色）
+    public var bambuThemeAccent: BambuThemeAccent?
+    /// 各区块显示开关（详情页可切换；关闭后对应区块不渲染）
+    public var bambuShowStatus: Bool?
+    public var bambuShowProgress: Bool?
+    public var bambuShowTask: Bool?
+    public var bambuShowTemperature: Bool?
+    public var bambuShowRemaining: Bool?
+    public var bambuShowError: Bool?
+    /// 画面区块开关（已映射画面实体且拉到图片时才渲染）
+    public var bambuShowImage: Bool?
+    /// 多打印机配置列表（每台打印机独立映射与告警；旧版单台字段迁移为首台）
+    public var bambuPrinters: [BambuLabCardSettings]?
     /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
     public var canvasImagePath: String?
     public var canvasImageName: String?
@@ -983,9 +1242,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.customImageName = s.customImageName
             d.canvasModules = s.canvasModules
             d.canvasModuleMargins = s.canvasModuleMargins
+            d.canvasPrinterFields = s.canvasPrinterFields
             d.canvasText = s.canvasText
-            d.canvasClockFormat = s.canvasClockFormat
-            d.canvasDateFormat = s.canvasDateFormat
             d.canvasNowPlayingCover = s.canvasNowPlayingCover
             d.canvasNowPlayingSmartBg = s.canvasNowPlayingSmartBg
             d.canvasNowPlayingTitleSize = s.canvasNowPlayingTitleSize
@@ -1000,15 +1258,28 @@ public struct DeviceSettings: Codable, Equatable {
             d.cardRotationMinutes = s.cardRotationMinutes
             d.cardRotationModes = s.cardRotationModes
             d.keyboardCardPanels = s.keyboardCardPanels
+            d.networkChart = s.networkChart
+            d.displayMode = s.displayMode
+            d.cardTheme = s.cardTheme
+            d.showCpu = s.showCpu
+            d.showMemory = s.showMemory
+            d.showNetwork = s.showNetwork
+            d.showUptime = s.showUptime
+            d.showDisk = s.showDisk
+            d.pomodoroPraiseEnabled = s.pomodoroPraiseEnabled
+            d.pomodoroPraiseSource = s.pomodoroPraiseSource
+            d.pomodoroTaskFontSize = s.pomodoroTaskFontSize
+            d.qwenQuotaShowPercent = s.qwenQuotaShowPercent
+            d.excerptQuoteCategories = s.excerptQuoteCategories
+            d.showExcerptSource = s.showExcerptSource
+            d.haCardEntityIDs = s.haCardEntityIDs
+            d.canvasHAEntityIDs = s.canvasHAEntityIDs
             d.nowPlayingTitleSize = s.nowPlayingTitleSize
             d.nowPlayingArtistSize = s.nowPlayingArtistSize
             d.nowPlayingFooterVisible = s.nowPlayingFooterVisible
-            d.nowPlayingTimeFormat = s.nowPlayingTimeFormat
-            d.nowPlayingDateFormat = s.nowPlayingDateFormat
             d.nowPlayingTimeSize = s.nowPlayingTimeSize
             d.nowPlayingDateSize = s.nowPlayingDateSize
             d.clockFontSize = s.clockFontSize
-            d.clockTimeFormat = s.clockTimeFormat
             d.clockFontWeight = s.clockFontWeight
             d.clockFont = s.clockFont
             d.clockOffsetX = s.clockOffsetX
@@ -1034,6 +1305,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.oracleSspaiCount = s.oracleSspaiCount
             d.oracleSspaiRandom = s.oracleSspaiRandom
             d.oracleNowPlayingHorizontal = s.oracleNowPlayingHorizontal
+            d.oracleCanvasPrinterFields = s.oracleCanvasPrinterFields
+            d.oracleCanvasHAEntityIDs = s.oracleCanvasHAEntityIDs
             d.oracleCanvasBoards = s.oracleCanvasBoards
             d.oracleCanvasBoardIndex = s.oracleCanvasBoardIndex
             d.canvasImagePath = s.oracleCanvasImagePath
@@ -1059,8 +1332,45 @@ public struct DeviceSettings: Codable, Equatable {
             d.excerptSspaiCount = s.excerptSspaiCount
             d.excerptSspaiRandom = s.excerptSspaiRandom
             d.excerptNowPlayingHorizontal = s.excerptNowPlayingHorizontal
+            d.excerptCanvasPrinterFields = s.excerptCanvasPrinterFields
+            d.excerptCanvasHAEntityIDs = s.excerptCanvasHAEntityIDs
             d.canvasImagePath = s.excerptCanvasImagePath
             d.canvasImageName = s.excerptCanvasImageName
+        case .homeAssistant:
+            d.haServerURL = s.haServerURL
+            d.haToken = s.haToken
+            d.haRefreshMinutes = s.haRefreshMinutes
+            d.haEntityID = s.haEntityID
+            d.haEntities = s.haEntities
+            d.haEntityAliases = s.haEntityAliases
+            d.haMonitorEnabled = s.haMonitorEnabled
+            d.haMonitorEntityID = s.haMonitorEntityID
+            d.haMonitorExpectedState = s.haMonitorExpectedState
+            d.haMonitorErrorEntityID = s.haMonitorErrorEntityID
+            // 打印机实体映射的逐字段（bambuStatusEntityID 等）只由 .bambuLab 设备记录：
+            // 这里若再捕获同一批全局镜像，切换 HA 设备会把 HA 快照里的旧映射写回镜像，
+            // 下一次同步又把它盖到打印机设备快照上（跨设备串扰）；仅保留旧版多打印机列表。
+            d.bambuPrinters = s.bambuPrinters
+        case .bambuLab:
+            d.bambuPrinterName = s.bambuPrinterName
+            d.bambuEnableAlert = s.bambuEnableAlert
+            d.bambuStatusEntityID = s.bambuStatusEntityID
+            d.bambuProgressEntityID = s.bambuProgressEntityID
+            d.bambuTaskEntityID = s.bambuTaskEntityID
+            d.bambuNozzleTempEntityID = s.bambuNozzleTempEntityID
+            d.bambuBedTempEntityID = s.bambuBedTempEntityID
+            d.bambuRemainingEntityID = s.bambuRemainingEntityID
+            d.bambuErrorEntityID = s.bambuErrorEntityID
+            d.bambuImageEntityID = s.bambuImageEntityID
+            d.bambuShowImage = s.bambuShowImage
+            d.bambuLayout = s.bambuLayout
+            d.bambuThemeAccent = s.bambuThemeAccent
+            d.bambuShowStatus = s.bambuShowStatus
+            d.bambuShowProgress = s.bambuShowProgress
+            d.bambuShowTask = s.bambuShowTask
+            d.bambuShowTemperature = s.bambuShowTemperature
+            d.bambuShowRemaining = s.bambuShowRemaining
+            d.bambuShowError = s.bambuShowError
         }
         return d
     }
@@ -1074,9 +1384,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = customImageName { s.customImageName = v }
             if let v = canvasModules { s.canvasModules = v }
             if let v = canvasModuleMargins { s.canvasModuleMargins = v }
+            if let v = canvasPrinterFields { s.canvasPrinterFields = v }
             if let v = canvasText { s.canvasText = v }
-            if let v = canvasClockFormat { s.canvasClockFormat = v }
-            if let v = canvasDateFormat { s.canvasDateFormat = v }
             if let v = canvasNowPlayingCover { s.canvasNowPlayingCover = v }
             if let v = canvasNowPlayingSmartBg { s.canvasNowPlayingSmartBg = v }
             if let v = canvasNowPlayingTitleSize { s.canvasNowPlayingTitleSize = v }
@@ -1091,15 +1400,28 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = cardRotationMinutes { s.cardRotationMinutes = v }
             if let v = cardRotationModes { s.cardRotationModes = v }
             if let v = keyboardCardPanels { s.keyboardCardPanels = v }
+            if let v = networkChart { s.networkChart = v }
+            if let v = displayMode { s.displayMode = v }
+            if let v = cardTheme { s.cardTheme = v }
+            if let v = showCpu { s.showCpu = v }
+            if let v = showMemory { s.showMemory = v }
+            if let v = showNetwork { s.showNetwork = v }
+            if let v = showUptime { s.showUptime = v }
+            if let v = showDisk { s.showDisk = v }
+            if let v = pomodoroPraiseEnabled { s.pomodoroPraiseEnabled = v }
+            if let v = pomodoroPraiseSource { s.pomodoroPraiseSource = v }
+            if let v = pomodoroTaskFontSize { s.pomodoroTaskFontSize = v }
+            if let v = qwenQuotaShowPercent { s.qwenQuotaShowPercent = v }
+            if let v = excerptQuoteCategories { s.excerptQuoteCategories = v }
+            if let v = showExcerptSource { s.showExcerptSource = v }
+            if let v = haCardEntityIDs { s.haCardEntityIDs = v }
+            if let v = canvasHAEntityIDs { s.canvasHAEntityIDs = v }
             if let v = nowPlayingTitleSize { s.nowPlayingTitleSize = v }
             if let v = nowPlayingArtistSize { s.nowPlayingArtistSize = v }
             if let v = nowPlayingFooterVisible { s.nowPlayingFooterVisible = v }
-            if let v = nowPlayingTimeFormat { s.nowPlayingTimeFormat = v }
-            if let v = nowPlayingDateFormat { s.nowPlayingDateFormat = v }
             if let v = nowPlayingTimeSize { s.nowPlayingTimeSize = v }
             if let v = nowPlayingDateSize { s.nowPlayingDateSize = v }
             if let v = clockFontSize { s.clockFontSize = v }
-            if let v = clockTimeFormat { s.clockTimeFormat = v }
             if let v = clockFontWeight { s.clockFontWeight = v }
             if let v = clockFont { s.clockFont = v }
             if let v = clockOffsetX { s.clockOffsetX = v }
@@ -1125,6 +1447,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = oracleSspaiCount { s.oracleSspaiCount = v }
             if let v = oracleSspaiRandom { s.oracleSspaiRandom = v }
             if let v = oracleNowPlayingHorizontal { s.oracleNowPlayingHorizontal = v }
+            if let v = oracleCanvasPrinterFields { s.oracleCanvasPrinterFields = v }
+            if let v = oracleCanvasHAEntityIDs { s.oracleCanvasHAEntityIDs = v }
             if let v = oracleCanvasBoards { s.oracleCanvasBoards = v }
             if let v = oracleCanvasBoardIndex { s.oracleCanvasBoardIndex = v }
             if let v = canvasImagePath { s.oracleCanvasImagePath = v }
@@ -1150,8 +1474,44 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = excerptSspaiCount { s.excerptSspaiCount = v }
             if let v = excerptSspaiRandom { s.excerptSspaiRandom = v }
             if let v = excerptNowPlayingHorizontal { s.excerptNowPlayingHorizontal = v }
+            if let v = excerptCanvasPrinterFields { s.excerptCanvasPrinterFields = v }
+            if let v = excerptCanvasHAEntityIDs { s.excerptCanvasHAEntityIDs = v }
             if let v = canvasImagePath { s.excerptCanvasImagePath = v }
             if let v = canvasImageName { s.excerptCanvasImageName = v }
+        case .homeAssistant:
+            if let v = haServerURL { s.haServerURL = v }
+            if let v = haToken { s.haToken = v }
+            if let v = haRefreshMinutes { s.haRefreshMinutes = v }
+            if let v = haEntityID { s.haEntityID = v }
+            if let v = haEntities { s.haEntities = v }
+            if let v = haEntityAliases { s.haEntityAliases = v }
+            if let v = haMonitorEnabled { s.haMonitorEnabled = v }
+            if let v = haMonitorEntityID { s.haMonitorEntityID = v }
+            if let v = haMonitorExpectedState { s.haMonitorExpectedState = v }
+            if let v = haMonitorErrorEntityID { s.haMonitorErrorEntityID = v }
+            // 打印机实体映射字段不在此套用：它们属于 .bambuLab 设备，
+            // 从旧的 HA 快照套用会覆盖当前打印机的映射（跨设备串扰）
+            if let v = bambuPrinters { s.bambuPrinters = v }
+        case .bambuLab:
+            if let v = bambuPrinterName { s.bambuPrinterName = v }
+            if let v = bambuEnableAlert { s.bambuEnableAlert = v }
+            if let v = bambuStatusEntityID { s.bambuStatusEntityID = v }
+            if let v = bambuProgressEntityID { s.bambuProgressEntityID = v }
+            if let v = bambuTaskEntityID { s.bambuTaskEntityID = v }
+            if let v = bambuNozzleTempEntityID { s.bambuNozzleTempEntityID = v }
+            if let v = bambuBedTempEntityID { s.bambuBedTempEntityID = v }
+            if let v = bambuRemainingEntityID { s.bambuRemainingEntityID = v }
+            if let v = bambuErrorEntityID { s.bambuErrorEntityID = v }
+            if let v = bambuImageEntityID { s.bambuImageEntityID = v }
+            if let v = bambuShowImage { s.bambuShowImage = v }
+            if let v = bambuLayout { s.bambuLayout = v }
+            if let v = bambuThemeAccent { s.bambuThemeAccent = v }
+            if let v = bambuShowStatus { s.bambuShowStatus = v }
+            if let v = bambuShowProgress { s.bambuShowProgress = v }
+            if let v = bambuShowTask { s.bambuShowTask = v }
+            if let v = bambuShowTemperature { s.bambuShowTemperature = v }
+            if let v = bambuShowRemaining { s.bambuShowRemaining = v }
+            if let v = bambuShowError { s.bambuShowError = v }
         }
     }
 }
@@ -1183,7 +1543,10 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
 
     /// 默认设备名（第 N 台）
     public static func defaultName(for type: DeviceType, index: Int) -> String {
-        "\(type.title) \(index + 1)"
+        switch type {
+        case .bambuLab: return "打印机 \(index + 1)"
+        default: return "\(type.title) \(index + 1)"
+        }
     }
 }
 
@@ -1367,6 +1730,9 @@ public struct GlobalShortcut: Codable, Equatable {
     public static let defaultToggle = GlobalShortcut(keyCode: 49, modifiers: controlKey | optionKey)
     public static let defaultSkip = GlobalShortcut(keyCode: 124, modifiers: controlKey | optionKey)
     public static let defaultReset = GlobalShortcut(keyCode: 51, modifiers: controlKey | optionKey)
+    /// 灵犀68 手动翻页默认组合：⌃⌥↑ 上一页 · ⌃⌥↓ 下一页
+    public static let defaultPageUp = GlobalShortcut(keyCode: 126, modifiers: controlKey | optionKey)
+    public static let defaultPageDown = GlobalShortcut(keyCode: 125, modifiers: controlKey | optionKey)
 
     /// 功能键键码（可无修饰键注册全局快捷键）
     public static func isFunctionKey(_ keyCode: UInt32) -> Bool {
@@ -1408,4 +1774,209 @@ extension GlobalShortcut {
                        modifiers: modifiers & (GlobalShortcut.cmdKey | GlobalShortcut.shiftKey
                                                | GlobalShortcut.optionKey | GlobalShortcut.controlKey))
     }
+}
+
+// MARK: - Home Assistant
+
+/// Home Assistant 实体（来自 GET /api/states 的解析结果）
+public struct HAEntity: Codable, Equatable {
+    public var entityId: String
+    public var friendlyName: String
+    public var state: String
+    public var unitOfMeasurement: String?
+    /// Material Design 图标名（由 attributes.icon 的 "mdi:xxx" 提取；无则 nil）
+    public var icon: String?
+    /// 状态最近变化时间（HA last_changed；用于判断错误码等状态是否过期）
+    public var lastChanged: Date?
+    /// 设备型号（attributes.model / series，如 "A1"；用于打印机型号识别）
+    public var model: String?
+    /// 图片地址（attributes.entity_picture；多为相对 Home Assistant 的路径，需补全并带令牌请求）
+    public var entityPicture: String?
+
+    public init(entityId: String, friendlyName: String, state: String,
+                unitOfMeasurement: String?, icon: String? = nil, lastChanged: Date? = nil,
+                model: String? = nil, entityPicture: String? = nil) {
+        self.entityId = entityId
+        self.friendlyName = friendlyName
+        self.state = state
+        self.unitOfMeasurement = unitOfMeasurement
+        self.icon = icon
+        self.lastChanged = lastChanged
+        self.model = model
+        self.entityPicture = entityPicture
+    }
+
+    /// 是否为可展示画面的实体（image 域且带 entity_picture）
+    public var hasPicture: Bool {
+        domain == "image" && !(entityPicture ?? "").isEmpty
+    }
+
+    /// 实体域（entity_id 前缀，如 sensor / light；无点回退 unknown）
+    public var domain: String {
+        HAEntityPicker.domain(of: entityId)
+    }
+
+    /// 显示名：优先 friendly_name，缺失时用 entity_id
+    public var displayName: String {
+        friendlyName.isEmpty ? entityId : friendlyName
+    }
+
+    /// 状态显示值：常见状态中文化；HA 的 ISO8601 时间戳压缩为适合小屏的本地短时间。
+    public var displayState: String {
+        Self.compactDisplayState(state)
+    }
+
+    /// 把 HA 原始状态转换为适合 142pt 宽键盘屏的短文本。
+    /// 图片实体经常把最后更新时间直接放在 state 中；完整 ISO8601 字符串会挤占整行，
+    /// 因此统一显示为「MM-dd HH:mm」。非时间状态保持原样。
+    public static func compactDisplayState(_ raw: String,
+                                           timeZone: TimeZone = .current) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "on": return "开"
+        case "off": return "关"
+        case "unknown": return "未知"
+        case "unavailable": return "不可用"
+        case "none": return "无"
+        default: break
+        }
+
+        // 普通数值、printing/idle 等状态占绝大多数；先做廉价形态判断，
+        // 避免每次画板渲染都为每个实体创建 ISO8601DateFormatter。
+        guard trimmed.count >= 19,
+              trimmed.index(trimmed.startIndex, offsetBy: 4) < trimmed.endIndex,
+              trimmed[trimmed.index(trimmed.startIndex, offsetBy: 4)] == "-",
+              trimmed[trimmed.index(trimmed.startIndex, offsetBy: 7)] == "-",
+              trimmed.contains("T") else {
+            return trimmed
+        }
+
+        for parser in isoTimestampParsers {
+            if let date = parser.date(from: trimmed) {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "zh_CN")
+                formatter.timeZone = timeZone
+                formatter.dateFormat = "MM-dd HH:mm"
+                return formatter.string(from: date)
+            }
+        }
+
+        return trimmed
+    }
+
+    private static let isoTimestampParsers: [ISO8601DateFormatter] = {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        return [fractional, standard]
+    }()
+
+    /// 完整显示串（含单位，如「23.5 °C」）
+    public var displayValue: String {
+        if let unit = unitOfMeasurement, !unit.isEmpty {
+            return "\(displayState) \(unit)"
+        }
+        return displayState
+    }
+
+    /// 剩余时间的可读文本：Bambu Lab 的 remaining_time 常以小时为单位的浮点小数
+    /// （如 0.383333333333333 h ≈ 23 分钟），直接显示原始值不可读，这里转为
+    /// 「X 小时 Y 分钟 / X 分钟」；分钟单位同理；其余值原样返回。
+    public var remainingDisplayText: String {
+        let unit = (unitOfMeasurement ?? "").lowercased()
+        guard let value = Double(state) else { return displayState }
+        if ["h", "hr", "hrs", "hour", "hours", "小时"].contains(unit) {
+            let totalMinutes = Int((value * 60).rounded())
+            if totalMinutes >= 60 {
+                return "\(totalMinutes / 60) 小时 \(totalMinutes % 60) 分钟"
+            }
+            return "\(totalMinutes) 分钟"
+        }
+        if ["min", "mins", "minute", "minutes", "分钟"].contains(unit) {
+            return "\(Int(value.rounded())) 分钟"
+        }
+        return displayState
+    }
+}
+
+/// Home Assistant 快照：实体列表 + 选中的多实体状态 + 错误信息
+public struct HASnapshot: Equatable {
+    public var entities: [HAEntity]
+    /// 当前选中的实体状态（按设置中的实体列表顺序；旧版单实体兼容）
+    public var selectedEntities: [HAEntity]
+    public var selected: HAEntity? {
+        selectedEntities.first
+    }
+    /// 实体自定义显示名称（entity_id → 别名；渲染优先使用）
+    public var aliases: [String: String]
+    public var errorText: String?
+    public var sampledAt: Date
+    /// 已绑定但当前服务器实体池中查不到的 entity_id（按绑定顺序）。
+    /// 换服务器后同名实体不再存在时用于明确显示「失效」，而不是静默错绑或凭空消失。
+    public var missingEntityIDs: [String]
+    /// entity_id → 最后一次已知显示值（失效行保留原值、灰显）
+    public var lastKnownValues: [String: String]
+    /// entity_id → 图片字节（image.* 实体的 entity_picture 拉取结果；与实体同一轮更新，
+    /// 所有卡片/画板共用同一份画面数据）
+    public var images: [String: Data]
+
+    public init(entities: [HAEntity] = [], selectedEntities: [HAEntity] = [],
+                aliases: [String: String] = [:],
+                errorText: String? = nil, sampledAt: Date = Date(),
+                missingEntityIDs: [String] = [], lastKnownValues: [String: String] = [:],
+                images: [String: Data] = [:]) {
+        self.entities = entities
+        self.selectedEntities = selectedEntities
+        self.aliases = aliases
+        self.errorText = errorText
+        self.sampledAt = sampledAt
+        self.missingEntityIDs = missingEntityIDs
+        self.lastKnownValues = lastKnownValues
+        self.images = images
+    }
+
+    /// 某实体对应的画面数据（无则 nil）
+    public func picture(for entityID: String) -> Data? {
+        images[entityID]
+    }
+
+    /// 由同一份服务器实体池生成某个消费者自己的选择视图（HA 卡片/三类画板可各持不同列表）。
+    public func selecting(entityIDs: [String]) -> HASnapshot {
+        guard !entityIDs.isEmpty else {
+            var copy = self
+            copy.selectedEntities = []
+            copy.missingEntityIDs = []
+            return copy
+        }
+        let wanted = Set(entityIDs)
+        var byID: [String: HAEntity] = [:]
+        byID.reserveCapacity(entityIDs.count)
+        for entity in entities where wanted.contains(entity.entityId) {
+            byID[entity.entityId] = entity
+            if byID.count == wanted.count { break }
+        }
+        var copy = self
+        copy.selectedEntities = entityIDs.compactMap { byID[$0] }
+        copy.missingEntityIDs = entities.isEmpty ? [] : entityIDs.filter { byID[$0] == nil }
+        return copy
+    }
+
+    /// 失效行渲染数据：(entity_id, 显示名, 最后一次已知值)
+    public func missingRows() -> [(id: String, name: String, lastValue: String)] {
+        missingEntityIDs.map { id in
+            (id, aliases[id] ?? id, lastKnownValues[id] ?? "")
+        }
+    }
+
+    /// 记录本批实体的显示值，供之后失效时回显原值
+    public func rememberingValues(from entities: [HAEntity]) -> HASnapshot {
+        var updated = self
+        var values = updated.lastKnownValues
+        for entity in entities { values[entity.entityId] = entity.displayValue }
+        updated.lastKnownValues = values
+        return updated
+    }
+
+    public static let empty = HASnapshot()
 }

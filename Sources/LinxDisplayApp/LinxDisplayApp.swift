@@ -47,13 +47,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         false // 关闭窗口后继续在菜单栏运行
     }
 
-    /// 安装全局番茄钟快捷键（默认 ⌃⌥Space / ⌃⌥→ / ⌃⌥⌫，可在番茄钟设置中自定义）
+    /// 安装全局快捷键（番茄钟 + 灵犀68 手动翻页）。
     private func installHotkeys() {
         let shortcuts: [GlobalHotkeyManager.Action: GlobalShortcut] = MainActor.assumeIsolated {
             [
                 .togglePomodoro: model?.settings.pomodoroToggleShortcut ?? .defaultToggle,
                 .skipPomodoro: model?.settings.pomodoroSkipShortcut ?? .defaultSkip,
-                .resetPomodoro: model?.settings.pomodoroResetShortcut ?? .defaultReset
+                .resetPomodoro: model?.settings.pomodoroResetShortcut ?? .defaultReset,
+                .keyboardPageUp: model?.settings.keyboardPageUpShortcut ?? .defaultPageUp,
+                .keyboardPageDown: model?.settings.keyboardPageDownShortcut ?? .defaultPageDown
             ]
         }
         GlobalHotkeyManager.install(handler: { [weak self] action in
@@ -63,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .togglePomodoro: Task { await model.togglePomodoro() }
                 case .skipPomodoro: Task { await model.skipPomodoro() }
                 case .resetPomodoro: Task { await model.resetPomodoro() }
+                case .keyboardPageUp: model.manualKeyboardPage(direction: -1)
+                case .keyboardPageDown: model.manualKeyboardPage(direction: 1)
                 }
             }
         }, shortcuts: shortcuts)
@@ -92,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         // 显示内容：直接作为顶层菜单项（每个模式一项，当前项带勾选，无需二次点击）
-        let modeOrder: [DisplayMode] = [.qwenWork, .codex, .pomodoro, .systemMonitor, .nowPlaying, .customImage, .canvas, .excerptQuote, .sspai]
+        let modeOrder: [DisplayMode] = [.qwenWork, .codex, .pomodoro, .systemMonitor, .nowPlaying, .customImage, .canvas, .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5]
         for mode in modeOrder {
             let modeItem = NSMenuItem(title: mode.title, action: #selector(switchMode(_:)), keyEquivalent: "")
             modeItem.target = self
@@ -142,6 +146,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     guard let raw = item.representedObject as? Int,
                           let mode = DisplayMode(rawValue: raw) else { continue }
                     item.state = (mode == model.settings.displayMode) ? .on : .off
+                    // 未添加（或已停用）的打印机没有对应卡片，不在菜单里占据空位置。
+                    if let slot = mode.bambuSlotIndex {
+                        item.isHidden = slot >= model.enabledDevices(for: .bambuLab).count
+                    } else {
+                        item.isHidden = false
+                    }
+                    // 打印机项显示用户自定义的设备名（与侧栏、卡片一致）；其余项用模式标题
+                    item.title = model.menuTitle(for: mode)
                 }
             }
             if menu === self.pomodoroSubmenu || menu === self.statusItem?.menu {

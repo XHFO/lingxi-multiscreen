@@ -2,14 +2,15 @@ import Carbon.HIToolbox
 import Foundation
 import LinxDisplayCore
 
-/// 全局番茄钟快捷键（系统范围内生效，基于 Carbon RegisterEventHotKey）。
-/// 默认 ⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置，可在番茄钟设置中自定义
+/// 全局快捷键（系统范围内生效，基于 Carbon RegisterEventHotKey）。
 final class GlobalHotkeyManager {
 
     enum Action {
         case togglePomodoro
         case skipPomodoro
         case resetPomodoro
+        case keyboardPageUp
+        case keyboardPageDown
     }
 
     private static let signature: OSType = 0x4C78_4448 // "LxDH"

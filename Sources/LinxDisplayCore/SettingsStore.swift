@@ -152,6 +152,16 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     /// 时钟时间格式（DateFormatter 模式，如 HH:mm / hh:mm / HH:mm:ss）
+    /// 全局时间格式（DateFormatter 模式）：软件内所有时间显示统一使用（时钟卡片、画板时钟模块、
+    /// 正在播放页脚等），不再按界面单独设置
+    @Published public var timeFormat = "HH:mm" {
+        didSet { onChange() }
+    }
+    /// 全局日期格式（DateFormatter 模式）：软件内所有日期显示统一使用
+    @Published public var dateFormat = "yyyy年M月d日 EEE" {
+        didSet { onChange() }
+    }
+    /// 旧档案字段：时钟卡片时间格式（已由全局 timeFormat 取代，仅用于读取旧设置）
     @Published public var clockTimeFormat = "HH:mm" {
         didSet { onChange() }
     }
@@ -323,6 +333,18 @@ public final class AppSettings: ObservableObject {
     @Published public var canvasModuleMargins: [Int: Int] = [:] {
         didSet { onChange() }
     }
+    /// 画板打印机模块的显示信息选项（key=CanvasModule.rawValue，每台打印机模块独立配置）
+    @Published public var canvasPrinterFields: [Int: CanvasPrinterFields] = [:] {
+        didSet { onChange() }
+    }
+    /// 口袋先知画板打印机模块显示选项（独立镜像：不与键盘画板共用，设备间互不串扰）
+    @Published public var oracleCanvasPrinterFields: [Int: CanvasPrinterFields] = [:] {
+        didSet { onChange() }
+    }
+    /// 摘录画板打印机模块显示选项（独立镜像：不与键盘画板共用，设备间互不串扰）
+    @Published public var excerptCanvasPrinterFields: [Int: CanvasPrinterFields] = [:] {
+        didSet { onChange() }
+    }
     /// 画板「千问额度」模块显示方式：true = 百分比为大字（与其他模块一致），false = 额度数值为大字
     @Published public var qwenQuotaShowPercent = true {
         didSet { onChange() }
@@ -347,6 +369,143 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     @Published public var pomodoroResetShortcut = GlobalShortcut.defaultReset {
+        didSet { onChange() }
+    }
+    /// 灵犀68 手动翻页全局快捷键（作用于「菜单栏切换目标键盘」）。
+    @Published public var keyboardPageUpShortcut = GlobalShortcut.defaultPageUp {
+        didSet { onChange() }
+    }
+    @Published public var keyboardPageDownShortcut = GlobalShortcut.defaultPageDown {
+        didSet { onChange() }
+    }
+    /// Home Assistant：服务器地址（全局唯一，所有设备共享；如 http://192.168.x.x:8123）
+    @Published public var haServerURL = "" {
+        didSet { onChange() }
+    }
+    /// Home Assistant：长期访问令牌（敏感字段，仅保存在本机 settings.json；日志与测试不打印明文）
+    @Published public var haToken = "" {
+        didSet { onChange() }
+    }
+    /// Home Assistant：刷新间隔（分钟，全局唯一）
+    @Published public var haRefreshMinutes = 5 {
+        didSet { onChange() }
+    }
+    /// 旧档案字段：单实体选择（现由每台键盘的 haCardEntityIDs 记录，仅用于读取旧设置）
+    @Published public var haEntityID = "" {
+        didSet { onChange() }
+    }
+    /// 旧档案字段：全局实体列表（现由每台键盘的 haCardEntityIDs 记录，仅用于读取旧设置）
+    @Published public var haEntities: [String] = [] {
+        didSet { onChange() }
+    }
+    /// 当前操作键盘的 Home Assistant 卡片实体列表（镜像；有序=卡片显示顺序）。
+    /// 实体池由全局共享服务器拉取一次，但每台键盘卡片展示哪些实体互相独立。
+    @Published public var haCardEntityIDs: [String] = [] {
+        didSet { onChange() }
+    }
+    /// 灵犀画板的 Home Assistant 模块实体列表（与 HA 键盘卡片、其他画板互相独立）。
+    @Published public var canvasHAEntityIDs: [String] = [] {
+        didSet { onChange() }
+    }
+    /// 口袋先知画板的 Home Assistant 模块实体列表。
+    @Published public var oracleCanvasHAEntityIDs: [String] = [] {
+        didSet { onChange() }
+    }
+    /// 摘录画板的 Home Assistant 模块实体列表。
+    @Published public var excerptCanvasHAEntityIDs: [String] = [] {
+        didSet { onChange() }
+    }
+    /// Home Assistant：实体自定义显示名称（entity_id → 别名；卡片渲染优先使用）
+    @Published public var haEntityAliases: [String: String] = [:] {
+        didSet { onChange() }
+    }
+    /// HA 异常监控：是否开启（检测到异常时推送到键盘告警）
+    @Published public var haMonitorEnabled = false {
+        didSet { onChange() }
+    }
+    /// HA 异常监控：被监控的状态实体 entity_id（如打印机状态 sensor；状态 != 期望值即异常）
+    @Published public var haMonitorEntityID = "" {
+        didSet { onChange() }
+    }
+    /// HA 异常监控：期望的正常状态值（如 idle/standby；状态 != 该值视为异常；空 = 不做状态判定）
+    @Published public var haMonitorExpectedState = "" {
+        didSet { onChange() }
+    }
+    /// HA 异常监控：可选错误码实体 entity_id（其状态非空且非 none 即异常，如打印机错误码）
+    @Published public var haMonitorErrorEntityID = "" {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 打印机卡片：报错时推送键盘告警（默认开启）
+    @Published public var bambuEnableAlert = true {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 打印机列表（多台打印机独立配置；旧版单台字段迁移为首台）
+    @Published public var bambuPrinters: [BambuLabCardSettings] = [] {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 打印机卡片：各字段实体映射（活动 Home Assistant 设备镜像）
+    @Published public var bambuStatusEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuProgressEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuTaskEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuNozzleTempEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuBedTempEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuRemainingEntityID = "" {
+        didSet { onChange() }
+    }
+    @Published public var bambuErrorEntityID = "" {
+        didSet { onChange() }
+    }
+    /// 画面实体（活动 Bambu 设备的镜像；image.* 实体，如打印机摄像头快照 / 模型封面）
+    @Published public var bambuImageEntityID = "" {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 打印机名称（活动 Bambu 设备的镜像；设备名独立存储于各设备快照）
+    @Published public var bambuPrinterName = "打印机" {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 卡片布局样式（活动 Bambu 设备的镜像）
+    @Published public var bambuLayout: BambuCardLayout = .standard {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 卡片主题色（活动 Bambu 设备的镜像）
+    @Published public var bambuThemeAccent: BambuThemeAccent = .global {
+        didSet { onChange() }
+    }
+    /// Bambu Lab 卡片各区块显示开关（活动 Bambu 设备的镜像）
+    @Published public var bambuShowStatus = true {
+        didSet { onChange() }
+    }
+    @Published public var bambuShowProgress = true {
+        didSet { onChange() }
+    }
+    @Published public var bambuShowTask = true {
+        didSet { onChange() }
+    }
+    @Published public var bambuShowTemperature = true {
+        didSet { onChange() }
+    }
+    @Published public var bambuShowRemaining = true {
+        didSet { onChange() }
+    }
+    @Published public var bambuShowError = true {
+        didSet { onChange() }
+    }
+    /// 画面区块开关（活动 Bambu 设备的镜像；仅在已映射画面实体且拉到图片时渲染）
+    @Published public var bambuShowImage = true {
+        didSet { onChange() }
+    }
+    /// 当前活动 Bambu Lab 打印机设备 ID（对应键盘 Bambu Lab 卡片渲染的打印机）
+    @Published public var activeBambuLabDeviceID: UUID? {
         didSet { onChange() }
     }
 
@@ -390,13 +549,216 @@ public final class AppSettings: ObservableObject {
         canvasModuleMargins[module.rawValue] ?? 0
     }
 
+    /// 当前活动 Home Assistant 设备的设置快照（无 HA 设备时返回 nil；
+    /// 无活动 ID 时回退第一台 HA 设备）
+    public func activeHADeviceSettings() -> DeviceSettings? {
+        if let id = activeHomeAssistantDeviceID,
+           let device = devices.first(where: { $0.id == id }) {
+            return device.settings
+        }
+        return devices.first { $0.type == .homeAssistant }?.settings
+    }
+
+    /// 活动 Bambu Lab 打印机设备（无活动 ID 时回退第一台已启用打印机；无打印机返回 nil）
+    public func activeBambuLabDevice() -> ManagedDevice? {
+        let printers = devices.filter { $0.type == .bambuLab }
+        guard !printers.isEmpty else { return nil }
+        if let id = activeBambuLabDeviceID,
+           let device = printers.first(where: { $0.id == id }) {
+            return device
+        }
+        return printers.first { $0.isEnabled } ?? printers.first
+    }
+
+    /// 活动 Bambu Lab 打印机的卡片配置（nil = 未配置任何打印机）
+    public func activeBambuLabSettings() -> BambuLabCardSettings? {
+        activeBambuLabDevice().map { BambuLabCardSettings.from($0) }
+    }
+
+    /// 按卡片位（已启用打印机顺序）取打印机配置：bambuLab→第 1 台、bambuLab2→第 2 台…
+    /// 与卡片管理槽位一致；该位无打印机返回 nil
+    public func bambuSettings(atSlot slot: Int) -> BambuLabCardSettings? {
+        let printers = devices.filter { $0.type == .bambuLab && $0.isEnabled }
+        guard printers.indices.contains(slot) else { return nil }
+        return BambuLabCardSettings.from(printers[slot])
+    }
+
+    /// 旧架构迁移：HA 设备内嵌的打印机配置（bambuPrinters 列表/旧单台字段）→ 独立 DeviceType.bambuLab 设备。
+    /// 每台打印机成为一个独立设备（名称与实体映射保留）；已存在 bambuLab 设备时跳过（幂等）。
+    /// 返回创建的打印机设备数量。
+    @discardableResult
+    public func migrateBambuPrintersToDevices() -> Int {
+        guard devices.allSatisfy({ $0.type != .bambuLab }) else { return 0 }
+        var migrated: [ManagedDevice] = []
+        for haDevice in devices where haDevice.type == .homeAssistant {
+            var printers = haDevice.settings.bambuPrinters ?? []
+            if printers.isEmpty,
+               let old = haDevice.settings.bambuStatusEntityID, !old.isEmpty {
+                printers = [BambuLabCardSettings.from(haDevice.settings)]
+            }
+            for printer in printers {
+                var settings = DeviceSettings()
+                printer.apply(to: &settings)
+                let device = ManagedDevice(type: .bambuLab,
+                                           name: printer.name.isEmpty ? "打印机 \(migrated.count + 1)" : printer.name,
+                                           settings: settings)
+                migrated.append(device)
+            }
+        }
+        if !migrated.isEmpty {
+            devices.append(contentsOf: migrated)
+            activeBambuLabDeviceID = migrated.first?.id
+        }
+        return migrated.count
+    }
+
+    /// 时间/日期格式统一（幂等）：软件内所有时间显示改用全局 timeFormat / dateFormat 后，
+    /// 旧档案里被用户改过的分界面格式收拢一次——按「与默认值不同者优先」取时间格式与日期格式，
+    /// 其余旧字段保持原样但不再被读取。返回迁移说明（nil = 无需迁移）。
+    @discardableResult
+    public func migrateTimeDateFormat() -> String? {
+        let timeDefaults = ["HH:mm", "HH:mm", "HH:mm"]
+        let legacyTimes = [(clockTimeFormat, timeDefaults[0], "时钟卡片"),
+                           (canvasClockFormat, timeDefaults[1], "画板时钟"),
+                           (nowPlayingTimeFormat, timeDefaults[2], "正在播放页脚")]
+        let legacyDates = [(canvasDateFormat, "yyyy年M月d日 EEE", "画板日期"),
+                           (nowPlayingDateFormat, "M月d日", "页脚日期")]
+        var notes: [String] = []
+        if timeFormat == "HH:mm",
+           let picked = legacyTimes.first(where: { $0.0 != $0.1 && !$0.0.isEmpty }) {
+            timeFormat = picked.0
+            notes.append("时间格式采用\(picked.2)设置（\(picked.0)）")
+        }
+        if dateFormat == "yyyy年M月d日 EEE",
+           let picked = legacyDates.first(where: { $0.0 != $0.1 && !$0.0.isEmpty }) {
+            dateFormat = picked.0
+            notes.append("日期格式采用\(picked.2)设置（\(picked.0)）")
+        }
+        return notes.isEmpty ? nil : "时间/日期格式已统一：" + notes.joined(separator: "；")
+    }
+
+    /// Home Assistant 单服务器收敛（幂等）：把设备快照里的地址/令牌/刷新间隔收归为一份全局配置。
+    /// 规则：全局地址为空 → 取活动设备的值；任一设备与全局不一致 → 以活动设备的值写入全局一次，
+    /// 其余设备值弃用；两种情况都会清掉设备侧副本（设置文件不再重复存令牌）。
+    /// 返回迁移说明（nil = 无需迁移）供启动日志留痕；重复启动是幂等空操作。
+    @discardableResult
+    public func migrateHAServerToGlobal() -> String? {
+        let haOffsets = devices.indices.filter { devices[$0].type == .homeAssistant }
+        guard !haOffsets.isEmpty else { return nil }
+        // 仍带连接信息的设备（旧档案）
+        let carriedOffsets = haOffsets.filter { off in
+            !(devices[off].settings.haServerURL ?? "").isEmpty || !(devices[off].settings.haToken ?? "").isEmpty
+        }
+        guard !carriedOffsets.isEmpty else { return nil }
+        let activeID = activeDevice(for: .homeAssistant)?.id
+        // 取值来源：优先活动设备（且它确实带了连接信息），否则第一台带信息的设备
+        let source = carriedOffsets.first { devices[$0].id == activeID } ?? carriedOffsets.first!
+        let sourceURL = (devices[source].settings.haServerURL ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceToken = devices[source].settings.haToken ?? ""
+        let sourceRefresh = devices[source].settings.haRefreshMinutes
+        var notes: [String] = []
+        if haServerURL.isEmpty, !sourceURL.isEmpty {
+            haServerURL = sourceURL
+            notes.append("全局服务器地址取自设备「\(devices[source].name)」")
+        }
+        if haToken.isEmpty, !sourceToken.isEmpty {
+            haToken = sourceToken
+            notes.append("全局令牌取自设备「\(devices[source].name)」")
+        }
+        let differing = carriedOffsets.filter { off in
+            let url = devices[off].settings.haServerURL ?? ""
+            let token = devices[off].settings.haToken ?? ""
+            return (!url.isEmpty && url != haServerURL) || (!token.isEmpty && token != haToken)
+        }
+        if !differing.isEmpty, !sourceURL.isEmpty || !sourceToken.isEmpty {
+            if !sourceURL.isEmpty { haServerURL = sourceURL }
+            if !sourceToken.isEmpty { haToken = sourceToken }
+            notes.append("\(differing.count) 台设备与全局服务器不一致，统一采用设备「\(devices[source].name)」的连接配置")
+        }
+        if let refresh = sourceRefresh, refresh != haRefreshMinutes {
+            haRefreshMinutes = min(max(refresh, 1), 60)
+            notes.append("刷新间隔采用设备设置（\(haRefreshMinutes) 分钟）")
+        }
+        for off in haOffsets {
+            devices[off].settings.haServerURL = nil
+            devices[off].settings.haToken = nil
+            devices[off].settings.haRefreshMinutes = nil
+        }
+        guard !notes.isEmpty else { return nil }
+        return "Home Assistant 连接配置已收归全局（所有设备共享）：" + notes.joined(separator: "；")
+    }
+
+    /// 旧档案键盘「卡片内容」补齐（幂等：只填设备缺失的字段，绝不覆盖设备已有的值）。
+    ///
+    /// 根因：早期版本的设备快照里没有卡片列表/卡片内容字段（全为 nil）。切换到这台键盘时，
+    /// apply 不会写这些字段 → 全局镜像仍保留上一台键盘的值 → 随后的 syncActiveDeviceSettings
+    /// 把上一台键盘的卡片列表与内容写进这台键盘的快照，表现为「改一台键盘的卡片影响另一台」。
+    /// 启动时按当前镜像为每台键盘补齐一次缺失字段，此后每台键盘各自记录、互不干扰。
+    /// 返回被补齐过字段的键盘台数。
+    @discardableResult
+    public func migrateKeyboardCardContentSeeds() -> Int {
+        let seed = DeviceSettings.capture(from: self, type: .keyboard)
+        let boolPaths: [WritableKeyPath<DeviceSettings, Bool?>] = [
+            \.cardRotationEnabled, \.networkChart, \.showCpu, \.showMemory, \.showNetwork,
+            \.showUptime, \.showDisk, \.pomodoroPraiseEnabled, \.qwenQuotaShowPercent,
+            \.showExcerptSource, \.canvasNowPlayingCover, \.canvasNowPlayingSmartBg,
+            \.canvasSspaiRandom, \.imageRotationEnabled,
+        ]
+        let intPaths: [WritableKeyPath<DeviceSettings, Int?>] = [
+            \.safeAreaHeight, \.jpegQuality, \.dynamicUploadSeconds, \.cardRotationMinutes,
+            \.canvasNowPlayingTitleSize, \.canvasNowPlayingArtistSize, \.canvasSspaiCount,
+            \.nowPlayingTitleSize, \.nowPlayingArtistSize, \.nowPlayingTimeSize, \.nowPlayingDateSize,
+            \.clockFontSize, \.clockOffsetX, \.clockOffsetY, \.imageRotationSeconds,
+            \.emojiWallpaperSize, \.emojiWallpaperSpacing, \.pomodoroTaskFontSize,
+        ]
+        let stringPaths: [WritableKeyPath<DeviceSettings, String?>] = [
+            \.customImageName, \.canvasText, \.canvasClockFormat, \.canvasDateFormat,
+            \.nowPlayingTimeFormat, \.nowPlayingDateFormat,
+        ]
+        let intArrayPaths: [WritableKeyPath<DeviceSettings, [Int]?>] = [
+            \.canvasModules, \.cardRotationModes, \.excerptQuoteCategories,
+        ]
+        var seeded = 0
+        for index in devices.indices where devices[index].type == .keyboard {
+            var s = devices[index].settings
+            let before = s
+            if s.keyboardCardPanels == nil { s.keyboardCardPanels = seed.keyboardCardPanels }
+            if s.haCardEntityIDs == nil { s.haCardEntityIDs = seed.haCardEntityIDs }
+            if s.canvasHAEntityIDs == nil { s.canvasHAEntityIDs = seed.canvasHAEntityIDs }
+            if s.displayMode == nil { s.displayMode = seed.displayMode }
+            if s.cardTheme == nil { s.cardTheme = seed.cardTheme }
+            if s.pomodoroPraiseSource == nil { s.pomodoroPraiseSource = seed.pomodoroPraiseSource }
+            if s.canvasImageMode == nil { s.canvasImageMode = seed.canvasImageMode }
+            if s.imageRotationMode == nil { s.imageRotationMode = seed.imageRotationMode }
+            if s.customImageClock == nil { s.customImageClock = seed.customImageClock }
+            if s.clockFontWeight == nil { s.clockFontWeight = seed.clockFontWeight }
+            if s.clockFont == nil { s.clockFont = seed.clockFont }
+            if s.emojiWallpaperLayout == nil { s.emojiWallpaperLayout = seed.emojiWallpaperLayout }
+            if s.emojiWallpaperText == nil { s.emojiWallpaperText = seed.emojiWallpaperText }
+            if s.customImagePath == nil { s.customImagePath = seed.customImagePath }
+            if s.canvasPrinterFields == nil { s.canvasPrinterFields = seed.canvasPrinterFields }
+            if s.canvasModuleMargins == nil { s.canvasModuleMargins = seed.canvasModuleMargins }
+            for kp in boolPaths where s[keyPath: kp] == nil { s[keyPath: kp] = seed[keyPath: kp] }
+            for kp in intPaths where s[keyPath: kp] == nil { s[keyPath: kp] = seed[keyPath: kp] }
+            for kp in stringPaths where s[keyPath: kp] == nil { s[keyPath: kp] = seed[keyPath: kp] }
+            for kp in intArrayPaths where s[keyPath: kp] == nil { s[keyPath: kp] = seed[keyPath: kp] }
+            if s != before {
+                devices[index].settings = s
+                seeded += 1
+            }
+        }
+        return seeded
+    }
+
     /// 各模块的自适应默认边距：内容厚重/需要呼吸的模块给更大间距，
     /// 纯文字紧凑模块给最小间距；用户手动设置过则覆盖默认值
     public func defaultCanvasMargin(for module: CanvasModule) -> Int {
         switch module {
         case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
         case .pomodoro: return 4
-        case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex: return 4
+        case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
+             .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return 4
         case .clock, .date, .text: return 2
         }
     }
@@ -410,6 +772,18 @@ public final class AppSettings: ObservableObject {
             }
         } else if canvasModuleMargins[module.rawValue] != clamped {
             canvasModuleMargins[module.rawValue] = clamped
+        }
+    }
+
+    /// 画板打印机模块的显示信息选项（未配置时用默认：状态 + 进度 + 错误）
+    public func canvasPrinterFields(for module: CanvasModule) -> CanvasPrinterFields {
+        canvasPrinterFields[module.rawValue] ?? .default
+    }
+
+    /// 更新画板打印机模块的显示信息选项
+    public func setCanvasPrinterFields(_ fields: CanvasPrinterFields, for module: CanvasModule) {
+        if canvasPrinterFields[module.rawValue] != fields {
+            canvasPrinterFields[module.rawValue] = fields
         }
     }
 
@@ -474,6 +848,9 @@ public final class AppSettings: ObservableObject {
     @Published public var activeOracleDeviceID: UUID? {
         didSet { onChange() }
     }
+    @Published public var activeHomeAssistantDeviceID: UUID? {
+        didSet { onChange() }
+    }
     @Published public var activeExcerptDeviceID: UUID? {
         didSet { onChange() }
     }
@@ -522,6 +899,11 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
 
+    /// 设备切换/新增设备进行中：此期间 onChange 不做「镜像→活动设备快照」回写，
+    /// 否则新设备快照会在套用前被上一台设备的镜像值整体覆盖（表现为设备间设置串扰）。
+    /// 运行期标记，不持久化。
+    public var deviceSyncInFlight = false
+
     /// 任一属性变更后调用（用于触发持久化）。
     public var onChange: () -> Void = {}
 
@@ -551,6 +933,26 @@ public final class AppSettings: ObservableObject {
         pomodoroToggleShortcut = pomodoroToggleShortcut.clamped()
         pomodoroSkipShortcut = pomodoroSkipShortcut.clamped()
         pomodoroResetShortcut = pomodoroResetShortcut.clamped()
+        keyboardPageUpShortcut = keyboardPageUpShortcut.clamped()
+        keyboardPageDownShortcut = keyboardPageDownShortcut.clamped()
+        haRefreshMinutes = min(max(haRefreshMinutes, 1), 60)
+        if timeFormat.trimmingCharacters(in: .whitespaces).isEmpty { timeFormat = "HH:mm" }
+        if dateFormat.trimmingCharacters(in: .whitespaces).isEmpty { dateFormat = "yyyy年M月d日 EEE" }
+        // HA 多实体列表：去空去重，保持顺序（旧全局列表 + 每台键盘自己的卡片列表）
+        func cleanEntityList(_ list: [String]) -> [String] {
+            var cleaned: [String] = []
+            var seen = Set<String>()
+            for eid in list where !eid.trimmingCharacters(in: .whitespaces).isEmpty && !seen.contains(eid) {
+                cleaned.append(eid)
+                seen.insert(eid)
+            }
+            return cleaned
+        }
+        haEntities = cleanEntityList(haEntities)
+        haCardEntityIDs = cleanEntityList(haCardEntityIDs)
+        canvasHAEntityIDs = cleanEntityList(canvasHAEntityIDs)
+        oracleCanvasHAEntityIDs = cleanEntityList(oracleCanvasHAEntityIDs)
+        excerptCanvasHAEntityIDs = cleanEntityList(excerptCanvasHAEntityIDs)
         nowPlayingTitleSize = min(max(nowPlayingTitleSize, 7), 24)
         nowPlayingArtistSize = min(max(nowPlayingArtistSize, 6), 20)
         nowPlayingTimeSize = min(max(nowPlayingTimeSize, 10), 40)
@@ -629,7 +1031,7 @@ public final class AppSettings: ObservableObject {
              networkChart,
              imageRotationEnabled, imageRotationSeconds, imageRotationMode,
              customImageClock, clockFontSize, clockTimeFormat, clockFontWeight, clockFont,
-             clockOffsetX, clockOffsetY,
+             clockOffsetX, clockOffsetY, timeFormat, dateFormat,
              canvasModules, canvasText,
              canvasClockFormat, canvasDateFormat, canvasNowPlayingCover, canvasNowPlayingSmartBg,
              oracleNowPlayingHorizontal, excerptNowPlayingHorizontal, canvasImageMode,
@@ -637,9 +1039,16 @@ public final class AppSettings: ObservableObject {
              canvasSspaiRandom, oracleSspaiRandom, excerptSspaiRandom,
              excerptQuoteCategories, showExcerptSource,
              emojiWallpaperText, emojiWallpaperSize, emojiWallpaperLayout, emojiWallpaperSpacing,
-             canvasModuleMargins, qwenQuotaShowPercent,
+             canvasModuleMargins, canvasPrinterFields, oracleCanvasPrinterFields, excerptCanvasPrinterFields, qwenQuotaShowPercent,
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
+             keyboardPageUpShortcut, keyboardPageDownShortcut,
+             haServerURL, haToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
+             canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
+             haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
+             bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
+             bambuNozzleTempEntityID, bambuBedTempEntityID, bambuRemainingEntityID, bambuErrorEntityID,
+             bambuPrinterName, bambuPrinters,
              nowPlayingTitleSize, nowPlayingArtistSize,
              nowPlayingFooterVisible, nowPlayingTimeFormat, nowPlayingDateFormat,
              nowPlayingTimeSize, nowPlayingDateSize,
@@ -650,7 +1059,7 @@ public final class AppSettings: ObservableObject {
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -703,6 +1112,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(clockFont.rawValue, forKey: .clockFont)
         try container.encode(clockOffsetX, forKey: .clockOffsetX)
         try container.encode(clockOffsetY, forKey: .clockOffsetY)
+        try container.encode(timeFormat, forKey: .timeFormat)
+        try container.encode(dateFormat, forKey: .dateFormat)
         try container.encode(clockTimeFormat, forKey: .clockTimeFormat)
         try container.encode(canvasModules, forKey: .canvasModules)
         try container.encode(canvasText, forKey: .canvasText)
@@ -726,6 +1137,9 @@ public final class AppSettings: ObservableObject {
         try container.encode(emojiWallpaperSpacing, forKey: .emojiWallpaperSpacing)
         try container.encode(canvasImageMode.rawValue, forKey: .canvasImageMode)
         try container.encode(canvasModuleMargins, forKey: .canvasModuleMargins)
+        try container.encode(canvasPrinterFields, forKey: .canvasPrinterFields)
+        try container.encode(oracleCanvasPrinterFields, forKey: .oracleCanvasPrinterFields)
+        try container.encode(excerptCanvasPrinterFields, forKey: .excerptCanvasPrinterFields)
         try container.encode(qwenQuotaShowPercent, forKey: .qwenQuotaShowPercent)
         try container.encode(pomodoroPraiseEnabled, forKey: .pomodoroPraiseEnabled)
         try container.encode(pomodoroPraiseSource.rawValue, forKey: .pomodoroPraiseSource)
@@ -733,6 +1147,32 @@ public final class AppSettings: ObservableObject {
         try container.encode(pomodoroToggleShortcut, forKey: .pomodoroToggleShortcut)
         try container.encode(pomodoroSkipShortcut, forKey: .pomodoroSkipShortcut)
         try container.encode(pomodoroResetShortcut, forKey: .pomodoroResetShortcut)
+        try container.encode(keyboardPageUpShortcut, forKey: .keyboardPageUpShortcut)
+        try container.encode(keyboardPageDownShortcut, forKey: .keyboardPageDownShortcut)
+        try container.encode(haServerURL, forKey: .haServerURL)
+        try container.encode(haToken, forKey: .haToken)
+        try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
+        try container.encode(haEntityID, forKey: .haEntityID)
+        try container.encode(haEntities, forKey: .haEntities)
+        try container.encode(haCardEntityIDs, forKey: .haCardEntityIDs)
+        try container.encode(canvasHAEntityIDs, forKey: .canvasHAEntityIDs)
+        try container.encode(oracleCanvasHAEntityIDs, forKey: .oracleCanvasHAEntityIDs)
+        try container.encode(excerptCanvasHAEntityIDs, forKey: .excerptCanvasHAEntityIDs)
+        try container.encode(haEntityAliases, forKey: .haEntityAliases)
+        try container.encode(haMonitorEnabled, forKey: .haMonitorEnabled)
+        try container.encode(haMonitorEntityID, forKey: .haMonitorEntityID)
+        try container.encode(haMonitorExpectedState, forKey: .haMonitorExpectedState)
+        try container.encode(haMonitorErrorEntityID, forKey: .haMonitorErrorEntityID)
+        try container.encode(bambuEnableAlert, forKey: .bambuEnableAlert)
+        try container.encode(bambuStatusEntityID, forKey: .bambuStatusEntityID)
+        try container.encode(bambuProgressEntityID, forKey: .bambuProgressEntityID)
+        try container.encode(bambuTaskEntityID, forKey: .bambuTaskEntityID)
+        try container.encode(bambuNozzleTempEntityID, forKey: .bambuNozzleTempEntityID)
+        try container.encode(bambuBedTempEntityID, forKey: .bambuBedTempEntityID)
+        try container.encode(bambuRemainingEntityID, forKey: .bambuRemainingEntityID)
+        try container.encode(bambuErrorEntityID, forKey: .bambuErrorEntityID)
+        try container.encode(bambuPrinterName, forKey: .bambuPrinterName)
+        try container.encode(bambuPrinters, forKey: .bambuPrinters)
         try container.encode(nowPlayingTitleSize, forKey: .nowPlayingTitleSize)
         try container.encode(nowPlayingArtistSize, forKey: .nowPlayingArtistSize)
         try container.encode(nowPlayingFooterVisible, forKey: .nowPlayingFooterVisible)
@@ -764,6 +1204,8 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeKeyboardDeviceID, forKey: .activeKeyboardDeviceID)
         try container.encodeIfPresent(activeOracleDeviceID, forKey: .activeOracleDeviceID)
         try container.encodeIfPresent(activeExcerptDeviceID, forKey: .activeExcerptDeviceID)
+        try container.encodeIfPresent(activeHomeAssistantDeviceID, forKey: .activeHomeAssistantDeviceID)
+        try container.encodeIfPresent(activeBambuLabDeviceID, forKey: .activeBambuLabDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
         try container.encode(excerptCanvasModules, forKey: .excerptCanvasModules)
         try container.encode(oracleImageRotate180, forKey: .oracleImageRotate180)
@@ -856,6 +1298,8 @@ extension AppSettings: Codable {
         }
         clockOffsetX = try container.decodeIfPresent(Int.self, forKey: .clockOffsetX) ?? clockOffsetX
         clockOffsetY = try container.decodeIfPresent(Int.self, forKey: .clockOffsetY) ?? clockOffsetY
+        timeFormat = try container.decodeIfPresent(String.self, forKey: .timeFormat) ?? timeFormat
+        dateFormat = try container.decodeIfPresent(String.self, forKey: .dateFormat) ?? dateFormat
         clockTimeFormat = try container.decodeIfPresent(String.self, forKey: .clockTimeFormat) ?? clockTimeFormat
         canvasModules = try container.decodeIfPresent([Int].self, forKey: .canvasModules) ?? canvasModules
         canvasText = try container.decodeIfPresent(String.self, forKey: .canvasText) ?? canvasText
@@ -886,6 +1330,9 @@ extension AppSettings: Codable {
         }
         canvasModuleMargins = (try container.decodeIfPresent([Int: Int].self, forKey: .canvasModuleMargins) ?? [:])
             .filter { $0.value > 0 }   // 0 = 自适应模式：丢弃历史遗留的显式 0 条目
+        canvasPrinterFields = try container.decodeIfPresent([Int: CanvasPrinterFields].self, forKey: .canvasPrinterFields) ?? [:]
+        oracleCanvasPrinterFields = try container.decodeIfPresent([Int: CanvasPrinterFields].self, forKey: .oracleCanvasPrinterFields) ?? [:]
+        excerptCanvasPrinterFields = try container.decodeIfPresent([Int: CanvasPrinterFields].self, forKey: .excerptCanvasPrinterFields) ?? [:]
         qwenQuotaShowPercent = try container.decodeIfPresent(Bool.self, forKey: .qwenQuotaShowPercent) ?? qwenQuotaShowPercent
         pomodoroPraiseEnabled = try container.decodeIfPresent(Bool.self, forKey: .pomodoroPraiseEnabled) ?? pomodoroPraiseEnabled
         if let raw = try container.decodeIfPresent(Int.self, forKey: .pomodoroPraiseSource),
@@ -896,6 +1343,38 @@ extension AppSettings: Codable {
         pomodoroToggleShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroToggleShortcut) ?? .defaultToggle
         pomodoroSkipShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroSkipShortcut) ?? .defaultSkip
         pomodoroResetShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroResetShortcut) ?? .defaultReset
+        keyboardPageUpShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageUpShortcut) ?? .defaultPageUp
+        keyboardPageDownShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageDownShortcut) ?? .defaultPageDown
+        haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
+        haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
+        haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
+        haEntityID = try container.decodeIfPresent(String.self, forKey: .haEntityID) ?? haEntityID
+        haEntities = try container.decodeIfPresent([String].self, forKey: .haEntities) ?? haEntities
+        haCardEntityIDs = try container.decodeIfPresent([String].self, forKey: .haCardEntityIDs) ?? haCardEntityIDs
+        canvasHAEntityIDs = try container.decodeIfPresent([String].self, forKey: .canvasHAEntityIDs) ?? []
+        oracleCanvasHAEntityIDs = try container.decodeIfPresent([String].self, forKey: .oracleCanvasHAEntityIDs) ?? []
+        excerptCanvasHAEntityIDs = try container.decodeIfPresent([String].self, forKey: .excerptCanvasHAEntityIDs) ?? []
+        // 旧档案：只有全局实体列表（或单实体字段）时，先把它作为当前镜像值，
+        // 随后 migrateKeyboardCardContentSeeds 会为每台键盘各记一份，之后互不影响
+        if haCardEntityIDs.isEmpty {
+            if !haEntities.isEmpty { haCardEntityIDs = haEntities }
+            else if !haEntityID.isEmpty { haCardEntityIDs = [haEntityID] }
+        }
+        haEntityAliases = try container.decodeIfPresent([String: String].self, forKey: .haEntityAliases) ?? haEntityAliases
+        haMonitorEnabled = try container.decodeIfPresent(Bool.self, forKey: .haMonitorEnabled) ?? haMonitorEnabled
+        haMonitorEntityID = try container.decodeIfPresent(String.self, forKey: .haMonitorEntityID) ?? haMonitorEntityID
+        haMonitorExpectedState = try container.decodeIfPresent(String.self, forKey: .haMonitorExpectedState) ?? haMonitorExpectedState
+        haMonitorErrorEntityID = try container.decodeIfPresent(String.self, forKey: .haMonitorErrorEntityID) ?? haMonitorErrorEntityID
+        bambuEnableAlert = try container.decodeIfPresent(Bool.self, forKey: .bambuEnableAlert) ?? bambuEnableAlert
+        bambuStatusEntityID = try container.decodeIfPresent(String.self, forKey: .bambuStatusEntityID) ?? bambuStatusEntityID
+        bambuProgressEntityID = try container.decodeIfPresent(String.self, forKey: .bambuProgressEntityID) ?? bambuProgressEntityID
+        bambuTaskEntityID = try container.decodeIfPresent(String.self, forKey: .bambuTaskEntityID) ?? bambuTaskEntityID
+        bambuNozzleTempEntityID = try container.decodeIfPresent(String.self, forKey: .bambuNozzleTempEntityID) ?? bambuNozzleTempEntityID
+        bambuBedTempEntityID = try container.decodeIfPresent(String.self, forKey: .bambuBedTempEntityID) ?? bambuBedTempEntityID
+        bambuRemainingEntityID = try container.decodeIfPresent(String.self, forKey: .bambuRemainingEntityID) ?? bambuRemainingEntityID
+        bambuErrorEntityID = try container.decodeIfPresent(String.self, forKey: .bambuErrorEntityID) ?? bambuErrorEntityID
+        bambuPrinterName = try container.decodeIfPresent(String.self, forKey: .bambuPrinterName) ?? bambuPrinterName
+        bambuPrinters = try container.decodeIfPresent([BambuLabCardSettings].self, forKey: .bambuPrinters) ?? bambuPrinters
         nowPlayingTitleSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingTitleSize) ?? nowPlayingTitleSize
         nowPlayingArtistSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingArtistSize) ?? nowPlayingArtistSize
         nowPlayingFooterVisible = try container.decodeIfPresent(Bool.self, forKey: .nowPlayingFooterVisible) ?? nowPlayingFooterVisible
@@ -931,6 +1410,8 @@ extension AppSettings: Codable {
         activeKeyboardDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeKeyboardDeviceID) ?? activeKeyboardDeviceID
         activeOracleDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeOracleDeviceID) ?? activeOracleDeviceID
         activeExcerptDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeExcerptDeviceID) ?? activeExcerptDeviceID
+        activeHomeAssistantDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeHomeAssistantDeviceID) ?? activeHomeAssistantDeviceID
+        activeBambuLabDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeBambuLabDeviceID) ?? activeBambuLabDeviceID
         oracleCanvasModules = try container.decodeIfPresent([Int].self, forKey: .oracleCanvasModules) ?? oracleCanvasModules
         excerptCanvasModules = try container.decodeIfPresent([Int].self, forKey: .excerptCanvasModules) ?? excerptCanvasModules
         oracleImageRotate180 = try container.decodeIfPresent(Bool.self, forKey: .oracleImageRotate180) ?? oracleImageRotate180

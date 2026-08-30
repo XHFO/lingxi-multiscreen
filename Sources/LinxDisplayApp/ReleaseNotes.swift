@@ -10,6 +10,18 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.5.0", date: "2026-08-31", notes: [
+            "新增 Home Assistant：支持独立状态卡片，并可分别为灵犀68、口袋先知和摘录画板选择要显示的实体；连接配置全局共享，访问令牌仅保存在本机。",
+            "Home Assistant 卡片重新排版：每页最多 4 个等高实体卡片，长名称和长状态自适应显示，时间日期弱化，实体不足时自动调整上下留白。",
+            "灵犀画板的 Home Assistant 模块会随实体数量动态调整高度；减少实体后及时释放空间，并增加模块安全间距，避免顶部与相邻卡片重叠。",
+            "新增 Bambu Lab 打印机设备管理与多打印机卡片；自动匹配须先选择打印状态实体，再依据稳定 entity_id、同前缀实体、状态值与型号特征匹配。",
+            "扩大 Bambu Lab 打印状态实体筛选弹窗，并在弹窗内加入“使用默认筛选”开关；关闭后立即显示全部 sensor，兼容用户重命名过的设备与实体。",
+            "Bambu Lab 支持手动实体映射、字段显示控制、错误告警和打印完成提示；菜单栏只列出已经添加的打印机。",
+            "全局设置新增手动上一页、下一页快捷键；多设备卡片内容与快捷控制按键盘设备隔离。",
+            "统一三类画板卡片字体与展开设置排版，改善文字拥挤、模块占位和多卡片布局。",
+            "大幅优化性能：修复自动匹配候选计算导致的高 CPU，减少静态画板重复渲染和无效系统采样，复用预览与推送帧，并限制 Home Assistant 历史值缓存。",
+            "修复多项实体迁移、排序、状态同步和显示细节问题；新增灵犀68 设备预览资源。",
+        ]),
         ReleaseNote(id: "1.4.0", date: "2026-08-25", notes: [
             "侧边栏重构：改为系统标准分栏（NavigationSplitView），分隔条可拖拽调整宽度；支持折叠为纯图标窄栏，展开/收起带弹簧动画；专辑封面光晕点亮/变暗平滑过渡。",
             "预览面板优化：窗口任意缩放时右侧键盘预览始终完整显示、绝不裁切；预览与键盘实际显示严格一致。",
@@ -69,14 +81,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.4.0"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.0"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
 
-    /// 当前短版本号（如 1.4.0，不含构建号），用于与 GitHub 最新版本比较
+    /// 当前短版本号（如 1.5.0，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.4.0"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.5.0"
     }
 }

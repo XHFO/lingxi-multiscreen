@@ -5,6 +5,59 @@ import UniformTypeIdentifiers
 
 // MARK: - 面板类型
 
+/// 「Beta」小徽标：橙色系圆角标签，标识 Home Assistant / Bambu Lab 实验性功能（仅视觉，不影响功能）
+struct BetaBadge: View {
+    var body: some View {
+        Text("Beta")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(Color(red: 0.96, green: 0.60, blue: 0.16)))
+            .accessibilityLabel("Beta 测试")
+    }
+}
+
+/// 该面板是否为实验性功能（Home Assistant / Bambu Lab）
+extension Panel {
+    var isBeta: Bool {
+        self == .homeAssistant || self == .bambuLab || self == .bambuLab2
+            || self == .bambuLab3 || self == .bambuLab4 || self == .bambuLab5
+    }
+
+    /// 是否为 Bambu Lab 打印机卡片位（第 1/2/3/4/5 台；显示在键盘设备分组内，
+    /// 实体映射与告警在「设备管理」中配置）
+    var isBambuCard: Bool {
+        self == .bambuLab || self == .bambuLab2 || self == .bambuLab3
+            || self == .bambuLab4 || self == .bambuLab5
+    }
+
+    /// Bambu 卡片位索引（0..4）；非 Bambu 面板返回 nil
+    var bambuSlotIndex: Int? {
+        switch self {
+        case .bambuLab: return 0
+        case .bambuLab2: return 1
+        case .bambuLab3: return 2
+        case .bambuLab4: return 3
+        case .bambuLab5: return 4
+        default: return nil
+        }
+    }
+
+    /// 按卡片位索引取 Bambu 面板（越界返回 nil）
+    static func bambuPanel(forSlotIndex i: Int) -> Panel? {
+        switch i {
+        case 0: return .bambuLab
+        case 1: return .bambuLab2
+        case 2: return .bambuLab3
+        case 3: return .bambuLab4
+        case 4: return .bambuLab5
+        default: return nil
+        }
+    }
+}
+
 enum Panel: String, CaseIterable, Identifiable, Hashable {
     case welcome
     case appearance
@@ -18,6 +71,12 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case excerptQuote
     case sspai
     case emojiWallpaper
+    case homeAssistant
+    case bambuLab
+    case bambuLab2
+    case bambuLab3
+    case bambuLab4
+    case bambuLab5
     case devices
     case buttonControl
     case cardRotation
@@ -30,7 +89,9 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     /// 主导航项（外观与设置置于底部）
     static var mainItems: [Panel] {
         [.qwenWork, .codex, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
-         .excerptQuote, .sspai, .emojiWallpaper, .devices, .oracleCanvas, .excerptCanvas]
+         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant,
+         .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+         .devices, .oracleCanvas, .excerptCanvas]
     }
 
     /// 底部项：外观与设置
@@ -82,6 +143,12 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return .excerptQuote
         case .sspai: return .sspai
         case .emojiWallpaper: return .emojiWallpaper
+        case .homeAssistant: return .homeAssistant
+        case .bambuLab: return .bambuLab
+        case .bambuLab2: return .bambuLab2
+        case .bambuLab3: return .bambuLab3
+        case .bambuLab4: return .bambuLab4
+        case .bambuLab5: return .bambuLab5
         }
     }
 
@@ -100,6 +167,12 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return "摘录语录"
         case .sspai: return "少数派推荐"
         case .emojiWallpaper: return "Emoji 壁纸"
+        case .homeAssistant: return "Home Assistant"
+        case .bambuLab: return "Bambu Lab 打印机"
+        case .bambuLab2: return "Bambu Lab 打印机 2"
+        case .bambuLab3: return "Bambu Lab 打印机 3"
+        case .bambuLab4: return "Bambu Lab 打印机 4"
+        case .bambuLab5: return "Bambu Lab 打印机 5"
         case .devices: return "设备管理"
         case .buttonControl: return "按键控制"
         case .cardRotation: return "卡片管理"
@@ -123,6 +196,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return "text.quote"
         case .sspai: return "newspaper"
         case .emojiWallpaper: return "face.smiling"
+        case .homeAssistant: return "house"
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return "printer"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
         case .cardRotation: return "tray.full"
@@ -146,6 +221,12 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return .excerptQuote
         case .sspai: return .sspai
         case .emojiWallpaper: return .emojiWallpaper
+        case .homeAssistant: return .homeAssistant
+        case .bambuLab: return .bambuLab
+        case .bambuLab2: return .bambuLab2
+        case .bambuLab3: return .bambuLab3
+        case .bambuLab4: return .bambuLab4
+        case .bambuLab5: return .bambuLab5
         }
     }
 }
@@ -296,6 +377,16 @@ struct SettingsView: View {
     /// 卡片管理拖拽排序状态（拖动中仅更新本地列表，松手统一提交）
     @State private var draggedCardPanel: Panel?
     @State private var dragCardPanels: [Panel]?
+    @State private var draggedHAEntity: HAEntityRef?
+    @State private var dragHAEntities: [HAEntityRef]?
+    /// Bambu 打印机自动匹配输入草稿（key = 设备ID-打印机索引）
+    @State private var bambuMatchDrafts: [String: String] = [:]
+    /// 彩蛋：连续点击告警标题次数（5 次触发所有打印机报错预览）
+    @State private var alertTitleTapCount = 0
+    @State private var showPrinterAlertPreview = false
+    /// HA 实体自定义显示名称编辑（正在编辑的实体 id 与草稿）
+    @State private var editingAliasEntityID: String?
+    @State private var aliasDraft = ""
     /// 设备连接字段的输入草稿（填写后需点「应用」才生效，避免输入中途被误用/误改）
     /// 键为「设备ID#字段名」复合键：同一设备可能有多个连接字段（摘录的 API Key 与序列号），
     /// 共用一个草稿槽会导致两个输入框互相串内容
@@ -316,11 +407,25 @@ struct SettingsView: View {
     @State private var recordingMonitor: Any?
     /// 恢复初始快捷键确认 / 快捷键冲突提示
     @State private var showRestoreShortcutsConfirm = false
+    @State private var showRestorePageShortcutsConfirm = false
     @State private var showShortcutConflict = false
     @State private var shortcutConflictText = ""
+    /// 版本更新日志：已展开的版本号集合（默认仅展开当前版本，旧版本收起为精简列表）
+    @State private var expandedReleaseNotes: Set<String>
+    /// 版本更新日志整体入口是否展开（默认收起，设置页主体保持一行入口不被撑长）
+    @State private var showVersionLog = false
+    /// Home Assistant 连接测试结果与进行中状态
+    @State private var haTestResult = ""
+    @State private var haTesting = false
+    /// 用户主动展开「添加 Home Assistant 服务器」表单（未配置服务器时默认只显示入口按钮）
+    @State private var haSetupVisible = false
+    /// 添加服务器时填写的长期访问令牌草稿
+    @State private var haTokenDraft = ""
 
     init(model: AppModel) {
         self.model = model
+        // 版本日志默认展开当前版本（最新一条），历史版本折叠
+        _expandedReleaseNotes = State(initialValue: Set(ReleaseNotes.all.prefix(1).map(\.id)))
         // 首次使用（无任何设备）直接进入「开始使用」引导页；已有设备时跟随当前显示模式
         if model.settings.devices.isEmpty {
             _selected = State(initialValue: .welcome)
@@ -405,7 +510,8 @@ struct SettingsView: View {
             // 详情区所需宽度：主内容最小 380 + 分隔线 + 预览面板 210（隐藏预览的面板只需 380）。
             // 侧栏列最大宽度随窗口宽度动态收缩，保证详情区永远放得下——
             // 预览面板任何窗口尺寸下都完整展示、绝不被裁切（与旧版自适应行为一致）
-            let detailNeed: CGFloat = 380 + (hidesPreviewPanel ? 0 : 210) + 2
+            let previewNeed: CGFloat = hidesPreviewPanel ? 0 : PreviewPanel.preferredWidth(forHeight: geo.size.height)
+            let detailNeed: CGFloat = 380 + previewNeed + 2
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 sidebarColumn(windowWidth: geo.size.width)
                     // 图标模式最窄 82
@@ -433,6 +539,13 @@ struct SettingsView: View {
                 if let panel = Panel.from(displayMode: newMode), panel != selected {
                     selected = panel
                 }
+            }
+            // 切换操作设备时丢弃进行中的拖拽临时列表：否则上一台键盘的排序可能被提交到新设备
+            .onChange(of: model.activeDeviceID(for: .keyboard)) { _ in
+                dragPanels = nil
+                dragCanvasPanels = nil
+                dragCardPanels = nil
+                draggedCardPanel = nil
             }
         }
     }
@@ -500,8 +613,11 @@ struct SettingsView: View {
 
             if !hidesPreviewPanel {
                 Divider()
-                PreviewPanel(model: model) // 面板自适应宽度（70–210），内容等比缩放永不裁切
+                PreviewPanel(model: model) // 宽度按面板自身高度×设备外观比例反推，四边留白固定
             }
+        }
+        .sheet(isPresented: $showPrinterAlertPreview) {
+            PrinterAlertPreviewSheet(model: model)
         }
     }
 
@@ -540,9 +656,14 @@ struct SettingsView: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
-            Text(model.settings.devices.isEmpty && !worksWithoutDevices(selected)
-                 ? "开始使用" : selected.title)
-                .font(.headline)
+            HStack(spacing: 6) {
+                Text(model.settings.devices.isEmpty && !worksWithoutDevices(selected)
+                     ? "开始使用" : selected.title)
+                    .font(.headline)
+                if selected.isBeta {
+                    BetaBadge()
+                }
+            }
 
             Spacer()
 
@@ -574,6 +695,8 @@ struct SettingsView: View {
         case .excerptQuote: excerptQuoteForm
         case .sspai: sspaiForm
         case .emojiWallpaper: emojiWallpaperForm
+        case .homeAssistant: homeAssistantForm
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
         case .cardRotation: cardRotationForm
@@ -589,21 +712,9 @@ struct SettingsView: View {
                                        fieldWidth: CGFloat? = nil,
                                        helpText: String? = nil,
                                        helpURL: URL? = nil) -> some View {
-        let draftKey = "\(deviceID.uuidString)#\(label)"
         HStack(spacing: 6) {
-            TextField(label, text: Binding(
-                get: { self.connectionDrafts[draftKey] ?? binding.wrappedValue },
-                set: { self.connectionDrafts[draftKey] = $0 }))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: fieldWidth)
-            Button("应用") {
-                binding.wrappedValue = self.connectionDrafts[draftKey] ?? ""
-                self.connectionDrafts[draftKey] = nil
-            }
-            .controlSize(.small)
-            .disabled((self.connectionDrafts[draftKey] ?? binding.wrappedValue)
-                      == binding.wrappedValue)
-            .help("确认并应用此连接信息")
+            draftField(key: "\(deviceID.uuidString)#\(label)", label: label,
+                       binding: binding, fieldWidth: fieldWidth)
             if let helpText, let helpURL {
                 Button {
                     NSWorkspace.shared.open(helpURL)
@@ -616,6 +727,41 @@ struct SettingsView: View {
                 .help(helpText)
             }
         }
+    }
+
+    /// 草稿式连接输入：输入框 + 「应用」（避免逐字符触发拉取/持久化）；key 为草稿存储键
+    private func draftField(key: String, label: String, binding: Binding<String>,
+                            fieldWidth: CGFloat? = nil, secure: Bool = false,
+                            onApply: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 6) {
+            Group {
+                if secure {
+                    SecureField(label, text: Binding(
+                        get: { self.connectionDrafts[key] ?? binding.wrappedValue },
+                        set: { self.connectionDrafts[key] = $0 }))
+                } else {
+                    TextField(label, text: Binding(
+                        get: { self.connectionDrafts[key] ?? binding.wrappedValue },
+                        set: { self.connectionDrafts[key] = $0 }))
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .frame(width: fieldWidth)
+            Button("应用") {
+                binding.wrappedValue = self.connectionDrafts[key] ?? ""
+                self.connectionDrafts[key] = nil
+                onApply?()
+            }
+            .controlSize(.small)
+            .disabled((self.connectionDrafts[key] ?? binding.wrappedValue) == binding.wrappedValue)
+            .help("确认并应用此连接信息")
+        }
+    }
+
+    /// Home Assistant 长期访问令牌输入（密码框 + 草稿 + 应用，与连接字段一致）
+    private func haTokenField(_ deviceID: UUID) -> some View {
+        draftField(key: "\(deviceID.uuidString)#HA令牌", label: "长期访问令牌",
+                   binding: model.deviceHATokenBinding(for: deviceID), fieldWidth: 320, secure: true)
     }
 
     /// 口袋先知按键控制页：配置当前口袋先知设备的按键控制目标
@@ -661,7 +807,7 @@ struct SettingsView: View {
     }
 
     /// 设备管理页面：多台 灵犀68/口袋先知/摘录 设备的添加、重命名、删除与活动设备切换；
-    /// 每台设备独立记住连接信息与画板设置
+    /// 每台设备独立记住自己的画板与卡片设置；Home Assistant 服务器为全局唯一连接配置
     private var devicesForm: some View {
         Group {
             ForEach(DeviceType.allCases) { type in
@@ -672,6 +818,16 @@ struct SettingsView: View {
                                 TextField("设备名称", text: model.deviceNameBinding(for: device.id))
                                     .textFieldStyle(.roundedBorder)
                                     .frame(width: 320)
+                                if type == .bambuLab, let printerModel = model.bambuModel(for: device.id) {
+                                    Text(printerModel)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(Color.accentColor.opacity(0.85)))
+                                        .help("识别到的打印机型号")
+                                }
                             }
                             .opacity(device.isEnabled ? 1 : 0.5)
                             // 连接信息按设备类型显示与编辑（键盘/先知只需 IP，摘录需 API Key 与序列号）
@@ -687,6 +843,40 @@ struct SettingsView: View {
                                                           fieldWidth: 320,
                                                           helpText: "Rand/0 设备 IP 地址可在设备网络设置中查看；点击图标查看显示模式官方文档。",
                                                           helpURL: rand0DisplayModeDocsURL)
+                                } else if type == .homeAssistant {
+                                    deviceConnectionField(device.id, label: "服务器地址",
+                                                          binding: model.deviceHAServerURLBinding(for: device.id),
+                                                          fieldWidth: 320,
+                                                          helpText: "如 http://192.168.x.x:8123；实体状态经 REST 接口（/api/states）拉取。")
+                                    haTokenField(device.id)
+                                    HStack {
+                                        Stepper("刷新间隔 \(model.deviceHARefreshBinding(for: device.id).wrappedValue) 分钟",
+                                                value: model.deviceHARefreshBinding(for: device.id), in: 1...60)
+                                        Spacer()
+                                    }
+                                    HStack {
+                                        Button("连接测试") {
+                                            Task {
+                                                haTesting = true
+                                                haTestResult = await model.testHADevice(device.id)
+                                                haTesting = false
+                                            }
+                                        }
+                                        if haTesting {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                        Spacer()
+                                        if !haTestResult.isEmpty {
+                                            Text(haTestResult)
+                                                .font(.caption)
+                                                .foregroundStyle(haTestResult.hasPrefix("连接成功") ? Color.secondary : Color.red)
+                                        }
+                                    }
+                                    Text("长期访问令牌在 Home Assistant 网页「个人资料 → 安全 → 长期访问令牌」生成；仅保存在本机，不会随发布包外泄。")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else if type == .bambuLab {
+                                    bambuDeviceConfigInline(device.id)
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
                                                           binding: model.deviceDotApiKeyBinding(for: device.id),
@@ -716,17 +906,24 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                             .help("删除该设备")
                         }
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 10)
+                        Divider()
                     }
-                    Button("添加 \(type.title) 设备") {
-                        model.addDevice(type: type)
+                    if let notice = model.settings.deviceLimitNotice(for: type) {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("添加 \(type.title) 设备") {
+                            model.addDevice(type: type)
+                        }
                     }
                 } header: {
                     Text(type.title)
                 }
             }
             Section {
-                Text("键盘与口袋先知只需填写 IP 地址（键盘会自动补全推送地址 http://IP/image/upload），摘录需 API Key 与设备序列号。连接信息填写后需点「应用」才生效；每台设备独立记录连接与画板设置，切换设备后恢复该设备之前的设置。")
+                Text("灵犀68 键盘与口袋先知只需填写 IP 地址（键盘会自动补全推送地址 http://IP/image/upload），摘录需 API Key 与设备序列号。连接信息填写后需点「应用」才生效；每台设备独立记录连接与画板设置，切换设备后恢复该设备之前的设置。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -752,6 +949,29 @@ struct SettingsView: View {
     /// 卡片轮换（键盘功能设置）：开关、间隔与轮换卡片内容排序（按键盘设备独立记录）
     private var cardRotationForm: some View {
         Group {
+            Section {
+                HStack(spacing: 8) {
+                    Image(systemName: "keyboard")
+                        .foregroundStyle(.secondary)
+                    Text("正在管理")
+                    Spacer()
+                    if model.enabledDevices(for: .keyboard).count > 1 {
+                        Picker("", selection: model.activeKeyboardBinding) {
+                            ForEach(model.enabledDevices(for: .keyboard)) { device in
+                                Text(device.name).tag(device.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 200)
+                    } else {
+                        Text(model.activeDevice(for: .keyboard)?.name ?? "未选择设备")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("每台灵犀68 键盘的卡片列表与卡片内容相互独立：此页只影响上面选中的这台键盘。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("自动轮播") {
                 Toggle("卡片页面自动轮播", isOn: model.cardRotationEnabledBinding)
                 if model.settings.cardRotationEnabled {
@@ -822,6 +1042,9 @@ struct SettingsView: View {
                                     .font(.system(size: 12))
                                     .frame(width: 16)
                                 Text(panel.title)
+                                if panel.isBeta {
+                                    BetaBadge()
+                                }
                                 Spacer()
                                 Image(systemName: "plus.circle")
                                     .foregroundStyle(Color.accentColor)
@@ -842,6 +1065,7 @@ struct SettingsView: View {
     /// 卡片管理列表中的一行：拖拽排序 + 侧栏显示开关 + 加入自动循环开关（开关固定列宽右对齐）
     private func cardManagementRow(_ panel: Panel) -> some View {
         let inRotation = panel.displayMode.map { model.settings.cardRotationModes.contains($0.rawValue) } ?? false
+        let displayTitle = model.bambuCardTitle(for: panel) ?? panel.title
         return HStack(spacing: 10) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11))
@@ -849,7 +1073,10 @@ struct SettingsView: View {
             Image(systemName: panel.icon)
                 .font(.system(size: 12))
                 .frame(width: 16)
-            Text(panel.title)
+            Text(displayTitle)
+            if panel.isBeta {
+                BetaBadge()
+            }
             Spacer()
             Toggle("", isOn: Binding(
                 get: { true },
@@ -1090,7 +1317,7 @@ struct SettingsView: View {
                                         owner: AppModel.CanvasOwner,
                                         moduleList: [CanvasModule],
                                         showFullWidthToggle: Bool = false) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
             HStack(spacing: 10) {
                 // 标签栏主体（拖拽把手/图标/标题/弹性空白）整段可点击展开/收起设置，
                 // 按钮（占满整行/展开箭头/删除）保持各自独立交互
@@ -1101,7 +1328,10 @@ struct SettingsView: View {
                     Image(systemName: module.icon)
                         .font(.system(size: 12))
                         .frame(width: 16)
-                    Text(module.title)
+                    Text(model.canvasModuleTitle(module))
+                    if module.isBeta {
+                        BetaBadge()
+                    }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -1129,8 +1359,10 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
             }
+            .padding(.vertical, 3)
             if expandedModule == module {
                 canvasModuleSettings(module, owner: owner)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .onDrag {
@@ -1150,7 +1382,10 @@ struct SettingsView: View {
                 Image(systemName: module.icon)
                     .font(.system(size: 12))
                     .frame(width: 16)
-                Text(module.title)
+                Text(model.canvasModuleTitle(module))
+                if module.isBeta {
+                    BetaBadge()
+                }
                 Spacer()
                 Image(systemName: "plus.circle")
                     .foregroundStyle(modulesRaw.contains(module.rawValue)
@@ -1605,6 +1840,21 @@ struct SettingsView: View {
         )
     }
 
+    /// 画板打印机模块的单个显示信息开关绑定（按画板归属读写：每台键盘/先知/摘录各自独立）
+    private func canvasPrinterFieldBinding(_ module: CanvasModule, owner: AppModel.CanvasOwner,
+                                           _ keyPath: WritableKeyPath<CanvasPrinterFields, Bool>) -> Binding<Bool> {
+        Binding(get: {
+            let stored = self.model.canvasPrinterFields(for: owner)[module.rawValue] ?? .default
+            return stored[keyPath: keyPath]
+        }, set: { v in
+            var dict = self.model.canvasPrinterFields(for: owner)
+            var fields = dict[module.rawValue] ?? .default
+            fields[keyPath: keyPath] = v
+            dict[module.rawValue] = fields
+            self.model.setCanvasPrinterFields(dict, for: owner)
+        })
+    }
+
     /// 墨水屏画板「正在播放」横向排布开关绑定（先知/摘录各持独立设置）
     private func nowPlayingHorizontalBinding(for owner: AppModel.CanvasOwner) -> Binding<Bool> {
         switch owner {
@@ -1617,10 +1867,11 @@ struct SettingsView: View {
     /// 模块行内展开的设置内容
     @ViewBuilder
     private func canvasModuleSettings(_ module: CanvasModule, owner: AppModel.CanvasOwner) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("上下边距")
+                    Label("上下边距", systemImage: "arrow.up.and.down")
+                        .font(.system(size: 12, weight: .medium))
                     Spacer()
                     if model.settings.manualCanvasMargin(for: module) == 0 {
                         Text("自适应")
@@ -1632,21 +1883,16 @@ struct SettingsView: View {
                     }
                 }
                 Slider(value: canvasMarginBinding(for: module), in: 0...40, step: 1)
-                Text("数值 0 = 自适应调节模式：自动按模块类型选用合适的间距（时钟/日期=2，CPU/内存等=4，正在播放/图片=6）；调大数值让该模块更紧凑、模块之间排布更密集。")
+                Text("0 为自适应；数值越大，模块越紧凑。自适应会按模块类型选择合适间距。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.04)))
             switch module {
-            case .clock:
-                TextField("时钟格式", text: model.canvasClockFormatBinding)
-                    .textFieldStyle(.roundedBorder)
-                Text("DateFormatter 模式，如 HH:mm / hh:mm / HH:mm:ss")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            case .date:
-                TextField("日期格式", text: model.canvasDateFormatBinding)
-                    .textFieldStyle(.roundedBorder)
-                Text("如 yyyy年M月d日 EEE / M/d / yyyy-MM-dd")
+            case .clock, .date:
+                Text("时间 / 日期格式在「设置 → 时间与日期」统一调整，所有界面共用同一份。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .text:
@@ -1726,11 +1972,81 @@ struct SettingsView: View {
                 Text("百分比：与其他模块一致，大字显示剩余百分比；额度数值：大字仅显示剩余额度数字。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            case .homeAssistant:
+                let selectedIDs = model.canvasHAEntityIDs(for: owner)
+                Text("模块会根据此画板选择的实体数量自动调整画面占比：实体越少越紧凑，实体越多占用空间越大。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                EntityDomainPicker(title: "显示实体（可多选）",
+                                   selection: .constant(""),
+                                   entities: model.haSnapshot.entities,
+                                   emptyLabel: "\(selectedIDs.count) 个已选",
+                                   allowClear: false,
+                                   multiSelect: true,
+                                   lockedIDs: Set(selectedIDs),
+                                   onMultiConfirm: { model.addCanvasHAEntities($0, for: owner) })
+                if selectedIDs.isEmpty {
+                    Text("尚未选择实体。此画板不会自动沿用 Home Assistant 键盘卡片或其他画板的实体。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(selectedIDs, id: \.self) { id in
+                        HStack(spacing: 6) {
+                            let entity = model.haSnapshot.entities.first { $0.entityId == id }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(entity?.displayName ?? id)
+                                    .font(.system(size: 11))
+                                    .lineLimit(1)
+                                if entity != nil {
+                                    Text(id)
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 4)
+                            Button(role: .destructive) {
+                                model.removeCanvasHAEntity(id, from: owner)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("从此画板移除")
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.primary.opacity(0.035)))
+                    }
+                    Text("这里只影响当前画板；灵犀画板、口袋先知画板、摘录画板分别保存自己的实体列表。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                }
+            case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+                Text("显示信息（每项在模块内各占一行）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("工作状态", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showStatus))
+                Toggle("打印进度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showProgress))
+                Toggle("当前任务", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showTask))
+                Toggle("喷嘴温度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showNozzleTemp))
+                Toggle("热床温度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showBedTemp))
+                Toggle("剩余时间", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showRemaining))
+                Toggle("错误码 / 故障原因", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showError))
+                Text("每个打印机模块独立配置；勾选的条目越多，模块内每行越矮。配合上方「上下边距」调节整体紧凑度。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             default:
                 EmptyView()
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.primary.opacity(0.025)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.primary.opacity(0.07), lineWidth: 1))
     }
 
     @ViewBuilder
@@ -1781,12 +2097,8 @@ struct SettingsView: View {
                 }
             }
             if model.settings.nowPlayingFooterVisible {
-                TextField("时间格式", text: model.nowPlayingTimeFormatBinding)
-                    .textFieldStyle(.roundedBorder)
-                TextField("日期格式", text: model.nowPlayingDateFormatBinding)
-                    .textFieldStyle(.roundedBorder)
                 HStack(spacing: 4) {
-                    Text("DateFormatter 模式，如 HH:mm / M月d日 / yyyy年M月d日 EEE")
+                    Text("页脚时间与日期使用全局格式，在「设置 → 时间与日期」调整。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -1862,6 +2174,342 @@ struct SettingsView: View {
         }
     }
 
+    /// Home Assistant 卡片页面：实体选择 + 异常监控（服务器连接设置只在「设备管理」中提供）
+    @ViewBuilder
+    private var homeAssistantForm: some View {
+        Section {
+            Text("实体状态将显示在键盘「Home Assistant」卡片与画板模块中；服务器地址与令牌请在「设备管理 → Home Assistant」中按设备填写，每台设备独立配置。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            let entityRefs = dragHAEntities ?? model.haEntityList.map(HAEntityRef.init)
+            if entityRefs.isEmpty {
+                Text("尚未添加实体：点下方「添加实体」按分类选择要显示的实体（可多选）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                reorderList(items: entityRefs,
+                            dragged: $draggedHAEntity,
+                            dragItems: $dragHAEntities,
+                            commit: { refs in
+                                model.haEntitiesBinding.wrappedValue = refs.map(\.id)
+                            }) { ref in
+                    haEntityRow(ref)
+                }
+            }
+            HAEntityAdder(entities: model.haSnapshot.entities,
+                          alreadyAdded: Set(model.haEntityList)) { entityIDs in
+                model.addHAEntitiesBatch(entityIDs)
+            }
+            // 拉取失败或未连接时给出明确原因（服务器设置只在「设备管理 → Home Assistant 连接」提供）
+            if let error = model.haSnapshot.errorText {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if model.settings.haServerURL.isEmpty {
+                Text("尚未配置服务器：请在「设备管理」中添加 Home Assistant 设备并填写地址与长期访问令牌。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("实体选择")
+                HelpIcon(text: "这里选中的实体同时用于键盘「Home Assistant」卡片和各类画板的 Home Assistant 模块，按列表顺序显示；拖拽排序、点 × 移除。")
+            }
+        }
+        Section("异常监控") {
+            Toggle("开启实体异常监控", isOn: model.haMonitorEnabledBinding)
+            if model.settings.haMonitorEnabled {
+                HStack(spacing: 4) {
+                    EntityDomainPicker(title: "状态实体",
+                                       selection: model.haMonitorEntityIDBinding,
+                                       entities: model.haSnapshot.entities,
+                                       emptyLabel: "未选择",
+                                       clearLabel: "不使用")
+                    HelpIcon(text: "该实体的状态不等于下面的期望值即视为异常（例如 Bambu Lab 打印机正常时为 idle/standby）。")
+                }
+                HStack(spacing: 4) {
+                    TextField("期望的正常状态值", text: model.haMonitorExpectedStateBinding)
+                        .textFieldStyle(.roundedBorder)
+                    HelpIcon(text: "留空则不做状态判定，只按错误码实体判定。")
+                        .fixedSize()
+                }
+                HStack(spacing: 4) {
+                    EntityDomainPicker(title: "错误码实体（可选）",
+                                       selection: model.haMonitorErrorEntityIDBinding,
+                                       entities: model.haSnapshot.entities,
+                                       emptyLabel: "不使用",
+                                       clearLabel: "不使用")
+                    HelpIcon(text: "错误码实体的值非空（且不是 none/正常/off）即视为异常；两个条件任一命中都会推送告警到键盘。")
+                }
+                if !model.haAlertTitle.isEmpty {
+                    Label("当前告警：\(model.haAlertTitle)（\(model.haAlertMessage)）",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    /// Bambu Lab 打印机卡片详情页：界面显示调整（布局样式 + 各区块开关）。
+    /// 卡片渲染由键盘右侧实时预览展示，本页不再重复预览；实体映射在「设备管理」中配置。
+    private func bambuLabForm(for panel: Panel) -> some View {
+        Group {
+            if let device = model.bambuDevice(for: panel) {
+                Section("卡片 · \(device.name)") {
+                    Picker("布局样式", selection: model.bambuLayoutBinding(for: device.id)) {
+                        ForEach(BambuCardLayout.allCases) { layout in
+                            Text(layout.title).tag(layout)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("「紧凑」缩小字号与行距以展示更多信息；「大字」放大状态与正文便于远距离查看。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("主题色", selection: model.bambuThemeAccentBinding(for: device.id)) {
+                        ForEach(BambuThemeAccent.allCases) { accent in
+                            Text(accent.title).tag(accent)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("「跟随全局」使用外观设置里的强调色；「Bambu Lab 强调色」固定使用品牌绿（徽标/进度条/状态高亮）。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section("显示区块") {
+                    Toggle("显示工作状态", isOn: model.bambuShowBinding(for: device.id, \.bambuShowStatus))
+                    Toggle("显示打印进度", isOn: model.bambuShowBinding(for: device.id, \.bambuShowProgress))
+                    Toggle("显示当前任务", isOn: model.bambuShowBinding(for: device.id, \.bambuShowTask))
+                    Toggle("显示喷嘴 / 热床温度", isOn: model.bambuShowBinding(for: device.id, \.bambuShowTemperature))
+                    Toggle("显示剩余时间", isOn: model.bambuShowBinding(for: device.id, \.bambuShowRemaining))
+                    Toggle("显示错误码", isOn: model.bambuShowBinding(for: device.id, \.bambuShowError))
+                    Text("关闭的区块即使已映射实体也不显示；未映射实体的区块本就自动隐藏。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    Button("实体映射与自动匹配 → 设备管理") {
+                        selected = .devices
+                    }
+                    Text("打印机实体映射、自动匹配与报错告警在「设备管理 → Bambu Lab 打印机」中按设备配置；卡片渲染效果见右侧实时预览。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Section {
+                    Text("该卡片位尚未绑定打印机设备：请到「设备管理 → Bambu Lab 打印机」添加设备，添加后卡片自动出现在本页与卡片管理中。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("前往设备管理") {
+                        selected = .devices
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    /// Bambu Lab 打印机在「设备管理」页内的内联配置：自动匹配 + 实体映射 + 报错告警
+    @ViewBuilder
+    private func bambuDeviceConfigInline(_ deviceID: UUID) -> some View {
+        // 打印机实体候选集：只保留可映射的域（sensor/binary_sensor/number/select/switch 等），
+        // 自动化/脚本/场景等无关类型默认排除
+        let printerEntities = HAEntityPicker.printerRelevant(model.haSnapshot.entities)
+        let useDefaultFilter = model.bambuDefaultEntityFilterBinding(for: deviceID).wrappedValue
+        let defaultStatusEntities = BambuEntityMatcher.printStatusCandidates(
+            printerEntities, useDefaultFilter: true)
+        let allStatusEntities = BambuEntityMatcher.printStatusCandidates(
+            printerEntities, useDefaultFilter: false)
+        let statusEntities = useDefaultFilter ? defaultStatusEntities : allStatusEntities
+        let configuredStatusID = model.devices(for: .bambuLab)
+            .first(where: { $0.id == deviceID })?.settings.bambuStatusEntityID ?? ""
+        return VStack(alignment: .leading, spacing: 6) {
+            // 自动匹配必须由打印状态实体确定打印机身份，再推导同一前缀下的其余字段。
+            EntityDomainPicker(title: "打印状态实体（自动匹配）",
+                               selection: bambuMatchDraftBinding(deviceID),
+                               entities: statusEntities,
+                               emptyLabel: "选择打印状态实体",
+                               clearLabel: "清除",
+                               allowClear: true,
+                               largePopover: true,
+                               defaultFilter: model.bambuDefaultEntityFilterBinding(for: deviceID),
+                               unfilteredEntities: allStatusEntities,
+                               filterEnabledDescription: "只显示软件判断为打印状态的实体。",
+                               filterDisabledDescription: "显示全部 sensor 实体，适合设备名称或 entity_id 已被修改的情况。")
+                .onChange(of: bambuMatchDraftBinding(deviceID).wrappedValue) { _, newValue in
+                    if !newValue.isEmpty,
+                       let entity = allStatusEntities.first(where: { $0.entityId == newValue }) {
+                        let currentUseDefaultFilter = model
+                            .bambuDefaultEntityFilterBinding(for: deviceID).wrappedValue
+                        model.applyBambuAutoDetect(from: entity, deviceID: deviceID,
+                                                   entities: printerEntities,
+                                                   useDefaultFilter: currentUseDefaultFilter)
+                        self.bambuMatchDrafts["\(deviceID.uuidString)"] = ""
+                    }
+                }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间和错误实体；结果可手动修改。")
+                Text("实体映射")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 4)
+                Button("按打印状态实体重新匹配") {
+                    model.applyBambuAutoDetect(deviceID: deviceID,
+                                               entities: printerEntities,
+                                               useDefaultFilter: useDefaultFilter)
+                }
+                .controlSize(.small)
+                .disabled(configuredStatusID.isEmpty
+                          || !statusEntities.contains { $0.entityId == configuredStatusID })
+                .help("需要先选择或手动设置有效的打印状态实体")
+            }
+            bambuFieldRow("工作状态", keyPath: \.bambuStatusEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("打印进度", keyPath: \.bambuProgressEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("当前任务", keyPath: \.bambuTaskEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("喷嘴温度", keyPath: \.bambuNozzleTempEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("热床温度", keyPath: \.bambuBedTempEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("剩余时间", keyPath: \.bambuRemainingEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("错误码", keyPath: \.bambuErrorEntityID, deviceID: deviceID, entities: printerEntities)
+            HStack(spacing: 8) {
+                Text("报错时推送键盘告警")
+                    .onTapGesture {
+                        alertTitleTapCount += 1
+                        if alertTitleTapCount >= 5 {
+                            alertTitleTapCount = 0
+                            showPrinterAlertPreview = true
+                        }
+                    }
+                    .help("连续点击 5 次可查看所有打印机报错界面预览（彩蛋）")
+                Spacer()
+                Toggle("", isOn: model.bambuAlertBinding(for: deviceID))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Bambu Lab 字段映射行（Popover 实体选择器；按打印机设备；未指定 = 隐藏该字段）
+    private func bambuFieldRow(_ title: String, keyPath: WritableKeyPath<DeviceSettings, String?>,
+                               deviceID: UUID, entities: [HAEntity]) -> some View {
+        EntityDomainPicker(title: title,
+                           selection: model.bambuFieldBinding(for: deviceID, keyPath),
+                           entities: entities,
+                           emptyLabel: "未指定（隐藏）",
+                           clearLabel: "未指定（隐藏）")
+    }
+
+    /// Bambu 自动匹配输入草稿绑定（按打印机设备隔离）
+    private func bambuMatchDraftBinding(_ deviceID: UUID) -> Binding<String> {
+        let key = "\(deviceID.uuidString)"
+        return Binding(get: { self.bambuMatchDrafts[key] ?? "" },
+                       set: { self.bambuMatchDrafts[key] = $0 })
+    }
+
+    /// 已选 HA 实体行：图标 + 名称（支持自定义别名）+ entity_id + 状态值 + 重命名/移除（拖拽排序）。
+    /// 从全量实体快照查找（新添加实体在下次轮询前也能显示名称与状态）
+    private func haEntityRow(_ ref: HAEntityRef) -> some View {
+        let entity = model.haSnapshot.entities.first { $0.entityId == ref.id }
+        // 已绑定但当前服务器查无此实体 = 失效（基线关闭该提示）
+        let isStale = AppModel.haStaleHintsEnabled && entity == nil && !model.haSnapshot.entities.isEmpty
+        let icon = entity.map { SFIconMapper.symbol(for: $0) } ?? "questionmark.circle"
+        let alias = model.settings.haEntityAliases[ref.id]
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Image(systemName: isStale ? "exclamationmark.triangle" : icon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(isStale ? Color.orange : Color.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(alias ?? (entity?.displayName ?? ref.id))
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .foregroundStyle(isStale ? Color.secondary
+                                         : (alias != nil ? Color.accentColor : Color.primary))
+                    Text(isStale ? "失效 · 当前服务器无此实体（\(ref.id)）" : ref.id)
+                        .font(.system(size: 9))
+                        .foregroundStyle(isStale ? Color.orange : Color.secondary.opacity(0.7))
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let entity {
+                    Text(entity.displayValue)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                } else if isStale, let last = model.haSnapshot.lastKnownValues[ref.id] {
+                    Text("原值 \(last)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+                if isStale {
+                    EntityDomainPicker(title: "重选",
+                                       selection: Binding(get: { "" },
+                                                          set: { model.replaceHAEntity(oldID: ref.id, newID: $0) }),
+                                       entities: model.haSnapshot.entities,
+                                       emptyLabel: "换绑实体",
+                                       clearLabel: "不使用")
+                        .frame(width: 150)
+                        .fixedSize()
+                        .help("该实体在当前服务器上不存在，换一个绑定")
+                }
+                Button {
+                    editingAliasEntityID = ref.id
+                    aliasDraft = alias ?? ""
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("自定义显示名称")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { model.removeHAEntity(ref.id) }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("移除该实体")
+            }
+            .padding(.vertical, 8)
+            .onDrag {
+                draggedHAEntity = ref
+                dragHAEntities = model.haEntityList.map(HAEntityRef.init)
+                return NSItemProvider(object: ref.id as NSString)
+            }
+            .help("拖拽排序")
+
+            if editingAliasEntityID == ref.id {
+                HStack(spacing: 6) {
+                    TextField("自定义显示名称（留空恢复默认）", text: $aliasDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            model.setHAEntityAlias(ref.id, alias: aliasDraft)
+                            editingAliasEntityID = nil
+                        }
+                    Button("保存") {
+                        model.setHAEntityAlias(ref.id, alias: aliasDraft)
+                        editingAliasEntityID = nil
+                    }
+                    .controlSize(.small)
+                    Button("取消") { editingAliasEntityID = nil }
+                        .controlSize(.small)
+                }
+                .padding(.leading, 44)
+                .padding(.bottom, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            Divider()
+        }
+    }
+
     private var generalForm: some View {
         Group {
         Section {
@@ -1906,6 +2554,67 @@ struct SettingsView: View {
                 Text("100% 为 4:4:4 无彩色抽样，画质接近无损；越低文件越小、压缩痕迹越明显。键盘仅支持 JPEG 格式。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+        Section("手动上下翻页快捷键") {
+            shortcutBindingRow("上一页", action: .keyboardPageUp)
+            shortcutBindingRow("下一页", action: .keyboardPageDown)
+            HStack {
+                if recordingShortcutAction == .keyboardPageUp || recordingShortcutAction == .keyboardPageDown {
+                    Text("正在录制…按下新的快捷键（Esc 取消）")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("在系统任意界面手动切换灵犀68 的上一张或下一张卡片；作用目标与上方菜单栏目标键盘一致。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("恢复默认") { showRestorePageShortcutsConfirm = true }
+                    .controlSize(.small)
+            }
+        }
+        Section {
+            Picker("时间格式", selection: model.clockFormatPresetBinding) {
+                Text("24 小时 · HH:mm").tag(0)
+                Text("24 小时 · H:mm").tag(1)
+                Text("24 小时 · HH:mm:ss").tag(2)
+                Text("12 小时 · hh:mm").tag(3)
+                Text("自定义…").tag(4)
+            }
+            if model.clockFormatPresetBinding.wrappedValue == 4 {
+                TextField("自定义时间格式", text: model.clockTimeFormatBinding)
+                    .textFieldStyle(.roundedBorder)
+                Text("可用符号：HH 两位小时 · H 小时 · hh 12 小时 · mm 分 · ss 秒 · a 上午/下午")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("日期格式", selection: model.dateFormatPresetBinding) {
+                Text("yyyy年M月d日 EEE").tag(0)
+                Text("M月d日").tag(1)
+                Text("yyyy-MM-dd").tag(2)
+                Text("M/d").tag(3)
+                Text("自定义…").tag(4)
+            }
+            if model.dateFormatPresetBinding.wrappedValue == 4 {
+                TextField("自定义日期格式", text: model.dateFormatBinding)
+                    .textFieldStyle(.roundedBorder)
+                Text("可用符号：yyyy 年 · MM 月 · M 月 · dd 日 · d 日 · EEE 星期")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("当前显示：\(model.previewTimeString) · \(model.previewDateString)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if model.settings.timeFormat.contains("s") {
+                Text("时间格式含秒时，键盘画面会按秒刷新推送。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("时间与日期")
+                HelpIcon(text: "软件内所有时间与日期显示统一使用这里的一份格式：时钟卡片、自定义图片上的时钟、画板时钟/日期模块、正在播放页脚、番茄钟与各类卡片页脚，不再逐界面单独设置。")
             }
         }
         Section("系统权限") {
@@ -1955,28 +2664,83 @@ struct SettingsView: View {
                 HelpIcon(text: "一套软件驱动三块屏幕；版本号随每次更新递增，可在本页查看当前版本、历史更新记录，并检查 GitHub 仓库是否有新版本。")
             }
         }
-        Section("版本更新日志") {
-            ForEach(ReleaseNotes.all) { note in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text("v\(note.id)")
-                            .font(.headline)
-                        Text(note.date)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    ForEach(note.notes, id: \.self) { item in
-                        Text("· \(item)")
+        // 版本更新日志：整体折叠为单行入口（chevron 展开），设置页主体不被版本列表撑长；
+        // 展开后每个版本仍是单行折叠，点版本行再展开详细日志
+        Section {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showVersionLog.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: showVersionLog ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("版本更新日志")
+                        .font(.headline)
+                    Spacer()
+                    if showVersionLog {
+                        Text("收起")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+                .foregroundStyle(.primary)
             }
-            Text("更新日志随新版本发布在本页追加；最新版本号以「关于」中的版本为准。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            if showVersionLog {
+                ForEach(ReleaseNotes.all) { note in
+                    let isExpanded = expandedReleaseNotes.contains(note.id)
+                    VStack(alignment: .leading, spacing: 4) {
+                        // 版本行：点击展开/收起该版本详细日志（0.2s 平滑过渡）
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if isExpanded {
+                                    expandedReleaseNotes.remove(note.id)
+                                } else {
+                                    expandedReleaseNotes.insert(note.id)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Text("v\(note.id)")
+                                    .font(.headline)
+                                Text(note.date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                if note.id == ReleaseNotes.all.first?.id {
+                                    Text("当前版本")
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        if isExpanded {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(note.notes, id: \.self) { item in
+                                    Text("· \(item)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                Text("点击版本行可展开/收起对应版本的更新日志；最新版本号以「关于」中的版本为准。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         Section("高级") {
             Button("恢复初始设定…", role: .destructive) {
@@ -1987,6 +2751,14 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         }
+        .confirmationDialog("恢复手动翻页快捷键？", isPresented: $showRestorePageShortcutsConfirm,
+                            titleVisibility: .visible) {
+            Button("恢复默认组合", role: .destructive) { model.resetKeyboardPageShortcuts() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("上一页、下一页将恢复为默认组合：⌃⌥↑ · ⌃⌥↓。")
+        }
+        .onDisappear { cancelShortcutRecording() }
     }
 
     @ViewBuilder
@@ -2162,7 +2934,10 @@ struct SettingsView: View {
             // 无修饰键且非功能键：拒绝（避免占用普通输入，Carbon 也无法注册）
             if mods == 0 && !GlobalShortcut.isFunctionKey(keyCode) { return nil }
             let newShortcut = GlobalShortcut(keyCode: keyCode, modifiers: mods)
-            let others: [GlobalHotkeyManager.Action] = [.togglePomodoro, .skipPomodoro, .resetPomodoro]
+            let others: [GlobalHotkeyManager.Action] = [
+                .togglePomodoro, .skipPomodoro, .resetPomodoro,
+                .keyboardPageUp, .keyboardPageDown
+            ]
             if let conflict = others.first(where: { $0 != action && self.model.shortcut(for: $0) == newShortcut }) {
                 self.shortcutConflictText = "「\(self.shortcutActionTitle(conflict))」已绑定到 \(newShortcut.displayString)。请更换组合。"
                 self.showShortcutConflict = true
@@ -2188,6 +2963,8 @@ struct SettingsView: View {
         case .togglePomodoro: return "开始/暂停"
         case .skipPomodoro: return "跳过"
         case .resetPomodoro: return "重置"
+        case .keyboardPageUp: return "上一页"
+        case .keyboardPageDown: return "下一页"
         }
     }
 
@@ -2296,25 +3073,9 @@ struct SettingsView: View {
                 Text("Pixel 锁屏风格数字；竖向布局为第一行小时、第二行分钟，每行两位数字横向排布。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("时间格式", selection: model.clockFormatPresetBinding) {
-                    Text("24 小时 · HH:mm").tag(0)
-                    Text("24 小时 · H:mm").tag(1)
-                    Text("24 小时 · HH:mm:ss").tag(2)
-                    Text("12 小时 · hh:mm").tag(3)
-                    Text("自定义…").tag(4)
-                }
-                if model.clockFormatPresetBinding.wrappedValue == 4 {
-                    TextField("自定义格式", text: model.clockTimeFormatBinding)
-                        .textFieldStyle(.roundedBorder)
-                    Text("可用符号：HH 两位小时 · H 小时 · hh 12 小时 · mm 分 · ss 秒 · a 上午/下午")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if model.settings.clockTimeFormat.contains("s") {
-                    Text("格式含秒时将按秒刷新推送。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("时间格式在「设置 → 时间与日期」统一调整（所有界面共用）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("恢复默认样式") {
                     model.resetClockOverlay()
                 }
@@ -2586,7 +3347,10 @@ struct Sidebar: View {
 
     /// 所有已启用设备按类型顺序（键盘 → 先知 → 摘录）平铺，供设备间分隔线遍历
     private var sidebarDevices: [(type: DeviceType, device: ManagedDevice)] {
-        DeviceType.allCases.flatMap { type in
+        // 侧栏不展示 HA 设备与 Bambu Lab 打印机独立分组：
+        // HA 配置在设备管理维护（卡片/画板模块嵌入）；Bambu 打印机卡片归入键盘分组，
+        // 实体映射与告警在「设备管理」中配置
+        DeviceType.allCases.filter { $0 != .homeAssistant && $0 != .bambuLab }.flatMap { type in
             model.enabledDevices(for: type).map { (type, $0) }
         }
     }
@@ -2610,6 +3374,12 @@ struct Sidebar: View {
                                                isExpanded: deviceExpandedBinding(device.id),
                                                panels: [.excerptCanvas],
                                                switchType: .excerpt, deviceID: device.id))
+        case .homeAssistant:
+            // HA 设备不在侧栏显示独立分组（配置在设备管理维护，以卡片/画板模块嵌入）
+            return AnyView(EmptyView())
+        case .bambuLab:
+            // Bambu Lab 打印机不在侧栏独立分组：卡片归入键盘分组，配置在设备管理维护
+            return AnyView(EmptyView())
         }
     }
 
@@ -2644,6 +3414,9 @@ struct Sidebar: View {
             }
             if let emptyHint {
                 Button {
+                    if let switchType, let deviceID {
+                        model.switchDevice(type: switchType, to: deviceID)
+                    }
                     selection = .cardRotation
                 } label: {
                     Label(emptyHint, systemImage: "plus.circle")
@@ -2689,6 +3462,8 @@ struct Sidebar: View {
             .settings.cardRotationEnabled ?? false
         return HStack(spacing: 8) {
             Button {
+                // 卡片管理页编辑的是「当前操作设备」：先切到这台键盘，避免改到别的键盘
+                model.switchDevice(type: .keyboard, to: deviceID)
                 selection = .cardRotation
             } label: {
                 HStack(spacing: 8) {
@@ -2808,13 +3583,20 @@ struct Sidebar: View {
             if let type, let deviceID {
                 model.switchDevice(type: type, to: deviceID)
             }
+            if panel.isBambuCard {
+                // 打印机卡片位：预览/键盘切到对应打印机的卡片，并打开该卡片的渲染页面
+                model.syncBambuPreviewSlot(panel: panel)
+            }
             selection = panel
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: panel.icon)
                     .frame(width: 18, height: 18)
-                Text(panel.title)
+                Text(model.bambuCardTitle(for: panel) ?? panel.title)
                     .lineLimit(1)
+                if panel.isBeta {
+                    BetaBadge()
+                }
                 Spacer(minLength: 0)
             }
             .font(.system(size: 12))
@@ -2951,64 +3733,163 @@ struct MiniSidebar: View {
 struct PreviewPanel: View {
     @ObservedObject var model: AppModel
 
-    /// 预览按设计尺寸 210×640 完整渲染，再按实际可用空间整体等比缩放——
-    /// 无论窗口如何缩放（宽或高），预览永远完整可见，绝不被裁切或隐藏
-    private static let designWidth: CGFloat = 210
-    private static let designHeight: CGFloat = 640
+    /// 设备外观图（俯视图，绿色区域即键盘显示区）；资源缺失时回退到普通圆角预览
+    private static let deviceFrame: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "akko2", withExtension: "png"),
+              let image = NSImage(contentsOf: url), image.size.width > 0 else { return nil }
+        return image
+    }()
+
+    /// 外观图中绿色显示区的实测位置（相对整张图归一化，左上原点）
+    private static let screenRect = CGRect(x: 0.19362, y: 0.33124, width: 0.61386, height: 0.60259)
+    /// 显示区圆角（相对图宽实测 49/909；素材圆角为正圆弧，故用 .circular 匹配）
+    private static let screenRadiusRatio: CGFloat = 0.05391
+    /// 渲染画布与卡片几何（与 ScreenRenderer 保持一致）
+    private static let canvasWidth: CGFloat = 142
+    private static let canvasHeight: CGFloat = 428
+    private static let cardInsetX: CGFloat = ScreenRenderer.cardInset
+    private static let cardRadiusCanvas: CGFloat = ScreenRenderer.cardRadius
+    /// 叠加层向外微扩（相对图宽），盖住抗锯齿留下的绿边
+    private static let screenBleedRatio: CGFloat = 0.005
+    /// 设备外观留白：上下左各 10pt，右侧贴住窗口右缘不留缝隙
+    static let panelPadding: CGFloat = 10
+    static let panelRightPadding: CGFloat = 0
+
+    /// 设备外观图宽高比（缺失时用打包资源的设计比例兜底）
+    private static var deviceRatio: CGFloat {
+        guard let frame = deviceFrame, frame.size.height > 0 else { return 456.0 / 1357.0 }
+        return frame.size.width / frame.size.height
+    }
+
+    /// 按比例把可用空间折算成等比适配尺寸
+    private static func fitSize(ratio: CGFloat, in size: CGSize) -> CGSize {
+        guard ratio > 0, size.width > 0, size.height > 0 else { return .zero }
+        return size.width / size.height > ratio
+            ? CGSize(width: size.height * ratio, height: size.height)
+            : CGSize(width: size.width, height: size.width / ratio)
+    }
+
+    /// 面板内可用于绘制设备图的区域（左/上/下留 panelPadding，右侧贴边）
+    private static func innerSize(_ size: CGSize) -> CGSize {
+        CGSize(width: max(size.width - panelPadding - panelRightPadding, 1),
+               height: max(size.height - panelPadding * 2, 1))
+    }
+
+    /// 面板宽度按面板自身可用高度等比反推：设备图按高度铺满，左侧 10pt、右侧贴边
+    static func preferredWidth(forHeight height: CGFloat) -> CGFloat {
+        guard height > 0 else { return 210 }
+        let usableHeight = max(height - panelPadding * 2, 1)
+        return (usableHeight * deviceRatio + panelPadding + panelRightPadding).rounded(.up)
+    }
+
+    /// 面板自身实测高度（用于反推宽度，避免用窗口高度估算带来的误差）
+    @State private var measuredHeight: CGFloat = 0
+    /// 鼠标是否悬停在预览面板上：底部信息胶囊默认隐藏，悬停时才淡入
+    @State private var isHovering = false
 
     var body: some View {
         GeometryReader { geo in
-            let scale = min(1,
-                            geo.size.width / Self.designWidth,
-                            geo.size.height / Self.designHeight)
-            previewContent
-                .frame(width: Self.designWidth, height: Self.designHeight, alignment: .top)
-                .scaleEffect(scale, anchor: .top)
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+            Group {
+                if let image = model.previewImage, let frame = Self.deviceFrame {
+                    devicePreview(image: image, frame: frame, in: geo.size)
+                } else if let image = model.previewImage {
+                    plainPreview(image: image, in: Self.innerSize(geo.size))
+                } else {
+                    ProgressView()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
+            }
+            .onAppear { measuredHeight = geo.size.height }
+            .onChange(of: geo.size.height) { _, newHeight in
+                if abs(newHeight - measuredHeight) > 0.5 { measuredHeight = newHeight }
+            }
         }
-        .frame(minWidth: 70, idealWidth: 210, maxWidth: 210)
+        .frame(width: Self.preferredWidth(forHeight: measuredHeight))
+        // 悬停整个预览面板（设备图区域）才显示底部信息胶囊
+        .onHover { hovering in isHovering = hovering }
+        // 沉浸式标题栏的安全区会把整列内容往下推约 50pt：预览顶部忽略安全区，
+        // 设备外观只需按设计留 10pt 上边距
+        .ignoresSafeArea(.all, edges: .top)
     }
 
-    private var previewContent: some View {
-        VStack(spacing: 8) {
-            Text("实时预览")
-                .font(.headline)
-            if let image = model.previewImage {
-                // 手机框按画布实际比例精确缩放：frame 比例与图片一致，内容完整铺满描边内部，
-                // 不再因 aspect-fit 在非等比容器中左右留出细缝
-                GeometryReader { geo in
-                    let imgW = CGFloat(image.size.width)
-                    let imgH = CGFloat(image.size.height)
-                    let scale = min(geo.size.width / imgW, geo.size.height / imgH)
-                    let w = max(imgW * scale, 1)
-                    let h = max(imgH * scale, 1)
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: w, height: h)
-                        .clipShape(RoundedRectangle(cornerRadius: 18 * scale, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 18 * scale, style: .continuous)
-                                .stroke(.quaternary, lineWidth: 1)
-                        }
-                        .shadow(color: .black.opacity(0.15), radius: 12 * scale, y: 4 * scale)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+    /// 设备外观打底 + 渲染画面叠加在绿色显示区上（正圆弧角匹配，右侧贴边）
+    private func devicePreview(image: NSImage, frame: NSImage, in size: CGSize) -> some View {
+        let inner = Self.innerSize(size)
+        let fitted = Self.fitSize(ratio: frame.size.width / frame.size.height, in: inner)
+        // 顶部固定 10pt、右侧贴住面板右缘；若面板比理想宽度更宽，余量全部留在左侧
+        let originX = size.width - Self.panelRightPadding - fitted.width
+        let originY = Self.panelPadding
+        let screen = Self.screenRect
+        let bleed = max(fitted.width * Self.screenBleedRatio, 0.5)
+        // 叠加时以「渲染卡片」而非整张画布对齐显示区：卡片左右边缘铺满绿色区，
+        // 画布四周的深色留白被裁到显示区之外，圆角也改用卡片自身半径，
+        // 避免出现「设备黑框 + 画面圆角」双层圆角与四角黑楔
+        let viewportW = fitted.width * screen.width + bleed * 2
+        let viewportH = fitted.height * screen.height + bleed * 2
+        let unit = viewportW / (Self.canvasWidth - Self.cardInsetX * 2)
+        let imageW = Self.canvasWidth * unit
+        let imageH = Self.canvasHeight * unit
+        let radius = Self.cardRadiusCanvas * unit + bleed
+        let cardShiftY = -ScreenRenderer.cardCenterOffsetY(safeArea: model.settings.safeAreaHeight) * unit
+        return ZStack {
+            Image(nsImage: frame)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: fitted.width, height: fitted.height)
+                .position(x: originX + fitted.width / 2, y: originY + fitted.height / 2)
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+                .frame(width: imageW, height: imageH)
+                .offset(y: cardShiftY)
+                .frame(width: viewportW, height: viewportH)
+                .clipped()
+                .background(Color.black)
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .circular))
+                .overlay {
+                    // 与设备黑色边框衔接，压住抗锯齿边缘
+                    RoundedRectangle(cornerRadius: radius, style: .circular)
+                        .stroke(Color.black.opacity(0.65), lineWidth: max(fitted.width * 0.004, 0.6))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 8)
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            Text("142 × 428 · JPEG")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            Text("当前模式：\(model.settings.displayMode.title)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .position(x: originX + fitted.width * screen.midX,
+                          y: originY + fitted.height * screen.midY)
         }
-        .padding(.top, 18) // 沉浸式标题栏留白
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 1) {
+                Text("实时预览 · \(model.menuTitle(for: model.settings.displayMode))")
+                Text("142 × 428 · JPEG")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.thinMaterial, in: Capsule())
+            .padding(.bottom, 6)
+            // 默认隐藏：不占用设备外观的视觉空间；鼠标移到预览面板上才淡入
+            .opacity(isHovering ? 1 : 0)
+            .animation(.easeInOut(duration: 0.2), value: isHovering)
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// 回退预览：没有设备外观图时，按画布比例圆角展示
+    private func plainPreview(image: NSImage, in size: CGSize) -> some View {
+        let fitted = Self.fitSize(ratio: image.size.width / image.size.height, in: size)
+        return Image(nsImage: image)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fill)
+            .frame(width: max(fitted.width, 1), height: max(fitted.height, 1))
+            .clipShape(RoundedRectangle(cornerRadius: max(fitted.width * 0.09, 6), style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: max(fitted.width * 0.09, 6), style: .continuous)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+            .position(x: size.width / 2, y: size.height / 2)
     }
 }
 
@@ -3156,6 +4037,468 @@ struct CropEditorView: View {
     }
 }
 
+// MARK: - HA 实体两级选择器
+
+/// Home Assistant 实体选择器：第一级 = 实体域分类（sensor/binary_sensor/…，显示实体数量），
+/// 第二级 = 分类下的实体列表（friendly_name + entity_id，点击选中回填）。
+/// 顶部搜索框按名称或 entity_id 关键字过滤；分类默认收起、点击展开，0.2s 过渡动画；
+/// 数据模型不变（仍存 entity_id 字符串）；外观跟随系统深浅色。
+struct EntityDomainPicker: View {
+    let title: String
+    @Binding var selection: String
+    let entities: [HAEntity]
+    var emptyLabel = "未选择"
+    var clearLabel = "清除选择"
+    var allowClear = true
+    /// 设备管理中的自动匹配使用更宽、更高的实体浏览面板。
+    var largePopover = false
+    /// 可选的默认筛选开关。传入时，开关直接显示在 Popover 内。
+    var defaultFilter: Binding<Bool>? = nil
+    /// 关闭默认筛选后使用的完整候选集。
+    var unfilteredEntities: [HAEntity]? = nil
+    var filterEnabledDescription = ""
+    var filterDisabledDescription = ""
+    /// 多选模式：Popover 内实体行勾选多个，底部「确认添加」批量回调（已锁定实体显示实心勾选不可取消）
+    var multiSelect = false
+    /// 多选模式下已加入列表的实体（锁定勾选，再次打开可见）
+    var lockedIDs: Set<String> = []
+    /// 多选确认回调：参数为本次勾选的实体（按实体列表顺序）
+    var onMultiConfirm: (([String]) -> Void)?
+
+    @State private var showPicker = false
+
+    private var selectedEntity: HAEntity? {
+        guard !selection.isEmpty else { return nil }
+        let lookupEntities = defaultFilter?.wrappedValue == false
+            ? (unfilteredEntities ?? entities) : entities
+        return lookupEntities.first { $0.entityId == selection }
+    }
+
+    /// 已绑定但当前服务器实体池中查不到（换服务器后的失效绑定；基线关闭该提示）
+    private var isStaleBinding: Bool {
+        AppModel.haStaleHintsEnabled
+            && !selection.isEmpty && selectedEntity == nil && !entities.isEmpty
+    }
+
+    /// 按钮右侧显示的选择状态文字
+    private var selectionLabel: String {
+        if multiSelect { return "\(lockedIDs.count) 个已选" }
+        if let selectedEntity { return selectedEntity.displayName }
+        if isStaleBinding { return "失效 · \(selection)" }
+        return emptyLabel
+    }
+
+    var body: some View {
+        Button {
+            showPicker = true
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(selectionLabel)
+                    .lineLimit(1)
+                    .foregroundStyle(isStaleBinding ? Color.orange
+                                       : (multiSelect || selectedEntity == nil ? Color.secondary : Color.primary))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // macOS 原生 Popover：系统保证「点击内部任何元素不关闭、点击外部才关闭」，
+        // 从机制上根治「点击实体行/搜索框导致选择器收起」的问题
+        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
+            EntityPickerContent(selection: $selection,
+                                entities: entities,
+                                emptyLabel: emptyLabel,
+                                clearLabel: clearLabel,
+                                allowClear: allowClear,
+                                largePopover: largePopover,
+                                defaultFilter: defaultFilter,
+                                unfilteredEntities: unfilteredEntities,
+                                filterEnabledDescription: filterEnabledDescription,
+                                filterDisabledDescription: filterDisabledDescription,
+                                multiSelect: multiSelect,
+                                lockedIDs: lockedIDs,
+                                onSingleSelect: { showPicker = false },
+                                onMultiConfirm: { ids in
+                                    onMultiConfirm?(ids)
+                                    showPicker = false
+                                })
+        }
+    }
+}
+
+/// 实体选择器内容（Popover 内）：搜索框 + 清除 + 分类列表（可滚动）+ 实体行 + 多选确认栏。
+/// 点击内部任何元素（勾选框/名称/搜索框/分类行）都不会关闭 Popover（系统保证）；
+/// 点击 Popover 外部自动关闭。
+private struct EntityPickerContent: View {
+    @Binding var selection: String
+    let entities: [HAEntity]
+    var emptyLabel = "未选择"
+    var clearLabel = "清除选择"
+    var allowClear = true
+    var largePopover = false
+    var defaultFilter: Binding<Bool>? = nil
+    var unfilteredEntities: [HAEntity]? = nil
+    var filterEnabledDescription = ""
+    var filterDisabledDescription = ""
+    var multiSelect = false
+    var lockedIDs: Set<String> = []
+    /// 单选选中后回调（关闭 Popover）
+    var onSingleSelect: () -> Void = {}
+    /// 多选确认回调（批量勾选结果）
+    var onMultiConfirm: (([String]) -> Void)?
+
+    @State private var expandedDomains: Set<String> = []
+    @State private var keyword = ""
+    @State private var checked: Set<String> = []
+
+    private var effectiveEntities: [HAEntity] {
+        defaultFilter?.wrappedValue == false ? (unfilteredEntities ?? entities) : entities
+    }
+
+    private var filtered: [HAEntity] {
+        HAEntityPicker.filter(effectiveEntities, keyword: keyword)
+    }
+
+    private var grouped: [(domain: String, entities: [HAEntity])] {
+        HAEntityPicker.groupByDomain(filtered)
+    }
+
+    private var checkedOrdered: [String] {
+        effectiveEntities.filter { checked.contains($0.entityId) }.map(\.entityId)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let defaultFilter {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Toggle("使用默认筛选", isOn: Binding(
+                            get: { defaultFilter.wrappedValue },
+                            set: { newValue in
+                                defaultFilter.wrappedValue = newValue
+                                keyword = ""
+                                expandedDomains.removeAll()
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        Spacer()
+                        Text("\(effectiveEntities.count) 个候选")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(defaultFilter.wrappedValue
+                         ? filterEnabledDescription : filterDisabledDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Divider()
+                    .padding(.bottom, 2)
+            }
+
+            // 搜索框：按名称或 entity_id 过滤
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("搜索名称、entity_id 或分类（如 灯 / 开关）", text: $keyword)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                if !keyword.isEmpty {
+                    Button {
+                        keyword = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清空搜索")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+
+            // 清除选择（单选模式）
+            if allowClear && !selection.isEmpty {
+                Button {
+                    selection = ""
+                    keyword = ""
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "slash.circle")
+                            .font(.system(size: 11))
+                        Text(clearLabel)
+                            .font(.system(size: 12))
+                        Spacer()
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 3)
+                    .padding(.leading, 2)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // 分类列表（可滚动，实体多时也能完整浏览）
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if grouped.isEmpty {
+                        Text("无匹配实体")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 6)
+                            .padding(.leading, 4)
+                    } else {
+                        ForEach(grouped, id: \.domain) { group in
+                            domainRow(group)
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: largePopover ? 300 : nil,
+                   maxHeight: largePopover ? 460 : 340)
+
+            // 多选确认栏
+            if multiSelect {
+                HStack(spacing: 8) {
+                    Text(checked.isEmpty ? "勾选实体后批量添加" : "已勾选 \(checked.count) 项")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        onMultiConfirm?(checkedOrdered)
+                    } label: {
+                        Text("确认添加")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(checked.isEmpty)
+                }
+            }
+        }
+        .padding(largePopover ? 16 : 12)
+        .frame(width: largePopover ? 520 : 360)
+        .onAppear {
+            // 自动匹配候选通常只有一组；大面板直接展开，减少一次无意义点击。
+            if largePopover, grouped.count == 1, let domain = grouped.first?.domain {
+                expandedDomains.insert(domain)
+            }
+        }
+    }
+
+    /// 第一级：实体域分类行（域 + 数量 + 展开箭头），点击展开该分类实体
+    private func domainRow(_ group: (domain: String, entities: [HAEntity])) -> some View {
+        let isExpanded = expandedDomains.contains(group.domain)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isExpanded {
+                        expandedDomains.remove(group.domain)
+                    } else {
+                        expandedDomains.insert(group.domain)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(HAEntityPicker.chineseDomain(group.domain))
+                        .font(.system(size: 12, weight: .medium))
+                    if HAEntityPicker.chineseDomain(group.domain) != group.domain {
+                        Text(group.domain)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text("\(group.entities.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 5)
+                .padding(.leading, 4)
+            }
+            .buttonStyle(.plain)
+            if isExpanded {
+                ForEach(group.entities, id: \.entityId) { entity in
+                    entityRow(entity)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    /// 第二级：实体行。勾选框为纯手势区（highPriorityGesture 隔离 + 命中区 28×24），
+    /// 点击只切换勾选、绝不触发收起；名称区同样切换。锁定态（已添加）禁用
+    private func entityRow(_ entity: HAEntity) -> some View {
+        let isLocked = multiSelect && lockedIDs.contains(entity.entityId)
+        let isChecked = multiSelect
+            ? (isLocked || checked.contains(entity.entityId))
+            : (entity.entityId == selection)
+        let iconName = isChecked ? "checkmark.circle.fill" : "circle"
+        let iconColor: Color = isLocked ? Color.orange.opacity(0.85)
+            : (isChecked ? Color.accentColor : Color.secondary)
+        return HStack(spacing: 6) {
+            // 勾选框：纯手势区（Image + highPriorityGesture），不依赖 Button 命中；
+            // 实测独立 Button 在相邻按钮 contentShape 抢占下不可靠，手势区最稳
+            Image(systemName: iconName)
+                .font(.system(size: 14))
+                .foregroundStyle(iconColor)
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    TapGesture().onEnded {
+                        if !isLocked {
+                            toggleEntity(entity)
+                        }
+                    }
+                )
+                .opacity(isLocked ? 0.9 : 1)
+                .help(isLocked ? "已在显示列表中" : "点击勾选/取消")
+            // 名称区：多选点击同勾选；单选点击选中回填
+            Button {
+                toggleEntity(entity)
+            } label: {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entity.displayName)
+                            .font(.system(size: largePopover ? 13 : 12))
+                            .foregroundStyle(isChecked ? (isLocked ? Color.primary : Color.accentColor) : Color.primary)
+                        Text(entity.entityId)
+                            .font(.system(size: largePopover ? 11 : 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if isLocked {
+                        Text("已添加")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isLocked)
+            .help(isLocked ? "已在显示列表中" : (multiSelect ? "点击勾选/取消" : "点击选中"))
+        }
+        .padding(.vertical, largePopover ? 6 : 3)
+        .padding(.leading, 14)
+    }
+
+    /// 切换勾选/选中：多选只改勾选（Popover 不关闭）；单选选中回填并关闭 Popover
+    private func toggleEntity(_ entity: HAEntity) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if multiSelect {
+                if checked.contains(entity.entityId) {
+                    checked.remove(entity.entityId)
+                } else {
+                    checked.insert(entity.entityId)
+                }
+            } else {
+                selection = entity.entityId
+                keyword = ""
+                onSingleSelect()
+            }
+        }
+    }
+}
+
+/// 彩蛋：所有打印机报错界面预览（连续点击告警标题 5 次触发）。
+/// 为每台打印机渲染一张深红告警卡（含型号/错误码与 HMS 原因），便于检查报错效果。
+private struct PrinterAlertPreviewSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("所有打印机报错界面预览")
+                .font(.headline)
+            Text("彩蛋：为每台打印机展示报错告警卡效果（错误码 07FE-4500-0002-0003，含故障原因）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            let printers = model.settings.devices
+                .filter { $0.type == .bambuLab }
+                .map { BambuLabCardSettings.from($0) }
+            if printers.isEmpty {
+                Text("尚未添加 Bambu Lab 打印机设备")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        ForEach(printers.indices, id: \.self) { index in
+                            alertCard(printers[index], index: index)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Button("关闭") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(20)
+        .frame(width: 380, height: 520)
+    }
+
+    private func alertCard(_ printer: BambuLabCardSettings, index: Int) -> some View {
+        VStack(spacing: 6) {
+            if let render = try? ScreenRenderer.renderHAAlert(
+                title: printer.name.isEmpty ? "打印机 \(index + 1)" : printer.name,
+                message: "07FE-4500-0002-0003",
+                settings: model.settings) {
+                Image(nsImage: NSImage(cgImage: render.image,
+                                       size: NSSize(width: 142, height: 428)))
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 100, height: 302)
+                    .cornerRadius(8)
+            }
+            Text("打印机 \(index + 1)：\(printer.name.isEmpty ? "未命名" : printer.name)")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.primary.opacity(0.05)))
+    }
+}
+
+/// HA 实体 id 的 Identifiable 包装（多实体列表拖拽排序用）
+struct HAEntityRef: Identifiable, Equatable {
+    let id: String
+}
+
+/// 「添加 Home Assistant 实体」入口：直接弹出 Popover 多选选择器（域分类 + 搜索 + 勾选批量添加）。
+/// 点击选择器内部任意元素不关闭（系统 Popover 保证），确认添加后批量回调。
+private struct HAEntityAdder: View {
+    let entities: [HAEntity]
+    /// 已加入显示列表的实体（锁定勾选，再次打开可见）
+    let alreadyAdded: Set<String>
+    /// 批量添加回调（勾选确认后传入本次勾选的实体）
+    let onAddBatch: ([String]) -> Void
+
+    var body: some View {
+        EntityDomainPicker(title: "添加实体（可多选）",
+                           selection: .constant(""),
+                           entities: entities,
+                           emptyLabel: "未选择",
+                           allowClear: false,
+                           multiSelect: true,
+                           lockedIDs: alreadyAdded,
+                           onMultiConfirm: onAddBatch)
+    }
+}
+
 // MARK: - AppModel 编辑绑定
 
 extension AppModel {
@@ -3284,10 +4627,10 @@ extension AppModel {
         Binding(get: { Double(self.settings.clockOffsetY) },
                 set: { self.settings.clockOffsetY = Int($0.rounded()) })
     }
-    /// 时间格式预设：0=HH:mm 1=H:mm 2=HH:mm:ss 3=hh:mm 4=自定义
+    /// 全局时间格式预设：0=HH:mm 1=H:mm 2=HH:mm:ss 3=hh:mm 4=自定义
     var clockFormatPresetBinding: Binding<Int> {
         Binding(get: {
-            switch self.settings.clockTimeFormat {
+            switch self.settings.timeFormat {
             case "HH:mm": return 0
             case "H:mm": return 1
             case "HH:mm:ss": return 2
@@ -3302,8 +4645,30 @@ extension AppModel {
         })
     }
     var clockTimeFormatBinding: Binding<String> {
-        Binding(get: { self.settings.clockTimeFormat },
+        Binding(get: { self.settings.timeFormat },
                 set: { self.setClockTimeFormat($0) })
+    }
+
+    /// 全局日期格式预设：0=yyyy年M月d日 EEE 1=M月d日 2=yyyy-MM-dd 3=M/d 4=自定义
+    var dateFormatPresetBinding: Binding<Int> {
+        Binding(get: {
+            switch self.settings.dateFormat {
+            case "yyyy年M月d日 EEE": return 0
+            case "M月d日": return 1
+            case "yyyy-MM-dd": return 2
+            case "M/d": return 3
+            default: return 4
+            }
+        }, set: { preset in
+            let patterns = ["yyyy年M月d日 EEE", "M月d日", "yyyy-MM-dd", "M/d"]
+            if preset >= 0, preset < patterns.count {
+                self.setDateFormat(patterns[preset])
+            }
+        })
+    }
+    var dateFormatBinding: Binding<String> {
+        Binding(get: { self.settings.dateFormat },
+                set: { self.setDateFormat($0) })
     }
     var canvasTextBinding: Binding<String> {
         Binding(get: { self.settings.canvasText }, set: { self.setCanvasText($0) })
@@ -3373,14 +4738,6 @@ extension AppModel {
         Binding(get: { self.settings.excerptLayoutColumns },
                 set: { self.settings.excerptLayoutColumns = $0 })
     }
-    var canvasClockFormatBinding: Binding<String> {
-        Binding(get: { self.settings.canvasClockFormat },
-                set: { self.settings.canvasClockFormat = $0 })
-    }
-    var canvasDateFormatBinding: Binding<String> {
-        Binding(get: { self.settings.canvasDateFormat },
-                set: { self.settings.canvasDateFormat = $0 })
-    }
     var canvasNowPlayingCoverBinding: Binding<Bool> {
         Binding(get: { self.settings.canvasNowPlayingCover },
                 set: { self.settings.canvasNowPlayingCover = $0 })
@@ -3388,6 +4745,36 @@ extension AppModel {
     var canvasNowPlayingSmartBgBinding: Binding<Bool> {
         Binding(get: { self.settings.canvasNowPlayingSmartBg },
                 set: { self.settings.canvasNowPlayingSmartBg = $0 })
+    }
+    /// Home Assistant 配置绑定（地址/令牌/刷新间隔/实体）
+    var haServerURLBinding: Binding<String> {
+        Binding(get: { self.settings.haServerURL },
+                set: { self.settings.haServerURL = $0 })
+    }
+    var haTokenBinding: Binding<String> {
+        Binding(get: { self.settings.haToken },
+                set: { self.settings.haToken = $0 })
+    }
+    var haRefreshMinutesBinding: Binding<Int> {
+        Binding(get: { self.settings.haRefreshMinutes },
+                set: { self.settings.haRefreshMinutes = $0 })
+    }
+    /// HA 异常监控绑定
+    var haMonitorEnabledBinding: Binding<Bool> {
+        Binding(get: { self.settings.haMonitorEnabled },
+                set: { self.settings.haMonitorEnabled = $0 })
+    }
+    var haMonitorEntityIDBinding: Binding<String> {
+        Binding(get: { self.settings.haMonitorEntityID },
+                set: { self.settings.haMonitorEntityID = $0 })
+    }
+    var haMonitorExpectedStateBinding: Binding<String> {
+        Binding(get: { self.settings.haMonitorExpectedState },
+                set: { self.settings.haMonitorExpectedState = $0 })
+    }
+    var haMonitorErrorEntityIDBinding: Binding<String> {
+        Binding(get: { self.settings.haMonitorErrorEntityID },
+                set: { self.settings.haMonitorErrorEntityID = $0 })
     }
     /// 画板「千问额度」模块显示方式（百分比 / 额度数值）
     var qwenQuotaShowPercentBinding: Binding<Bool> {
@@ -3494,14 +4881,6 @@ extension AppModel {
     var nowPlayingFooterVisibleBinding: Binding<Bool> {
         Binding(get: { self.settings.nowPlayingFooterVisible },
                 set: { self.settings.nowPlayingFooterVisible = $0 })
-    }
-    var nowPlayingTimeFormatBinding: Binding<String> {
-        Binding(get: { self.settings.nowPlayingTimeFormat },
-                set: { self.settings.nowPlayingTimeFormat = $0 })
-    }
-    var nowPlayingDateFormatBinding: Binding<String> {
-        Binding(get: { self.settings.nowPlayingDateFormat },
-                set: { self.settings.nowPlayingDateFormat = $0 })
     }
     var nowPlayingTimeSizeBinding: Binding<Double> {
         Binding(get: { Double(self.settings.nowPlayingTimeSize) },

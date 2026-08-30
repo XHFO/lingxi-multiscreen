@@ -28,6 +28,7 @@ public final class AppModel: ObservableObject {
     private var lastUploadedHash: String?
     private var lastNowPlayingFetch: Date?
     private var lastTickDate: Date?
+    private var lastPreviewRender: Date?
     private var lastImageRotation: Date?
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
@@ -102,10 +103,22 @@ public final class AppModel: ObservableObject {
     private var praiseText: String?
     private var praiseUntil: Date?
     private static let praiseDisplaySeconds: TimeInterval = 12
+    /// 打印成功庆祝：打印机名与展示截止时间（到期后恢复正常卡片）
+    private var printSuccessName: String?
+    /// 完成庆祝卡上展示的具体任务名（取完成瞬间该打印机的任务实体）
+    private var printSuccessTask: String?
+    /// 完成瞬间抓到的画面（打印机摄像头最后一帧 / 模型封面）
+    private var printSuccessImage: Data?
+    private var printSuccessUntil: Date?
+    /// 各打印机最近一次状态（用于检测「非完成 → 完成」的跳变，只在跳变时推送庆祝）
+    private var lastPrinterStatuses: [UUID: String] = [:]
     private var cachedArtwork: (data: Data, image: CGImage)?
     private var busy = false
     /// 用量统一调取进行中（防止长耗时拉取重叠）
     private var quotaRefreshing = false
+    /// Home Assistant 拉取进行中 / 上次拉取时间（按设置间隔节流）
+    private var haRefreshing = false
+    private var lastHARefresh: Date?
     /// 两个独立画板定时推送的上次推送时间（初始化为启动时刻，避免启动即推送）
     private var lastOracleAutoPush: Date?
     private var lastExcerptAutoPush: Date?
@@ -133,6 +146,17 @@ public final class AppModel: ObservableObject {
     public var settings: AppSettings
     @Published public var usage: UsageSnapshot = .sample
     @Published public var qwenQuota: QwenWorkQuota = .sample
+    /// Home Assistant 快照（实体列表 + 选中实体状态 + 错误信息）
+    @Published public var haSnapshot: HASnapshot = .empty
+    /// HA 异常监控告警：异常标题（如打印机名）与详情（错误码等）；非空即处于告警状态
+    @Published public var haAlertTitle = ""
+    @Published public var haAlertMessage = ""
+    /// 告警触发时间：用于硬性超时（超过 haAlertMaxSeconds 自动清除，防止陈旧故障码永久占屏）
+    private var haAlertSetAt: Date?
+    /// 告警冷却截止时间：同一错误码超时清除后，在该时间点前不再重复弹告警（避免每分钟反复占屏）
+    private var haAlertCooldownUntil: Date?
+    /// 最近一次已提醒过的错误码（用于区分「同一错误冷却中」与「新故障」）
+    private var haAlertedCode: String?
     /// 少数派推荐文章缓存（供「少数派推荐」卡片显示）
     @Published public var sspaiArticles: [SspaiArticle] = []
     @Published public var nowPlaying: NowPlayingInfo = .placeholder
@@ -153,9 +177,68 @@ public final class AppModel: ObservableObject {
         let loaded = store.load()
         settings = loaded
         pomodoro = PomodoroService(state: store.loadPomodoro())
+        // HA 旧配置迁移：设置页时代的全局 ha 配置（实体/监控）→ 第一台 Home Assistant 设备，
+        // 避免用户重配。连接配置（地址/令牌/刷新间隔）不写进设备快照：它只有一份全局来源
+        if !loaded.haServerURL.isEmpty, loaded.devices.allSatisfy({ $0.type != .homeAssistant }) {
+            let count = loaded.devices.filter { $0.type == .homeAssistant }.count
+            var haDevice = ManagedDevice(type: .homeAssistant,
+                                         name: ManagedDevice.defaultName(for: .homeAssistant, index: count),
+                                         settings: DeviceSettings.capture(from: loaded, type: .homeAssistant))
+            haDevice.settings.haServerURL = loaded.haServerURL
+            haDevice.settings.haToken = loaded.haToken
+            loaded.devices.append(haDevice)
+            loaded.activeHomeAssistantDeviceID = haDevice.id
+        }
         // 设备管理初始化：首次使用不自动创建设备（空列表），由界面引导用户在设备管理中添加；
         // 直接用本地加载的对象（避免经 AppModel 的 @Published 包装器访问，
         // 防止 init 阶段触发元数据重入崩溃）
+        // HA 多实体迁移：旧版单实体 haEntityID → 多实体列表首项（全局 + 各 HA 设备快照）
+        if loaded.haEntities.isEmpty, !loaded.haEntityID.isEmpty {
+            loaded.haEntities = [loaded.haEntityID]
+        }
+        for index in loaded.devices.indices where loaded.devices[index].type == .homeAssistant {
+            let s = loaded.devices[index].settings
+            if (s.haEntities ?? []).isEmpty, let single = s.haEntityID, !single.isEmpty {
+                loaded.devices[index].settings.haEntities = [single]
+            }
+            // Bambu 多打印机迁移：旧版单台字段 → 打印机列表首台
+            if (s.bambuPrinters ?? []).isEmpty,
+               let old = s.bambuStatusEntityID, !old.isEmpty {
+                loaded.devices[index].settings.bambuPrinters = [BambuLabCardSettings.from(s)]
+            }
+        }
+        // 时间/日期格式统一（幂等）：各界面独立格式收拢为全局一对
+        if let note = loaded.migrateTimeDateFormat() {
+            NSLog("[LinxDisplay] \(note)")
+        }
+        // Bambu Lab 打印机设备迁移：旧架构中打印机配置内嵌在 HA 设备（bambuPrinters 列表），
+        // 新架构每台打印机是独立 DeviceType.bambuLab 设备（迁移逻辑在 Core，幂等可测）
+        loaded.migrateBambuPrintersToDevices()
+        // 旧档案键盘补齐：卡片列表/卡片内容字段缺失的键盘按当前镜像各记一份，
+        // 否则切到这台键盘时会把上一台键盘的卡片列表与内容写进它的快照（多设备互相干扰）
+        loaded.migrateKeyboardCardContentSeeds()
+        // 旧档案没有画板独立 HA 实体字段：显式补为空列表，避免切换同类设备时沿用
+        // 上一台设备的镜像；空列表也符合“加入 HA 模块后由用户单独选择”的新行为。
+        for index in loaded.devices.indices {
+            switch loaded.devices[index].type {
+            case .keyboard:
+                if loaded.devices[index].settings.canvasHAEntityIDs == nil {
+                    loaded.devices[index].settings.canvasHAEntityIDs = []
+                }
+            case .oracle:
+                if loaded.devices[index].settings.oracleCanvasHAEntityIDs == nil {
+                    loaded.devices[index].settings.oracleCanvasHAEntityIDs = []
+                }
+            case .excerpt:
+                if loaded.devices[index].settings.excerptCanvasHAEntityIDs == nil {
+                    loaded.devices[index].settings.excerptCanvasHAEntityIDs = []
+                }
+            default:
+                break
+            }
+        }
+        // 设备↔卡片绑定：为已存在的打印机设备补齐键盘卡片管理的对应卡片位
+        reconcileBambuCards()
         for type in DeviceType.allCases {
             let list = loaded.devices.filter { $0.type == type }
             let activeID: UUID?
@@ -163,6 +246,8 @@ public final class AppModel: ObservableObject {
             case .keyboard: activeID = loaded.activeKeyboardDeviceID
             case .oracle: activeID = loaded.activeOracleDeviceID
             case .excerpt: activeID = loaded.activeExcerptDeviceID
+            case .homeAssistant: activeID = loaded.activeHomeAssistantDeviceID
+            case .bambuLab: activeID = loaded.activeBambuLabDeviceID
             }
             if let device = list.first(where: { $0.id == activeID }) ?? list.first {
                 device.settings.apply(to: loaded, type: type)
@@ -208,6 +293,13 @@ public final class AppModel: ObservableObject {
         quoteOverrideIndex = nil
         praiseText = nil
         praiseUntil = nil
+        printSuccessName = nil
+        printSuccessTask = nil
+        printSuccessImage = nil
+        printSuccessUntil = nil
+        lastPrinterStatuses = [:]
+        haAlertCooldownUntil = nil
+        haAlertedCode = nil
         lastQuotaRefresh = nil
         lastPushAttempt = nil
         lastUploadedHash = nil
@@ -240,8 +332,9 @@ public final class AppModel: ObservableObject {
                 self?.updateSoftwareDarkState()
                 // 拖拽侧边栏宽度中：跳过持久化/重渲染/外观应用，避免逐帧闪烁，松手时一次性提交
                 guard self?.sidebarResizing != true else { return }
-                // 设备设置同步进行中（同步操作会再次触发 onChange）：直接跳过防递归
-                guard self?.isSyncingDeviceSettings != true else { return }
+                // 设备切换/快照同步进行中：跳过中途「镜像→快照」回写，
+                // 否则新设备快照会在套用前被旧设备的镜像值整体覆盖（设备间串扰）
+                guard self?.settings.deviceSyncInFlight != true else { return }
                 // 同步活动设备设置（内部防重入），随后持久化
                 self?.syncActiveDeviceSettings()
                 self?.persistSettings()
@@ -256,37 +349,26 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// 设备设置同步防重入（同步操作会再次触发 onChange）
-    private var isSyncingDeviceSettings = false
-
     /// 把活动设置同步回各类型当前激活设备的快照（切换设备时据此记住之前设备的设置）
     public func syncActiveDeviceSettings() {
-        guard !settings.devices.isEmpty else { return }
-        isSyncingDeviceSettings = true
-        defer { isSyncingDeviceSettings = false }
-        for type in DeviceType.allCases {
-            guard let device = activeDevice(for: type),
-                  let index = settings.devices.firstIndex(where: { $0.id == device.id }) else { continue }
-            settings.devices[index].settings = DeviceSettings.capture(from: settings, type: type)
-        }
+        settings.deviceSyncInFlight = true
+        defer { settings.deviceSyncInFlight = false }
+        settings.captureActiveDeviceSnapshots()
     }
 
     /// 某类型设备列表（含被禁用的；设备管理页需要显示以便重新启用）
     public func devices(for type: DeviceType) -> [ManagedDevice] {
-        settings.devices.filter { $0.type == type }
+        settings.devices(for: type)
     }
 
     /// 某类型已启用设备列表（侧栏导航/目标选择等只展示启用的设备）
     public func enabledDevices(for type: DeviceType) -> [ManagedDevice] {
-        settings.devices.filter { $0.type == type && $0.isEnabled }
+        settings.enabledDevices(for: type)
     }
 
     /// 某类型当前活动设备（按活动 ID，回退该类第一台已启用设备；全部禁用时为 nil）
     public func activeDevice(for type: DeviceType) -> ManagedDevice? {
-        let list = enabledDevices(for: type)
-        guard !list.isEmpty else { return nil }
-        let activeID = activeDeviceID(for: type)
-        return list.first { $0.id == activeID } ?? list[0]
+        settings.activeDevice(for: type)
     }
 
     /// 设备启用/禁用开关：禁用后侧栏隐藏该设备；禁用活动设备时自动切到该类第一台仍启用的设备
@@ -306,6 +388,15 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// 当前操作的键盘设备（卡片管理等页面据此切换编辑对象；每台键盘配置互相独立）
+    public var activeKeyboardBinding: Binding<UUID> {
+        Binding(get: {
+            self.activeDevice(for: .keyboard)?.id ?? UUID()
+        }, set: { id in
+            self.switchDevice(type: .keyboard, to: id)
+        })
+    }
+
     /// 某台设备的启用开关绑定
     public func deviceEnabledBinding(for id: UUID) -> Binding<Bool> {
         Binding(get: {
@@ -317,37 +408,61 @@ public final class AppModel: ObservableObject {
 
     /// 某类型活动设备 ID
     public func activeDeviceID(for type: DeviceType) -> UUID? {
-        switch type {
-        case .keyboard: return settings.activeKeyboardDeviceID
-        case .oracle: return settings.activeOracleDeviceID
-        case .excerpt: return settings.activeExcerptDeviceID
-        }
+        settings.activeDeviceID(for: type)
     }
 
     private func setActiveDeviceID(_ type: DeviceType, _ id: UUID?) {
-        switch type {
-        case .keyboard: settings.activeKeyboardDeviceID = id
-        case .oracle: settings.activeOracleDeviceID = id
-        case .excerpt: settings.activeExcerptDeviceID = id
-        }
+        settings.setActiveDeviceID(type, id)
     }
 
-    /// 切换某类型的活动设备：先把当前设置存回原设备，再套用新设备的设置
+    /// 切换某类型的活动设备：存回原设备快照 → 套用新设备快照（Core 内原子完成），
+    /// 这里只做切换后的界面/会话副作用
     public func switchDevice(type: DeviceType, to deviceID: UUID?) {
-        guard let newDevice = devices(for: type).first(where: { $0.id == deviceID })
-                ?? devices(for: type).first else { return }
-        if activeDeviceID(for: type) == newDevice.id { return }
-        syncActiveDeviceSettings()
-        setActiveDeviceID(type, newDevice.id)
-        newDevice.settings.apply(to: settings, type: type)
+        guard let newDevice = settings.switchActiveDevice(of: type, to: deviceID) else { return }
+        // 切换键盘设备：轮换池与当前卡片都换了，重置轮换时钟，从这台键盘自己的卡片重新开始
+        if type == .keyboard {
+            lastCardRotation = nil
+            cardRotationIndex = 0
+        }
         // 切换口袋先知设备后，显示模式会话要重连到新设备 IP（按键信号才回传到这台设备）
         if type == .oracle {
             ensureRand0Session()
+        }
+        // 点开某台 Bambu 打印机的设置页时，预览/键盘立即切到这台打印机的卡片位
+        // （按已启用打印机顺序对应 Bambu Lab 打印机 1/2/3 卡，避免在编辑打印机 2 时预览仍显示打印机 1）
+        if type == .bambuLab {
+            syncBambuPreviewSlot(for: newDevice.id)
         }
         persistSettings()
         renderPreview()
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
+    }
+
+    /// 把预览/键盘切到指定打印机的卡片位（按已启用打印机顺序对应 bambuLab/bambuLab2/bambuLab3/4/5）
+    public func syncBambuPreviewSlot(for deviceID: UUID) {
+        guard let index = enabledDevices(for: .bambuLab).firstIndex(where: { $0.id == deviceID }) else { return }
+        syncBambuPreviewSlot(index: index)
+    }
+
+    /// 按 Bambu 卡片位（Bambu Lab 打印机 1/2/3/4/5）把预览切到对应打印机
+    func syncBambuPreviewSlot(panel: Panel) {
+        let index: Int
+        switch panel {
+        case .bambuLab2: index = 1
+        case .bambuLab3: index = 2
+        case .bambuLab4: index = 3
+        case .bambuLab5: index = 4
+        default: index = 0
+        }
+        syncBambuPreviewSlot(index: index)
+    }
+
+    /// 按已启用打印机序号切卡片位（0→bambuLab，1→bambuLab2，…，4→bambuLab5；该位无打印机则不动）
+    public func syncBambuPreviewSlot(index: Int) {
+        guard enabledDevices(for: .bambuLab).indices.contains(index),
+              let slot = DisplayMode(rawValue: DisplayMode.bambuLab.rawValue + index) else { return }
+        settings.displayMode = slot
     }
 
     /// 新增一台该类型设备（以当前活动设备设置为模板，但连接/凭证字段一律置空：
@@ -357,10 +472,18 @@ public final class AppModel: ObservableObject {
         // 屏蔽中间 onChange 的同步回写：添加过程涉及设备列表、全局镜像、活动设备多处变更，
         // 若每次变更都触发 syncActiveDeviceSettings，会把全局旧值写回新设备快照、
         // 或把置空后的全局值污染旧设备快照（卡片列表/连接信息串扰）
-        isSyncingDeviceSettings = true
-        defer { isSyncingDeviceSettings = false }
+        settings.deviceSyncInFlight = true
+        defer { settings.deviceSyncInFlight = false }
+        // 数量上限（Home Assistant 1 个实例 / Bambu Lab 5 台）：不再新增，直接定位到已有设备
+        if !settings.canAddDevice(of: type), let existing = devices(for: type).first {
+            if type == .homeAssistant {
+                setActiveDeviceID(type, existing.id)
+                persistSettings()
+            }
+            return existing.id
+        }
         // 无活动设备时（如删光后重加）继承全局设置快照：非连接字段照常继承，连接字段随后统一置空
-        var current = activeDevice(for: type)?.settings
+        let current = activeDevice(for: type)?.settings
             ?? DeviceSettings.capture(from: settings, type: type)
         let count = devices(for: type).count
         let device = ManagedDevice(type: type,
@@ -372,6 +495,16 @@ public final class AppModel: ObservableObject {
         if type == .keyboard {
             settings.keyboardCardPanels = []
             settings.devices[index].settings.keyboardCardPanels = []
+            // 新键盘从「灵犀画板」开始，不沿用别的键盘当前显示的卡片与轮换池
+            settings.displayMode = .canvas
+            settings.devices[index].settings.displayMode = .canvas
+            settings.cardRotationModes = []
+            settings.devices[index].settings.cardRotationModes = []
+            // 新键盘的 Home Assistant 卡片也从空开始（不继承别的键盘的实体选择）
+            settings.haCardEntityIDs = []
+            settings.devices[index].settings.haCardEntityIDs = []
+            settings.canvasHAEntityIDs = []
+            settings.devices[index].settings.canvasHAEntityIDs = []
         }
         // 连接/凭证字段置空：设备快照与全局镜像同步清空（镜像先行，与新设备实际状态一致）
         switch type {
@@ -381,13 +514,65 @@ public final class AppModel: ObservableObject {
         case .oracle:
             settings.rand0IP = ""
             settings.devices[index].settings.rand0IP = ""
+            settings.oracleCanvasHAEntityIDs = []
+            settings.devices[index].settings.oracleCanvasHAEntityIDs = []
         case .excerpt:
             settings.dotApiKey = ""
             settings.dotDeviceId = ""
             settings.devices[index].settings.dotApiKey = ""
             settings.devices[index].settings.dotDeviceId = ""
+            settings.excerptCanvasHAEntityIDs = []
+            settings.devices[index].settings.excerptCanvasHAEntityIDs = []
+        case .homeAssistant:
+            // 基线：每台 Home Assistant 设备各自填写服务器地址与令牌，新设备从空连接配置开始
+            settings.haServerURL = ""
+            settings.haToken = ""
+            settings.haEntities = []
+            settings.haEntityID = ""
+            settings.haMonitorEnabled = false
+            settings.haMonitorEntityID = ""
+            settings.haMonitorExpectedState = ""
+            settings.haMonitorErrorEntityID = ""
+            settings.devices[index].settings.haMonitorEnabled = false
+            settings.devices[index].settings.haMonitorEntityID = ""
+            settings.devices[index].settings.haMonitorExpectedState = ""
+            settings.devices[index].settings.haMonitorErrorEntityID = ""
+            settings.devices[index].settings.haServerURL = nil
+            settings.devices[index].settings.haToken = nil
+            settings.devices[index].settings.haRefreshMinutes = nil
+            settings.devices[index].settings.haEntities = nil
+            settings.devices[index].settings.haEntityID = nil
+            settings.devices[index].settings.haEntityAliases = nil
+            settings.devices[index].settings.haCardEntityIDs = nil
+        case .bambuLab:
+            // 新打印机从空配置开始：实体映射/名称全部置空，绝不继承其他打印机的映射
+            settings.bambuPrinterName = "打印机"
+            settings.bambuEnableAlert = true
+            settings.bambuStatusEntityID = ""
+            settings.bambuProgressEntityID = ""
+            settings.bambuTaskEntityID = ""
+            settings.bambuNozzleTempEntityID = ""
+            settings.bambuBedTempEntityID = ""
+            settings.bambuRemainingEntityID = ""
+            settings.bambuErrorEntityID = ""
+            settings.bambuImageEntityID = ""
+            settings.bambuShowImage = true
+            settings.devices[index].settings.bambuPrinterName = "打印机"
+            settings.devices[index].settings.bambuEnableAlert = true
+            settings.devices[index].settings.bambuStatusEntityID = ""
+            settings.devices[index].settings.bambuProgressEntityID = ""
+            settings.devices[index].settings.bambuTaskEntityID = ""
+            settings.devices[index].settings.bambuNozzleTempEntityID = ""
+            settings.devices[index].settings.bambuBedTempEntityID = ""
+            settings.devices[index].settings.bambuRemainingEntityID = ""
+            settings.devices[index].settings.bambuErrorEntityID = ""
+            settings.devices[index].settings.bambuImageEntityID = ""
+            settings.devices[index].settings.bambuShowImage = true
         }
         setActiveDeviceID(type, device.id)
+        if type == .bambuLab {
+            addBambuPrinterCard()
+        }
         persistSettings()
         renderPreview()
         refreshOracleCanvasPreview()
@@ -404,10 +589,74 @@ public final class AppModel: ObservableObject {
             setActiveDeviceID(type, nil)
             activeDevice(for: type)?.settings.apply(to: settings, type: type)
         }
+        if type == .bambuLab {
+            removeBambuPrinterCard()
+        }
         persistSettings()
         renderPreview()
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
+    }
+
+    /// 新增打印机设备后：只在当前操作的键盘设备卡片管理中加入对应卡片位
+    /// （不写其他键盘：各键盘卡片列表相互独立，需要时在它那台的「卡片管理」里自行添加）
+    private func addBambuPrinterCard() {
+        let count = devices(for: .bambuLab).count
+        guard count >= 1, let slot = Panel.bambuPanel(forSlotIndex: count - 1) else { return }
+        appendPrinterCardToActiveKeyboard(slot)
+        if let mode = slot.displayMode, !settings.cardRotationModes.contains(mode.rawValue) {
+            settings.cardRotationModes.append(mode.rawValue)
+        }
+    }
+
+    /// 删除打印机设备后：从每台键盘移除卡片位索引 ≥ 现有打印机台数的卡片
+    /// （这些卡片位已无对应设备，属于清理失效项，不是给别的键盘新增内容）
+    private func removeBambuPrinterCard() {
+        let count = devices(for: .bambuLab).count
+        var removed: [Panel] = []
+        for kb in devices(for: .keyboard) {
+            guard let idx = settings.devices.firstIndex(where: { $0.id == kb.id }) else { continue }
+            var list = keyboardCardList(for: kb.id)
+            let gone = list.filter { ($0.bambuSlotIndex ?? -1) >= count }
+            guard !gone.isEmpty else { continue }
+            removed.append(contentsOf: gone)
+            list.removeAll { ($0.bambuSlotIndex ?? -1) >= count }
+            writeKeyboardCardPanels(list, deviceIndex: idx)
+        }
+        for p in removed {
+            if let mode = p.displayMode {
+                settings.cardRotationModes.removeAll { $0 == mode.rawValue }
+            }
+        }
+    }
+
+    /// 启动补齐：仅在当前操作的键盘上补齐已存在打印机对应的卡片位（设备↔卡片绑定；
+    /// 其他键盘保持自己的卡片列表不变）
+    private func reconcileBambuCards() {
+        for slot in 0..<enabledDevices(for: .bambuLab).count {
+            if let panel = Panel.bambuPanel(forSlotIndex: slot) {
+                appendPrinterCardToActiveKeyboard(panel)
+            }
+        }
+    }
+
+    /// 把一张打印机卡片追加到当前操作键盘的可见列表（镜像先行，防 sync 覆盖）
+    private func appendPrinterCardToActiveKeyboard(_ panel: Panel) {
+        guard let kb = activeDevice(for: .keyboard),
+              let idx = settings.devices.firstIndex(where: { $0.id == kb.id }) else { return }
+        var list = keyboardCardList(for: kb.id)
+        guard !list.contains(panel) else { return }
+        list.append(panel)
+        writeKeyboardCardPanels(list, deviceIndex: idx)
+    }
+
+    /// 写某台键盘的卡片列表（镜像先行：仅当它是活动键盘时同步全局，防止 syncActiveDeviceSettings 覆盖）
+    private func writeKeyboardCardPanels(_ panels: [Panel], deviceIndex: Int) {
+        let raw = panels.map(\.rawValue)
+        if settings.devices[deviceIndex].id == activeDeviceID(for: .keyboard) {
+            settings.keyboardCardPanels = raw
+        }
+        settings.devices[deviceIndex].settings.keyboardCardPanels = raw
     }
 
     /// 重命名设备
@@ -495,6 +744,373 @@ public final class AppModel: ObservableObject {
                                 set: { $0.dotDeviceId = $1 },
                                 activeType: .excerpt,
                                 liveSync: { self.settings.dotDeviceId = $0 })
+    }
+
+    /// Home Assistant 设备服务器地址绑定
+    public func deviceHAServerURLBinding(for id: UUID) -> Binding<String> {
+        deviceConnectionBinding(for: id,
+                                get: { $0.haServerURL },
+                                set: { $0.haServerURL = $1 },
+                                activeType: .homeAssistant,
+                                liveSync: { self.settings.haServerURL = $0 })
+    }
+
+    /// Home Assistant 设备长期访问令牌绑定（敏感字段，仅存本机；日志/测试不打印明文）
+    public func deviceHATokenBinding(for id: UUID) -> Binding<String> {
+        deviceConnectionBinding(for: id,
+                                get: { $0.haToken },
+                                set: { $0.haToken = $1 },
+                                activeType: .homeAssistant,
+                                liveSync: { self.settings.haToken = $0 })
+    }
+
+    /// Home Assistant 设备刷新间隔绑定（分钟）
+    public func deviceHARefreshBinding(for id: UUID) -> Binding<Int> {
+        Binding(get: {
+            guard let device = self.settings.devices.first(where: { $0.id == id }) else { return 5 }
+            return device.settings.haRefreshMinutes ?? 5
+        }, set: { newValue in
+            guard let index = self.settings.devices.firstIndex(where: { $0.id == id }) else { return }
+            self.settings.devices[index].settings.haRefreshMinutes = newValue
+            if self.activeDeviceID(for: .homeAssistant) == id {
+                self.settings.haRefreshMinutes = newValue
+            }
+        })
+    }
+
+    /// Home Assistant 设备连接测试（读该设备快照的地址与令牌验证；不打印令牌）
+    public func testHADevice(_ id: UUID) async -> String {
+        guard let device = settings.devices.first(where: { $0.id == id }) else { return "设备不存在" }
+        let server = device.settings.haServerURL ?? ""
+        let token = device.settings.haToken ?? ""
+        if let problem = HomeAssistantClient.validate(serverURL: server, token: token) {
+            return problem
+        }
+        do {
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
+            return "连接成功：读到 \(entities.count) 个实体"
+        } catch let error as HAError {
+            return error.errorDescription ?? "连接失败"
+        } catch {
+            return "连接失败"
+        }
+    }
+
+    /// 当前活动 Home Assistant 设备 ID（无则回退第一台 HA 设备）
+    public var activeHADeviceID: UUID? {
+        if let id = settings.activeHomeAssistantDeviceID,
+           settings.devices.contains(where: { $0.id == id }) { return id }
+        return settings.devices.first { $0.type == .homeAssistant }?.id
+    }
+
+    /// Bambu Lab 字段实体映射绑定（按打印机设备快照；活动设备时同步全局镜像防 sync 覆盖）
+    public func bambuFieldBinding(for id: UUID,
+                                  _ keyPath: WritableKeyPath<DeviceSettings, String?>) -> Binding<String> {
+        Binding(get: {
+            guard let dev = self.settings.devices.first(where: { $0.id == id }) else { return "" }
+            return dev.settings[keyPath: keyPath] ?? ""
+        }, set: { v in
+            // 先写全局镜像再写设备快照，防止 onChange→syncActiveDeviceSettings 用旧全局值覆盖回写
+            self.syncBambuGlobalMirror(id, keyPath: keyPath, value: v)
+            self.mutateDeviceSettings(id) { $0[keyPath: keyPath] = v }
+        })
+    }
+
+    /// 当前活动 Bambu Lab 打印机设备 ID（无则回退第一台已配置打印机）
+    public var activeBambuLabDeviceID: UUID? {
+        if let id = settings.activeBambuLabDeviceID,
+           settings.devices.contains(where: { $0.id == id }) { return id }
+        return settings.devices.first { $0.type == .bambuLab }?.id
+    }
+
+    /// 某台 Bambu Lab 打印机设备的卡片配置（nil = 设备不存在）
+    public func bambuSettings(for deviceID: UUID) -> BambuLabCardSettings? {
+        guard let dev = settings.devices.first(where: { $0.id == deviceID }) else { return nil }
+        return BambuLabCardSettings.from(dev.settings)
+    }
+
+    /// 打印机名称绑定：读写设备名（重命名设备，侧栏分组/设备管理/卡片徽标同步更新；
+    /// 同时镜像旧版 bambuPrinterName 字段保持兼容）
+    public func bambuDeviceNameBinding(for deviceID: UUID) -> Binding<String> {
+        Binding(get: {
+            self.settings.devices.first(where: { $0.id == deviceID })?.name ?? ""
+        }, set: { v in
+            self.renameDevice(id: deviceID, to: v)
+            if self.activeDeviceID(for: .bambuLab) == deviceID {
+                self.settings.bambuPrinterName = v
+            }
+            self.mutateDeviceSettings(deviceID) { $0.bambuPrinterName = v }
+        })
+    }
+
+    /// 打印机告警开关绑定（按打印机设备快照；活动设备时同步全局镜像）
+    public func bambuAlertBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: {
+            guard let dev = self.settings.devices.first(where: { $0.id == id }) else { return true }
+            return dev.settings.bambuEnableAlert ?? true
+        }, set: { v in
+            if self.activeDeviceID(for: .bambuLab) == id {
+                self.settings.bambuEnableAlert = v
+            }
+            self.mutateDeviceSettings(id) { $0.bambuEnableAlert = v }
+        })
+    }
+
+    /// 打印状态实体默认筛选开关（按打印机设备持久化；旧档案默认开启）。
+    public func bambuDefaultEntityFilterBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.settings.devices.first(where: { $0.id == id })?
+                .settings.bambuUseDefaultEntityFilter ?? true
+        }, set: { value in
+            self.mutateDeviceSettings(id) { $0.bambuUseDefaultEntityFilter = value }
+        })
+    }
+
+    /// 卡片布局样式绑定（详情页布局选择器；按打印机设备快照）
+    public func bambuLayoutBinding(for id: UUID) -> Binding<BambuCardLayout> {
+        Binding(get: {
+            guard let dev = self.settings.devices.first(where: { $0.id == id }) else { return .standard }
+            return dev.settings.bambuLayout ?? .standard
+        }, set: { v in
+            if self.activeDeviceID(for: .bambuLab) == id {
+                self.settings.bambuLayout = v
+            }
+            self.mutateDeviceSettings(id) { $0.bambuLayout = v }
+        })
+    }
+
+    /// 卡片主题色绑定（跟随全局 / Bambu Lab 强调色；按打印机设备快照）
+    public func bambuThemeAccentBinding(for id: UUID) -> Binding<BambuThemeAccent> {
+        Binding(get: {
+            guard let dev = self.settings.devices.first(where: { $0.id == id }) else { return .global }
+            return dev.settings.bambuThemeAccent ?? .global
+        }, set: { v in
+            if self.activeDeviceID(for: .bambuLab) == id {
+                self.settings.bambuThemeAccent = v
+            }
+            self.mutateDeviceSettings(id) { $0.bambuThemeAccent = v }
+        })
+    }
+
+    /// 各区块显示开关绑定（按打印机设备快照；未设置默认开启）
+    public func bambuShowBinding(for id: UUID,
+                                 _ keyPath: WritableKeyPath<DeviceSettings, Bool?>) -> Binding<Bool> {
+        Binding(get: {
+            guard let dev = self.settings.devices.first(where: { $0.id == id }) else { return true }
+            return dev.settings[keyPath: keyPath] ?? true
+        }, set: { v in
+            if self.activeDeviceID(for: .bambuLab) == id {
+                self.syncBambuShowMirror(id, keyPath: keyPath, value: v)
+            }
+            self.mutateDeviceSettings(id) { $0[keyPath: keyPath] = v }
+        })
+    }
+
+    /// 显示开关写回全局镜像（仅活动打印机设备）
+    private func syncBambuShowMirror(_ id: UUID, keyPath: WritableKeyPath<DeviceSettings, Bool?>, value: Bool) {
+        switch keyPath {
+        case \.bambuShowStatus: settings.bambuShowStatus = value
+        case \.bambuShowProgress: settings.bambuShowProgress = value
+        case \.bambuShowTask: settings.bambuShowTask = value
+        case \.bambuShowTemperature: settings.bambuShowTemperature = value
+        case \.bambuShowRemaining: settings.bambuShowRemaining = value
+        case \.bambuShowError: settings.bambuShowError = value
+        case \.bambuShowImage: settings.bambuShowImage = value
+        default: break
+        }
+    }
+
+    /// 自动匹配：只从打印状态实体推导该打印机的全部实体映射（保留用户设备名）。
+    public func applyBambuAutoDetect(from knownEntity: HAEntity, deviceID: UUID,
+                                     entities: [HAEntity], useDefaultFilter: Bool = true) {
+        var detected = BambuEntityMatcher.detect(from: knownEntity, allEntities: entities,
+                                                 allowUnfilteredSeed: !useDefaultFilter)
+        guard detected.statusEntityID == knownEntity.entityId else { return }
+        if let dev = settings.devices.first(where: { $0.id == deviceID }) {
+            let deviceName = dev.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !deviceName.isEmpty {
+                detected.name = deviceName
+            }
+        }
+        writeBambuDetected(detected, deviceID: deviceID)
+    }
+
+    /// 重新匹配：必须先配置有效的打印状态实体，不再从全量任意实体猜测打印机归属。
+    public func applyBambuAutoDetect(deviceID: UUID, entities: [HAEntity],
+                                     useDefaultFilter: Bool = true) {
+        guard let dev = settings.devices.first(where: { $0.id == deviceID }),
+              let seedID = dev.settings.bambuStatusEntityID, !seedID.isEmpty,
+              let seed = entities.first(where: { $0.entityId == seedID }) else { return }
+        var detected = BambuEntityMatcher.detect(from: seed, allEntities: entities,
+                                                 allowUnfilteredSeed: !useDefaultFilter)
+        guard detected.statusEntityID == seed.entityId else { return }
+        if let dev = settings.devices.first(where: { $0.id == deviceID }) {
+            let deviceName = dev.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !deviceName.isEmpty {
+                detected.name = deviceName
+            }
+        }
+        writeBambuDetected(detected, deviceID: deviceID)
+    }
+
+    /// 经统一通道写入打印机设备的字段（先全局镜像、再设备快照，防 sync 覆盖回退）
+    private func writeBambuDetected(_ detected: BambuLabCardSettings, deviceID: UUID) {
+        if activeDeviceID(for: .bambuLab) == deviceID {
+            syncBambuLegacyMirror(detected)
+        }
+        mutateDeviceSettings(deviceID) { detected.apply(to: &$0) }
+    }
+
+    /// 同步到全局旧版单台字段（兼容 capture/apply 与活动设备快照重建）
+    private func syncBambuLegacyMirror(_ p: BambuLabCardSettings) {
+        settings.bambuPrinterName = p.name
+        settings.bambuEnableAlert = p.enableAlert
+        settings.bambuStatusEntityID = p.statusEntityID
+        settings.bambuProgressEntityID = p.progressEntityID
+        settings.bambuTaskEntityID = p.taskEntityID
+        settings.bambuNozzleTempEntityID = p.nozzleTempEntityID
+        settings.bambuBedTempEntityID = p.bedTempEntityID
+        settings.bambuRemainingEntityID = p.remainingEntityID
+        settings.bambuErrorEntityID = p.errorEntityID
+        settings.bambuImageEntityID = p.imageEntityID
+        settings.bambuLayout = p.layout
+        settings.bambuThemeAccent = p.themeAccent
+        settings.bambuShowStatus = p.showStatus
+        settings.bambuShowProgress = p.showProgress
+        settings.bambuShowTask = p.showTask
+        settings.bambuShowTemperature = p.showTemperature
+        settings.bambuShowRemaining = p.showRemaining
+        settings.bambuShowError = p.showError
+        settings.bambuShowImage = p.showImage
+    }
+
+    /// 某台打印机的型号（从其状态实体识别；未识别返回 nil）
+    public func bambuModel(for deviceID: UUID) -> String? {
+        guard let dev = settings.devices.first(where: { $0.id == deviceID }),
+              let statusID = dev.settings.bambuStatusEntityID, !statusID.isEmpty,
+              let e = haSnapshot.entities.first(where: { $0.entityId == statusID }) else { return nil }
+        return BambuModelDetector.model(of: e)
+    }
+
+    /// Bambu 卡片位绑定的打印机名（卡片↔设备绑定：卡片名显示所绑定设备的名称；
+    /// 非 Bambu 面板或无对应设备返回 nil）
+    func bambuCardTitle(for panel: Panel) -> String? {
+        guard let slot = panel.bambuSlotIndex else { return nil }
+        let printers = enabledDevices(for: .bambuLab)
+        guard printers.indices.contains(slot) else { return nil }
+        let name = printers[slot].name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? panel.title : name
+    }
+
+    /// 画板模块显示名：Bambu 模块显示所绑定打印机的设备名（与卡片、侧栏一致）
+    func canvasModuleTitle(_ module: CanvasModule) -> String {
+        guard let slot = module.bambuSlotIndex else { return module.title }
+        let printers = enabledDevices(for: .bambuLab)
+        guard printers.indices.contains(slot) else { return module.title }
+        let name = printers[slot].name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? module.title : name
+    }
+
+    /// 菜单栏用的显示模式标题：Bambu 卡片位显示所绑定打印机的设备名
+    public func menuTitle(for mode: DisplayMode) -> String {
+        guard let slot = mode.bambuSlotIndex else { return mode.title }
+        let printers = enabledDevices(for: .bambuLab)
+        guard printers.indices.contains(slot) else { return mode.title }
+        let name = printers[slot].name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? mode.title : name
+    }
+
+    /// Bambu 卡片位绑定的打印机设备（用于详情页；非 Bambu 面板返回 nil）
+    func bambuDevice(for panel: Panel) -> ManagedDevice? {
+        guard let slot = panel.bambuSlotIndex else { return nil }
+        let printers = enabledDevices(for: .bambuLab)
+        return printers.indices.contains(slot) ? printers[slot] : nil
+    }
+
+    /// Bambu 字段全局镜像同步（该设备为活动 Bambu 打印机或活动 HA 设备时写全局；sync 重建快照以全局为准）
+    private func syncBambuGlobalMirror(_ id: UUID, keyPath: WritableKeyPath<DeviceSettings, String?>, value: String) {
+        guard activeDeviceID(for: .bambuLab) == id || activeDeviceID(for: .homeAssistant) == id else { return }
+        switch keyPath {
+        case \.bambuStatusEntityID: settings.bambuStatusEntityID = value
+        case \.bambuProgressEntityID: settings.bambuProgressEntityID = value
+        case \.bambuTaskEntityID: settings.bambuTaskEntityID = value
+        case \.bambuNozzleTempEntityID: settings.bambuNozzleTempEntityID = value
+        case \.bambuBedTempEntityID: settings.bambuBedTempEntityID = value
+        case \.bambuRemainingEntityID: settings.bambuRemainingEntityID = value
+        case \.bambuErrorEntityID: settings.bambuErrorEntityID = value
+        default: break
+        }
+    }
+
+    /// 修改设备快照（复制-修改-赋回，触发 @Published 让 UI 刷新；
+    /// @Published 对数组元素的嵌套修改不自动触发，必须整体赋回）
+    private func mutateDeviceSettings(_ id: UUID, _ mutate: (inout DeviceSettings) -> Void) {
+        guard let idx = settings.devices.firstIndex(where: { $0.id == id }) else { return }
+        var devices = settings.devices
+        mutate(&devices[idx].settings)
+        settings.devices = devices
+    }
+
+    /// Home Assistant 连接测试（全局共享服务器配置；返回用户可读结果，不打印令牌）
+    public func testHAConnection() async -> String {
+        if let problem = HomeAssistantClient.validate(serverURL: settings.haServerURL,
+                                                      token: settings.haToken) {
+            return problem
+        }
+        do {
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: settings.haServerURL,
+                                                                     token: settings.haToken)
+            applyHASnapshot(entities: entities, errorText: nil)
+            lastHARefresh = Date()
+            return "连接成功：读到 \(entities.count) 个实体"
+        } catch let error as HAError {
+            return error.errorDescription ?? "连接失败"
+        } catch {
+            return "连接失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// 画面实体（image.*）功能开关：当前部署基线关闭
+    static let haPictureSupportEnabled = false
+    /// 失效绑定提示开关：当前部署基线关闭
+    static let haStaleHintsEnabled = false
+    /// 卡片实体列表是否按键盘独立记录：当前部署基线关闭（全局一份）
+    static let haCardPerKeyboardEnabled = false
+
+    /// 全局服务器当前是否有可用实体池（设备管理页的连接指示灯用）
+    public var haConnectedNow: Bool {
+        !settings.haServerURL.isEmpty && !haSnapshot.entities.isEmpty && haSnapshot.errorText == nil
+    }
+
+    /// 是否已添加 Home Assistant 服务器（填过地址或令牌即算已添加）
+    public var haServerConfigured: Bool {
+        !settings.haServerURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !settings.haToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 移除 Home Assistant 服务器：清空全局地址与令牌、丢弃实体池与画面；
+    /// 各键盘的卡片实体选择保留（重新添加服务器后即恢复显示）
+    public func clearHAServer() {
+        settings.haServerURL = ""
+        settings.haToken = ""
+        haSnapshot = .empty
+        lastHARefresh = nil
+        clearHAAlert(cooldown: false)
+        persistSettings()
+        renderPreview()
+        refreshOracleCanvasPreview()
+        refreshExcerptCanvasPreview()
+        status = "已移除 Home Assistant 服务器"
+    }
+
+    /// 各键盘 Home Assistant 卡片当前显示的实体数量摘要（卡片内容按键盘独立）
+    public func haCardEntityCountSummary() -> String {
+        let keyboards = enabledDevices(for: .keyboard)
+        guard !keyboards.isEmpty else { return "尚未添加键盘设备" }
+        let parts = keyboards.map { device in
+            "\(device.name) \(device.settings.haCardEntityIDs?.count ?? 0) 个"
+        }
+        return "各键盘卡片：" + parts.joined(separator: " · ")
     }
 
     /// 按键控制目标选项：口袋先知自身 + 所有灵犀68 键盘设备 + 所有摘录设备
@@ -642,12 +1258,30 @@ public final class AppModel: ObservableObject {
         if deviceCanvasNeedsLiveNowPlaying {
             await refreshNowPlaying(now: now)
         }
+        // Home Assistant 定时刷新（按设置间隔节流；未配置服务器地址时自动跳过）
+        if haRefreshDue(now: now) {
+            await refreshHA()
+        }
         // 夸夸展示到期：恢复正常卡片并推送
         if let until = praiseUntil, now >= until {
             praiseText = nil
             praiseUntil = nil
             renderPreview()
             await push(force: true)
+        }
+        // 打印完成庆祝到期：恢复正常卡片并推送
+        if let until = printSuccessUntil, now >= until {
+            printSuccessName = nil
+            printSuccessTask = nil
+            printSuccessImage = nil
+            printSuccessUntil = nil
+            renderPreview()
+            await push(force: true)
+        }
+        // 设备报错占屏到期（最多 1 分钟）：立即清除并进入冷却，恢复常规卡片推送
+        if !haAlertTitle.isEmpty, let setAt = haAlertSetAt,
+           now.timeIntervalSince(setAt) > haAlertMaxSeconds {
+            clearHAAlert(cooldown: true)
         }
         let periodCompleted = pomodoro.tick(now: now)
         if periodCompleted {
@@ -670,55 +1304,47 @@ public final class AppModel: ObservableObject {
             case .push:
                 await push(force: false)
             case .none:
-                renderPreview()
+                renderPreviewIfDue(now: now)
             }
         case .systemMonitor:
             system = monitor.sample(now: now)
-            renderPreview()
-            if shouldPushDynamically(now: now) {
-                await push(force: false)
-            }
+            await refreshPreviewOrPush(now: now)
         case .pomodoro:
-            renderPreview()
-            if shouldPushDynamically(now: now) {
-                await push(force: false)
-            }
+            await refreshPreviewOrPush(now: now)
         case .nowPlaying:
             await refreshNowPlaying(now: now)
-            renderPreview()
-            if shouldPushDynamically(now: now) {
-                await push(force: false)
-            }
+            await refreshPreviewOrPush(now: now)
         case .canvas:
-            system = monitor.sample(now: now)
+            if RuntimePerformancePolicy.needsSystemSample(modules: settings.canvasModuleList) {
+                system = monitor.sample(now: now)
+            }
             // 画板含 Codex/千问额度模块时，按统一用量刷新周期先调取再渲染
             if canvasNeedsQuotaData, isQuotaDataStale(now: now) {
                 let failures = await refreshUsageAndQuota()
                 if !failures.isEmpty { status = failures.joined(separator: "；") }
             }
-            renderPreview()
-            if shouldPushDynamically(now: now) {
-                await push(force: false)
-            }
+            await refreshPreviewOrPush(now: now)
         case .excerptQuote:
-            renderPreview()
             // 语录变化（手动切换或分钟轮换）时才推送到键盘
             let quote = quoteDisplayText
             if lastQuotePushText != quote {
                 lastQuotePushText = quote
                 await push(force: false)
+            } else {
+                renderPreviewIfDue(now: now)
             }
         case .sspai:
             // 到刷新周期则重新抓取少数派推荐
             if lastSspaiFetch == nil
                 || now.timeIntervalSince(lastSspaiFetch!) >= TimeInterval(max(5, settings.sspaiRefreshMinutes) * 60) {
                 let changed = await fetchSspai()
-                renderPreview()
                 if changed {
                     await push(force: false)
+                } else {
+                    renderPreviewIfDue(now: now)
                 }
             } else {
-                renderPreview()
+                renderPreviewIfDue(now: now)
             }
         case .customImage:
             if settings.imageRotationEnabled {
@@ -729,10 +1355,9 @@ public final class AppModel: ObservableObject {
             }
         case .emojiWallpaper:
             // 壁纸内容确定性强（由设置决定），仅在内容变化（设置改动触发渲染）时推送
-            renderPreview()
-            if shouldPushDynamically(now: now) {
-                await push(force: false)
-            }
+            await refreshPreviewOrPush(now: now)
+        case .homeAssistant, .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+            await refreshPreviewOrPush(now: now)
         }
         // 用量数据统一调取：任一画板（键盘/先知/摘录）含 Codex 或千问额度模块时，
         // 按统一刷新周期（codexRefreshSeconds）并行拉取一次，供所有功能共享（避免各自重复调用）
@@ -825,7 +1450,7 @@ public final class AppModel: ObservableObject {
         let minute = comps.minute ?? 0
         let second = comps.second ?? 0
         let minuteOfDay = hour * 60 + minute
-        let includesSeconds = settings.clockTimeFormat.contains("s")
+        let includesSeconds = settings.timeFormat.contains("s")
         let current = includesSeconds ? minuteOfDay * 60 + second : minuteOfDay
         guard current != lastClockMinute else { return }
         lastClockMinute = current
@@ -841,10 +1466,21 @@ public final class AppModel: ObservableObject {
     }
 
     /// 自定义时钟时间格式（重置时钟，下一个 tick 立即重推）
-    public func setClockTimeFormat(_ format: String) {
+    /// 设置页实时预览用的当前时间 / 日期文本
+    public var previewTimeString: String { TimeFormatProbe.format(settings.timeFormat, now: Date()) }
+    public var previewDateString: String { TimeFormatProbe.format(settings.dateFormat, now: Date()) }
+
+public func setClockTimeFormat(_ format: String) {
         let trimmed = format.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.clockTimeFormat = trimmed.isEmpty ? "HH:mm" : trimmed
+        settings.timeFormat = trimmed.isEmpty ? "HH:mm" : trimmed
         lastClockMinute = nil
+        persistSettings()
+    }
+
+    /// 设置全局日期格式（软件内所有日期显示统一生效）
+    public func setDateFormat(_ format: String) {
+        let trimmed = format.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.dateFormat = trimmed.isEmpty ? "yyyy年M月d日 EEE" : trimmed
         persistSettings()
     }
 
@@ -854,7 +1490,7 @@ public final class AppModel: ObservableObject {
         settings.clockFont = .helveticaNeue
         settings.clockFontSize = 36
         settings.clockFontWeight = .thin
-        settings.clockTimeFormat = "HH:mm"
+        settings.timeFormat = "HH:mm"
         settings.clockOffsetX = 0
         settings.clockOffsetY = 0
         lastClockMinute = nil
@@ -1090,7 +1726,10 @@ public final class AppModel: ObservableObject {
 
     /// 正在播放：每 ~6 秒经子进程拉取一次系统状态，间隔内本地推进播放进度
     private func refreshNowPlaying(now: Date) async {
-        if let last = lastNowPlayingFetch, now.timeIntervalSince(last) < 6 {
+        // 播放中保持 6 秒校准；无媒体/暂停时退避到 30 秒，避免空闲状态频繁启动
+        // Swift MediaRemote 探测子进程而拖慢整个系统。检测到播放后自动恢复高频校准。
+        let fetchInterval: TimeInterval = nowPlaying.isPlaying ? 6 : 30
+        if let last = lastNowPlayingFetch, now.timeIntervalSince(last) < fetchInterval {
             // 本地推进：只加“距上一次 tick”的间隔，避免重复累计；并钳制不超过总时长
             if nowPlaying.isPlaying, let lastTick = lastTickDate {
                 nowPlaying.elapsedTime += now.timeIntervalSince(lastTick)
@@ -1155,6 +1794,16 @@ public final class AppModel: ObservableObject {
         return now.timeIntervalSince(lastPushAttempt) >= TimeInterval(settings.dynamicUploadSeconds)
     }
 
+    /// 到推送周期时只渲染一次：同一份结果同时更新软件预览并用于上传；
+    /// 非推送秒则按内容实际变化速度刷新预览，避免主线程每秒无条件重绘。
+    private func refreshPreviewOrPush(now: Date) async {
+        if shouldPushDynamically(now: now) {
+            await push(force: false)
+        } else {
+            renderPreviewIfDue(now: now)
+        }
+    }
+
     // MARK: - 模式激活
 
     private func activateMode() async {
@@ -1200,6 +1849,10 @@ public final class AppModel: ObservableObject {
                 await push(force: true)
             }
         case .emojiWallpaper:
+            renderPreview()
+            await push(force: true)
+        case .homeAssistant, .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+            await refreshHA()
             renderPreview()
             await push(force: true)
         }
@@ -1251,6 +1904,401 @@ public final class AppModel: ObservableObject {
             qwenQuota = updated
         }
         return outcome.failures
+    }
+
+    // MARK: - Home Assistant
+
+    /// 取 Bambu 打印机配置（按显示模式对应第 1/2/3/4/5 台 Bambu Lab 设备：
+    /// bambuLab→第 1 台、bambuLab2→第 2 台…bambuLab5→第 5 台；未配置该位时返回空占位卡）
+    func bambuConfig(for mode: DisplayMode) -> BambuLabCardSettings {
+        let printers = enabledDevices(for: .bambuLab)
+        let index: Int
+        switch mode {
+        case .bambuLab2: index = 1
+        case .bambuLab3: index = 2
+        case .bambuLab4: index = 3
+        case .bambuLab5: index = 4
+        default: index = 0
+        }
+        if printers.indices.contains(index) {
+            return BambuLabCardSettings.from(printers[index])
+        }
+        let placeholder: String
+        switch index {
+        case 1: placeholder = "打印机 2"
+        case 2: placeholder = "打印机 3"
+        case 3: placeholder = "打印机 4"
+        case 4: placeholder = "打印机 5"
+        default: placeholder = "打印机"
+        }
+        return BambuLabCardSettings(name: placeholder)
+    }
+
+    /// HA 卡片实体列表（基线：全局共享一份；顺序即卡片显示顺序）
+    public var haEntityList: [String] {
+        if Self.haCardPerKeyboardEnabled { return settings.haCardEntityIDs }
+        let list = settings.haEntities
+        if list.isEmpty, !settings.haEntityID.isEmpty { return [settings.haEntityID] }
+        return list
+    }
+
+    /// 批量添加实体（多选勾选确认后调用；去空去重，保持现有顺序后追加）
+    public func addHAEntitiesBatch(_ entityIDs: [String]) {
+        setHAEntities(HAEntityListEditor.merge(haEntityList, adding: entityIDs))
+    }
+
+    /// 从多实体列表移除一个实体（保留首项兼容单实体字段）
+    public func removeHAEntity(_ entityID: String) {
+        var list = haEntityList
+        list.removeAll { $0 == entityID }
+        setHAEntities(list)
+    }
+
+    /// 多实体列表拖拽排序提交
+    public func moveHAEntity(from source: IndexSet, to destination: Int) {
+        var list = haEntityList
+        list.move(fromOffsets: source, toOffset: destination)
+        setHAEntities(list)
+    }
+
+    /// 用新实体替换失效绑定（保持列表位置与自定义显示名称；换服务器后可一键重选）
+    public func replaceHAEntity(oldID: String, newID: String) {
+        let target = newID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, target != oldID else { return }
+        var list = haEntityList
+        guard let index = list.firstIndex(of: oldID) else { return }
+        if list.contains(target) {
+            list.remove(at: index)          // 新实体已在列表中：失效项直接去掉
+        } else {
+            list[index] = target
+        }
+        if let alias = settings.haEntityAliases.removeValue(forKey: oldID) {
+            settings.haEntityAliases[target] = alias   // 显示名称跟随换绑
+        }
+        setHAEntities(list)
+    }
+
+    /// 写入 HA 卡片实体列表（基线：全局镜像 + 活动 HA 设备快照）
+    private func setHAEntities(_ list: [String]) {
+        if Self.haCardPerKeyboardEnabled {
+            settings.haCardEntityIDs = list
+            if let kb = activeDevice(for: .keyboard),
+               let index = settings.devices.firstIndex(where: { $0.id == kb.id }) {
+                settings.devices[index].settings.haCardEntityIDs = list
+            }
+        } else {
+            settings.haEntities = list
+            settings.haEntityID = list.first ?? ""
+            if let devID = activeHADeviceID,
+               let index = settings.devices.firstIndex(where: { $0.id == devID }) {
+                settings.devices[index].settings.haEntities = list
+                settings.devices[index].settings.haEntityID = list.first ?? ""
+            }
+        }
+        persistSettings()
+        // 实体列表变更后立即重建快照选中集并刷新预览/推送（不依赖轮询间隔）
+        refreshHASnapshotSelection()
+    }
+
+    /// 设置实体自定义显示名称（空 = 清除别名回默认名）
+    public func setHAEntityAlias(_ entityID: String, alias: String) {
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        var aliases = settings.haEntityAliases
+        if trimmed.isEmpty {
+            aliases.removeValue(forKey: entityID)
+        } else {
+            aliases[entityID] = trimmed
+        }
+        settings.haEntityAliases = aliases
+        // 显示名称是实体本身的属性：全局共享一份，不写到任何设备快照上
+        persistSettings()
+        refreshHASnapshotSelection()
+    }
+
+    /// 按当前实体列表立即重建快照选中集并刷新预览、按需推送一次
+    private func refreshHASnapshotSelection() {
+        applyHASnapshot(entities: haSnapshot.entities, errorText: haSnapshot.errorText)
+        renderPreview()
+        Task { await push(force: false) }
+    }
+
+    /// 本键盘 Home Assistant 卡片实体列表绑定（设置页多实体编辑用）
+    public var haEntitiesBinding: Binding<[String]> {
+        Binding(get: { self.haEntityList },
+                set: { self.setHAEntities($0) })
+    }
+
+    /// HA 是否到刷新时间（按设置间隔节流；未配置服务器地址返回 false）
+    private func haRefreshDue(now: Date) -> Bool {
+        HARefreshPolicy.isDue(now: now, serverURL: settings.haServerURL,
+                              minutes: settings.haRefreshMinutes, lastRefresh: lastHARefresh)
+    }
+
+    /// 共享服务器配置变更（地址/令牌）：立即按新配置重拉一次，让所有设备即时生效
+    public func reloadHAServer() {
+        lastHARefresh = nil
+        if !haSnapshot.entities.isEmpty {
+            applyHASnapshot(entities: haSnapshot.entities, errorText: nil)
+        }
+        Task { await refreshHA() }
+    }
+
+    /// 拉取 Home Assistant 实体状态并更新快照（失败时保留旧实体列表、记录错误文案；不打印令牌）。
+    /// 后台按刷新间隔自动轮询（tick 驱动）；开启异常监控时进行异常判定：
+    /// 检测到异常推送到键盘告警，恢复正常清除告警
+    public func refreshHA() async {
+        guard !haRefreshing else { return }
+        haRefreshing = true
+        defer { haRefreshing = false }
+        guard !settings.haServerURL.isEmpty else {
+            // 未配置/已清空服务器：不保留上一台服务器的实体池，卡片明确显示未连接
+            applyHASnapshot(entities: [], errorText: nil)
+            return
+        }
+        lastHARefresh = Date()
+        do {
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: settings.haServerURL,
+                                                                     token: settings.haToken)
+            // 一份全局快照：HA 卡片、画板模块、异常监控、打印机映射共用同一数据源
+            applyHASnapshot(entities: entities, errorText: nil)
+            // Bambu Lab 打印机告警：状态=error 或错误码实体非空 → 推送告警（开启告警开关时）
+            // Bambu 打印机告警：遍历全部已启用打印机设备（每台独立），任一报错推告警（含打印机名），恢复自动清除
+            let printers = enabledDevices(for: .bambuLab)
+                .map { BambuLabCardSettings.from($0) }
+            let staleSeconds = TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60)
+            var anyError: (name: String, code: String)? = nil
+            for printer in printers where printer.enableAlert {
+                guard !printer.statusEntityID.isEmpty || !printer.errorEntityID.isEmpty else { continue }
+                let statusE = entities.first { $0.entityId == printer.statusEntityID }
+                let errorE = entities.first { $0.entityId == printer.errorEntityID }
+                let isError = (statusE?.state.lowercased() == "error")
+                    || (errorE.map { e in
+                        let s = e.state.trimmingCharacters(in: .whitespaces).lowercased()
+                        // binary_sensor 类 HMS 错误实体 off = 无错误、on = 有错误；
+                        // unavailable/unknown 为设备离线/不可用，也不是错误码
+                        return !s.isEmpty && !["none", "无", "normal", "ok", "0", "off", "unavailable", "unknown"].contains(s)
+                            && HAErrorCodePolicy.isFresh(entity: e, staleSeconds: staleSeconds)
+                    } ?? false)
+                if isError {
+                    anyError = (printer.name, errorE?.state ?? statusE?.state ?? "打印机报错")
+                    break
+                }
+            }
+            if let error = anyError {
+                // 同一错误码超时后进入冷却，不再反复占屏；错误码变化（新故障）则立即提醒
+                if haAlertTitle.isEmpty, shouldAlert(code: error.code, now: Date()) {
+                    enterHAAlert(title: error.name, message: error.code)
+                }
+            } else {
+                if !haAlertTitle.isEmpty {
+                    clearHAAlert()
+                }
+            }
+            // 打印完成庆祝：状态从「非完成」跳变到「完成」（completed/finish/success/done）时，
+            // 推送一次 🎉 打印完成提醒（与番茄钟夸夸卡同模式，短暂占屏；不重复推送）
+            let completedStates: Set<String> = ["completed", "finish", "success", "done"]
+            for printerDevice in enabledDevices(for: .bambuLab) {
+                guard let statusID = printerDevice.settings.bambuStatusEntityID, !statusID.isEmpty,
+                      let e = entities.first(where: { $0.entityId == statusID }) else { continue }
+                let state = e.state.trimmingCharacters(in: .whitespaces).lowercased()
+                let prev = lastPrinterStatuses[printerDevice.id]
+                lastPrinterStatuses[printerDevice.id] = state
+                guard completedStates.contains(state), let prev, !completedStates.contains(prev) else { continue }
+                // 完成瞬间抓取任务名，让用户知道具体打完的是哪个任务
+                let taskName = printerDevice.settings.bambuTaskEntityID.flatMap { id in
+                    entities.first(where: { $0.entityId == id })?.state
+                }
+                // 完成瞬间的画面（摄像头最后一帧 / 模型封面）
+                enterPrintSuccess(printerName: printerDevice.name, taskName: taskName,
+                                  picture: nil)
+            }
+            // 异常监控判定（配置开启且有可判定的条件时）
+            if settings.haMonitorEnabled,
+               !settings.haMonitorEntityID.isEmpty || !settings.haMonitorErrorEntityID.isEmpty {
+                let result = HomeAssistantClient.monitor(
+                    entities: entities,
+                    monitorEntityID: settings.haMonitorEntityID,
+                    expectedState: settings.haMonitorExpectedState,
+                    errorEntityID: settings.haMonitorErrorEntityID,
+                    staleErrorSeconds: TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60))
+                let title = monitoredEntityDisplayName(entities: entities)
+                if result.isAbnormal {
+                    // 异常：进入告警状态并推送到键盘（只推一次，避免每次刷新重复推送）
+                    if haAlertTitle.isEmpty {
+                        enterHAAlert(title: title, message: result.reason ?? "实体状态异常")
+                    }
+                } else {
+                    // 恢复正常：清除告警并恢复显示（仅当之前处于告警状态）
+                    if !haAlertTitle.isEmpty {
+                        clearHAAlert()
+                    }
+                }
+            }
+        } catch let error as HAError {
+            applyHASnapshot(entities: [], errorText: error.errorDescription ?? "无法获取实体状态")
+        } catch {
+            applyHASnapshot(entities: [], errorText: "无法获取实体状态")
+        }
+    }
+
+    /// 统一构建全局 HA 快照：一份服务器数据同时供 HA 卡片、画板模块、异常监控与打印机映射使用。
+    /// 同时记录每个实体的最后一次已知值，并标出「已绑定但当前服务器查无此实体」的失效项
+    /// （换服务器后不静默错绑、也不凭空消失，而是明确显示失效）。
+    private func applyHASnapshot(entities: [HAEntity], errorText: String?) {
+        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        // 最后已知值只服务于已经绑定的实体。旧逻辑保存服务器全部实体且永不清理，
+        // 在大型 HA 实例或实体改名后会持续抬高常驻内存。
+        let retainedIDs = Set(boundEntityIDs())
+        var values = haSnapshot.lastKnownValues.filter { retainedIDs.contains($0.key) }
+        for entity in entities where retainedIDs.contains(entity.entityId) {
+            values[entity.entityId] = entity.displayValue
+        }
+        // 拉取失败（实体池为空）时不做失效判定，避免把全部绑定误标失效
+        let missing: [String] = entities.isEmpty ? [] : missingBoundEntityIDs(pool: byID)
+        haSnapshot = HASnapshot(entities: entities,
+                                selectedEntities: haEntityList.compactMap { byID[$0] },
+                                aliases: settings.haEntityAliases,
+                                errorText: errorText,
+                                sampledAt: Date(),
+                                missingEntityIDs: missing,
+                                lastKnownValues: values,
+                                images: haSnapshot.images)
+    }
+
+    /// 本轮需要展示的画面实体 ID（基线关闭画面功能 → 返回空，整条取图链路不生效）
+    func pictureEntityIDs() -> [String] {
+        if !Self.haPictureSupportEnabled { return [] }
+        var ids: [String] = []
+        for printer in devices(for: .bambuLab) {
+            let id = (printer.settings.bambuImageEntityID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !id.isEmpty, !ids.contains(id) { ids.append(id) }
+        }
+        for id in haEntityList {
+            if HAEntityPicker.domain(of: id) == "image", !ids.contains(id) { ids.append(id) }
+        }
+        for owner in [CanvasOwner.keyboard, .oracle, .excerpt] {
+            for id in canvasHAEntityIDs(for: owner)
+                where HAEntityPicker.domain(of: id) == "image" && !ids.contains(id) {
+                ids.append(id)
+            }
+        }
+        return ids
+    }
+
+    /// 拉取需要展示的画面（跟随 HA 轮询同一节奏；只接受 image.* 且带 entity_picture 的实体）。
+    /// 失败的实体保留上一轮画面，避免摄像头偶发超时导致卡片闪空。
+    private func refreshHAPictures(entities: [HAEntity]) async {
+        let wanted = pictureEntityIDs()
+        guard !wanted.isEmpty else {
+            if !haSnapshot.images.isEmpty { haSnapshot.images = [:] }
+            return
+        }
+        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        var images = haSnapshot.images.filter { wanted.contains($0.key) }
+        for id in wanted {
+            guard let picture = byID[id]?.entityPicture?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !picture.isEmpty else { continue }
+            guard let url = HomeAssistantClient.imageURL(server: settings.haServerURL,
+                                                         picture: picture,
+                                                         token: settings.haToken) else { continue }
+            if let data = try? await HomeAssistantClient.fetchImage(url: url,
+                                                                    token: settings.haToken) {
+                images[id] = data
+            }
+        }
+        haSnapshot.images = images
+    }
+
+    /// 所有已绑定的 entity_id：HA 卡片实体 + 每台打印机七字段映射 + 异常监控实体（去重、保序、去空）
+    func boundEntityIDs() -> [String] {
+        var ids: [String] = []
+        func add(_ candidate: String?) {
+            guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty, !ids.contains(value) else { return }
+            ids.append(value)
+        }
+        haEntityList.forEach { add($0) }
+        canvasHAEntityIDs(for: .keyboard).forEach { add($0) }
+        canvasHAEntityIDs(for: .oracle).forEach { add($0) }
+        canvasHAEntityIDs(for: .excerpt).forEach { add($0) }
+        for printer in devices(for: .bambuLab) {
+            let config = BambuLabCardSettings.from(printer)
+            add(config.statusEntityID); add(config.progressEntityID); add(config.taskEntityID)
+            add(config.nozzleTempEntityID); add(config.bedTempEntityID)
+            add(config.remainingEntityID); add(config.errorEntityID); add(config.imageEntityID)
+        }
+        if settings.haMonitorEnabled {
+            add(settings.haMonitorEntityID); add(settings.haMonitorErrorEntityID)
+        }
+        return ids
+    }
+
+    /// 已绑定但服务器实体池中查不到的 entity_id（基线关闭失效提示 → 恒为空）
+    func missingBoundEntityIDs(pool: [String: HAEntity]) -> [String] {
+        guard Self.haStaleHintsEnabled else { return [] }
+        return boundEntityIDs().filter { pool[$0] == nil }
+    }
+
+    /// HA 告警最长强制显示时长（秒）：设备报错最多占屏 1 分钟，到期自动清除恢复常规卡片
+    private var haAlertMaxSeconds: TimeInterval { 60 }
+    /// 同一错误码超时后的冷却时长：期间不再重复弹告警，避免报错长期占屏、其他卡片无法推送
+    private var haAlertCooldownSeconds: TimeInterval { 10 * 60 }
+
+    /// 是否应弹出告警：无冷却、或错误码与上次已提醒过的不同（新故障立即提醒）
+    private func shouldAlert(code: String, now: Date) -> Bool {
+        if let alerted = haAlertedCode, alerted != code { return true }   // 换了错误码：不受冷却限制
+        if let until = haAlertCooldownUntil, now < until { return false } // 冷却期内不重复
+        return true
+    }
+
+    /// 进入告警状态（记录触发时间与错误码）并立即推送
+    private func enterHAAlert(title: String, message: String) {
+        haAlertTitle = title
+        haAlertMessage = message
+        haAlertSetAt = Date()
+        haAlertedCode = message
+        renderPreview()
+        Task { await push(force: true) }
+    }
+
+    /// 清除告警并推送恢复正常；超时清除时进入冷却，避免同一错误立刻再次占屏
+    private func clearHAAlert(cooldown: Bool = false) {
+        let timedOut = cooldown
+        haAlertTitle = ""
+        haAlertMessage = ""
+        haAlertSetAt = nil
+        if timedOut {
+            haAlertCooldownUntil = Date().addingTimeInterval(haAlertCooldownSeconds)
+        } else {
+            // 设备已恢复正常：解除冷却，下次报错可以立即提醒
+            haAlertCooldownUntil = nil
+            haAlertedCode = nil
+        }
+        renderPreview()
+        Task { await push(force: true) }
+    }
+
+    /// 打印完成庆祝：短暂展示 🎉 卡片并推送（与番茄钟夸夸同模式），带上完成的任务名
+    private func enterPrintSuccess(printerName: String, taskName: String?, picture: Data?) {
+        printSuccessName = printerName
+        printSuccessTask = taskName
+        printSuccessImage = picture
+        printSuccessUntil = Date().addingTimeInterval(Self.praiseDisplaySeconds)
+        renderPreview()
+        Task { await push(force: true) }
+    }
+
+    /// 被监控实体的显示名（状态实体优先，其次错误码实体，都缺时用「Home Assistant」）
+    private func monitoredEntityDisplayName(entities: [HAEntity]) -> String {
+        if !settings.haMonitorEntityID.isEmpty,
+           let e = entities.first(where: { $0.entityId == settings.haMonitorEntityID }) {
+            return e.displayName
+        }
+        if !settings.haMonitorErrorEntityID.isEmpty,
+           let e = entities.first(where: { $0.entityId == settings.haMonitorErrorEntityID }) {
+            return e.displayName
+        }
+        return "Home Assistant"
     }
 
     /// 额度百分比基线自动采样：跨天重新采样 + 额度高于基线时拉高基线（基线变更经 onChange 自动持久化；
@@ -1500,12 +2548,83 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// 某一块画板的 HA 模块实体列表。三块画板与 HA 键盘卡片均不共用选择结果。
+    func canvasHAEntityIDs(for owner: CanvasOwner) -> [String] {
+        switch owner {
+        case .keyboard: return settings.canvasHAEntityIDs
+        case .oracle: return settings.oracleCanvasHAEntityIDs
+        case .excerpt: return settings.excerptCanvasHAEntityIDs
+        }
+    }
+
+    /// 写入某画板的 HA 实体列表；AppSettings 的 onChange 会同步到该画板所属的活动设备快照。
+    func setCanvasHAEntityIDs(_ ids: [String], for owner: CanvasOwner) {
+        let cleaned = HAEntityListEditor.merge([], adding: ids)
+        switch owner {
+        case .keyboard: settings.canvasHAEntityIDs = cleaned
+        case .oracle: settings.oracleCanvasHAEntityIDs = cleaned
+        case .excerpt: settings.excerptCanvasHAEntityIDs = cleaned
+        }
+    }
+
+    func addCanvasHAEntities(_ ids: [String], for owner: CanvasOwner) {
+        setCanvasHAEntityIDs(HAEntityListEditor.merge(canvasHAEntityIDs(for: owner), adding: ids),
+                             for: owner)
+    }
+
+    func removeCanvasHAEntity(_ id: String, from owner: CanvasOwner) {
+        setCanvasHAEntityIDs(canvasHAEntityIDs(for: owner).filter { $0 != id }, for: owner)
+    }
+
+    /// 将同一份 HA 实体池按画板自己的选择列表投影为渲染快照。
+    func haSnapshot(forCanvas owner: CanvasOwner) -> HASnapshot {
+        haSnapshot.selecting(entityIDs: canvasHAEntityIDs(for: owner))
+    }
+
     /// 各画板「少数派推荐」显示条数（1–6，各自独立）
     func sspaiCount(for owner: CanvasOwner) -> Int {
         switch owner {
         case .keyboard: return settings.canvasSspaiCount
         case .oracle: return settings.oracleSspaiCount
         case .excerpt: return settings.excerptSspaiCount
+        }
+    }
+
+    /// 画板归属对应的设备类型（键盘画板 → 键盘设备）
+    func deviceType(for owner: CanvasOwner) -> DeviceType {
+        switch owner {
+        case .keyboard: return .keyboard
+        case .oracle: return .oracle
+        case .excerpt: return .excerpt
+        }
+    }
+
+    /// 某画板的打印机模块显示选项：每种画板使用各自的镜像字段
+    /// （先知/摘录补齐全部打印机模块默认值，渲染时不会回退到键盘画板的配置）
+    func canvasPrinterFields(for owner: CanvasOwner) -> [Int: CanvasPrinterFields] {
+        let stored: [Int: CanvasPrinterFields]
+        switch owner {
+        case .keyboard: stored = settings.canvasPrinterFields
+        case .oracle: stored = settings.oracleCanvasPrinterFields
+        case .excerpt: stored = settings.excerptCanvasPrinterFields
+        }
+        guard owner != .keyboard else { return stored }
+        var filled = stored
+        for module in CanvasModule.allCases where module.bambuSlotIndex != nil {
+            if filled[module.rawValue] == nil { filled[module.rawValue] = .default }
+        }
+        return filled
+    }
+
+    /// 更新某画板的打印机模块显示选项（写镜像先行，由设备同步落到对应画板设备快照，各画板互相独立）
+    func setCanvasPrinterFields(_ fields: [Int: CanvasPrinterFields], for owner: CanvasOwner) {
+        switch owner {
+        case .keyboard:
+            if settings.canvasPrinterFields != fields { settings.canvasPrinterFields = fields }
+        case .oracle:
+            if settings.oracleCanvasPrinterFields != fields { settings.oracleCanvasPrinterFields = fields }
+        case .excerpt:
+            if settings.excerptCanvasPrinterFields != fields { settings.excerptCanvasPrinterFields = fields }
         }
     }
 
@@ -1550,12 +2669,16 @@ public final class AppModel: ObservableObject {
     /// 支持整体旋转 180° = 上下+左右反转，非镜像）
     private func renderOracleCanvasImage(now: Date = Date()) -> CGImage {
         let rotate = settings.oracleImageRotate180
-        return ScreenRenderer.renderDeviceCanvas(modules: settings.oracleCanvasModuleList,
-                                                system: monitor.sample(now: now),
+        let modules = settings.oracleCanvasModuleList
+        let canvasSystem = RuntimePerformancePolicy.needsSystemSample(modules: modules)
+            ? monitor.sample(now: now) : system
+        return ScreenRenderer.renderDeviceCanvas(modules: modules,
+                                                system: canvasSystem,
                                                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                 customText: settings.canvasText, settings: settings,
                                                 codex: usage, qwenQuota: qwenQuota,
                                                 sspaiArticles: sspaiDisplayArticles(for: .oracle),
+                                                ha: haSnapshot(forCanvas: .oracle),
                                                 now: now,
                                                 width: ScreenRenderer.oracleCanvasSize,
                                                 height: ScreenRenderer.oracleCanvasSize,
@@ -1563,7 +2686,8 @@ public final class AppModel: ObservableObject {
                                                 flipVertical: rotate,
                                                 flipHorizontal: rotate,
                                                 nowPlayingHorizontal: settings.oracleNowPlayingHorizontal,
-                                                canvasImagePath: settings.oracleCanvasImagePath)
+                                                canvasImagePath: settings.oracleCanvasImagePath,
+                                                printerFields: canvasPrinterFields(for: .oracle))
     }
 
     /// 口袋先知画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -1583,12 +2707,16 @@ public final class AppModel: ObservableObject {
     private func renderExcerptCanvasRawImage(now: Date = Date()) -> CGImage {
         // 旋转 180° = 上下反转 + 左右反转（非镜像）
         let rotate = settings.excerptImageRotate180
-        return ScreenRenderer.renderDeviceCanvas(modules: settings.excerptCanvasModuleList,
-                                                 system: monitor.sample(now: now),
+        let modules = settings.excerptCanvasModuleList
+        let canvasSystem = RuntimePerformancePolicy.needsSystemSample(modules: modules)
+            ? monitor.sample(now: now) : system
+        return ScreenRenderer.renderDeviceCanvas(modules: modules,
+                                                 system: canvasSystem,
                                                  nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                  customText: settings.canvasText, settings: settings,
                                                  codex: usage, qwenQuota: qwenQuota,
                                                  sspaiArticles: sspaiDisplayArticles(for: .excerpt),
+                                                 ha: haSnapshot(forCanvas: .excerpt),
                                                  now: now,
                                                  width: ScreenRenderer.excerptCanvasWidth,
                                                  height: ScreenRenderer.excerptCanvasHeight,
@@ -1598,7 +2726,8 @@ public final class AppModel: ObservableObject {
                                                  columns: settings.excerptLayoutColumns,
                                                  fullWidthModules: Set(settings.excerptFullWidthModules),
                                                  nowPlayingHorizontal: settings.excerptNowPlayingHorizontal,
-                                                 canvasImagePath: settings.excerptCanvasImagePath)
+                                                 canvasImagePath: settings.excerptCanvasImagePath,
+                                                 printerFields: canvasPrinterFields(for: .excerpt))
     }
 
     /// 摘录画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -1618,6 +2747,10 @@ public final class AppModel: ObservableObject {
     /// 反色已在原始渲染源头生效，灰阶转换自然继承反色。
     private func renderExcerptCanvasImage(now: Date = Date()) -> CGImage {
         let raw = renderExcerptCanvasRawImage(now: now)
+        return processedExcerptCanvasImage(from: raw)
+    }
+
+    private func processedExcerptCanvasImage(from raw: CGImage) -> CGImage {
         if settings.excerptPushRawImage {
             return ScreenRenderer.grayscaleCanvasImage(from: raw,
                                                       algorithm: .luminosity,
@@ -1644,23 +2777,28 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshOracleCanvasPreview() {
-        let size = CGFloat(ScreenRenderer.oracleCanvasSize)
-        let raw = renderOracleCanvasImage()
-        let preview = ScreenRenderer.oraclePreviewImage(from: raw,
-                                                        algorithm: settings.oracleGrayAlgorithm,
-                                                        mode: settings.oracleDisplayMode,
-                                                        dither: settings.oracleDitherKernel)
-        oracleCanvasRawImage = NSImage(cgImage: raw, size: NSSize(width: size, height: size))
-        oracleCanvasImage = NSImage(cgImage: preview, size: NSSize(width: size, height: size))
+        autoreleasepool {
+            let size = CGFloat(ScreenRenderer.oracleCanvasSize)
+            let raw = renderOracleCanvasImage()
+            let preview = ScreenRenderer.oraclePreviewImage(from: raw,
+                                                            algorithm: settings.oracleGrayAlgorithm,
+                                                            mode: settings.oracleDisplayMode,
+                                                            dither: settings.oracleDitherKernel)
+            oracleCanvasRawImage = NSImage(cgImage: raw, size: NSSize(width: size, height: size))
+            oracleCanvasImage = NSImage(cgImage: preview, size: NSSize(width: size, height: size))
+        }
     }
 
     public func refreshExcerptCanvasPreview() {
-        let raw = renderExcerptCanvasRawImage()
-        let processed = renderExcerptCanvasImage()
-        let size = NSSize(width: CGFloat(ScreenRenderer.excerptCanvasWidth),
-                          height: CGFloat(ScreenRenderer.excerptCanvasHeight))
-        excerptCanvasRawImage = NSImage(cgImage: raw, size: size)
-        excerptCanvasImage = NSImage(cgImage: processed, size: size)
+        autoreleasepool {
+            let raw = renderExcerptCanvasRawImage()
+            // 直接处理同一张 raw；旧逻辑在 renderExcerptCanvasImage 内又完整渲染了一次。
+            let processed = processedExcerptCanvasImage(from: raw)
+            let size = NSSize(width: CGFloat(ScreenRenderer.excerptCanvasWidth),
+                              height: CGFloat(ScreenRenderer.excerptCanvasHeight))
+            excerptCanvasRawImage = NSImage(cgImage: raw, size: size)
+            excerptCanvasImage = NSImage(cgImage: processed, size: size)
+        }
     }
 
     /// 确保口袋先知显示模式会话已连接：保持 WebSocket 连接以接收设备按键事件
@@ -1851,6 +2989,11 @@ public final class AppModel: ObservableObject {
     /// 推送口袋先知画板到 Rand/0 设备（按所选显示模式与灰阶算法生成帧）。
     /// 优先走持久会话（保持按键监听、发送即显示）；会话不可用时回退一次性推送。
     public func pushOracleCanvas() async {
+        await pushOracleCanvas(preRenderedFrame: nil)
+    }
+
+    /// 内容检查已经完成渲染时直接复用帧，避免“先渲染比较、变化后再渲染推送”两次开销。
+    private func pushOracleCanvas(preRenderedFrame: Data?) async {
         guard !settings.rand0IP.isEmpty else {
             status = "请先在「口袋先知画板」中填写 Rand/0 设备 IP"
             return
@@ -1858,11 +3001,7 @@ public final class AppModel: ObservableObject {
         // 确保会话已建立：推送同时保持按键监听（自动重连由会话负责）
         ensureRand0Session()
         do {
-            let image = renderOracleCanvasImage()
-            let frame = ScreenRenderer.oracleFrame(from: image,
-                                                   algorithm: settings.oracleGrayAlgorithm,
-                                                   mode: settings.oracleDisplayMode,
-                                                   dither: settings.oracleDitherKernel)
+            let frame = preRenderedFrame ?? oracleCanvasContentHash()
             let endpoint: Rand0Client.Endpoint = settings.oracleDisplayMode == .gray4 ? .gray4 : .bw
             // 会话循环存活（含断线重连中）一律走会话推送：内部等待连接就绪，绝不另开竞争连接
             if let session = rand0Session, rand0SessionIP == settings.rand0IP,
@@ -1895,6 +3034,11 @@ public final class AppModel: ObservableObject {
 
     /// 推送摘录画板到 Dot 设备（image API，296×152 固定分辨率）
     public func pushExcerptCanvas() async {
+        await pushExcerptCanvas(preRenderedPNG: nil)
+    }
+
+    /// 复用内容检查生成的 PNG，避免变化时重复渲染和灰阶处理。
+    private func pushExcerptCanvas(preRenderedPNG: Data?) async {
         guard !settings.dotApiKey.isEmpty, !settings.dotDeviceId.isEmpty else {
             status = "请先在「摘录画板」中填写 Dot API Key 与设备序列号"
             return
@@ -1904,7 +3048,7 @@ public final class AppModel: ObservableObject {
             // 使用所选 ditherType/ditherKernel 自行转换；本地处理后推送用 NONE 保留本地抖动。
             // 浅色模式（反色）在推送图上取反。
             let rawPush = settings.excerptPushRawImage
-            let png = try Self.pngData(from: excerptPushImage())
+            let png = try preRenderedPNG ?? Self.pngData(from: excerptPushImage())
             let pushResult = try await DotImageAPIClient.push(pngData: png,
                                                               deviceId: settings.dotDeviceId,
                                                               apiKey: settings.dotApiKey,
@@ -1942,12 +3086,14 @@ public final class AppModel: ObservableObject {
                              intervalMinutes: settings.oracleAutoPushMinutes) {
                 lastOracleAutoPush = now
                 await pushOracleCanvas()
-            } else if isContentCheckDue(lastCheck: lastOracleContentCheck, now: now) {
+            } else if isContentCheckDue(lastCheck: lastOracleContentCheck, now: now,
+                                        modules: settings.oracleCanvasModuleList) {
                 lastOracleContentCheck = now
                 // 已有推送基线且内容变化 → 立即推送
-                if let baseline = lastOraclePushedHash, oracleCanvasContentHash() != baseline {
+                let frame = oracleCanvasContentHash()
+                if let baseline = lastOraclePushedHash, frame != baseline {
                     lastOracleAutoPush = now
-                    await pushOracleCanvas()
+                    await pushOracleCanvas(preRenderedFrame: frame)
                 }
             }
         }
@@ -1956,11 +3102,13 @@ public final class AppModel: ObservableObject {
                              intervalMinutes: settings.excerptAutoPushMinutes) {
                 lastExcerptAutoPush = now
                 await pushExcerptCanvas()
-            } else if isContentCheckDue(lastCheck: lastExcerptContentCheck, now: now) {
+            } else if isContentCheckDue(lastCheck: lastExcerptContentCheck, now: now,
+                                        modules: settings.excerptCanvasModuleList) {
                 lastExcerptContentCheck = now
-                if let baseline = lastExcerptPushedHash, excerptCanvasContentHash() != baseline {
+                let png = excerptCanvasContentHash()
+                if let baseline = lastExcerptPushedHash, let png, png != baseline {
                     lastExcerptAutoPush = now
-                    await pushExcerptCanvas()
+                    await pushExcerptCanvas(preRenderedPNG: png)
                 }
             }
         }
@@ -1971,24 +3119,32 @@ public final class AppModel: ObservableObject {
         return now.timeIntervalSince(lastPush) >= TimeInterval(max(1, intervalMinutes) * 60)
     }
 
-    /// 内容变化检查节流（每 5 秒渲染对比一次，避免每秒重渲染）
-    private func isContentCheckDue(lastCheck: Date?, now: Date) -> Bool {
+    /// 内容变化检查按模块动态节流：播放/秒钟/系统指标保持 5 秒，静态内容降到 30 秒。
+    private func isContentCheckDue(lastCheck: Date?, now: Date,
+                                   modules: [CanvasModule]) -> Bool {
         guard let lastCheck else { return true }
-        return now.timeIntervalSince(lastCheck) >= 5
+        let interval = RuntimePerformancePolicy.deviceCanvasContentCheckInterval(
+            modules: modules,
+            timeFormat: settings.timeFormat,
+            nowPlaying: nowPlaying.isPlaying,
+            pomodoroRunning: pomodoroSnapshot.isRunning)
+        return now.timeIntervalSince(lastCheck) >= interval
     }
 
     /// 口袋先知画布当前内容指纹（灰阶帧字节；封面/时间/语录变化都会改变）
     private func oracleCanvasContentHash() -> Data {
-        let image = renderOracleCanvasImage()
-        return ScreenRenderer.oracleFrame(from: image,
-                                          algorithm: settings.oracleGrayAlgorithm,
-                                          mode: settings.oracleDisplayMode,
-                                          dither: settings.oracleDitherKernel)
+        autoreleasepool {
+            let image = renderOracleCanvasImage()
+            return ScreenRenderer.oracleFrame(from: image,
+                                              algorithm: settings.oracleGrayAlgorithm,
+                                              mode: settings.oracleDisplayMode,
+                                              dither: settings.oracleDitherKernel)
+        }
     }
 
     /// 摘录画布当前内容指纹（推送 PNG 字节）
     private func excerptCanvasContentHash() -> Data? {
-        try? Self.pngData(from: excerptPushImage())
+        autoreleasepool { try? Self.pngData(from: excerptPushImage()) }
     }
 
     /// Dot 推送状态文案：优先显示服务器返回的 message（如设备离线/休眠提示）
@@ -2079,7 +3235,8 @@ public final class AppModel: ObservableObject {
 
     private func uploadRendered(force: Bool) async throws {
         // 键盘仅支持 JPEG（质量可调，100 = 4:4:4 无彩色抽样、画质接近无损）
-        let jpeg = try renderBytes()
+        // 渲染结果同时供软件预览和上传使用，消除原先推送秒的重复整卡渲染。
+        let jpeg = try renderAndUpdatePreview().data
         let hash = Self.sha256(jpeg)
         lastPushAttempt = Date()
         if !force && hash == lastUploadedHash {
@@ -2212,13 +3369,15 @@ public final class AppModel: ObservableObject {
         await push(force: true)
     }
 
-    // MARK: - 全局快捷键（番茄钟）
+    // MARK: - 全局快捷键（番茄钟 / 灵犀68 手动翻页）
 
     func shortcut(for action: GlobalHotkeyManager.Action) -> GlobalShortcut {
         switch action {
         case .togglePomodoro: return settings.pomodoroToggleShortcut
         case .skipPomodoro: return settings.pomodoroSkipShortcut
         case .resetPomodoro: return settings.pomodoroResetShortcut
+        case .keyboardPageUp: return settings.keyboardPageUpShortcut
+        case .keyboardPageDown: return settings.keyboardPageDownShortcut
         }
     }
 
@@ -2227,6 +3386,8 @@ public final class AppModel: ObservableObject {
         case .togglePomodoro: settings.pomodoroToggleShortcut = shortcut
         case .skipPomodoro: settings.pomodoroSkipShortcut = shortcut
         case .resetPomodoro: settings.pomodoroResetShortcut = shortcut
+        case .keyboardPageUp: settings.keyboardPageUpShortcut = shortcut
+        case .keyboardPageDown: settings.keyboardPageDownShortcut = shortcut
         }
         // 触发 onChange → 持久化 + applyGlobalShortcuts 重新注册
     }
@@ -2237,12 +3398,19 @@ public final class AppModel: ObservableObject {
         settings.pomodoroResetShortcut = .defaultReset
     }
 
+    public func resetKeyboardPageShortcuts() {
+        settings.keyboardPageUpShortcut = .defaultPageUp
+        settings.keyboardPageDownShortcut = .defaultPageDown
+    }
+
     /// 把设置中的快捷键组合应用到全局注册（组合未变化时跳过）
     public func applyGlobalShortcuts() {
         GlobalHotkeyManager.apply(shortcuts: [
             .togglePomodoro: settings.pomodoroToggleShortcut,
             .skipPomodoro: settings.pomodoroSkipShortcut,
-            .resetPomodoro: settings.pomodoroResetShortcut
+            .resetPomodoro: settings.pomodoroResetShortcut,
+            .keyboardPageUp: settings.keyboardPageUpShortcut,
+            .keyboardPageDown: settings.keyboardPageDownShortcut
         ])
     }
 
@@ -2461,13 +3629,12 @@ public final class AppModel: ObservableObject {
 
     /// 某台键盘设备侧栏显示的卡片（有序可见列表；nil = 旧设备未配置，回退侧栏排序的全部卡片，含正在播放）
     func keyboardCardList(for deviceID: UUID) -> [Panel] {
-        guard let device = settings.devices.first(where: { $0.id == deviceID }) else { return [] }
-        if let panels = device.settings.keyboardCardPanels {
-            return panels.compactMap(Panel.init(rawValue:))
-        }
-        // 未配置（旧设备）：按侧栏排序派生全部卡片（含正在播放）
-        return Panel.orderedKeyboardItems(settings.sidebarOrder)
+        // 旧设备（未记录卡片列表）回退：按侧栏排序派生全部卡片（含正在播放）
+        let fallback = Panel.orderedKeyboardItems(settings.sidebarOrder)
             .filter { $0 != .devices && $0 != .cardRotation }
+            .map(\.rawValue)
+        return settings.keyboardCardPanelRawValues(for: deviceID, fallback: fallback)
+            .compactMap(Panel.init(rawValue:))
     }
 
     /// 活动键盘设备的可见卡片列表
@@ -2479,8 +3646,10 @@ public final class AppModel: ObservableObject {
     /// 活动键盘设备未显示在侧栏的卡片（供「添加到侧栏」）
     var keyboardHiddenCardList: [Panel] {
         let visible = Set(activeKeyboardCardList.map(\.rawValue))
+        let printerCount = enabledDevices(for: .bambuLab).count
         return Panel.orderedKeyboardItems(settings.sidebarOrder)
-            .filter { $0 != .devices && $0 != .cardRotation && !visible.contains($0.rawValue) }
+            .filter { $0 != .devices && $0 != .cardRotation && !visible.contains($0.rawValue)
+                && (($0.bambuSlotIndex.map { $0 < printerCount }) ?? true) }
     }
 
     /// 设置活动键盘设备某张卡片是否显示在侧栏（先写全局镜像再写设备快照，防 sync 覆盖）
@@ -2553,7 +3722,16 @@ public final class AppModel: ObservableObject {
                 updateStatusText = "已是最新版本"
             }
         } catch {
-            updateStatusText = nil // 离线/限流时静默，不打扰
+            // 手动检查（force）失败：显示明确提示不静默；自动启动检查保持静默
+            if force {
+                if let e = error as? GitHubReleaseError {
+                    updateStatusText = e.errorDescription ?? "无法连接 GitHub，请检查网络"
+                } else {
+                    updateStatusText = "无法连接 GitHub，请检查网络"
+                }
+            } else {
+                updateStatusText = nil
+            }
         }
     }
 
@@ -2579,6 +3757,12 @@ public final class AppModel: ObservableObject {
         guard let targetID = settings.menuBarKeyboardDeviceID,
               let target = enabledDevices(for: .keyboard).first(where: { $0.id == targetID }) else { return }
         switchDevice(type: .keyboard, to: target.id)
+    }
+
+    /// 全局翻页快捷键：与菜单栏操作共用目标键盘，然后循环切换上一张/下一张卡片。
+    public func manualKeyboardPage(direction: Int) {
+        ensureMenuBarKeyboard()
+        keyboardPage(direction: direction)
     }
 
     /// 菜单栏切换显示内容：先切到目标键盘再设置模式
@@ -2633,6 +3817,18 @@ public final class AppModel: ObservableObject {
                                                    sessions: pomodoroSnapshot.completedFocusSessions,
                                                    settings: settings)
         }
+        // 打印完成庆祝卡：打印成功后短暂展示 🎉（与夸夸同模式），并显示完成的任务名
+        if let name = printSuccessName, let until = printSuccessUntil, Date() < until {
+            return try ScreenRenderer.renderPrintSuccess(printerName: name,
+                                                         taskName: printSuccessTask,
+                                                         picture: printSuccessImage,
+                                                         settings: settings)
+        }
+        // HA 异常告警：监控到异常时优先显示告警卡（打印机名 + 错误码，醒目样式），恢复后自动消失
+        if !haAlertTitle.isEmpty {
+            return try ScreenRenderer.renderHAAlert(title: haAlertTitle, message: haAlertMessage,
+                                                    settings: settings)
+        }
         switch settings.displayMode {
         case .pomodoro:
             return try ScreenRenderer.renderPomodoro(pomodoroSnapshot, settings: settings)
@@ -2646,6 +3842,16 @@ public final class AppModel: ObservableObject {
             return try ScreenRenderer.renderCustomImage(path: path, settings: settings)
         case .qwenWork:
             return try ScreenRenderer.renderQwenWork(qwenQuota, settings: settings)
+        case .homeAssistant:
+            return try ScreenRenderer.renderHA(haSnapshot.selectedEntities,
+                                               aliases: haSnapshot.aliases,
+                                               missing: haSnapshot.missingRows(),
+                                               errorText: haSnapshot.errorText,
+                                               settings: settings)
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+            return try ScreenRenderer.renderBambuLab(bambuConfig(for: settings.displayMode),
+                                                     entities: haSnapshot.entities,
+                                                     settings: settings)
         case .excerptQuote:
             return try ScreenRenderer.renderExcerptQuote(quote: quoteDisplayText, settings: settings, now: Date())
         case .sspai:
@@ -2663,7 +3869,9 @@ public final class AppModel: ObservableObject {
                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                 customText: settings.canvasText, settings: settings,
                 codex: usage, qwenQuota: qwenQuota,
-                sspaiArticles: sspaiDisplayArticles(for: .keyboard))
+                sspaiArticles: sspaiDisplayArticles(for: .keyboard),
+                ha: haSnapshot(forCanvas: .keyboard),
+                artworkImage: cachedArtworkImage(for: nowPlaying.artwork))
         }
     }
 
@@ -2681,10 +3889,28 @@ public final class AppModel: ObservableObject {
         return image
     }
 
+    private func renderAndUpdatePreview() throws -> RenderResult {
+        let result = try autoreleasepool { try renderCurrent() }
+        previewImage = NSImage(cgImage: result.image, size: NSSize(width: 142, height: 428))
+        lastPreviewRender = Date()
+        return result
+    }
+
+    private func renderPreviewIfDue(now: Date) {
+        let interval = RuntimePerformancePolicy.previewInterval(
+            mode: settings.displayMode,
+            canvasModules: settings.canvasModuleList,
+            timeFormat: settings.timeFormat,
+            nowPlaying: nowPlaying.isPlaying,
+            pomodoroRunning: pomodoroSnapshot.isRunning,
+            dynamicUploadSeconds: settings.dynamicUploadSeconds)
+        if let lastPreviewRender, now.timeIntervalSince(lastPreviewRender) < interval { return }
+        renderPreview()
+    }
+
     private func renderPreview() {
         do {
-            let result = try renderCurrent()
-            previewImage = NSImage(cgImage: result.image, size: NSSize(width: 142, height: 428))
+            _ = try renderAndUpdatePreview()
         } catch {
             status = Self.friendly(error)
         }
@@ -2743,5 +3969,15 @@ public final class AppModel: ObservableObject {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(identifier)") else { return }
         NSWorkspace.shared.open(url)
         status = "请在系统设置中允许 LinxDisplay，并勾选快捷操作"
+    }
+}
+
+/// 全局时间/日期格式的实时预览文本（设置页用）
+public enum TimeFormatProbe {
+    public static func format(_ pattern: String, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = pattern.isEmpty ? "HH:mm" : pattern
+        return formatter.string(from: now)
     }
 }
