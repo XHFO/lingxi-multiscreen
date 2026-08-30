@@ -50,6 +50,15 @@ public enum ScreenRenderer {
         drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
                  color: colors.borderCG)
 
+        if !snapshot.isAvailable {
+            drawText(ctx, "尚未读取", size: 18, bold: true, color: colors.primaryTextCG,
+                     in: rect(c.minX + 8, c.minY + 145, c.width - 16, 32), align: .center)
+            drawText(ctx, "请在软件中刷新 Codex 用量", size: 9, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(c.minX + 8, c.minY + 180, c.width - 16, 24), align: .center)
+            return try encode(ctx, quality: settings.jpegQuality)
+        }
+
         let top = c.minY + 49
         // 与千问办公额度卡同款布局：标题 → 大数字居中 → 单位 → 进度条 → 描述 → 信息框 → 页脚
         drawText(ctx, snapshot.windowTitle, size: 10, bold: true, color: colors.secondaryTextCG,
@@ -465,8 +474,8 @@ public enum ScreenRenderer {
     public static func renderCanvas(modules: [CanvasModule], system: SystemSnapshot,
                                     nowPlaying: NowPlayingInfo, pomodoro: PomodoroSnapshot,
                                     customText: String, settings: AppSettings,
-                                    codex: UsageSnapshot = .sample,
-                                    qwenQuota: QwenWorkQuota = .sample,
+                                    codex: UsageSnapshot = .empty,
+                                    qwenQuota: QwenWorkQuota = .unavailable,
                                     sspaiArticles: [SspaiArticle] = [],
                                     ha: HASnapshot = .empty,
                                     now: Date = Date(),
@@ -674,8 +683,8 @@ public enum ScreenRenderer {
     public static func renderDeviceCanvas(modules: [CanvasModule], system: SystemSnapshot,
                                           nowPlaying: NowPlayingInfo, pomodoro: PomodoroSnapshot,
                                           customText: String, settings: AppSettings,
-                                          codex: UsageSnapshot = .sample,
-                                          qwenQuota: QwenWorkQuota = .sample,
+                                          codex: UsageSnapshot = .empty,
+                                          qwenQuota: QwenWorkQuota = .unavailable,
                                           sspaiArticles: [SspaiArticle] = [],
                                           ha: HASnapshot = .empty,
                                           now: Date = Date(),
@@ -2435,6 +2444,15 @@ public enum ScreenRenderer {
                    accent: colors.accentCG, colors: colors, titleSize: 7.5)
         drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
                  color: colors.borderCG)
+
+        if !quota.available {
+            drawText(ctx, "尚未读取", size: 18, bold: true, color: colors.primaryTextCG,
+                     in: rect(c.minX + 8, c.minY + 145, c.width - 16, 32), align: .center)
+            drawText(ctx, "请运行千问办公后刷新", size: 9, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(c.minX + 8, c.minY + 180, c.width - 16, 24), align: .center)
+            return try encode(ctx, quality: settings.jpegQuality)
+        }
 
         let top = c.minY + 49
         drawText(ctx, "剩余额度", size: 10, bold: true, color: colors.secondaryTextCG,

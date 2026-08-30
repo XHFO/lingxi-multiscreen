@@ -144,8 +144,8 @@ public final class AppModel: ObservableObject {
     /// 活动设置（普通存储属性而非 @Published：视图直接观察 AppSettings 自身
     /// 的 objectWillChange，避免 @Published 包装器嵌套访问触发元数据递归崩溃）
     public var settings: AppSettings
-    @Published public var usage: UsageSnapshot = .sample
-    @Published public var qwenQuota: QwenWorkQuota = .sample
+    @Published public var usage: UsageSnapshot = .empty
+    @Published public var qwenQuota: QwenWorkQuota = .unavailable
     /// Home Assistant 快照（实体列表 + 选中实体状态 + 错误信息）
     @Published public var haSnapshot: HASnapshot = .empty
     /// HA 异常监控告警：异常标题（如打印机名）与详情（错误码等）；非空即处于告警状态
@@ -286,8 +286,8 @@ public final class AppModel: ObservableObject {
         wireSettingsHandlers()
         // 3. 重置内存运行态
         pomodoro.reset()
-        usage = .sample
-        qwenQuota = .sample
+        usage = .empty
+        qwenQuota = .unavailable
         sspaiArticles = []
         sspaiRandomSelection = [:]
         quoteOverrideIndex = nil
@@ -3291,6 +3291,7 @@ public func setClockTimeFormat(_ format: String) {
 
     /// 千问办公额度摘要文本
     public var qwenQuotaText: String {
+        guard qwenQuota.available else { return "尚未读取" }
         let plan = qwenQuota.plan.map { "\($0) · " } ?? ""
         return "\(plan)剩余 \(String(format: "%.2f", qwenQuota.remainingCredits)) \(qwenQuota.unit)"
     }

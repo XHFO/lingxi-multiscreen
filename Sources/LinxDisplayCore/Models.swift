@@ -713,14 +713,21 @@ public struct UsageSnapshot: Equatable {
         }
     }
 
-    /// 首次展示前的示例数据（与原版一致）
-    public static let sample = UsageSnapshot(
-        remainingPercent: 98,
-        resetDate: Date().addingTimeInterval(5 * 24 * 3600),
-        windowMinutes: 10_080,
-        availableResetCount: 3,
-        planType: "plus"
+    /// 是否已读取到真实的 Codex 用量。全新安装和读取失败时保持 false，
+    /// 避免把开发预览用的示例百分比误当成用户数据展示。
+    public var isAvailable: Bool {
+        resetDate != nil || windowMinutes != nil || planType != nil
+    }
+
+    /// 正式运行的空状态；示例数据只允许用于测试和预览。
+    public static let empty = UsageSnapshot(
+        remainingPercent: 0,
+        resetDate: nil,
+        windowMinutes: nil,
+        availableResetCount: 0,
+        planType: nil
     )
+
 }
 
 // MARK: - 键盘图像 API 地址

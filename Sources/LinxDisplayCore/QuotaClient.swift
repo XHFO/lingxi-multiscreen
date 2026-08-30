@@ -57,12 +57,13 @@ public struct QwenWorkQuota: Equatable {
         return min(current / baseline, 1)
     }
 
-    public static let sample = QwenWorkQuota(
-        available: true, remainingCredits: 2061.9, usedCredits: 0, totalCredits: 0,
-        percentageUsed: 0, unit: "credits", plan: "Free",
-        segments: [Segment(id: "plan", remaining: 2061.9, unit: "credits")],
-        sampledAt: Date()
+    /// 正式运行的空状态；没有读取到本机千问服务前不显示虚构额度。
+    public static let unavailable = QwenWorkQuota(
+        available: false, remainingCredits: 0, usedCredits: 0, totalCredits: 0,
+        percentageUsed: nil, unit: "", plan: nil, segments: [],
+        sampledAt: .distantPast
     )
+
 }
 
 /// 额度百分比基线采样器：每日定期采样、更新、刷新基线。

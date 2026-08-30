@@ -57,11 +57,6 @@ public struct NowPlayingInfo: Equatable {
                                                    duration: 0, elapsedTime: 0, playbackRate: 0,
                                                    artwork: nil, appName: nil)
 
-    /// 示例数据（无封面时为占位样式）
-    public static let sample = NowPlayingInfo(
-        title: "示例歌曲", artist: "示例歌手", album: "示例专辑",
-        duration: 210, elapsedTime: 63, playbackRate: 1, artwork: nil, sampledAt: Date())
-
     /// 合并新拉的播放状态与本地推进值：同一首歌且正在播放时，
     /// 若拉取到的 elapsedTime 落后于本地值（MediaRemote 可能停滞），
     /// 保留本地较大值，避免进度条周期性回跳；换曲/暂停/时长变化则采用新值。

@@ -8,6 +8,37 @@ import ImageIO
 import UniformTypeIdentifiers
 import LinxDisplayCore
 
+// 仅测试和视觉预览使用的样本数据。放在测试目标中，确保正式 App 二进制不携带示例账号数据。
+extension UsageSnapshot {
+    static var sample: UsageSnapshot {
+        UsageSnapshot(
+            remainingPercent: 98,
+            resetDate: Date().addingTimeInterval(5 * 24 * 3600),
+            windowMinutes: 10_080,
+            availableResetCount: 3,
+            planType: "plus")
+    }
+}
+
+extension QwenWorkQuota {
+    static var sample: QwenWorkQuota {
+        QwenWorkQuota(
+            available: true, remainingCredits: 2061.9, usedCredits: 0, totalCredits: 0,
+            percentageUsed: 0, unit: "credits", plan: "Free",
+            segments: [Segment(id: "plan", remaining: 2061.9, unit: "credits")],
+            sampledAt: Date())
+    }
+}
+
+extension NowPlayingInfo {
+    static var sample: NowPlayingInfo {
+        NowPlayingInfo(
+            title: "示例歌曲", artist: "示例歌手", album: "示例专辑",
+            duration: 210, elapsedTime: 63, playbackRate: 1,
+            artwork: nil, sampledAt: Date())
+    }
+}
+
 var failures: [String] = []
 var passed = 0
 
@@ -3614,6 +3645,16 @@ func testDeviceManagement() throws {
     // 首次使用不自动创建设备：空列表由界面引导到设备管理添加；添加设备后才产生设备档案
     let fresh = AppSettings()
     check(fresh.devices.isEmpty, "首次使用不应自动创建设备")
+    check(DeviceOnboardingPolicy.shouldShow(for: fresh.devices), "全新配置应进入设备添加引导")
+    check(fresh.endpoint.isEmpty, "全新配置不应包含键盘地址")
+    check(fresh.rand0IP.isEmpty, "全新配置不应包含口袋先知地址")
+    check(fresh.dotApiKey.isEmpty && fresh.dotDeviceId.isEmpty, "全新配置不应包含摘录凭据")
+    check(fresh.haServerURL.isEmpty && fresh.haToken.isEmpty, "全新配置不应包含 HA 连接参数")
+    check(fresh.haEntities.isEmpty, "全新配置不应包含 HA 测试实体")
+    check(fresh.customImagePath == nil && fresh.customImageHistory.isEmpty,
+          "全新配置不应包含测试图片或历史记录")
+    check(!UsageSnapshot.empty.isAvailable, "Codex 正式初始状态不应使用示例数据")
+    check(!QwenWorkQuota.unavailable.available, "千问正式初始状态不应使用示例额度")
     // 删除设备允许删光（不再强制每类至少一台）
     let base = FileManager.default.temporaryDirectory.appendingPathComponent("linx-device-test-\(UUID().uuidString)")
     var emptyTest = AppSettings()
@@ -3626,6 +3667,21 @@ func testDeviceManagement() throws {
     checkEqual(reloaded.devices.count, 1, "设备档案往返")
     checkEqual(reloaded.devices[0].name, "临时", "设备名往返-删除测试")
     checkEqual(fresh.devices.isEmpty, true, "全新设置无设备")
+    check(!DeviceOnboardingPolicy.shouldShow(for: reloaded.devices), "已有设备时不应显示首次添加引导")
+
+    // 从完全不存在的数据目录加载：必须得到空白设置，且不能生成或迁入测试参数。
+    let virginBase = FileManager.default.temporaryDirectory
+        .appendingPathComponent("linx-virgin-release-test-\(UUID().uuidString)")
+    let virginStore = SettingsStore(dataDirectory: virginBase)
+    let virgin = virginStore.load()
+    check(virgin.devices.isEmpty, "发布版全新数据目录应为 0 台设备")
+    check(virgin.endpoint.isEmpty && virgin.rand0IP.isEmpty,
+          "发布版全新数据目录不应带设备地址")
+    check(virgin.dotApiKey.isEmpty && virgin.dotDeviceId.isEmpty
+          && virgin.haServerURL.isEmpty && virgin.haToken.isEmpty,
+          "发布版全新数据目录不应带任何连接凭据")
+    check(DeviceOnboardingPolicy.shouldShow(for: virgin.devices),
+          "发布版全新数据目录应触发设备添加引导")
 
     // 恢复初始设定：设置/番茄钟/自定义图片/图片缓存移入废纸篓，重新加载为全新默认
     let resetBase = FileManager.default.temporaryDirectory.appendingPathComponent("linx-reset-test-\(UUID().uuidString)")

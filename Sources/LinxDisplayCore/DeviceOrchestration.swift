@@ -1,5 +1,12 @@
 import Foundation
 
+/// 首次使用入口判定。正式发布的全新配置必须没有任何设备，界面据此直接显示设备添加引导。
+public enum DeviceOnboardingPolicy {
+    public static func shouldShow(for devices: [ManagedDevice]) -> Bool {
+        devices.isEmpty
+    }
+}
+
 /// 多设备编排（放在 Core 以便冒烟测试直接覆盖真实逻辑）：
 /// 每台设备一份 `DeviceSettings` 快照，全局 `AppSettings` 字段只是「当前活动设备」的镜像。
 ///

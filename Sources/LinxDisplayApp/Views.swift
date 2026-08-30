@@ -427,7 +427,7 @@ struct SettingsView: View {
         // 版本日志默认展开当前版本（最新一条），历史版本折叠
         _expandedReleaseNotes = State(initialValue: Set(ReleaseNotes.all.prefix(1).map(\.id)))
         // 首次使用（无任何设备）直接进入「开始使用」引导页；已有设备时跟随当前显示模式
-        if model.settings.devices.isEmpty {
+        if DeviceOnboardingPolicy.shouldShow(for: model.settings.devices) {
             _selected = State(initialValue: .welcome)
         } else {
             _selected = State(initialValue: Panel.from(displayMode: model.settings.displayMode) ?? .general)
@@ -2782,7 +2782,8 @@ struct SettingsView: View {
             Text("额度百分比按「当前剩余 ÷ 基线」计算。基线每日自动采样：跨天后以当天额度重新采样；同一日内额度回升超过基线（如每日赠送积分入账）时自动把基线拉高到当前额度，无需手动维护。也可点上方按钮随时手动重设基线。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            LabeledContent("最后采样", value: Self.formatSample(model.qwenQuota.sampledAt))
+            LabeledContent("最后采样", value: model.qwenQuota.available
+                           ? Self.formatSample(model.qwenQuota.sampledAt) : "尚未读取")
             Text("额度数据来自本机千问办公客户端（本地服务），请保持千问办公运行。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2804,7 +2805,9 @@ struct SettingsView: View {
                     Task { await model.refresh() }
                 }
                 Spacer()
-                Text("剩余 \(model.usage.remainingPercent)% · 可用重置 \(model.usage.availableResetCount) 次")
+                Text(model.usage.isAvailable
+                     ? "剩余 \(model.usage.remainingPercent)% · 可用重置 \(model.usage.availableResetCount) 次"
+                     : "尚未读取 Codex 用量")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
