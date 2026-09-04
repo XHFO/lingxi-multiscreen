@@ -10,6 +10,11 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.5.2", date: "2026-09-05", notes: [
+            "修复口袋先知 WebSocket 会话在设置同步、显示模式切换或画板轮换时可能叠加重连线程与未完成连接的问题，显著降低长时间运行后的 CPU、内存和系统资源占用。",
+            "修复系统监控在睡眠唤醒、VPN/热点切换或网络接口重建后，网络累计计数回退可能引发整数下溢并导致软件崩溃的问题。",
+            "补齐 Bambu Lab 共享状态词库：覆盖 X2D、P1P、A1 mini 等设备的 80 个 current_stage 详细阶段与完整 print_status，包含调平、校准、换料、温控、检测和暂停原因等中文显示。",
+        ]),
         ReleaseNote(id: "1.5.1", date: "2026-09-04", notes: [
             "Bambu Lab 卡片新增摄像头与打印任务封面实体：支持自动关联、手动解除单项绑定，并可按卡片选择显示摄像头静态帧或任务图片；Home Assistant 卡片同步支持 camera/image 静态画面。",
             "Bambu Lab 卡片统一新版仪表排版：显示打印机设备名、状态背景大字、前景百分比、加粗进度条、双行自适应任务名和清晰的数据更新时间；灵犀画板、口袋先知与摘录画板同步应用高对比样式。",
@@ -93,14 +98,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.1"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.2"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
 
-    /// 当前短版本号（如 1.5.1，不含构建号），用于与 GitHub 最新版本比较
+    /// 当前短版本号（如 1.5.2，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.5.1"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.5.2"
     }
 }

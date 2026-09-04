@@ -43,6 +43,20 @@ extension NowPlayingInfo {
 var failures: [String] = []
 var passed = 0
 
+private final class ThreadSafeFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = false
+
+    func set() {
+        lock.lock(); storage = true; lock.unlock()
+    }
+
+    var value: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return storage
+    }
+}
+
 func check(_ condition: Bool, _ message: String, file: String = #file, line: Int = #line) {
     if condition {
         passed += 1
@@ -283,6 +297,12 @@ func testSyncPlanner() {
 // MARK: - 系统监控
 
 func testSystemMonitor() {
+    checkEqual(SystemMonitor.monotonicCounterDelta(current: 150, previous: 100), 50,
+               "网络累计计数正常递增时返回差值")
+    checkEqual(SystemMonitor.monotonicCounterDelta(current: 20, previous: 100), 0,
+               "网络接口重建导致计数回退时不发生 UInt64 下溢")
+    checkEqual(SystemMonitor.monotonicCounterDelta(current: 0, previous: UInt64.max), 0,
+               "网络累计计数极端回退时仍安全归零")
     let monitor = SystemMonitor()
     _ = monitor.sample()
     Thread.sleep(forTimeInterval: 0.2)
@@ -293,6 +313,28 @@ func testSystemMonitor() {
     check(snapshot.diskPercent >= 0 && snapshot.diskPercent <= 100, "磁盘占用应在 0-100%")
     check(snapshot.uptime > 0, "运行时间应大于 0")
     print("  系统监控采样通过（CPU \(Int(snapshot.cpuPercent.rounded()))% / 内存 \(Int(snapshot.memoryPercent.rounded()))% / 磁盘 \(Int(snapshot.diskPercent.rounded()))%）")
+}
+
+/// 口袋先知会话在目标/显示模式切换时必须让旧重连循环退出，
+/// 否则新 connect 会永久排在旧 socketQueue 后面，并在应用层诱发不断新建会话。
+func testRand0SessionLifecycle() async {
+    let session = Rand0DisplaySession()
+    // 本机 1 端口会立即拒绝，首次 connect 返回后内部仍处于退避重连。
+    await session.connect(ip: "127.0.0.1:1", endpoint: .bw)
+    check(session.isActive, "Rand/0 首次失败后保持单个自动重连循环")
+
+    let switched = ThreadSafeFlag()
+    let switchTask = Task {
+        await session.connect(ip: "127.0.0.1:1", endpoint: .gray4)
+        switched.set()
+    }
+    try? await Task.sleep(nanoseconds: 750_000_000)
+    check(switched.value, "Rand/0 目标切换应在退避期及时淘汰旧循环")
+
+    session.disconnect()
+    await switchTask.value
+    check(!session.isActive, "Rand/0 disconnect 后不再保留重连循环")
+    print("  Rand/0 会话生命周期通过")
 }
 
 // MARK: - 设置与工具
@@ -4017,6 +4059,7 @@ Task {
         try testCodexParse()
         testSyncPlanner()
         testSystemMonitor()
+        await testRand0SessionLifecycle()
         testSettingsAndUtilities()
         try testMigration()
         try testQuotaParse()
@@ -5285,9 +5328,64 @@ func testHomeAssistant() throws {
     checkEqual(legacyFields.showStatus, false, "画板显示选项-已给字段生效")
     checkEqual(legacyFields.showProgress, true, "画板显示选项-缺字段回退默认")
     // 状态汉化共用映射（卡片与画板模块一致）
-    checkEqual(BambuStatusText.map("running"), "运行中", "状态汉化 running")
+    checkEqual(BambuStatusText.map("running"), "打印中", "状态汉化 running")
     checkEqual(BambuStatusText.map("finish"), "已完成", "状态汉化 finish")
     checkEqual(BambuStatusText.map("weird_state"), "weird_state", "状态汉化未知原样返回")
+    let x2dPrintStatusTranslations = [
+        "failed": "失败", "finish": "已完成", "idle": "空闲", "init": "初始化中",
+        "offline": "离线", "pause": "已暂停", "prepare": "准备中", "running": "打印中",
+        "slicing": "切片中", "unknown": "未知",
+    ]
+    for (raw, translated) in x2dPrintStatusTranslations {
+        checkEqual(BambuStatusText.map(raw), translated, "X2D 打印状态翻译 \(raw)")
+    }
+    // X2D 在实机 Home Assistant 历史中已出现的详细阶段，译文要稳定且适合小屏。
+    let observedX2DStageTranslations = [
+        "auto_bed_leveling": "自动热床调平",
+        "build_plate_alignment_detection": "打印板对齐检测",
+        "calibrate_nozzle_offset": "喷嘴偏移校准",
+        "calibrating_extrusion": "挤出校准",
+        "changing_filament": "换料中",
+        "cleaning_nozzle_tip": "清洁喷嘴",
+        "cooling_chamber": "腔室冷却中",
+        "heatbed_surface_foreign_object_detection": "热床表面异物检测",
+        "homing_toolhead": "工具头归位",
+        "identifying_build_plate_type": "识别打印板",
+        "print_calibration_lines": "打印校准线",
+        "sweeping_xy_mech_mode": "扫描 XY 轴机械模态",
+        "waiting_for_heatbed_temperature": "等待热床升温",
+    ]
+    for (raw, translated) in observedX2DStageTranslations {
+        checkEqual(BambuStatusText.map(raw), translated, "X2D 实际阶段翻译 \(raw)")
+    }
+    // ha-bambulab 当前为 X2D/P1P/A1 mini 等设备声明的 80 个 current_stage。
+    // 全部必须命中词库；日后集成增加新值时仍会原样显示，便于发现。
+    let allX2DStages = """
+    filament_loading scanning_bed_surface measuring_surface waiting_for_heatbed_temperature
+    moving_toolhead_to_center_of_heatbed homing_toolhead changing_filament auto_bed_leveling unknown
+    paused_front_cover_falling bed_level_high_temperature calibrating_motor_noise heated_bedcooling
+    calibrating_micro_lidar calibrating_blade_holder_position homing_blade_holder
+    calibrating_detection_nozzle_clumping printing heating_hotend cooling_nozzle inspecting_first_layer
+    calibrate_nozzle_offset paused_filament_runout build_plate_alignment_detection bed_level_phase_2
+    cooling_chamber paused_nozzle_filament_covered_detected calibrating_cutter_model_offset active_arc_fitting
+    check_plaform paused_low_fan_speed_heat_break check_birdeye_camera_position
+    heatbed_underside_foreign_object_detection calibrating_extrusion
+    paused_chamber_temperature_control_error thermal_preconditioning cleaning_nozzle_tip
+    heatbed_surface_foreign_object_detection paused_heat_bed_temperature_malfunction paused_ams_lost
+    check_material_position check_quick_release calibrate_birdeye_camera calibrating_extrusion_flow
+    checking_extruder_temperature moving_toolhead_above_purge_chute filament_unloading bed_level_phase_1
+    calibrating_camera_offset check_material check_absolute_accuracy_before_calibration laser_calibration
+    heating_chamber calibrating_live_view_camera waiting_chamber_temperature_equalize measuring_rotary_attachment
+    motor_noise_showoff paused_nozzle_clog paused_skipped_step print_calibration_lines paused_first_layer_error
+    absolute_accuracy_calibration pre_extrusion_before_printing paused_nozzle_temperature_malfunction
+    identifying_build_plate_type hotend_type_detection purifying_chamber_air paused_user paused_cutter_error
+    preparing_ams check_absolute_accuracy_after_calibration preparing_hotend hotend_pick_place_test
+    paused_user_gcode idle heatbed_preheating m400_pause sweeping_xy_mech_mode check_door_and_cover offline
+    """.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    checkEqual(allX2DStages.count, 80, "X2D current_stage 声明数量")
+    for raw in allX2DStages {
+        check(BambuStatusText.map(raw) != raw, "X2D current_stage 已翻译 \(raw)")
+    }
     // 完成庆祝卡：带任务名与不带渲染不同；超长任务名不撑爆
     let doneNoTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D", settings: bCanvas)
     let doneWithTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D",

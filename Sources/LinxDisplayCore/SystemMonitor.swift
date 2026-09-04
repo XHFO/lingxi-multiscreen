@@ -33,8 +33,15 @@ public final class SystemMonitor {
                 cpu = Double(min(max(busyDelta * 100 / totalDelta, 0), 100))
             }
             let seconds = max(0.001, now.timeIntervalSince(previousSampledAt))
-            download = max(0, Double(received - previousReceived)) / seconds
-            upload = max(0, Double(sent - previousSent)) / seconds
+            // 网络接口可能在睡眠唤醒、VPN/热点切换或接口重建后消失，导致本次累计字节数
+            // 小于上次。UInt64 直接相减会触发 Swift arithmetic overflow 并让应用崩溃；
+            // 此时把当前采样视为新基线，本周期速率记为 0。
+            let receivedDelta = Self.monotonicCounterDelta(current: received,
+                                                           previous: previousReceived)
+            let sentDelta = Self.monotonicCounterDelta(current: sent,
+                                                       previous: previousSent)
+            download = Double(receivedDelta) / seconds
+            upload = Double(sentDelta) / seconds
         }
 
         previousIdle = idle
@@ -65,6 +72,11 @@ public final class SystemMonitor {
             uptime: readUptime(),
             sampledAt: now
         )
+    }
+
+    /// 对可能因系统接口重建而回退的累计计数器做安全差值。
+    public static func monotonicCounterDelta(current: UInt64, previous: UInt64) -> UInt64 {
+        current >= previous ? current - previous : 0
     }
 
     // MARK: - CPU

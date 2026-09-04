@@ -1363,6 +1363,7 @@ public final class AppModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        rand0Session?.disconnect()
     }
 
     // MARK: - 时钟
@@ -3114,8 +3115,8 @@ public func setClockTimeFormat(_ format: String) {
         let endpoint: Rand0Client.Endpoint = settings.oracleDisplayMode == .gray4 ? .gray4 : .bw
         guard !ip.isEmpty else {
             rand0Session?.disconnect()
-            rand0Session = nil
             rand0SessionConnected = false
+            rand0SessionIP = ""
             return
         }
         // 旧配置（目标非自身但未指定具体设备）在读取时按「自身」处理（界面显示与按键分发一致），
@@ -3126,11 +3127,19 @@ public func setClockTimeFormat(_ format: String) {
             rand0SessionConnected = session.isConnected
             return
         }
-        // IP 或显示模式变化：断开旧会话再建新连接
-        rand0Session?.disconnect()
+        // 整个 AppModel 始终复用同一个 session。目标变化由 session 内的 generation
+        // 淘汰旧循环；若每次新建对象，旧对象会被其 socketQueue 持有到阻塞连接返回，
+        // 画板轮换时便可能积累大量重连线程。
         rand0SessionIP = ip
         rand0SessionEndpoint = endpoint
-        let session = Rand0DisplaySession()
+        let session: Rand0DisplaySession
+        if let existing = rand0Session {
+            session = existing
+        } else {
+            let created = Rand0DisplaySession()
+            rand0Session = created
+            session = created
+        }
         session.onKeyEvent = { [weak self] key, action in
             guard action == "short" else { return }
             Task { @MainActor [weak self] in
@@ -3183,15 +3192,19 @@ public func setClockTimeFormat(_ format: String) {
                 }
             }
         }
-        rand0Session = session
         session.onStatusChange = { [weak self] connected in
             Task { @MainActor in
                 self?.rand0SessionConnected = connected
             }
         }
-        Task {
+        Task { @MainActor [weak self, session] in
+            // ensure 连续被多组设置变化触发时，丢弃尚未开始的过时目标。
+            guard let self, self.rand0Session === session,
+                  self.rand0SessionIP == ip, self.rand0SessionEndpoint == endpoint else { return }
             await session.connect(ip: ip, endpoint: endpoint)
-            rand0SessionConnected = session.isConnected
+            guard self.rand0Session === session,
+                  self.rand0SessionIP == ip, self.rand0SessionEndpoint == endpoint else { return }
+            self.rand0SessionConnected = session.isConnected
         }
     }
 

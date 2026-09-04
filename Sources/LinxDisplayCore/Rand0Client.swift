@@ -318,17 +318,20 @@ public final class Rand0DisplaySession: @unchecked Sendable {
 
     // MARK: - 同步锁辅助（避免在 async 上下文直接使用 NSLock）
 
-    /// 锁内准备连接状态；返回 true 表示调用方需启动新的连接循环
-    private func shouldStartLoop(host: String, port: UInt16, path: String) -> Bool {
+    /// 锁内准备连接状态；返回新循环的不可变代次，nil 表示目标未变且循环已存活。
+    /// 目标切换时 stopRequested 会为新循环恢复为 false，因此旧循环还必须用代次永久淘汰。
+    private func prepareLoop(host: String, port: UInt16, path: String) -> Int? {
         lock.lock(); defer { lock.unlock() }
         if self.host == host && self.port == port && self.path == path && loopRunning {
-            return false
+            return nil
         }
         if loopRunning {
-            // 目标变化：停掉旧循环（fd 关闭后旧 readLoop 立刻返回）
+            // 目标变化：停掉旧循环（fd shutdown 后旧 readLoop 立刻返回）
             stopRequested = true
             if fd >= 0 {
-                Darwin.close(fd)
+                // 只 shutdown 来唤醒所有者的 recv；最终 close 由该循环完成。
+                // 这避免两个线程重复 close 同一数字后误关系统复用的新 fd。
+                Darwin.shutdown(fd, SHUT_RDWR)
                 fd = -1
             }
         }
@@ -338,7 +341,7 @@ public final class Rand0DisplaySession: @unchecked Sendable {
         stopRequested = false
         loopRunning = true
         generation += 1
-        return true
+        return generation
     }
 
     /// 当前连接的 fd（未连接返回 nil）
@@ -354,7 +357,7 @@ public final class Rand0DisplaySession: @unchecked Sendable {
         guard !trimmed.isEmpty else { return }
         let (h, p) = Self.splitHostPort(EndpointBuilder.host(from: trimmed))
         let path = "/display/\(endpoint.rawValue)"
-        guard shouldStartLoop(host: h, port: p, path: path) else { return }
+        guard let loopGeneration = prepareLoop(host: h, port: p, path: path) else { return }
 
         _ = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             socketQueue.async { [weak self] in
@@ -362,7 +365,8 @@ public final class Rand0DisplaySession: @unchecked Sendable {
                     cont.resume(returning: false)
                     return
                 }
-                self.runLoop(firstResult: cont)
+                self.runLoop(host: h, port: p, path: path,
+                             generation: loopGeneration, firstResult: cont)
             }
         }
     }
@@ -391,10 +395,12 @@ public final class Rand0DisplaySession: @unchecked Sendable {
     public func disconnect() {
         lock.lock()
         stopRequested = true
+        // 淘汰已排队、正在 connect 或 read 的所有旧循环。
+        generation += 1
         loopRunning = false
         connectedFlag = false
         if fd >= 0 {
-            Darwin.close(fd)
+            Darwin.shutdown(fd, SHUT_RDWR)
             fd = -1
         }
         lock.unlock()
@@ -412,28 +418,23 @@ public final class Rand0DisplaySession: @unchecked Sendable {
 
     // MARK: - 连接循环
 
-    private func runLoop(firstResult: CheckedContinuation<Bool, Never>) {
+    private func runLoop(host: String, port: UInt16, path: String, generation myGen: Int,
+                         firstResult: CheckedContinuation<Bool, Never>) {
         var backoff: TimeInterval = 1.0
         var firstDone = false
-        lock.lock()
-        let myGen = generation
-        lock.unlock()
 
         while true {
             lock.lock()
-            let stop = stopRequested
-            let h = host
-            let p = port
-            let pa = path
+            let stop = stopRequested || generation != myGen
             lock.unlock()
             if stop {
                 finishLoop(gen: myGen, firstResult: firstResult, firstDone: &firstDone)
                 return
             }
             do {
-                let (newFd, leftover) = try Self.openConnection(host: h, port: p, path: pa)
+                let (newFd, leftover) = try Self.openConnection(host: host, port: port, path: path)
                 lock.lock()
-                if stopRequested {
+                if stopRequested || generation != myGen {
                     Darwin.close(newFd)
                     lock.unlock()
                     finishLoop(gen: myGen, firstResult: firstResult, firstDone: &firstDone)
@@ -473,13 +474,25 @@ public final class Rand0DisplaySession: @unchecked Sendable {
                 }
             }
             lock.lock()
-            let stop2 = stopRequested
+            let stop2 = stopRequested || generation != myGen
             lock.unlock()
             if stop2 {
                 finishLoop(gen: myGen, firstResult: firstResult, firstDone: &firstDone)
                 return
             }
-            Thread.sleep(forTimeInterval: backoff)
+            // 分段等待，让目标切换/disconnect 最多 100 ms 就能淘汰本循环，
+            // 不会被 8 秒退避卡住 socketQueue 后面的新连接。
+            let deadline = Date().addingTimeInterval(backoff)
+            while Date() < deadline {
+                lock.lock()
+                let obsolete = stopRequested || generation != myGen
+                lock.unlock()
+                if obsolete {
+                    finishLoop(gen: myGen, firstResult: firstResult, firstDone: &firstDone)
+                    return
+                }
+                Thread.sleep(forTimeInterval: min(0.1, max(0, deadline.timeIntervalSinceNow)))
+            }
             backoff = min(backoff * 2, 8)
         }
     }
@@ -509,7 +522,7 @@ public final class Rand0DisplaySession: @unchecked Sendable {
         var havePending = false
         while true {
             lock.lock()
-            let stop = stopRequested
+            let stop = stopRequested || generation != gen
             lock.unlock()
             if stop { return }
             if buffer.count > 1_000_000 {

@@ -1330,27 +1330,120 @@ public enum BambuModelDetector {
 
 /// Bambu Lab 打印状态汉化：空闲/打印中/已完成…（卡片与画板模块共用，未知状态原样返回）
 public enum BambuStatusText {
+    /// Bambu Lab Home Assistant 集成的 print_status + current_stage 共享词库。
+    /// current_stage 在 X2D/P1P/A1 mini 等型号上会返回详细校准、检测和暂停原因；
+    /// 这里使用适合小屏的简短译文，未知新值仍原样返回，便于后续发现并补充。
+    private static let translations: [String: String] = [
+        // print_status 与通用工作状态
+        "idle": "空闲",
+        "printing": "打印中",
+        "paused": "已暂停",
+        "pause": "已暂停",
+        "error": "报错",
+        "standby": "待机",
+        "off": "关机",
+        "offline": "离线",
+        "completed": "已完成",
+        "finish": "已完成",
+        "running": "打印中",
+        "busy": "忙碌",
+        "preparing": "准备中",
+        "prepare": "准备中",
+        "init": "初始化中",
+        "slicing": "切片中",
+        "unloading": "退料中",
+        "loading": "进料中",
+        "cooling": "冷却中",
+        "heating": "加热中",
+        "calibrating": "校准中",
+        "failed": "失败",
+        "unknown": "未知",
+
+        // current_stage：备料、运动、温控与打印流程
+        "filament_loading": "进料中",
+        "filament_unloading": "退料中",
+        "changing_filament": "换料中",
+        "scanning_bed_surface": "扫描热床",
+        "measuring_surface": "测量表面",
+        "waiting_for_heatbed_temperature": "等待热床升温",
+        "moving_toolhead_to_center_of_heatbed": "工具头移至热床中心",
+        "moving_toolhead_above_purge_chute": "工具头移至废料槽",
+        "homing_toolhead": "工具头归位",
+        "auto_bed_leveling": "自动热床调平",
+        "bed_level_phase_1": "热床调平·阶段 1",
+        "bed_level_phase_2": "热床调平·阶段 2",
+        "bed_level_high_temperature": "高温热床调平",
+        "heated_bedcooling": "热床冷却中",
+        "heatbed_preheating": "热床预热中",
+        "heating_hotend": "热端加热中",
+        "cooling_nozzle": "喷嘴冷却中",
+        "heating_chamber": "腔室加热中",
+        "cooling_chamber": "腔室冷却中",
+        "waiting_chamber_temperature_equalize": "等待腔室温度稳定",
+        "purifying_chamber_air": "腔室空气净化",
+        "thermal_preconditioning": "热预处理",
+        "cleaning_nozzle_tip": "清洁喷嘴",
+        "inspecting_first_layer": "首层检测",
+        "print_calibration_lines": "打印校准线",
+        "pre_extrusion_before_printing": "打印前预挤出",
+        "preparing_ams": "准备 AMS",
+        "preparing_hotend": "准备热端",
+        "m400_pause": "M400 暂停",
+
+        // current_stage：校准、检测与自检
+        "calibrating_motor_noise": "电机噪声校准",
+        "motor_noise_showoff": "电机噪声校准结果",
+        "calibrating_micro_lidar": "微型激光雷达校准",
+        "calibrating_blade_holder_position": "刀架位置校准",
+        "homing_blade_holder": "刀架归位",
+        "calibrating_detection_nozzle_clumping": "喷嘴结块检测校准",
+        "calibrate_nozzle_offset": "喷嘴偏移校准",
+        "calibrating_cutter_model_offset": "切刀模块偏移校准",
+        "calibrating_extrusion": "挤出校准",
+        "calibrating_extrusion_flow": "挤出流量校准",
+        "calibrating_camera_offset": "相机偏移校准",
+        "calibrating_live_view_camera": "实时画面相机校准",
+        "calibrate_birdeye_camera": "鸟瞰相机校准",
+        "laser_calibration": "激光校准",
+        "absolute_accuracy_calibration": "绝对精度校准",
+        "active_arc_fitting": "主动弧线拟合",
+        "sweeping_xy_mech_mode": "扫描 XY 轴机械模态",
+        "checking_extruder_temperature": "检查挤出机温度",
+        "check_plaform": "平台检查",
+        "check_birdeye_camera_position": "鸟瞰相机位置检查",
+        "check_material_position": "材料位置检查",
+        "check_quick_release": "快拆机构检查",
+        "check_material": "材料检查",
+        "check_absolute_accuracy_before_calibration": "校准前精度检查",
+        "check_absolute_accuracy_after_calibration": "校准后精度检查",
+        "check_door_and_cover": "检查门和上盖",
+        "build_plate_alignment_detection": "打印板对齐检测",
+        "heatbed_surface_foreign_object_detection": "热床表面异物检测",
+        "heatbed_underside_foreign_object_detection": "热床底部异物检测",
+        "identifying_build_plate_type": "识别打印板",
+        "hotend_type_detection": "热端类型检测",
+        "hotend_pick_place_test": "热端取放测试",
+        "measuring_rotary_attachment": "测量旋转附件",
+
+        // current_stage：暂停原因
+        "paused_front_cover_falling": "前盖脱落·暂停",
+        "paused_filament_runout": "耗材用尽·暂停",
+        "paused_nozzle_filament_covered_detected": "喷嘴裹料·暂停",
+        "paused_low_fan_speed_heat_break": "热端风扇低速·暂停",
+        "paused_chamber_temperature_control_error": "腔温控制异常·暂停",
+        "paused_heat_bed_temperature_malfunction": "热床温度异常·暂停",
+        "paused_ams_lost": "AMS 断连·暂停",
+        "paused_nozzle_clog": "喷嘴堵塞·暂停",
+        "paused_skipped_step": "打印失步·暂停",
+        "paused_first_layer_error": "首层异常·暂停",
+        "paused_nozzle_temperature_malfunction": "喷嘴温度异常·暂停",
+        "paused_user": "用户暂停",
+        "paused_cutter_error": "切刀异常·暂停",
+        "paused_user_gcode": "G-code 指令暂停",
+    ]
+
     public static func map(_ state: String) -> String {
-        switch state.lowercased() {
-        case "idle": return "空闲"
-        case "printing": return "打印中"
-        case "paused": return "已暂停"
-        case "error": return "报错"
-        case "standby": return "待机"
-        case "off": return "关机"
-        case "completed", "finish": return "已完成"
-        case "running": return "运行中"
-        case "busy": return "忙碌"
-        case "preparing": return "准备中"
-        case "unloading": return "退料中"
-        case "loading": return "进料中"
-        case "cooling": return "冷却中"
-        case "heating": return "加热中"
-        case "calibrating": return "校准中"
-        case "failed": return "失败"
-        case "unknown": return "未知"
-        default: return state
-        }
+        translations[state.lowercased()] ?? state
     }
 }
 
