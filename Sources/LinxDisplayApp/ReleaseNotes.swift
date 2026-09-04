@@ -10,6 +10,18 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.5.1", date: "2026-09-04", notes: [
+            "Bambu Lab 卡片新增摄像头与打印任务封面实体：支持自动关联、手动解除单项绑定，并可按卡片选择显示摄像头静态帧或任务图片；Home Assistant 卡片同步支持 camera/image 静态画面。",
+            "Bambu Lab 卡片统一新版仪表排版：显示打印机设备名、状态背景大字、前景百分比、加粗进度条、双行自适应任务名和清晰的数据更新时间；灵犀画板、口袋先知与摘录画板同步应用高对比样式。",
+            "切换到 Home Assistant 或 Bambu Lab 卡片时立即刷新一次状态；打印机卡片只请求当前已绑定实体，状态先显示、静态画面随后补推，降低大型 Home Assistant 实例的加载延迟。",
+            "卡片显示设置、画面来源与实体绑定修改后立即重新渲染并等待当前上传结束后推送，修复设置已变化但键盘画面没有及时更新的问题。",
+            "自定义图片时钟重做为两种 Pixel 叠排大时钟：Arial Black 压缩粗体、四位数字与日期整组缩放、Material You 三档动态取色，以及随壁纸亮暗反色的约 5px 数字描边。",
+            "Pixel 时钟大小范围收紧为有效的 76%–100%，Y 轴调整扩大到 ±160px；日期字号增大并可独立关闭，壁纸文件变化时会实时重新取色和推送。",
+            "全局时间与日期显示增加自适应字号，避免较长格式超出卡片和画板范围。",
+            "口袋先知新增画板自动轮换，可按保存顺序定时切换并立即推送；软件预览保持正向，仅实际推送内容应用 180° 旋转。",
+            "新增灵犀68 Fn + 旋钮翻页选项，默认关闭；开启后会拦截该键盘的音量控制，并在设置中提供输入监控权限状态与重新连接入口。",
+            "修复 Bambu Lab 设备重命名被默认名称干扰、实体候选意外为空等问题；更新应用图标，并将 Beta 标识调整为低对比浅灰样式。",
+        ]),
         ReleaseNote(id: "1.5.0", date: "2026-08-31", notes: [
             "新增 Home Assistant：支持独立状态卡片，并可分别为灵犀68、口袋先知和摘录画板选择要显示的实体；连接配置全局共享，访问令牌仅保存在本机。",
             "Home Assistant 卡片重新排版：每页最多 4 个等高实体卡片，长名称和长状态自适应显示，时间日期弱化，实体不足时自动调整上下留白。",
@@ -81,14 +93,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.0"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.1"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
 
-    /// 当前短版本号（如 1.5.0，不含构建号），用于与 GitHub 最新版本比较
+    /// 当前短版本号（如 1.5.1，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.5.0"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.5.1"
     }
 }

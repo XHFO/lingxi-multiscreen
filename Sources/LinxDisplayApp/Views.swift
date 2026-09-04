@@ -5,16 +5,22 @@ import UniformTypeIdentifiers
 
 // MARK: - 面板类型
 
-/// 「Beta」小徽标：橙色系圆角标签，标识 Home Assistant / Bambu Lab 实验性功能（仅视觉，不影响功能）
+/// 「Beta」小徽标：低对比浅灰标签，标识 Home Assistant / Bambu Lab 实验性功能。
 struct BetaBadge: View {
     var body: some View {
         Text("Beta")
-            .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(.white)
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(Color.secondary.opacity(0.82))
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Color(red: 0.96, green: 0.60, blue: 0.16)))
+            .background {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color.secondary.opacity(0.12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
+                    }
+            }
             .accessibilityLabel("Beta 测试")
     }
 }
@@ -525,6 +531,9 @@ struct SettingsView: View {
                 if let mode = newValue.displayMode {
                     model.setMode(mode)
                 }
+                if newValue == .devices {
+                    Task { await model.ensureBambuEntityCatalog() }
+                }
                 // 两个独立画板均为双栏布局（左主内容 + 右侧边栏）：
                 // 窗口不够宽时自动放大到能完整显示，避免用户看不到右侧边栏
                 if newValue == .excerptCanvas || newValue == .oracleCanvas {
@@ -943,6 +952,9 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {
                 deviceToDelete = nil
             }
+        }
+        .task {
+            await model.ensureBambuEntityCatalog()
         }
     }
 
@@ -1434,7 +1446,7 @@ struct SettingsView: View {
                     Toggle(isOn: model.oracleImageRotate180Binding) {
                         HStack(spacing: 4) {
                             Text("旋转 180°")
-                            HelpIcon(text: "将画面直接旋转 180°，适配设备安装方向；不会产生镜像。")
+                            HelpIcon(text: "仅将实际推送到设备的画面旋转 180°，适配设备安装方向；软件预览始终保持正向，也不会产生镜像。")
                         }
                     }
                     Picker(selection: model.oracleDisplayModeBinding) {
@@ -1495,7 +1507,7 @@ struct SettingsView: View {
                         HelpIcon(text: "通过局域网 WebSocket（ws://<IP>/display/bw 或 /display/gray4）把图像推送到 Rand/0 墨水屏，发送即显示、无需在设备上按键刷新。保持连接时设备按键信号会回传给软件，可在「设备管理」中配置每台先知设备按键控制的目标（自身更新画布 / 灵犀68 键盘翻页 / 摘录切换语录）。请确认设备在线且与电脑在同一局域网。")
                     }
                 }
-                Section("自动推送") {
+                Section("自动推送与轮换") {
                     Toggle(isOn: model.oracleAutoPushEnabledBinding) {
                         HStack(spacing: 4) {
                             Text("自动推送画布")
@@ -1505,6 +1517,26 @@ struct SettingsView: View {
                     if model.settings.oracleAutoPushEnabled {
                         Stepper("推送间隔 \(model.settings.oracleAutoPushMinutes) 分钟",
                                 value: model.oracleAutoPushMinutesBinding, in: 1...1440)
+                    }
+                    Divider()
+                    Toggle(isOn: model.oracleBoardRotationEnabledBinding) {
+                        HStack(spacing: 4) {
+                            Text("自动轮换画板")
+                            HelpIcon(text: "按上方画板列表的顺序循环切换；每次切换后立即推送到口袋先知。该功能与“自动推送画布”相互独立。")
+                        }
+                    }
+                    if model.settings.oracleBoardRotationEnabled {
+                        Stepper("轮换间隔 \(model.settings.oracleBoardRotationMinutes) 分钟",
+                                value: model.oracleBoardRotationMinutesBinding, in: 1...1440)
+                    }
+                    if model.settings.oracleCanvasBoards.count < 2 {
+                        Text("至少保存两块画板后才会开始轮换。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if model.settings.oracleBoardRotationEnabled {
+                        Text("当前：\(model.oracleCanvasBoardName) · 下一块：\(model.nextOracleCanvasBoardName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -2178,7 +2210,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var homeAssistantForm: some View {
         Section {
-            Text("实体状态将显示在键盘「Home Assistant」卡片与画板模块中；服务器地址与令牌请在「设备管理 → Home Assistant」中按设备填写，每台设备独立配置。")
+            Text("实体状态将显示在键盘「Home Assistant」卡片与画板模块中；camera.* 与 image.* 会抓取当前静态帧显示，不会建立视频流。服务器地址与令牌请在「设备管理 → Home Assistant」中按设备填写。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             let entityRefs = dragHAEntities ?? model.haEntityList.map(HAEntityRef.init)
@@ -2213,7 +2245,7 @@ struct SettingsView: View {
         } header: {
             HStack(spacing: 4) {
                 Text("实体选择")
-                HelpIcon(text: "这里选中的实体同时用于键盘「Home Assistant」卡片和各类画板的 Home Assistant 模块，按列表顺序显示；拖拽排序、点 × 移除。")
+                HelpIcon(text: "这里选中的实体用于键盘「Home Assistant」卡片，按列表顺序显示；camera.* 与 image.* 支持静态画面，单个图片实体显示大图，和其他实体混排时显示横向预览卡。拖拽排序、点 × 移除。")
             }
         }
         Section("异常监控") {
@@ -2258,12 +2290,24 @@ struct SettingsView: View {
             if let device = model.bambuDevice(for: panel) {
                 Section("卡片 · \(device.name)") {
                     Picker("布局样式", selection: model.bambuLayoutBinding(for: device.id)) {
-                        ForEach(BambuCardLayout.allCases) { layout in
+                        ForEach(BambuCardLayout.selectableCases) { layout in
                             Text(layout.title).tag(layout)
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text("「紧凑」缩小字号与行距以展示更多信息；「大字」放大状态与正文便于远距离查看。")
+                    Picker("画面内容", selection: model.bambuImageSourceBinding(for: device.id)) {
+                        ForEach(BambuImageSource.allCases) { source in
+                            Text(source.title).tag(source)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle(isOn: model.bambuShowBinding(for: device.id, \.bambuShowImage)) {
+                        HStack(spacing: 4) {
+                            Text("显示图片")
+                            HelpIcon(text: "按上方选择显示摄像头静态帧或当前打印任务封面。摄像头只抓单帧，不会建立实时视频流；状态先推送，图片获取完成后再更新画面。")
+                        }
+                    }
+                    Text("「大字」把工作状态作为浅色背景大字，并在前景显示进度数字、% 与加粗进度条。两个图片实体会同时保留，切换画面内容不会清除映射。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Picker("主题色", selection: model.bambuThemeAccentBinding(for: device.id)) {
@@ -2312,17 +2356,29 @@ struct SettingsView: View {
     /// Bambu Lab 打印机在「设备管理」页内的内联配置：自动匹配 + 实体映射 + 报错告警
     @ViewBuilder
     private func bambuDeviceConfigInline(_ deviceID: UUID) -> some View {
-        // 打印机实体候选集：只保留可映射的域（sensor/binary_sensor/number/select/switch 等），
-        // 自动化/脚本/场景等无关类型默认排除
-        let printerEntities = HAEntityPicker.printerRelevant(model.haSnapshot.entities)
+        // 复用全量 HA 快照更新时生成的目录；不在每台打印机的 View 重算中反复筛选/排序。
+        let catalog = model.bambuEntityCatalog
+        let printerEntities = catalog.printerEntities
+        let currentBambu = model.bambuSettings(for: deviceID)
+        let currentCameraID = currentBambu?.imageEntityID ?? ""
+        let currentTaskCoverID = currentBambu?.taskImageEntityID ?? ""
+        // 老版本可能曾把封面回填到“摄像头”字段。分类优化后仍把当前绑定项保留在
+        // 对应选择器里，确保用户能看见、换绑或解除，不会出现有值却显示“未绑定”。
+        let cameraEntities = catalog.cameraEntities + catalog.pictureEntities.filter { entity in
+            entity.entityId == currentCameraID
+                && !catalog.cameraEntities.contains(where: { $0.entityId == entity.entityId })
+        }
+        let taskCoverEntities = catalog.taskCoverEntities + catalog.pictureEntities.filter { entity in
+            entity.entityId == currentTaskCoverID
+                && !catalog.taskCoverEntities.contains(where: { $0.entityId == entity.entityId })
+        }
         let useDefaultFilter = model.bambuDefaultEntityFilterBinding(for: deviceID).wrappedValue
-        let defaultStatusEntities = BambuEntityMatcher.printStatusCandidates(
-            printerEntities, useDefaultFilter: true)
-        let allStatusEntities = BambuEntityMatcher.printStatusCandidates(
-            printerEntities, useDefaultFilter: false)
-        let statusEntities = useDefaultFilter ? defaultStatusEntities : allStatusEntities
-        let configuredStatusID = model.devices(for: .bambuLab)
-            .first(where: { $0.id == deviceID })?.settings.bambuStatusEntityID ?? ""
+        let defaultStatusEntities = catalog.defaultStatusEntities
+        let allStatusEntities = catalog.allStatusEntities
+        // 默认规则没有识别结果时自动展示全部 sensor，不能让“推荐筛选”变成空白墙。
+        let statusEntities = useDefaultFilter && !defaultStatusEntities.isEmpty
+            ? defaultStatusEntities : allStatusEntities
+        let configuredStatusID = model.bambuSettings(for: deviceID)?.statusEntityID ?? ""
         return VStack(alignment: .leading, spacing: 6) {
             // 自动匹配必须由打印状态实体确定打印机身份，再推导同一前缀下的其余字段。
             EntityDomainPicker(title: "打印状态实体（自动匹配）",
@@ -2348,7 +2404,7 @@ struct SettingsView: View {
                     }
                 }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间和错误实体；结果可手动修改。")
+                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间、错误、摄像头与任务封面实体；结果可手动修改，点击每行右侧 × 可解除单项关联并停止显示。")
                 Text("实体映射")
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 4)
@@ -2369,6 +2425,10 @@ struct SettingsView: View {
             bambuFieldRow("热床温度", keyPath: \.bambuBedTempEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("剩余时间", keyPath: \.bambuRemainingEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("错误码", keyPath: \.bambuErrorEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("打印任务封面", keyPath: \.bambuTaskImageEntityID,
+                          deviceID: deviceID, entities: taskCoverEntities)
+            bambuFieldRow("摄像头画面", keyPath: \.bambuImageEntityID,
+                          deviceID: deviceID, entities: cameraEntities)
             HStack(spacing: 8) {
                 Text("报错时推送键盘告警")
                     .onTapGesture {
@@ -2392,11 +2452,28 @@ struct SettingsView: View {
     /// Bambu Lab 字段映射行（Popover 实体选择器；按打印机设备；未指定 = 隐藏该字段）
     private func bambuFieldRow(_ title: String, keyPath: WritableKeyPath<DeviceSettings, String?>,
                                deviceID: UUID, entities: [HAEntity]) -> some View {
-        EntityDomainPicker(title: title,
-                           selection: model.bambuFieldBinding(for: deviceID, keyPath),
-                           entities: entities,
-                           emptyLabel: "未指定（隐藏）",
-                           clearLabel: "未指定（隐藏）")
+        let binding = model.bambuFieldBinding(for: deviceID, keyPath)
+        return HStack(spacing: 8) {
+            EntityDomainPicker(title: title,
+                               selection: binding,
+                               entities: entities,
+                               emptyLabel: "未绑定（不显示）",
+                               clearLabel: "解除关联（隐藏此项）",
+                               allowClear: true)
+            // 已绑定时在行尾直接提供解除入口，不必先展开实体弹窗再寻找“清除”。
+            // 清空 entity_id 即为禁用该项显示；之后仍可随时重新选择实体。
+            if !binding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    binding.wrappedValue = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("解除“\(title)”实体关联并停止显示该项")
+            }
+        }
     }
 
     /// Bambu 自动匹配输入草稿绑定（按打印机设备隔离）
@@ -2573,6 +2650,26 @@ struct SettingsView: View {
                 Button("恢复默认") { showRestorePageShortcutsConfirm = true }
                     .controlSize(.small)
             }
+            Divider()
+            Toggle("使用 Fn + 旋钮翻页", isOn: model.lingxi68KnobPagingBinding)
+            Text("默认关闭。开启后，灵犀68 的 Fn + 顺时针切换下一页、Fn + 逆时针切换上一页；软件会独占该键盘的媒体控制接口，因此系统将不再响应这把键盘的音量增加、音量减少和静音操作。其他键盘与 Mac 自身音量键不受影响。")
+                .font(.caption)
+                .foregroundStyle(model.settings.lingxi68KnobPagingEnabled ? .orange : .secondary)
+            if model.settings.lingxi68KnobPagingEnabled {
+                HStack {
+                    Label(model.lingxi68KnobPagingStatus,
+                          systemImage: model.lingxi68KnobPagingStatus.hasPrefix("已接管") ? "checkmark.circle.fill" : "dial.high")
+                        .font(.caption)
+                        .foregroundStyle(model.lingxi68KnobPagingStatus.hasPrefix("已接管") ? .green : .secondary)
+                    Spacer()
+                    if !model.listenEventGranted {
+                        Button("打开输入监控设置") { model.openInputMonitoringSettings() }
+                            .controlSize(.small)
+                    }
+                    Button("重新连接") { model.reconnectLingxi68KnobPaging() }
+                        .controlSize(.small)
+                }
+            }
         }
         Section {
             Picker("时间格式", selection: model.clockFormatPresetBinding) {
@@ -2606,6 +2703,8 @@ struct SettingsView: View {
             Text("当前显示：\(model.previewTimeString) · \(model.previewDateString)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
             if model.settings.timeFormat.contains("s") {
                 Text("时间格式含秒时，键盘画面会按秒刷新推送。")
                     .font(.caption)
@@ -2614,7 +2713,7 @@ struct SettingsView: View {
         } header: {
             HStack(spacing: 4) {
                 Text("时间与日期")
-                HelpIcon(text: "软件内所有时间与日期显示统一使用这里的一份格式：时钟卡片、自定义图片上的时钟、画板时钟/日期模块、正在播放页脚、番茄钟与各类卡片页脚，不再逐界面单独设置。")
+                HelpIcon(text: "软件内所有时间与日期显示统一使用这里的一份格式：时钟卡片、自定义图片上的时钟、画板时钟/日期模块、正在播放页脚、番茄钟与各类卡片页脚。较长格式会按所在区域自动缩小字号，避免超出画面。")
             }
         }
         Section("系统权限") {
@@ -3018,25 +3117,27 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if model.settings.customImageClock != .none {
-                Picker("字体", selection: model.clockFontBinding) {
-                    ForEach(ClockFont.allCases) { font in
-                        Text(font.title).tag(font)
+                Picker("动态取色", selection: model.wallpaperColorStyleBinding) {
+                    ForEach(WallpaperColorStyle.allCases) { style in
+                        Text(style.title).tag(style)
                     }
                 }
-                Picker("字体粗细", selection: model.clockFontWeightBinding) {
-                    ForEach(ClockFontWeight.allCases) { weight in
-                        Text(weight.title).tag(weight)
-                    }
-                }
+                .pickerStyle(.segmented)
+                Text(model.settings.wallpaperColorStyle.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("显示日期", isOn: model.clockDateVisibleBinding)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text("时钟字号")
+                        Text("整体大小")
                         Spacer()
-                        Text("\(model.settings.clockFontSize) pt")
+                        Text("\(StackedClockSizing.percent(for: model.settings.clockFontSize))%")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: model.clockFontSizeBinding, in: 18...96, step: 1)
+                    Slider(value: model.clockFontSizeBinding,
+                           in: Double(StackedClockSizing.minimum)...Double(StackedClockSizing.maximum),
+                           step: 1)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
@@ -3062,7 +3163,9 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: model.clockOffsetYBinding, in: -80...80, step: 1)
+                    Slider(value: model.clockOffsetYBinding,
+                           in: Double(StackedClockSizing.minimumYOffset)...Double(StackedClockSizing.maximumYOffset),
+                           step: 1)
                         // 双击滑块恢复默认偏移 0（与拖动互不干扰）
                         .simultaneousGesture(
                             TapGesture(count: 2).onEnded {
@@ -3070,10 +3173,10 @@ struct SettingsView: View {
                             }
                         )
                 }
-                Text("横向布局为时间+日期整组，竖向布局为小时+分钟两行整组；X 正值向右、Y 正值向下。双击滑块可将偏移恢复为 0。")
+                Text("Pixel 叠排大时钟把四位时间与日期视为一个图层组统一缩放，数字之间的紧密关系不会随大小变化。X 正值向右、Y 正值向下，双击滑块可将偏移恢复为 0。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Pixel 锁屏风格数字；竖向布局为第一行小时、第二行分钟，每行两位数字横向排布。")
+                Text("叠排样式固定使用纵向压缩、加粗描边的 Arial Black 数字。配色会实时从当前图片提取种子色，并按 Android Material You 规则生成同色相的 Accent 1/2 色调阶，与壁纸保持同一色系并拉开强烈反差。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("时间格式在「设置 → 时间与日期」统一调整（所有界面共用）。")
@@ -3082,7 +3185,7 @@ struct SettingsView: View {
                 Button("恢复默认样式") {
                     model.resetClockOverlay()
                 }
-                Text("恢复为默认字体（Helvetica Neue · 纤细）、36pt、HH:mm、无偏移；叠加开关与布局保持不变。")
+                Text("恢复为自然取色、显示日期、Arial Black、100% 整体大小、HH:mm、无偏移；叠加开关与布局保持不变。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -3586,9 +3689,11 @@ struct Sidebar: View {
             if let type, let deviceID {
                 model.switchDevice(type: type, to: deviceID)
             }
-            if panel.isBambuCard {
-                // 打印机卡片位：预览/键盘切到对应打印机的卡片，并打开该卡片的渲染页面
-                model.syncBambuPreviewSlot(panel: panel)
+            // 用户进入 HA/Bambu 卡片时显式激活一次。切换键盘设备可能已从设备快照恢复出
+            // 相同 displayMode，因此这里允许同模式重新激活；随后 selection 的 onChange
+            // 再调用普通 setMode 会因模式未变化而短路，不会产生第二次查询。
+            if let mode = panel.displayMode, mode.refreshesHomeAssistantOnEntry {
+                model.setMode(mode, reactivateIfUnchanged: true)
             }
             selection = panel
         } label: {
@@ -4233,6 +4338,7 @@ private struct EntityPickerContent: View {
                 Button {
                     selection = ""
                     keyword = ""
+                    onSingleSelect()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "slash.circle")
@@ -4287,8 +4393,9 @@ private struct EntityPickerContent: View {
                 }
             }
         }
-        .padding(largePopover ? 16 : 12)
-        .frame(width: largePopover ? 520 : 360)
+        .padding(largePopover ? 16 : 14)
+        // 普通映射弹窗也需要容纳较长的设备名和 entity_id；自动匹配面板再宽一档。
+        .frame(width: largePopover ? 640 : 520)
         .onAppear {
             // 自动匹配候选通常只有一组；大面板直接展开，减少一次无意义点击。
             if largePopover, grouped.count == 1, let domain = grouped.first?.domain {
@@ -4611,6 +4718,14 @@ extension AppModel {
     var customImageClockBinding: Binding<CustomImageClockOverlay> {
         Binding(get: { self.settings.customImageClock }, set: { self.setCustomImageClock($0) })
     }
+    var wallpaperColorStyleBinding: Binding<WallpaperColorStyle> {
+        Binding(get: { self.settings.wallpaperColorStyle },
+                set: { self.settings.wallpaperColorStyle = $0 })
+    }
+    var clockDateVisibleBinding: Binding<Bool> {
+        Binding(get: { self.settings.clockDateVisible },
+                set: { self.settings.clockDateVisible = $0 })
+    }
     var clockFontSizeBinding: Binding<Double> {
         Binding(get: { Double(self.settings.clockFontSize) },
                 set: { self.settings.clockFontSize = Int($0.rounded()) })
@@ -4913,6 +5028,14 @@ extension AppModel {
         Binding(get: { Double(self.settings.oracleAutoPushMinutes) },
                 set: { self.settings.oracleAutoPushMinutes = Int($0.rounded()) })
     }
+    var oracleBoardRotationEnabledBinding: Binding<Bool> {
+        Binding(get: { self.settings.oracleBoardRotationEnabled },
+                set: { self.setOracleBoardRotationEnabled($0) })
+    }
+    var oracleBoardRotationMinutesBinding: Binding<Double> {
+        Binding(get: { Double(self.settings.oracleBoardRotationMinutes) },
+                set: { self.settings.oracleBoardRotationMinutes = Int($0.rounded()) })
+    }
     var excerptAutoPushEnabledBinding: Binding<Bool> {
         Binding(get: { self.settings.excerptAutoPushEnabled },
                 set: { self.setExcerptAutoPushEnabled($0) })
@@ -4924,6 +5047,10 @@ extension AppModel {
     var startWithSystemBinding: Binding<Bool> {
         Binding(get: { self.settings.startWithSystem },
                 set: { self.setStartWithSystem($0) })
+    }
+    var lingxi68KnobPagingBinding: Binding<Bool> {
+        Binding(get: { self.settings.lingxi68KnobPagingEnabled },
+                set: { self.setLingxi68KnobPagingEnabled($0) })
     }
     var themeBinding: Binding<CardTheme> {
         Binding(get: { self.settings.cardTheme }, set: { self.setTheme($0) })

@@ -26,6 +26,11 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
         return (0...4).contains(offset) ? offset : nil
     }
 
+    /// 进入这些卡片时应立即拉取一次 Home Assistant 状态，不受后台刷新间隔限制。
+    public var refreshesHomeAssistantOnEntry: Bool {
+        self == .homeAssistant || bambuSlotIndex != nil
+    }
+
     public var id: Int { rawValue }
 
     public var title: String {
@@ -838,15 +843,74 @@ public enum CustomImageClockOverlay: Int, CaseIterable, Identifiable, Codable {
     case verticalLeft = 3
     case verticalCenter = 4
 
+    /// 只保留不叠加与两种 Pixel 叠排大时钟；横向值仅用于兼容旧设置解码。
+    public static let allCases: [CustomImageClockOverlay] = [.none, .verticalLeft, .verticalCenter]
+
     public var id: Int { rawValue }
 
     public var title: String {
         switch self {
         case .none: return "不叠加"
-        case .horizontalTop: return "横向 · 顶部"
-        case .horizontalBottom: return "横向 · 底部"
-        case .verticalLeft: return "竖向 · 左侧"
-        case .verticalCenter: return "竖向 · 居中"
+        case .horizontalTop: return "Pixel 大时钟 · 顶部"
+        case .horizontalBottom: return "Pixel 大时钟 · 底部"
+        case .verticalLeft: return "Pixel 叠排大时钟 · 上方"
+        case .verticalCenter: return "Pixel 叠排大时钟 · 居中"
+        }
+    }
+
+    /// 旧横向布局迁移到位置语义最接近的叠排布局。
+    public var stackedOnly: CustomImageClockOverlay {
+        switch self {
+        case .horizontalTop: return .verticalLeft
+        case .horizontalBottom: return .verticalCenter
+        case .none, .verticalLeft, .verticalCenter: return self
+        }
+    }
+}
+
+/// Pixel 叠排时钟整体图层组的有效尺寸范围。每一档都直接对应统一缩放比例，
+/// 不再存在旧 18…96 范围中因内部最小/最大字号钳制而无效的区段。
+public enum StackedClockSizing {
+    public static let minimum = 32
+    public static let maximum = 42
+    public static let defaultValue = 42
+    /// 数字本体之外的浅色轮廓半径；随整个时钟图层组一起缩放。
+    public static let outlineExpansion: CGFloat = 5
+    /// 覆盖 428px 画布的大部分垂直行程，同时保留精确到 1px 的微调。
+    public static let minimumYOffset = -160
+    public static let maximumYOffset = 160
+
+    public static func scale(for value: Int) -> CGFloat {
+        CGFloat(min(max(value, minimum), maximum)) / CGFloat(maximum)
+    }
+
+    public static func percent(for value: Int) -> Int {
+        Int((scale(for: value) * 100).rounded())
+    }
+}
+
+/// 自定义图片时钟的 Material 动态取色变体。
+/// 三档对应 Pixel 常见的 Tonal Spot / Vibrant / Expressive 视觉方向。
+public enum WallpaperColorStyle: Int, CaseIterable, Identifiable, Codable {
+    case natural = 0
+    case vibrant = 1
+    case expressive = 2
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .natural: return "自然"
+        case .vibrant: return "鲜艳"
+        case .expressive: return "表现力"
+        }
+    }
+
+    public var description: String {
+        switch self {
+        case .natural: return "保持壁纸种子色相，层次柔和"
+        case .vibrant: return "提高色度，让强调色更鲜明"
+        case .expressive: return "偏移色相，形成更强的配色层次"
         }
     }
 }
@@ -858,6 +922,7 @@ public enum ClockFontWeight: Int, CaseIterable, Identifiable, Codable {
     case light = 2
     case regular = 3
     case medium = 4
+    case bold = 5
 
     public var id: Int { rawValue }
 
@@ -868,6 +933,17 @@ public enum ClockFontWeight: Int, CaseIterable, Identifiable, Codable {
         case .light: return "细体"
         case .regular: return "常规"
         case .medium: return "中粗"
+        case .bold: return "粗体"
+        }
+    }
+
+    /// 新版锁屏时钟只提供清晰字重；旧档案中的纤细字重仍可解码，但渲染时提升为中粗。
+    public static let modernCases: [ClockFontWeight] = [.regular, .medium, .bold]
+
+    public var modernized: ClockFontWeight {
+        switch self {
+        case .ultraLight, .thin, .light: return .medium
+        case .regular, .medium, .bold: return self
         }
     }
 
@@ -879,6 +955,7 @@ public enum ClockFontWeight: Int, CaseIterable, Identifiable, Codable {
         case .light: return "HelveticaNeue-Light"
         case .regular: return "HelveticaNeue-Regular"
         case .medium: return "HelveticaNeue-Medium"
+        case .bold: return "HelveticaNeue-Bold"
         }
     }
 }
@@ -917,6 +994,7 @@ public enum ClockFont: Int, CaseIterable, Identifiable, Codable {
             case .light: return "HelveticaNeue-Light"
             case .regular: return "HelveticaNeue-Regular"
             case .medium: return "HelveticaNeue-Medium"
+            case .bold: return "HelveticaNeue-Bold"
             }
         case .pingfang:
             switch weight {
@@ -925,31 +1003,32 @@ public enum ClockFont: Int, CaseIterable, Identifiable, Codable {
             case .light: return "PingFangSC-Light"
             case .regular: return "PingFangSC-Regular"
             case .medium: return "PingFangSC-Medium"
+            case .bold: return "PingFangSC-Semibold"
             }
         case .songti:
             switch weight {
             case .ultraLight, .thin, .light: return "STSongti-SC-Light"
             case .regular: return "STSongti-SC-Regular"
-            case .medium: return "STSongti-SC-Bold"
+            case .medium, .bold: return "STSongti-SC-Bold"
             }
         case .kaiti:
             switch weight {
-            case .medium: return "STKaitiSC-Bold"
+            case .medium, .bold: return "STKaitiSC-Bold"
             default: return "STKaitiSC-Regular"
             }
         case .timesNewRoman:
             switch weight {
-            case .medium: return "TimesNewRomanPS-BoldMT"
+            case .medium, .bold: return "TimesNewRomanPS-BoldMT"
             default: return "TimesNewRomanPSMT"
             }
         case .courier:
             switch weight {
-            case .medium: return "CourierNewPS-BoldMT"
+            case .medium, .bold: return "CourierNewPS-BoldMT"
             default: return "CourierNewPSMT"
             }
         case .menlo:
             switch weight {
-            case .medium: return "Menlo-Bold"
+            case .medium, .bold: return "Menlo-Bold"
             default: return "Menlo-Regular"
             }
         }
@@ -1146,6 +1225,8 @@ public struct DeviceSettings: Codable, Equatable {
     /// 时钟叠加垂直偏移（px，正值向下）
     public var clockOffsetY: Int?
     public var customImageClock: CustomImageClockOverlay?
+    public var wallpaperColorStyle: WallpaperColorStyle?
+    public var clockDateVisible: Bool?
     public var imageRotationEnabled: Bool?
     public var imageRotationSeconds: Int?
     public var imageRotationMode: ImageRotationMode?
@@ -1162,6 +1243,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var oracleDitherKernel: OracleDitherKernel?
     public var oracleAutoPushEnabled: Bool?
     public var oracleAutoPushMinutes: Int?
+    public var oracleBoardRotationEnabled: Bool?
+    public var oracleBoardRotationMinutes: Int?
     public var oracleSspaiCount: Int?
     public var oracleSspaiRandom: Bool?
     public var oracleNowPlayingHorizontal: Bool?
@@ -1216,8 +1299,12 @@ public struct DeviceSettings: Codable, Equatable {
     /// 自动匹配是否使用默认打印状态候选筛选；nil 兼容旧档案并视为开启。
     /// 关闭后允许用户从全部 sensor 实体中指定改名后的打印状态实体。
     public var bambuUseDefaultEntityFilter: Bool?
-    /// 画面实体（HA image.* 实体；打印机摄像头快照 / 模型封面等，卡片状态下方图片区块）
+    /// 摄像头实体（旧字段名保留，兼容已发布配置）
     public var bambuImageEntityID: String?
+    /// 当前打印任务封面实体
+    public var bambuTaskImageEntityID: String?
+    /// 卡片画面来源（摄像头 / 任务图片）
+    public var bambuImageSource: BambuImageSource?
     /// 卡片布局样式（标准/紧凑/大字；详情页可切换，每台打印机独立）
     public var bambuLayout: BambuCardLayout?
     /// 卡片主题色（跟随全局 / Bambu Lab 强调色）
@@ -1292,6 +1379,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.clockOffsetX = s.clockOffsetX
             d.clockOffsetY = s.clockOffsetY
             d.customImageClock = s.customImageClock
+            d.wallpaperColorStyle = s.wallpaperColorStyle
+            d.clockDateVisible = s.clockDateVisible
             d.imageRotationEnabled = s.imageRotationEnabled
             d.imageRotationSeconds = s.imageRotationSeconds
             d.imageRotationMode = s.imageRotationMode
@@ -1309,6 +1398,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.oracleDitherKernel = s.oracleDitherKernel
             d.oracleAutoPushEnabled = s.oracleAutoPushEnabled
             d.oracleAutoPushMinutes = s.oracleAutoPushMinutes
+            d.oracleBoardRotationEnabled = s.oracleBoardRotationEnabled
+            d.oracleBoardRotationMinutes = s.oracleBoardRotationMinutes
             d.oracleSspaiCount = s.oracleSspaiCount
             d.oracleSspaiRandom = s.oracleSspaiRandom
             d.oracleNowPlayingHorizontal = s.oracleNowPlayingHorizontal
@@ -1369,6 +1460,8 @@ public struct DeviceSettings: Codable, Equatable {
             d.bambuRemainingEntityID = s.bambuRemainingEntityID
             d.bambuErrorEntityID = s.bambuErrorEntityID
             d.bambuImageEntityID = s.bambuImageEntityID
+            d.bambuTaskImageEntityID = s.bambuTaskImageEntityID
+            d.bambuImageSource = s.bambuImageSource
             d.bambuShowImage = s.bambuShowImage
             d.bambuLayout = s.bambuLayout
             d.bambuThemeAccent = s.bambuThemeAccent
@@ -1433,7 +1526,9 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = clockFont { s.clockFont = v }
             if let v = clockOffsetX { s.clockOffsetX = v }
             if let v = clockOffsetY { s.clockOffsetY = v }
-            if let v = customImageClock { s.customImageClock = v }
+            if let v = customImageClock { s.customImageClock = v.stackedOnly }
+            if let v = wallpaperColorStyle { s.wallpaperColorStyle = v }
+            if let v = clockDateVisible { s.clockDateVisible = v }
             if let v = imageRotationEnabled { s.imageRotationEnabled = v }
             if let v = imageRotationSeconds { s.imageRotationSeconds = v }
             if let v = imageRotationMode { s.imageRotationMode = v }
@@ -1451,6 +1546,9 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = oracleDitherKernel { s.oracleDitherKernel = v }
             if let v = oracleAutoPushEnabled { s.oracleAutoPushEnabled = v }
             if let v = oracleAutoPushMinutes { s.oracleAutoPushMinutes = v }
+            // 旧设备快照没有轮换字段时必须明确回退默认值，避免切换设备后沿用上一台设置。
+            s.oracleBoardRotationEnabled = oracleBoardRotationEnabled ?? false
+            s.oracleBoardRotationMinutes = oracleBoardRotationMinutes ?? 5
             if let v = oracleSspaiCount { s.oracleSspaiCount = v }
             if let v = oracleSspaiRandom { s.oracleSspaiRandom = v }
             if let v = oracleNowPlayingHorizontal { s.oracleNowPlayingHorizontal = v }
@@ -1510,6 +1608,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = bambuRemainingEntityID { s.bambuRemainingEntityID = v }
             if let v = bambuErrorEntityID { s.bambuErrorEntityID = v }
             if let v = bambuImageEntityID { s.bambuImageEntityID = v }
+            if let v = bambuTaskImageEntityID { s.bambuTaskImageEntityID = v }
+            if let v = bambuImageSource { s.bambuImageSource = v }
             if let v = bambuShowImage { s.bambuShowImage = v }
             if let v = bambuLayout { s.bambuLayout = v }
             if let v = bambuThemeAccent { s.bambuThemeAccent = v }
@@ -1546,6 +1646,11 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
         name = try c.decode(String.self, forKey: .name)
         settings = try c.decodeIfPresent(DeviceSettings.self, forKey: .settings) ?? DeviceSettings()
         isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+    }
+
+    /// 用户编辑设备名时原样保存输入；默认名只在创建设备时生成，不能在编辑过程中回填。
+    public mutating func rename(to editedName: String) {
+        name = editedName
     }
 
     /// 默认设备名（第 N 台）
@@ -1813,9 +1918,10 @@ public struct HAEntity: Codable, Equatable {
         self.entityPicture = entityPicture
     }
 
-    /// 是否为可展示画面的实体（image 域且带 entity_picture）
+    /// 是否为可抓取静态帧的画面源：image.* 使用 entity_picture；camera.* 可走
+    /// Home Assistant 的 camera_proxy 单帧接口，即使状态属性没有 entity_picture 也可用。
     public var hasPicture: Bool {
-        domain == "image" && !(entityPicture ?? "").isEmpty
+        domain == "camera" || (domain == "image" && !(entityPicture ?? "").isEmpty)
     }
 
     /// 实体域（entity_id 前缀，如 sensor / light；无点回退 unknown）

@@ -1,0 +1,5 @@
+#!/bin/zsh
+# 当前 CLT 的 Swift 6.3.3 比随 macOS 26.5 SDK 写入接口的 6.3.2 新一个补丁版本。
+# 告诉编译器按 SDK 的接口版本解析，避免错误拒绝同一 6.3 系列的系统模块。
+exec /Library/Developer/CommandLineTools/usr/bin/swiftc \
+  -Xfrontend -interface-compiler-version -Xfrontend 6.3.2 "$@"

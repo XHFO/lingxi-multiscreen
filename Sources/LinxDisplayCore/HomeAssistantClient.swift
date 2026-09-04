@@ -51,6 +51,13 @@ public enum BambuCardLayout: Int, CaseIterable, Identifiable, Codable {
 
     public var id: Int { rawValue }
 
+    /// “紧凑”仅为旧设置解码兼容保留，不再提供给用户选择。
+    public static let selectableCases: [BambuCardLayout] = [.standard, .large]
+
+    public var selectableValue: BambuCardLayout {
+        self == .compact ? .standard : self
+    }
+
     public var title: String {
         switch self {
         case .standard: return "标准"
@@ -75,6 +82,21 @@ public enum BambuThemeAccent: Int, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Bambu 卡片图片区块的内容来源。两个实体都保存在打印机设备中，切换时只读取所选来源。
+public enum BambuImageSource: Int, CaseIterable, Identifiable, Codable {
+    case camera = 0
+    case taskCover = 1
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .camera: return "摄像头"
+        case .taskCover: return "任务图片"
+        }
+    }
+}
+
 /// Bambu Lab 打印机卡片字段配置（实体映射 + 告警 + 显示选项；每台打印机独立）
 public struct BambuLabCardSettings: Codable, Equatable {
     /// 打印机名称（多打印机时区分；如「客厅 A1」「工作室 P1S」）
@@ -87,8 +109,12 @@ public struct BambuLabCardSettings: Codable, Equatable {
     public var bedTempEntityID: String
     public var remainingEntityID: String
     public var errorEntityID: String
-    /// 画面实体（HA image.* 实体，attributes.entity_picture 提供打印机摄像头快照 / 模型封面）
+    /// 摄像头实体（兼容旧版 imageEntityID 字段名；支持 image.* / camera.* 静态帧）
     public var imageEntityID: String
+    /// 当前打印任务封面实体（通常为 image.*）
+    public var taskImageEntityID: String
+    /// 卡片当前选择显示摄像头还是打印任务封面
+    public var imageSource: BambuImageSource
     /// 卡片布局样式（标准 / 紧凑 / 大字）
     public var layout: BambuCardLayout
     /// 卡片主题色（跟随全局 / Bambu Lab 强调色）
@@ -109,6 +135,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
                 taskEntityID: String = "", nozzleTempEntityID: String = "",
                 bedTempEntityID: String = "", remainingEntityID: String = "",
                 errorEntityID: String = "", imageEntityID: String = "",
+                taskImageEntityID: String = "",
+                imageSource: BambuImageSource = .camera,
                 layout: BambuCardLayout = .standard,
                 themeAccent: BambuThemeAccent = .global,
                 showStatus: Bool = true, showProgress: Bool = true, showTask: Bool = true,
@@ -124,7 +152,9 @@ public struct BambuLabCardSettings: Codable, Equatable {
         self.remainingEntityID = remainingEntityID
         self.errorEntityID = errorEntityID
         self.imageEntityID = imageEntityID
-        self.layout = layout
+        self.taskImageEntityID = taskImageEntityID
+        self.imageSource = imageSource
+        self.layout = layout.selectableValue
         self.themeAccent = themeAccent
         self.showStatus = showStatus
         self.showProgress = showProgress
@@ -136,6 +166,14 @@ public struct BambuLabCardSettings: Codable, Equatable {
     }
 
     public static let empty = BambuLabCardSettings()
+
+    /// 当前卡片选中的画面实体。未配置所选来源时保持空白，不暗中切换到另一来源。
+    public var selectedImageEntityID: String {
+        switch imageSource {
+        case .camera: return imageEntityID
+        case .taskCover: return taskImageEntityID
+        }
+    }
 
     /// 从设备快照读取（旧版单台字段 + 显示选项）
     public static func from(_ s: DeviceSettings) -> BambuLabCardSettings {
@@ -149,7 +187,9 @@ public struct BambuLabCardSettings: Codable, Equatable {
                              remainingEntityID: s.bambuRemainingEntityID ?? "",
                              errorEntityID: s.bambuErrorEntityID ?? "",
                              imageEntityID: s.bambuImageEntityID ?? "",
-                             layout: s.bambuLayout ?? .standard,
+                             taskImageEntityID: s.bambuTaskImageEntityID ?? "",
+                             imageSource: s.bambuImageSource ?? .camera,
+                             layout: (s.bambuLayout ?? .standard).selectableValue,
                              themeAccent: s.bambuThemeAccent ?? .global,
                              showStatus: s.bambuShowStatus ?? true,
                              showProgress: s.bambuShowProgress ?? true,
@@ -182,6 +222,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
         s.bambuRemainingEntityID = remainingEntityID
         s.bambuErrorEntityID = errorEntityID
         s.bambuImageEntityID = imageEntityID
+        s.bambuTaskImageEntityID = taskImageEntityID
+        s.bambuImageSource = imageSource
         s.bambuLayout = layout
         s.bambuThemeAccent = themeAccent
         s.bambuShowStatus = showStatus
@@ -198,7 +240,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case name, enableAlert, statusEntityID, progressEntityID, taskEntityID,
              nozzleTempEntityID, bedTempEntityID, remainingEntityID, errorEntityID,
-             imageEntityID, layout, themeAccent, showStatus, showProgress, showTask,
+             imageEntityID, taskImageEntityID, imageSource,
+             layout, themeAccent, showStatus, showProgress, showTask,
              showTemperature, showRemaining, showError, showImage
     }
 
@@ -214,7 +257,10 @@ public struct BambuLabCardSettings: Codable, Equatable {
         remainingEntityID = try c.decodeIfPresent(String.self, forKey: .remainingEntityID) ?? ""
         errorEntityID = try c.decodeIfPresent(String.self, forKey: .errorEntityID) ?? ""
         imageEntityID = try c.decodeIfPresent(String.self, forKey: .imageEntityID) ?? ""
-        layout = try c.decodeIfPresent(BambuCardLayout.self, forKey: .layout) ?? .standard
+        taskImageEntityID = try c.decodeIfPresent(String.self, forKey: .taskImageEntityID) ?? ""
+        imageSource = try c.decodeIfPresent(BambuImageSource.self, forKey: .imageSource) ?? .camera
+        layout = (try c.decodeIfPresent(BambuCardLayout.self, forKey: .layout) ?? .standard)
+            .selectableValue
         themeAccent = try c.decodeIfPresent(BambuThemeAccent.self, forKey: .themeAccent) ?? .global
         showStatus = try c.decodeIfPresent(Bool.self, forKey: .showStatus) ?? true
         showProgress = try c.decodeIfPresent(Bool.self, forKey: .showProgress) ?? true
@@ -237,6 +283,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
         try c.encode(remainingEntityID, forKey: .remainingEntityID)
         try c.encode(errorEntityID, forKey: .errorEntityID)
         try c.encode(imageEntityID, forKey: .imageEntityID)
+        try c.encode(taskImageEntityID, forKey: .taskImageEntityID)
+        try c.encode(imageSource, forKey: .imageSource)
         try c.encode(layout, forKey: .layout)
         try c.encode(themeAccent, forKey: .themeAccent)
         try c.encode(showStatus, forKey: .showStatus)
@@ -258,28 +306,36 @@ public struct BambuLabCardSettings: Codable, Equatable {
             return id.contains("bambu") || id.contains("printer")
         }
         var s = BambuLabCardSettings()
-        func match(_ keywords: [String]) -> String? {
+        func match(_ keywords: [String], domains: Set<String>) -> String? {
             printer.first { e in
+                guard domains.contains(HAEntityPicker.domain(of: e.entityId)) else { return false }
                 let id = e.entityId.lowercased()
                 return keywords.contains { id.contains($0) }
             }?.entityId
         }
-        s.statusEntityID = match(["status", "state"]) ?? ""
-        s.progressEntityID = match(["progress"]) ?? ""
-        s.taskEntityID = match(["current_task", "print_task", "task_name", "job_name", "current_job"]) ?? ""
-        s.nozzleTempEntityID = match(["nozzle_temp", "temp_nozzle", "nozzle_temperature", "hotend_temp"]) ?? ""
-        s.bedTempEntityID = match(["bed_temp", "temp_bed", "bed_temperature"]) ?? ""
-        s.remainingEntityID = match(["remaining_time", "remaining"]) ?? ""
-        s.errorEntityID = match(["error", "err"]) ?? ""
-        // 画面实体：只从带 entity_picture 的 image.* 实体里挑，命名优先摄像头/封面/缩略图；
-        // 多台打印机时若没有按名称命中的画面实体则不绑，避免错绑到别的设备
-        let pictures = BambuEntityMatcher.pictureCandidates(relevant)
-            .sorted { BambuEntityMatcher.pictureSuffixBonus($0.entityId)
-                    > BambuEntityMatcher.pictureSuffixBonus($1.entityId) }
-        s.imageEntityID = pictures.first {
-            let id = $0.entityId.lowercased()
-            return id.contains("bambu") || id.contains("printer")
-        }?.entityId ?? (pictures.count == 1 ? pictures[0].entityId : "")
+        let valueDomains: Set<String> = ["sensor", "number"]
+        s.statusEntityID = match(["status", "state"], domains: ["sensor"]) ?? ""
+        s.progressEntityID = match(["progress"], domains: valueDomains) ?? ""
+        s.taskEntityID = match(
+            ["current_task", "print_task", "task_name", "job_name", "current_job"],
+            domains: ["sensor", "text", "select"]) ?? ""
+        s.nozzleTempEntityID = match(
+            ["nozzle_temp", "temp_nozzle", "nozzle_temperature", "hotend_temp"],
+            domains: valueDomains) ?? ""
+        s.bedTempEntityID = match(
+            ["bed_temp", "temp_bed", "bed_temperature"], domains: valueDomains) ?? ""
+        s.remainingEntityID = match(
+            ["remaining_time", "remaining"], domains: valueDomains) ?? ""
+        s.errorEntityID = match(
+            ["hms_error", "hms_errors", "error", "err"],
+            domains: ["sensor", "binary_sensor"]) ?? ""
+        // 摄像头与任务封面分别匹配并同时保存，卡片里可以即时切换来源。
+        let base = s.statusEntityID.isEmpty ? "sensor.bambu_printer" :
+            BambuEntityMatcher.prefix(of: s.statusEntityID)
+        s.imageEntityID = BambuEntityMatcher.matchPicture(
+            base: base, allEntities: relevant, source: .camera)
+        s.taskImageEntityID = BambuEntityMatcher.matchPicture(
+            base: base, allEntities: relevant, source: .taskCover)
         return s
     }
 }
@@ -287,6 +343,22 @@ public struct BambuLabCardSettings: Codable, Equatable {
 /// Home Assistant 客户端：REST 拉取实体状态（GET /api/states，Bearer 认证）。
 /// 不持久化任何令牌；令牌仅存在于调用方设置中。
 public enum HomeAssistantClient {
+
+    private struct RawState: Decodable {
+        let entity_id: String
+        let state: String
+        let last_changed: String?
+        let attributes: Attributes?
+
+        struct Attributes: Decodable {
+            let friendly_name: String?
+            let unit_of_measurement: String?
+            let icon: String?
+            let model: String?
+            let series: String?
+            let entity_picture: String?
+        }
+    }
 
     /// 拉取全部实体状态。serverURL 形如 http://192.168.x.x:8123（自动补 /api/states）
     public static func fetchStates(serverURL: String, token: String,
@@ -320,6 +392,67 @@ public enum HomeAssistantClient {
             }
         }
         return try parseStates(data: data)
+    }
+
+    /// 只拉取指定实体。Bambu 卡片进入时通常仅有 7–8 个已映射实体，
+    /// 并发访问 `/api/states/<entity_id>` 可避免下载、解析整个 HA 实体库。
+    public static func fetchStates(serverURL: String, token: String,
+                                   entityIDs: [String], timeout: TimeInterval = 8) async throws -> [HAEntity] {
+        let ids = Array(Set(entityIDs.filter { !$0.isEmpty })).sorted()
+        guard !ids.isEmpty else { return [] }
+        let outcome = await withTaskGroup(of: (Int, Result<HAEntity, HAError>).self) { group in
+            for (index, id) in ids.enumerated() {
+                group.addTask {
+                    do {
+                        return (index, .success(try await fetchState(
+                            serverURL: serverURL, token: token, entityID: id, timeout: timeout)))
+                    } catch let error as HAError {
+                        return (index, .failure(error))
+                    } catch {
+                        return (index, .failure(.cannotConnect))
+                    }
+                }
+            }
+            var fetched: [(Int, HAEntity)] = []
+            var firstError: HAError?
+            fetched.reserveCapacity(ids.count)
+            for await (index, result) in group {
+                switch result {
+                case .success(let entity): fetched.append((index, entity))
+                case .failure(let error): firstError = firstError ?? error
+                }
+            }
+            // 某一个旧映射已被用户改名/删除时仍更新其余有效字段；全部失败才报告连接错误。
+            return (fetched.sorted { $0.0 < $1.0 }.map(\.1), firstError)
+        }
+        if outcome.0.isEmpty, let error = outcome.1 { throw error }
+        return outcome.0
+    }
+
+    public static func fetchState(serverURL: String, token: String, entityID: String,
+                                  timeout: TimeInterval = 8) async throws -> HAEntity {
+        guard let root = statesURL(server: serverURL) else { throw HAError.invalidURL }
+        var request = URLRequest(url: root.appendingPathComponent(entityID))
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            throw error.code == .timedOut ? HAError.timedOut : HAError.cannotConnect
+        } catch {
+            throw HAError.cannotConnect
+        }
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300: break
+            case 401: throw HAError.unauthorized
+            case 403: throw HAError.forbidden
+            default: throw HAError.serverError(status: http.statusCode)
+            }
+        }
+        return try parseState(data: data)
     }
 
     /// 连接参数本地校验：返回给用户的原因（nil = 参数看起来可用）
@@ -356,12 +489,28 @@ public enum HomeAssistantClient {
         return URL(string: root + suffix)
     }
 
+    /// 解析实体的静态帧地址。优先使用 HA 返回的 entity_picture；camera.* 没有该属性时，
+    /// 回退到官方 camera_proxy 接口，键盘端最终仍只会收到一张静态图片。
+    public static func imageURL(server: String, entity: HAEntity, token: String? = nil) -> URL? {
+        let picture = (entity.entityPicture ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !picture.isEmpty {
+            return imageURL(server: server, picture: picture, token: token)
+        }
+        guard entity.domain == "camera", let states = statesURL(server: server) else { return nil }
+        return states.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("api")
+            .appendingPathComponent("camera_proxy")
+            .appendingPathComponent(entity.entityId)
+    }
+
     /// 拉取实体画面字节（超时与体积上限保护；仅接受图片响应）
     public static func fetchImage(url: URL, token: String,
                                   timeout: TimeInterval = 8,
                                   maxBytes: Int = 2_000_000) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -449,35 +598,31 @@ public enum HomeAssistantClient {
 
     /// 解析 /api/states 响应 JSON（独立函数便于测试）
     public static func parseStates(data: Data) throws -> [HAEntity] {
-        struct Raw: Decodable {
-            let entity_id: String
-            let state: String
-            let last_changed: String?
-            let attributes: Attributes?
-            struct Attributes: Decodable {
-                let friendly_name: String?
-                let unit_of_measurement: String?
-                let icon: String?
-                let model: String?
-                let series: String?
-                let entity_picture: String?
-            }
-        }
         do {
-            let raws = try JSONDecoder().decode([Raw].self, from: data)
-            return raws.map { raw in
-                HAEntity(entityId: raw.entity_id,
-                         friendlyName: raw.attributes?.friendly_name ?? "",
-                         state: raw.state,
-                         unitOfMeasurement: raw.attributes?.unit_of_measurement,
-                         icon: Self.mdiName(from: raw.attributes?.icon),
-                         lastChanged: Self.parseHADate(raw.last_changed),
-                         model: raw.attributes?.model ?? raw.attributes?.series,
-                         entityPicture: raw.attributes?.entity_picture)
-            }
+            return try JSONDecoder().decode([RawState].self, from: data).map(makeEntity)
         } catch {
             throw HAError.invalidResponse
         }
+    }
+
+    /// 解析 `/api/states/<entity_id>` 返回的单个实体。
+    public static func parseState(data: Data) throws -> HAEntity {
+        do {
+            return makeEntity(try JSONDecoder().decode(RawState.self, from: data))
+        } catch {
+            throw HAError.invalidResponse
+        }
+    }
+
+    private static func makeEntity(_ raw: RawState) -> HAEntity {
+        HAEntity(entityId: raw.entity_id,
+                 friendlyName: raw.attributes?.friendly_name ?? "",
+                 state: raw.state,
+                 unitOfMeasurement: raw.attributes?.unit_of_measurement,
+                 icon: Self.mdiName(from: raw.attributes?.icon),
+                 lastChanged: Self.parseHADate(raw.last_changed),
+                 model: raw.attributes?.model ?? raw.attributes?.series,
+                 entityPicture: raw.attributes?.entity_picture)
     }
 
     /// 解析 HA 时间戳（ISO8601；兼容带/不带小数秒）
@@ -805,6 +950,10 @@ public enum BambuEntityMatcher {
         "bed_temperature", "bed_temp", "temp_bed",
         "remaining_time", "hms_error", "hms_errors", "current_stage",
         "cooling_fan_speed", "aux_fan_speed", "chamber_temperature",
+        // 画面实体跨 image/camera 域时也按相同设备根名称比较。
+        "cover_image", "task_cover", "print_cover", "model_preview",
+        "camera_image", "camera_snapshot", "snapshot", "camera",
+        "thumbnail", "thumb", "preview", "cover",
         "status", "state", "progress", "task", "remaining", "error", "err", "hms",
     ]
 
@@ -970,18 +1119,51 @@ public enum BambuEntityMatcher {
         return lower
     }
 
-    /// 画面实体候选：image.* 域且带 entity_picture
-    static func pictureCandidates(_ entities: [HAEntity]) -> [HAEntity] {
-        entities.filter {
-            HAEntityPicker.domain(of: $0.entityId) == "image"
-                && !($0.entityPicture ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private static let cameraPictureHints = [
+        "camera", "摄像头", "webcam", "live_view", "liveview", "stream", "snapshot", "监控",
+    ]
+    private static let taskCoverPictureHints = [
+        "cover", "封面", "thumbnail", "thumb", "preview", "预览", "model", "模型",
+        "plate", "盘", "gcode", "3mf", "task", "任务", "job", "print_image",
+    ]
+
+    private static func containsPictureHint(_ text: String, hints: [String]) -> Bool {
+        hints.contains { text.contains($0) }
+    }
+
+    /// 画面实体候选：把 camera.* 和 image.* 摄像头归到“摄像头”，其余 image.*
+    ///（尤其 cover/thumbnail/preview）归到“任务封面”。返回值稳定排序，供自动匹配与手动选择共用。
+    public static func pictureCandidates(_ entities: [HAEntity],
+                                         source: BambuImageSource? = nil,
+                                         requireAvailablePicture: Bool = true) -> [HAEntity] {
+        entities.filter { entity in
+            let domain = HAEntityPicker.domain(of: entity.entityId)
+            guard domain == "image" || domain == "camera" else { return false }
+            if requireAvailablePicture, !entity.hasPicture { return false }
+            guard let source else { return true }
+            let text = "\(entity.entityId) \(entity.friendlyName)".lowercased()
+            let looksLikeCamera = domain == "camera"
+                || containsPictureHint(text, hints: cameraPictureHints)
+            let looksLikeTaskCover = containsPictureHint(text, hints: taskCoverPictureHints)
+            switch source {
+            case .camera: return looksLikeCamera
+            case .taskCover:
+                guard domain == "image" else { return false }
+                // 明确带摄像头词的 image.* 不混入封面；同时出现封面词时以封面身份保留，
+                // 兼容部分集成的 camera_cover / camera_preview 命名。
+                return looksLikeTaskCover || !looksLikeCamera
+            }
+        }.sorted {
+            $0.entityId.localizedStandardCompare($1.entityId) == .orderedAscending
         }
     }
 
     /// 无区分度的通用词（域前缀、状态词、品牌词），不参与打印机与画面实体的标识词匹配
     static let genericTokens: Set<String> = [
-        "sensor", "binary", "image", "number", "select", "switch", "input", "text",
+        "sensor", "binary", "image", "camera", "number", "select", "switch", "input", "text",
         "status", "state", "print", "printer", "device", "entity", "bambu", "lab", "current",
+        "camera", "snapshot", "webcam", "image", "picture", "cover", "thumbnail", "thumb",
+        "preview", "model", "plate", "task", "job",
     ]
 
     /// 实体 id 的标识词集合（去掉通用词与短词）
@@ -993,35 +1175,72 @@ public enum BambuEntityMatcher {
             .filter { $0.count >= 2 && !genericTokens.contains($0) })
     }
 
-    /// 画面实体命名偏好加分（摄像头实时画面 > 模型封面 > 缩略图 > 其他）
-    static func pictureSuffixBonus(_ entityID: String) -> Int {
+    /// 画面实体命名偏好加分；仅用于同一台打印机多个同类画面时稳定排序。
+    static func pictureSuffixBonus(_ entityID: String, source: BambuImageSource) -> Int {
         let id = entityID.lowercased()
-        if id.contains("camera") || id.contains("snap") { return 5 }
-        if id.contains("cover") { return 4 }
-        if id.contains("thumb") { return 3 }
+        switch source {
+        case .camera:
+            if HAEntityPicker.domain(of: id) == "camera" { return 8 }
+            if id.contains("camera") { return 6 }
+            if id.contains("snapshot") || id.contains("webcam") { return 4 }
+        case .taskCover:
+            if id.contains("cover_image") || id.contains("task_cover") { return 8 }
+            if id.contains("cover") { return 6 }
+            if id.contains("thumbnail") || id.contains("thumb") { return 5 }
+            if id.contains("preview") || id.contains("model") { return 4 }
+        }
         return 0
     }
 
     /// 为本打印机挑选画面实体：优先与打印机前缀共享标识词的 image 实体（多台打印机不会互相错绑），
     /// 同分时摄像头/封面优先；实体池里只有一张画面时兜底绑定（单打印机常见布局的命名不统一）
-    static func matchPicture(base: String, allEntities: [HAEntity]) -> String {
-        let candidates = pictureCandidates(allEntities)
+    static func matchPicture(base: String, knownEntity: HAEntity? = nil,
+                             allEntities: [HAEntity],
+                             source: BambuImageSource = .camera) -> String {
+        let candidates = pictureCandidates(allEntities, source: source)
         guard !candidates.isEmpty else { return "" }
-        let baseTokens = identifierTokens(of: base)
-        var best: (id: String, score: Int)?
-        for candidate in candidates {
-            // HA 常把画面实体按设备编号命名（image.2_camera），而传感器按型号命名，
-            // 因此除 entity_id 外再按显示名称取词比对
-            let candidateTokens = identifierTokens(of: candidate.entityId)
-                .union(identifierTokens(of: candidate.friendlyName))
-            let shared = baseTokens.intersection(candidateTokens).count
-            guard shared > 0 else { continue }
-            let score = shared * 10 + pictureSuffixBonus(candidate.entityId)
-            if best == nil || score > best!.score {
-                best = (candidate.entityId, score)
+        let baseObject = base.split(separator: ".", maxSplits: 1).last.map(String.init) ?? base
+        var baseTokens = identifierTokens(of: base)
+        if let knownEntity {
+            baseTokens.formUnion(identifierTokens(of: knownEntity.friendlyName))
+            if let model = knownEntity.model {
+                baseTokens.formUnion(identifierTokens(of: model))
             }
         }
-        if let best { return best.id }
+        let knownModel = knownEntity.flatMap(BambuModelDetector.model(of:))
+        var ranked: [(id: String, score: Int)] = []
+        ranked.reserveCapacity(candidates.count)
+        for candidate in candidates {
+            // 第一优先级：跨域去掉字段后缀后，设备根名称完全一致。
+            let candidateBase = prefix(of: candidate.entityId)
+            let candidateObject = candidateBase.split(separator: ".", maxSplits: 1)
+                .last.map(String.init) ?? candidateBase
+            let candidateTokens = identifierTokens(of: candidate.entityId)
+                .union(identifierTokens(of: candidate.friendlyName))
+                .union(identifierTokens(of: candidate.model ?? ""))
+            let shared = baseTokens.intersection(candidateTokens).count
+            var score = shared * 20 + pictureSuffixBonus(candidate.entityId, source: source)
+            if candidateObject == baseObject {
+                score += 200
+            } else if candidateObject.hasPrefix(baseObject + "_")
+                        || baseObject.hasPrefix(candidateObject + "_") {
+                score += 80
+            }
+            if let knownModel, BambuModelDetector.model(of: candidate) == knownModel {
+                score += 35
+            }
+            if score > 0 { ranked.append((candidate.entityId, score)) }
+        }
+        ranked.sort {
+            if $0.score != $1.score { return $0.score > $1.score }
+            return $0.id.localizedStandardCompare($1.id) == .orderedAscending
+        }
+        if let best = ranked.first {
+            // 两个候选证据完全相同时不武断错绑，交给用户在已分流的选择器里手动指定。
+            if ranked.count > 1, ranked[1].score == best.score { return "" }
+            return best.id
+        }
+        // 只有一个同类画面时仍保留兜底，支持完全自定义 entity_id 的单打印机场景。
         return candidates.count == 1 ? candidates[0].entityId : ""
     }
 
@@ -1038,9 +1257,12 @@ public enum BambuEntityMatcher {
         let candidates = HAEntityPicker.printerRelevant(allEntities)
         let base = prefix(of: knownEntity.entityId)
         let baseObject = base.split(separator: ".", maxSplits: 1).last.map(String.init) ?? base
-        func match(_ keywords: [String]) -> String {
+        func match(_ keywords: [String], domains: Set<String>) -> String {
             for keyword in keywords {
                 if let entity = candidates.first(where: { e in
+                    guard domains.contains(HAEntityPicker.domain(of: e.entityId)) else {
+                        return false
+                    }
                     let id = e.entityId.lowercased()
                     let object = id.split(separator: ".", maxSplits: 1).last.map(String.init) ?? id
                     let samePrinter = baseObject.isEmpty || object == baseObject
@@ -1052,16 +1274,28 @@ public enum BambuEntityMatcher {
             }
             return ""
         }
+        let valueDomains: Set<String> = ["sensor", "number"]
         return BambuLabCardSettings(
             name: BambuModelDetector.modelName(of: knownEntity) ?? "打印机",
             statusEntityID: knownEntity.entityId,
-            progressEntityID: match(["print_progress", "progress"]),
-            taskEntityID: match(["current_task", "print_task", "task_name", "job_name", "current_job", "task"]),
-            nozzleTempEntityID: match(["nozzle_temp", "hotend_temp", "nozzle_temperature", "temp_nozzle"]),
-            bedTempEntityID: match(["bed_temp", "bed_temperature", "temp_bed"]),
-            remainingEntityID: match(["remaining_time", "remaining"]),
-            errorEntityID: match(["hms_error", "hms_errors", "error", "err"]),
-            imageEntityID: matchPicture(base: base, allEntities: allEntities))
+            progressEntityID: match(["print_progress", "progress"], domains: valueDomains),
+            taskEntityID: match(
+                ["current_task", "print_task", "task_name", "job_name", "current_job", "task"],
+                domains: ["sensor", "text", "select"]),
+            nozzleTempEntityID: match(
+                ["nozzle_temp", "hotend_temp", "nozzle_temperature", "temp_nozzle"],
+                domains: valueDomains),
+            bedTempEntityID: match(
+                ["bed_temp", "bed_temperature", "temp_bed"], domains: valueDomains),
+            remainingEntityID: match(
+                ["remaining_time", "remaining"], domains: valueDomains),
+            errorEntityID: match(
+                ["hms_error", "hms_errors", "error", "err"],
+                domains: ["sensor", "binary_sensor"]),
+            imageEntityID: matchPicture(base: base, knownEntity: knownEntity,
+                                        allEntities: allEntities, source: .camera),
+            taskImageEntityID: matchPicture(base: base, knownEntity: knownEntity,
+                                            allEntities: allEntities, source: .taskCover))
     }
 }
 
@@ -1132,6 +1366,18 @@ public enum HAEntityPicker {
             return String(lower[..<dot])
         }
         return "unknown"
+    }
+
+    /// 从用户选择的实体 ID 中提取可显示静态帧的 camera/image 实体。
+    /// 去除空白、去重并保持用户在卡片中的排列顺序。
+    public static func pictureEntityIDs(in entityIDs: [String]) -> [String] {
+        entityIDs.reduce(into: []) { result, rawID in
+            let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entityDomain = domain(of: id)
+            guard (entityDomain == "camera" || entityDomain == "image"),
+                  !result.contains(id) else { return }
+            result.append(id)
+        }
     }
 
     /// 按实体域分组：域按字母序、组内按 entity_id 排序（空输入返回空数组）
@@ -1228,7 +1474,7 @@ public enum HAEntityPicker {
         "sensor", "binary_sensor", "number", "select", "switch",
         "input_number", "input_select", "input_boolean",
         // 画面实体（打印机摄像头快照 / 模型封面）也归入打印机可选域
-        "image",
+        "image", "camera",
     ]
 
     /// 过滤出打印机相关实体（仅保留白名单域；用于打印机实体选择器与自动匹配的候选集）

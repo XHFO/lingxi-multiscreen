@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         false // 关闭窗口后继续在菜单栏运行
     }
 
+    /// 用户从「系统设置 → 输入监控」返回时，刷新授权状态并在需要时自动重连旋钮。
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            model?.refreshInputMonitoringStatus()
+        }
+    }
+
     /// 安装全局快捷键（番茄钟 + 灵犀68 手动翻页）。
     private func installHotkeys() {
         let shortcuts: [GlobalHotkeyManager.Action: GlobalShortcut] = MainActor.assumeIsolated {

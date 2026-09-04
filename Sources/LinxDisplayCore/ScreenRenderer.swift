@@ -211,7 +211,7 @@ public enum ScreenRenderer {
                 let boxH = min(naturalH, availableH, 110)
                 let box = CGRect(x: c.minX + 8, y: nextY + 4, width: boxW, height: boxH)
                 if drawImageData(ctx, data: picture, into: box, cover: true, radius: 6) {
-                    strokeRound(ctx, box, radius: 6, color: colors.borderCG, width: 1)
+                    strokeRound(ctx, rect(box), radius: 6, color: colors.borderCG, width: 1)
                     pictureBox = box
                 }
             }
@@ -481,7 +481,8 @@ public enum ScreenRenderer {
                                     now: Date = Date(),
                                     palette: ScreenPalette? = nil,
                                     printerFields: [Int: CanvasPrinterFields] = [:],
-                                    artworkImage: CGImage? = nil) throws -> RenderResult {
+                                    artworkImage: CGImage? = nil,
+                                    bambuHeroLayout: Bool = true) throws -> RenderResult {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
         // 画板专用底色模式（手动深/浅色）覆盖默认调色板
@@ -558,7 +559,10 @@ public enum ScreenRenderer {
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
                                  canvasCoverBgActive: coverArt != nil,
                                  accentOverride: accentOverride,
-                                 printerFields: printerFields)
+                                 printerFields: printerFields,
+                                 // 灵犀画板与口袋先知/摘录统一采用新版打印机仪表排版：
+                                 // 状态背景字、前景百分比、加粗进度条、双行任务名与数据更新时间。
+                                 bambuHeroLayout: bambuHeroLayout)
             }
         }
         return try encode(ctx, quality: settings.jpegQuality)
@@ -696,7 +700,10 @@ public enum ScreenRenderer {
                                           fullWidthModules: Set<Int> = [],
                                           nowPlayingHorizontal: Bool = false,
                                           canvasImagePath: String? = nil,
-                                          printerFields: [Int: CanvasPrinterFields] = [:]) -> CGImage {
+                                          printerFields: [Int: CanvasPrinterFields] = [:],
+                                          optimizeBambuForOracleEInk: Bool = false,
+                                          bambuHeroLayout: Bool = false,
+                                          showBambuCamera: Bool = true) -> CGImage {
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
@@ -737,7 +744,10 @@ public enum ScreenRenderer {
                                  deviceCanvas: true,
                                  nowPlayingHorizontal: nowPlayingHorizontal,
                                  canvasImagePath: canvasImagePath,
-                                 printerFields: printerFields)
+                                 printerFields: printerFields,
+                                 optimizeBambuForOracleEInk: optimizeBambuForOracleEInk,
+                                 bambuHeroLayout: bambuHeroLayout,
+                                 showBambuCamera: showBambuCamera)
             }
         }
         var result = ctx.makeImage() ?? placeholderCanvas()
@@ -764,7 +774,7 @@ public enum ScreenRenderer {
     }
 
     /// 按底色明暗返回最深对比色（浅底黑、深底白），用于墨水屏文字/描边
-    private static func einkDeepColorRGB(against bg: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
+    public static func einkDeepColorRGB(against bg: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
         let lum = 0.299 * bg.0 + 0.587 * bg.1 + 0.114 * bg.2
         return lum >= 0.5 ? (0, 0, 0) : (1, 1, 1)
     }
@@ -914,6 +924,30 @@ public enum ScreenRenderer {
         (label: 9, value: 12, body: 10)
     }
 
+    /// Bambu 画板模块字号。口袋先知与摘录都属于独立设备画板，使用更大的字号与
+    /// 更高的最小值，确保灰阶量化后设备名、温度和剩余时间仍能直接辨认。
+    public static func bambuCanvasTypography(sizeBase: CGFloat,
+                                             optimizeForOracleEInk: Bool)
+        -> (label: CGFloat, value: CGFloat, body: CGFloat) {
+        if optimizeForOracleEInk {
+            return (label: min(max(sizeBase * 0.68, 12), 16),
+                    value: min(max(sizeBase * 0.78, 14), 21),
+                    body: min(max(sizeBase * 0.72, 12.5), 17))
+        }
+        let standard = canvasTypography()
+        return (label: min(max(sizeBase * 0.52, 7), standard.label),
+                value: min(max(sizeBase * 0.62, 8), standard.value),
+                body: min(max(sizeBase * 0.56, 7), standard.body))
+    }
+
+    /// Bambu 画板进度条厚度。口袋先知使用 8–14 px，确保误差扩散后二值线条仍清晰。
+    public static func bambuCanvasProgressBarHeight(rowHeight: CGFloat,
+                                                    optimizeForOracleEInk: Bool) -> CGFloat {
+        optimizeForOracleEInk
+            ? min(max(rowHeight * 0.36, 8), 14)
+            : min(max(rowHeight - 6, 3), 7)
+    }
+
     /// 绘制单个画板模块（band 为 Skia 语义的横带）；imageOverlayOnly=true 时图像模块强制按叠加绘制；
     /// nowPlayingSmartBg=true 时正在播放模块用封面主色填充模块底（键盘画板整卡背景已是封面主色时由
     /// canvasCoverBgActive=true 跳过，避免出现色差圆角块）
@@ -931,7 +965,10 @@ public enum ScreenRenderer {
                                          nowPlayingHorizontal: Bool = false,
                                          canvasImagePath: String? = nil,
                                          accentOverride: CGColor? = nil,
-                                         printerFields: [Int: CanvasPrinterFields] = [:]) {
+                                         printerFields: [Int: CanvasPrinterFields] = [:],
+                                         optimizeBambuForOracleEInk: Bool = false,
+                                         bambuHeroLayout: Bool = false,
+                                         showBambuCamera: Bool = true) {
         let w = band.width
         let typography = canvasTypography()
         switch module {
@@ -1095,6 +1132,8 @@ public enum ScreenRenderer {
             let bed = ha.entities.first { $0.entityId == bambu.bedTempEntityID }
             let remain = ha.entities.first { $0.entityId == bambu.remainingEntityID }
             let error = ha.entities.first { $0.entityId == bambu.errorEntityID }
+            let hasStatusBinding = !bambu.statusEntityID
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let statusText = status.map { BambuStatusText.map($0.state) } ?? "未配置"
             let errorStaleSeconds = TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60)
             let isError = status?.state.lowercased() == "error"
@@ -1104,14 +1143,56 @@ public enum ScreenRenderer {
                         && HAErrorCodePolicy.isFresh(entity: e, staleSeconds: errorStaleSeconds)
                 } ?? false)
             let printerLabel = bambu.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            // 画面行：模块开启「画面」且本轮拉到该实体图片时占一行（与文字行均分模块高度）
-            let picture = (fields.showImage && !bambu.imageEntityID.isEmpty)
-                ? ha.picture(for: bambu.imageEntityID) : nil
+            // 口袋先知的 Bambu 模块固定白底纯黑字：不再随深色主题切换成白字，
+            // 保证黑白量化及误差扩散前拿到的是最大黑度，细笔画不会被抖动吃掉。
+            let pureBlack = CGColor(gray: 0, alpha: 1)
+            let pureWhite = CGColor(gray: 1, alpha: 1)
+            let primaryText = optimizeBambuForOracleEInk ? pureBlack : colors.primaryTextCG
+            let secondaryText = optimizeBambuForOracleEInk ? pureBlack : colors.secondaryTextCG
+            let alertText = optimizeBambuForOracleEInk ? pureBlack : colors.accentCG
+            let progressInk = optimizeBambuForOracleEInk
+                ? pureBlack : (accentOverride ?? colors.accentCG)
+            // 轨道用稳定浅灰显示未完成部分；描边按画板底色反色（浅底黑、深底白）。
+            let progressTrack = optimizeBambuForOracleEInk
+                ? CGColor(gray: 0.82, alpha: 1) : colors.borderCG
+            let adaptiveOutline = colors.cg(einkDeepColorRGB(against: colors.background))
+            let baseContentBand: CGRect
+            if optimizeBambuForOracleEInk {
+                fillRound(ctx, rect(band), radius: 7, color: pureWhite)
+                strokeRound(ctx, rect(band), radius: 7, color: adaptiveOutline, width: 1.5)
+                // 模块很多、条带很矮时保留至少 2 px 内容高度，避免 inset 产生负尺寸。
+                let horizontalInset = min(6, max((band.width - 12) / 2, 0))
+                let verticalInset = min(4, max((band.height - 2) / 2, 0))
+                baseContentBand = band.insetBy(dx: horizontalInset, dy: verticalInset)
+            } else {
+                baseContentBand = band
+            }
+            let heroEnabled = bambuHeroLayout && fields.showProgress && progress != nil
+            // 新仪表布局在模块底部保留一行清晰的数据更新时间；条带过矮时自动省略。
+            let footerH: CGFloat = heroEnabled && baseContentBand.height >= 72
+                ? min(max(baseContentBand.height * 0.10, 15), 22) : 0
+            let contentBand = CGRect(x: baseContentBand.minX, y: baseContentBand.minY,
+                                     width: baseContentBand.width,
+                                     height: max(baseContentBand.height - footerH - (footerH > 0 ? 2 : 0), 2))
+            let contentWidth = contentBand.width
+            // 口袋先知/摘录不显示摄像头帧；选择“任务图片”时仍可按用户的画面开关显示封面。
+            let selectedPictureAllowed = showBambuCamera || bambu.imageSource != .camera
+            let picture = (selectedPictureAllowed && fields.showImage
+                           && !bambu.selectedImageEntityID.isEmpty)
+                ? ha.picture(for: bambu.selectedImageEntityID) : nil
+            let taskText = task?.displayState.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let taskNeedsTwoLines = !taskText.isEmpty
+                && measureTextWidth(taskText, size: 15, bold: optimizeBambuForOracleEInk)
+                    > max(contentBand.width - 4, 10)
 
             // 已开启且有内容的行（错误行仅在真正报错时占位）
             var rows: [Int] = []
-            if fields.showStatus { rows.append(0) }
-            if fields.showProgress, progress != nil { rows.append(1) }
+            if heroEnabled {
+                rows.append(8) // 状态背景字 + 前景百分比 + 下方粗进度条
+            } else {
+                if fields.showStatus && hasStatusBinding { rows.append(0) }
+                if fields.showProgress, progress != nil { rows.append(1) }
+            }
             if fields.showTask, let t = task, !t.state.isEmpty { rows.append(2) }
             if fields.showNozzleTemp, nozzle != nil { rows.append(3) }
             if fields.showBedTemp, bed != nil { rows.append(4) }
@@ -1121,93 +1202,167 @@ public enum ScreenRenderer {
             if picture != nil { rows.append(7) }
             if rows.isEmpty { rows = [0] }
             // 行高按权重分配：画面行占更多空间，文字行保持原有字号基准
-            let weights = rows.map { $0 == 7 ? 2.4 : 1.0 }
+            let weights = rows.map { kind -> CGFloat in
+                if kind == 7 { return 2.4 }
+                if kind == 8 { return 2.0 }
+                if kind == 2 && taskNeedsTwoLines { return 1.55 }
+                return 1.0
+            }
             let totalWeight = max(weights.reduce(0, +), 0.001)
-            let textRowCount = max(rows.filter { $0 != 7 }.count, 1)
-            let textRowH = band.height / CGFloat(textRowCount)
-            let rowH = band.height / CGFloat(rows.count)
+            let textRowCount = max(rows.filter { $0 != 7 && $0 != 8 }.count, 1)
+            let textRowH = contentBand.height / CGFloat(textRowCount)
+            let rowH = contentBand.height / CGFloat(rows.count)
             var rowTops: [CGFloat] = []
             var rowHeights: [CGFloat] = []
-            var cursor = band.minY
+            var cursor = contentBand.minY
             for weight in weights {
-                let h = band.height * weight / totalWeight
+                let h = contentBand.height * weight / totalWeight
                 rowTops.append(cursor)
                 rowHeights.append(h)
                 cursor += h
             }
             let sizeBase = rows.contains(7) ? min(rowH * 2, textRowH) : rowH
-            let labelSize = min(max(sizeBase * 0.52, 7), typography.label)
-            let valueSize = min(max(sizeBase * 0.62, 8), typography.value)
-            let bodySize = min(max(sizeBase * 0.56, 7), typography.body)
+            let bambuTypography = bambuCanvasTypography(
+                sizeBase: sizeBase, optimizeForOracleEInk: optimizeBambuForOracleEInk)
+            let labelSize = bambuTypography.label
+            let valueSize = bambuTypography.value
+            let bodySize = bambuTypography.body
             for (i, kind) in rows.enumerated() {
-                let rowRect = CGRect(x: band.minX, y: rowTops[i],
-                                     width: w, height: rowHeights[i])
+                let rowRect = CGRect(x: contentBand.minX, y: rowTops[i],
+                                     width: contentWidth, height: rowHeights[i])
                 switch kind {
+                case 8:
+                    // 口袋先知/摘录的大字仪表布局：状态退到灰色背景，进度数字与小号 %
+                    // 叠在前景；进度条与数字之间保留明显空隙，避免墨水屏量化后粘连。
+                    let value = min(max(Double(progress?.state ?? "") ?? 0, 0), 100)
+                    let numberSize = min(max(rowRect.height * 0.36, 20), 54)
+                    let percentSize = max(numberSize / 2, 10)
+                    let nameSize = min(max(rowRect.height * 0.13, 11), 16)
+                    drawAdaptiveText(ctx, printerLabel.isEmpty ? "打印机" : printerLabel,
+                                     maxSize: nameSize, minSize: 9, bold: true,
+                                     color: secondaryText,
+                                     in: rect(rowRect.minX, rowRect.minY,
+                                              rowRect.width, max(nameSize + 5, 17)), align: .left)
+                    if fields.showStatus && hasStatusBinding {
+                        // 旧值 0.28 在灰阶/误差扩散后笔画容易消失；提高到 0.50，
+                        // 同时保留前景纯黑进度数字的层级差。
+                        let backdrop = primaryText.copy(alpha: 0.50) ?? secondaryText
+                        drawAdaptiveText(ctx, statusText,
+                                         maxSize: min(max(rowRect.height * 0.34, 22), 58),
+                                         minSize: 15, bold: true, color: backdrop,
+                                         in: rect(rowRect.minX, rowRect.minY + rowRect.height * 0.08,
+                                                  rowRect.width, rowRect.height * 0.48),
+                                         align: .center)
+                    }
+                    let labelY = rowRect.minY + rowRect.height * 0.24
+                    let labelH = rowRect.height * 0.42
+                    drawBambuProgressLabel(ctx, number: String(format: "%.0f", value),
+                                           numberSize: numberSize, percentSize: percentSize,
+                                           numberColor: primaryText, percentColor: secondaryText,
+                                           in: rect(rowRect.minX, labelY, rowRect.width, labelH))
+                    let barH = min(max(rowRect.height * 0.095, 8), 14)
+                    let barY = rowRect.maxY - barH - 3
+                    let progressBounds = rect(rowRect.minX, barY, rowRect.width, barH)
+                    drawProgress(ctx, progressBounds, progress: value / 100,
+                                 accent: progressInk, background: progressTrack)
+                    strokeRound(ctx, progressBounds, radius: barH / 2,
+                                color: adaptiveOutline,
+                                width: optimizeBambuForOracleEInk ? 2 : 1.5)
                 case 0:
-                    // 状态行：打印机名（左）+ 状态大字（右）
+                    // 状态行：打印机名（左）+ 状态大字（右）。全部映射均为空时
+                    // rows 的兜底仍会进入这里，但只显示设备名，不把“未配置”冒充状态。
                     drawText(ctx, printerLabel.isEmpty ? "打印机" : printerLabel, size: labelSize,
-                             bold: false, color: colors.secondaryTextCG,
-                             in: rect(rowRect.minX, rowRect.minY, w * 0.5, rowRect.height), align: .left)
-                    drawText(ctx, statusText, size: valueSize, bold: true,
-                             color: isError ? colors.accentCG : colors.primaryTextCG,
-                             in: rect(rowRect.minX, rowRect.minY, w, rowRect.height), align: .right)
+                             bold: optimizeBambuForOracleEInk, color: secondaryText,
+                             in: rect(rowRect.minX, rowRect.minY,
+                                      hasStatusBinding ? contentWidth * 0.5 : contentWidth,
+                                      rowRect.height),
+                             align: hasStatusBinding ? .left : .center)
+                    if hasStatusBinding {
+                        drawText(ctx, statusText, size: valueSize, bold: true,
+                                 color: isError ? alertText : primaryText,
+                                 in: rect(rowRect.minX, rowRect.minY,
+                                          contentWidth, rowRect.height), align: .right)
+                    }
                 case 1:
                     // 进度行：进度条 + 百分比
                     let pct = progress.flatMap { Double($0.state) }.map { min($0 / 100, 1) } ?? 0
                     let pctText = progress.flatMap { Double($0.state) }
                         .map { String(format: "%.0f%%", $0) } ?? "—"
-                    let barH = min(max(rowRect.height - 6, 3), 7)
-                    drawProgress(ctx, rect(rowRect.minX, rowRect.midY - barH / 2, w - 34, barH),
-                                 progress: pct, accent: accentOverride ?? colors.accentCG,
-                                 background: colors.borderCG)
-                    drawText(ctx, pctText, size: valueSize, bold: true, color: colors.primaryTextCG,
-                             in: rect(rowRect.maxX - 32, rowRect.minY, 32, rowRect.height), align: .right)
+                    let barH = bambuCanvasProgressBarHeight(
+                        rowHeight: rowRect.height,
+                        optimizeForOracleEInk: optimizeBambuForOracleEInk)
+                    let pctWidth = max(optimizeBambuForOracleEInk ? 42 : 32,
+                                       measureTextWidth(pctText, size: valueSize, bold: true) + 3)
+                    let progressBounds = rect(rowRect.minX, rowRect.midY - barH / 2,
+                                              max(contentWidth - pctWidth - 6, 12), barH)
+                    drawProgress(ctx, progressBounds, progress: pct,
+                                 accent: progressInk, background: progressTrack)
+                    if optimizeBambuForOracleEInk {
+                        strokeRound(ctx, progressBounds, radius: barH / 2,
+                                    color: adaptiveOutline, width: 2)
+                    }
+                    drawText(ctx, pctText, size: valueSize, bold: true, color: primaryText,
+                             in: rect(rowRect.maxX - pctWidth, rowRect.minY,
+                                      pctWidth, rowRect.height), align: .right)
                 case 2:
-                    drawCanvasModuleValueLine(ctx, task?.displayState ?? "", rowRect, w: w,
-                                              size: bodySize, color: colors.primaryTextCG)
+                    drawBambuCanvasTask(ctx, taskText, in: rowRect,
+                                        preferredSize: min(bodySize + 2, 20),
+                                        color: primaryText,
+                                        bold: optimizeBambuForOracleEInk)
                 case 3:
-                    drawCanvasModuleValueLine(ctx, "喷嘴 \(nozzle?.displayValue ?? "—")", rowRect, w: w,
-                                              size: bodySize, color: colors.secondaryTextCG)
+                    drawCanvasModuleValueLine(ctx, "喷嘴 \(nozzle?.displayValue ?? "—")", rowRect,
+                                              w: contentWidth, size: bodySize, color: secondaryText,
+                                              bold: optimizeBambuForOracleEInk)
                 case 4:
-                    drawCanvasModuleValueLine(ctx, "热床 \(bed?.displayValue ?? "—")", rowRect, w: w,
-                                              size: bodySize, color: colors.secondaryTextCG)
+                    drawCanvasModuleValueLine(ctx, "热床 \(bed?.displayValue ?? "—")", rowRect,
+                                              w: contentWidth, size: bodySize, color: secondaryText,
+                                              bold: optimizeBambuForOracleEInk)
                 case 5:
-                    drawCanvasModuleValueLine(ctx, "剩余 \(remain?.remainingDisplayText ?? "—")", rowRect, w: w,
-                                              size: bodySize, color: colors.secondaryTextCG)
+                    drawCanvasModuleValueLine(ctx, "剩余 \(remain?.remainingDisplayText ?? "—")", rowRect,
+                                              w: contentWidth, size: bodySize, color: secondaryText,
+                                              bold: optimizeBambuForOracleEInk)
                 case 7:
                     // 画面行：打印机摄像头快照 / 模型封面（圆角 + 描边）
                     let box = CGRect(x: rowRect.minX, y: rowRect.minY + 1,
                                      width: w, height: rowRect.height - 3)
                     if let picture, drawImageData(ctx, data: picture, into: box,
                                                   cover: true, radius: 4) {
-                        strokeRound(ctx, box, radius: 4, color: colors.borderCG, width: 1)
+                        strokeRound(ctx, rect(box), radius: 4, color: colors.borderCG, width: 1)
                     }
                 default:
                     // 错误行：错误码（醒目）
                     let errorText = error?.state ?? status?.state ?? "未知错误"
-                    drawCanvasModuleValueLine(ctx, "⚠ \(errorText)", rowRect, w: w,
-                                              size: min(bodySize + 1, typography.value),
-                                              color: colors.accentCG, bold: true)
+                    drawCanvasModuleValueLine(ctx, "⚠ \(errorText)", rowRect, w: contentWidth,
+                                              size: min(bodySize + 1,
+                                                        optimizeBambuForOracleEInk ? 17 : typography.value),
+                                              color: alertText, bold: true)
                 }
+            }
+            if footerH > 0 {
+                let lineY = baseContentBand.maxY - footerH
+                drawLine(ctx, x1: baseContentBand.minX + 6, y1: lineY,
+                         x2: baseContentBand.maxX - 6, y2: lineY,
+                         color: optimizeBambuForOracleEInk ? adaptiveOutline : colors.borderCG)
+                let footerSize = min(max(footerH * 0.52, 8), 10.5)
+                drawText(ctx, "数据更新  \(formatDate(ha.sampledAt, "HH:mm:ss"))",
+                         size: footerSize, bold: true, color: secondaryText,
+                         in: rect(baseContentBand.minX, lineY + 2,
+                                  baseContentBand.width, footerH - 2), align: .center)
             }
         case .clock:
             let text = clockTimeText(now, format: settings.timeFormat)
-            var size = min(band.height * 0.62, 32)
-            var tw = measureTextWidth(text, size: size, bold: true)
-            if tw > w - 4 {
-                size = max(size * (w - 4) / tw, 10)
-                tw = measureTextWidth(text, size: size, bold: true)
-            }
+            let preferredSize = min(band.height * 0.62, 32)
+            let size = adaptiveFontSize(text, maxSize: preferredSize,
+                                        minSize: min(preferredSize, 5.5), bold: true,
+                                        maxWidth: max(w - 4, 1))
             drawText(ctx, text, size: size, bold: true, color: colors.primaryTextCG,
                      in: rect(band.minX, band.minY - 2, w, band.height), align: .center)
         case .date:
             let text = formatDate(now, settings.dateFormat)
-            var size = min(band.height * 0.42, 14)
-            var tw = measureTextWidth(text, size: size, bold: false)
-            if tw > w - 4 {
-                size = max(size * (w - 4) / tw, 7)
-                tw = measureTextWidth(text, size: size, bold: false)
-            }
+            let preferredSize = min(band.height * 0.42, 14)
+            let size = adaptiveFontSize(text, maxSize: preferredSize,
+                                        minSize: min(preferredSize, 5), bold: false,
+                                        maxWidth: max(w - 4, 1))
             drawText(ctx, text, size: size, bold: false, color: colors.primaryTextCG,
                      in: rect(band.minX, band.minY, w, band.height), align: .center)
         case .cpu:
@@ -2314,95 +2469,151 @@ public enum ScreenRenderer {
         guard let cropped = original.cropping(to: crop) else { throw RenderError.cannotDecodeImage }
         ctx.interpolationQuality = .high
         ctx.draw(cropped, in: target)
+        let clockColors = wallpaperClockColors(of: cropped, style: settings.wallpaperColorStyle)
+        let primaryText = CGColor(red: clockColors.primary.0, green: clockColors.primary.1,
+                                  blue: clockColors.primary.2, alpha: 1)
+        let secondaryText = CGColor(red: clockColors.secondary.0, green: clockColors.secondary.1,
+                                    blue: clockColors.secondary.2, alpha: 1)
+        let primaryOutline = CGColor(red: clockColors.primaryOutline.0,
+                                     green: clockColors.primaryOutline.1,
+                                     blue: clockColors.primaryOutline.2, alpha: 1)
+        let secondaryOutline = CGColor(red: clockColors.secondaryOutline.0,
+                                       green: clockColors.secondaryOutline.1,
+                                       blue: clockColors.secondaryOutline.2, alpha: 1)
+        let shadowText = clockColors.usesLightTones
+            ? CGColor(red: 0, green: 0, blue: 0, alpha: 0.62)
+            : CGColor(red: 1, green: 1, blue: 1, alpha: 0.56)
         drawClockOverlay(ctx, overlay: settings.customImageClock, safeArea: safe, now: now,
                          fontSize: CGFloat(settings.clockFontSize),
                          timeFormat: settings.timeFormat,
-                         fontName: settings.clockFont.fontName(weight: settings.clockFontWeight),
+                         dateFormat: settings.dateFormat,
+                         showDate: settings.clockDateVisible,
+                         stackedFontName: "Arial-Black",
                          offsetX: CGFloat(settings.clockOffsetX),
                          offsetY: CGFloat(settings.clockOffsetY),
-                         colors: settings.resolvedPalette)
+                         primaryText: primaryText,
+                         secondaryText: secondaryText,
+                         primaryOutline: primaryOutline,
+                         secondaryOutline: secondaryOutline,
+                         shadowText: shadowText)
         return try encode(ctx, quality: settings.jpegQuality)
     }
 
     // MARK: - 自定义图片时钟叠加
 
-    /// 叠加文字色（无背景遮罩，靠轻量投影保证可读性）
-    private static var overlayText: CGColor { CGColor(red: 1, green: 1, blue: 1, alpha: 1) }
-    private static var overlayTextDim: CGColor { CGColor(red: 1, green: 1, blue: 1, alpha: 0.75) }
-
-    /// 在自定义图片上叠加时钟（跟随系统时间；无背景遮罩，字体/字号/字重/偏移可自定义）
+    /// 在自定义图片上叠加 2×2 Pixel 大时钟。四位数字与日期作为一个图层组统一缩放，
+    /// 因此调节整体大小不会改变字间距；前景使用壁纸种子色生成的 Material You 色调阶。
     private static func drawClockOverlay(_ ctx: CGContext, overlay: CustomImageClockOverlay,
                                          safeArea: CGFloat, now: Date,
-                                         fontSize: CGFloat, timeFormat: String,
-                                         fontName: String,
+                                         fontSize: CGFloat, timeFormat: String, dateFormat: String,
+                                         showDate: Bool,
+                                         stackedFontName: String,
                                          offsetX: CGFloat, offsetY: CGFloat,
-                                         colors: ScreenPalette) {
-        guard overlay != .none else { return }
-        let calendar = Calendar.current
-        let comps = calendar.dateComponents([.weekday, .day, .month], from: now)
-        let weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-        let weekdayIndex = min(max((comps.weekday ?? 1) - 1, 0), 6)
-        let dateText = "\(comps.month ?? 0)月\(comps.day ?? 0)日 \(weekdays[weekdayIndex])"
+                                         primaryText: CGColor, secondaryText: CGColor,
+                                         primaryOutline: CGColor, secondaryOutline: CGColor,
+                                         shadowText: CGColor) {
+        let resolvedOverlay = overlay.stackedOnly
+        guard resolvedOverlay != .none else { return }
+        let dateText = formatDate(now, dateFormat)
         let timeText = clockTimeText(now, format: timeFormat)
-        let timeSize = max(min(fontSize, 96), 12)
 
-        switch overlay {
+        switch resolvedOverlay {
         case .none:
             return
-        case .horizontalTop, .horizontalBottom:
-            // 横向：细体大字号时间 + 小字日期（Google Pixel 锁屏时钟风格）；过宽时按比例收缩；
-            // 偏移作用于时间+日期整组
-            var size = timeSize
-            var tw = measureTextWidth(timeText, fontName: fontName, size: size)
-            let maxWidth = CGFloat(width) - 12
-            if tw > maxWidth {
-                size = max(size * maxWidth / tw, 12)
-                tw = measureTextWidth(timeText, fontName: fontName, size: size)
-            }
-            let timeH = size * 1.22
-            let timeY = (overlay == .horizontalTop
-                ? safeArea + 14
-                : CGFloat(height) - 14 - timeH) + offsetY
-            let tx = (CGFloat(width) - tw) / 2 + offsetX
-            let dateSize = max(6, size * 0.24)
-            let dateY = overlay == .horizontalTop ? timeY + timeH + 4 : timeY - dateSize - 6
-            let dateW = measureTextWidth(dateText, size: dateSize, bold: false)
-            drawTextShadowed(ctx, dateText, size: dateSize, bold: false, color: overlayTextDim,
-                             in: rect((CGFloat(width) - dateW) / 2 + offsetX, dateY, dateW, dateSize + 5),
-                             align: .left)
-            drawTextShadowed(ctx, timeText, size: size, bold: false, color: overlayText,
-                             in: rect(tx, timeY, tw, timeH), align: .left,
-                             fontName: fontName)
         case .verticalLeft, .verticalCenter:
-            // 竖向：第一行小时、第二行分钟，每行的两位数字横向排布（Pixel 细体）；
-            // 小时为白色、分钟为强调色；偏移作用于两行整组
-            let parts = timeText.split(separator: ":").map(String.init)
-            var hoursText = ""
-            var minutesText = ""
-            if parts.count >= 2 {
-                hoursText = parts[0]
-                minutesText = parts[1]
-            } else {
-                let digits = timeText.filter { $0.isNumber }
-                hoursText = String(digits.prefix(2))
-                minutesText = String(digits.dropFirst(2).prefix(2))
+            // 所有几何先以最大尺寸建立，再通过同一个 CTM 整体缩放；数字、错位、行列间距、
+            // 描边、阴影和日期始终保持固定比例，避免旧版缩小时字与字逐渐松散。
+            let digits = stackedClockDigits(timeText, now: now)
+            let groupScale = StackedClockSizing.scale(for: Int(fontSize.rounded()))
+            let blockW = CGFloat(width) - 8
+            let cellW = blockW * 0.56
+            let digitSize = adaptiveFontSize("8", maxSize: 118, minSize: 72,
+                                             fontName: stackedFontName,
+                                             maxWidth: cellW - 8)
+            let digitH = digitSize * 1.04
+            // Arial Black 保留块状轮廓，再把字形本身纵向压缩，得到更扁、更紧密的锁屏数字。
+            // 这里使用 CGContext 变换压缩实际轮廓，而不是只缩短文字框。
+            let digitVerticalScale: CGFloat = 0.76
+            // CoreText 的 strokeWidth 单位是字号百分比：在原 4% 基础上再增加 4px。
+            let digitStrokeWidth = 4 + 400 / digitSize
+            // CoreText 描边以字形边缘为中心，外轮廓需要增加两倍线宽，才能让可见边缘
+            // 比数字本体向外扩展约 5px。它位于同一个 CTM 内，会随整组同步缩放。
+            let digitOutlineStrokeWidth = digitStrokeWidth
+                + StackedClockSizing.outlineExpansion * 200 / digitSize
+            // 两行继续适度叠压；压扁后的可见轮廓仍保持清楚，不会散成四个独立方块。
+            let rowAdvance = digitSize * 0.56
+            let dateH: CGFloat = showDate ? 24 : 0
+            let dateGap: CGFloat = showDate ? 24 : 0
+            let visibleDigitBottom = digitH * (1 + digitVerticalScale) / 2
+            let totalH = rowAdvance + visibleDigitBottom + dateGap + dateH + 4
+            let scaledTotalH = totalH * groupScale
+            let finalTop = (resolvedOverlay == .verticalCenter
+                ? max((CGFloat(height) - scaledTotalH) / 2, safeArea + 6)
+                : safeArea + 14) + offsetY
+            let groupCenterY = finalTop + scaledTotalH / 2
+            let groupCenterX = CGFloat(width) / 2 + offsetX
+            let startY = groupCenterY - totalH / 2
+            let blockX = groupCenterX - blockW / 2
+            let columnAdvance = blockW * 0.41
+            let positions: [(CGFloat, CGFloat)] = [
+                (0, 0),
+                (columnAdvance, digitSize * 0.02),
+                (digitSize * 0.03, rowAdvance),
+                (columnAdvance + digitSize * 0.02, rowAdvance + digitSize * 0.035)
+            ]
+            let digitColors = [primaryText, secondaryText, secondaryText, primaryText]
+            let digitOutlineColors = [primaryOutline, secondaryOutline,
+                                      secondaryOutline, primaryOutline]
+
+            // Skia 语义的 y 向下；CGContext 的变换中心需换算到左下角坐标。
+            let groupCenterCG = CGPoint(x: groupCenterX,
+                                        y: CGFloat(height) - groupCenterY)
+            ctx.saveGState()
+            ctx.translateBy(x: groupCenterCG.x, y: groupCenterCG.y)
+            ctx.scaleBy(x: groupScale, y: groupScale)
+            ctx.translateBy(x: -groupCenterCG.x, y: -groupCenterCG.y)
+            for index in 0..<4 {
+                let position = positions[index]
+                drawTextShadowed(ctx, String(digits[index]), size: digitSize, bold: false,
+                                 color: digitColors[index],
+                                 in: rect(blockX + position.0, startY + position.1,
+                                          cellW, digitH), align: .center,
+                                 fontName: stackedFontName, shadowColor: shadowText,
+                                 shadowAlpha: 1, shadowOffset: 1.15,
+                                 verticalScale: digitVerticalScale,
+                                 strokeWidth: digitStrokeWidth,
+                                 strokeColor: digitColors[index],
+                                 outerStrokeWidth: digitOutlineStrokeWidth,
+                                 outerStrokeColor: digitOutlineColors[index])
             }
-            let glyphSize = max(timeSize * 0.78, 12)
-            let rowH = glyphSize * 1.25
-            let startY = safeArea + 16 + offsetY
-            func drawRow(_ text: String, y: CGFloat, color: CGColor) {
-                let rowW = max(measureTextWidth(text, fontName: fontName, size: glyphSize),
-                               glyphSize)
-                let rowX: CGFloat = overlay == .verticalLeft
-                    ? 10 + offsetX
-                    : (CGFloat(width) - rowW) / 2 + offsetX
-                drawTextShadowed(ctx, text, size: glyphSize, bold: false, color: color,
-                                 in: rect(rowX, y, rowW, rowH), align: .left,
-                                 fontName: fontName)
+            if showDate {
+                let dateY = startY + rowAdvance + visibleDigitBottom + dateGap
+                let dateSize = adaptiveFontSize(dateText, maxSize: 14, minSize: 8,
+                                                bold: true, maxWidth: blockW)
+                drawTextShadowed(ctx, dateText, size: dateSize, bold: true,
+                                 color: secondaryText,
+                                 in: rect(blockX, dateY, blockW, dateH),
+                                 align: .center,
+                                 shadowColor: shadowText, shadowAlpha: 1, shadowOffset: 0.7)
             }
-            drawRow(hoursText, y: startY, color: overlayText)
-            drawRow(minutesText, y: startY + rowH, color: colors.accentCG)
+            ctx.restoreGState()
+        case .horizontalTop, .horizontalBottom:
+            // 只为旧枚举值保留穷尽分支；stackedOnly 已在进入 switch 前完成迁移。
+            return
         }
+    }
+
+    /// 从任意用户时间格式中提取小时/分钟，并稳定补齐为四位；叠排样式不显示秒。
+    private static func stackedClockDigits(_ timeText: String, now: Date) -> [Character] {
+        let groups = timeText.split(whereSeparator: { !$0.isNumber }).map(String.init)
+        if groups.count >= 2, let hour = groups.first, let minute = groups.dropFirst().first {
+            let hourDigits = String(hour.suffix(2))
+            let minuteDigits = String(minute.prefix(2))
+            let normalized = String(repeating: "0", count: max(0, 2 - hourDigits.count)) + hourDigits
+                + String(repeating: "0", count: max(0, 2 - minuteDigits.count)) + minuteDigits
+            return Array(normalized.prefix(4))
+        }
+        return Array(formatDate(now, "HHmm"))
     }
 
     /// 按用户格式输出时间；格式无效/输出为空时回退 HH:mm
@@ -2422,15 +2633,47 @@ public enum ScreenRenderer {
     private static func drawTextShadowed(_ ctx: CGContext, _ text: String, size: CGFloat, bold: Bool,
                                          color: CGColor, in boundsCG: CGRect, align: NSTextAlignment,
                                          fontName: String? = nil,
+                                         shadowColor: CGColor? = nil,
                                          shadowAlpha: CGFloat = 0.55,
-                                         shadowOffset: CGFloat = 0.9) {
-        let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha)
+                                         shadowOffset: CGFloat = 0.9,
+                                         verticalScale: CGFloat = 1,
+                                         strokeWidth: CGFloat? = nil,
+                                         strokeColor: CGColor? = nil,
+                                         outerStrokeWidth: CGFloat? = nil,
+                                         outerStrokeColor: CGColor? = nil) {
+        let resolvedShadowColor: CGColor
+        if let shadowColor {
+            resolvedShadowColor = shadowColor.copy(alpha: shadowColor.alpha * shadowAlpha)
+                ?? shadowColor
+        } else {
+            resolvedShadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha)
+        }
         let shadow = CGRect(x: boundsCG.origin.x + shadowOffset, y: boundsCG.origin.y - shadowOffset,
                             width: boundsCG.width, height: boundsCG.height)
-        drawText(ctx, text, size: size, bold: bold, color: shadowColor, in: shadow, align: align,
-                 fontName: fontName)
-        drawText(ctx, text, size: size, bold: bold, color: color, in: boundsCG, align: align,
-                 fontName: fontName)
+        func drawLayer(color layerColor: CGColor, bounds: CGRect,
+                       strokeWidth: CGFloat? = nil, strokeColor: CGColor? = nil) {
+            if verticalScale != 1 {
+                ctx.saveGState()
+                ctx.translateBy(x: 0, y: bounds.midY)
+                ctx.scaleBy(x: 1, y: verticalScale)
+                ctx.translateBy(x: 0, y: -bounds.midY)
+            }
+            drawText(ctx, text, size: size, bold: bold, color: layerColor,
+                     in: bounds, align: align, fontName: fontName,
+                     strokeWidth: strokeWidth, strokeColor: strokeColor)
+            if verticalScale != 1 {
+                ctx.restoreGState()
+            }
+        }
+        // 先铺阴影，再铺更宽的浅色外轮廓，最后用数字本体覆盖轮廓内部。
+        // 外轮廓与本体复用完全相同的字形和纵向压缩中心，不会产生错位。
+        drawLayer(color: resolvedShadowColor, bounds: shadow)
+        if let outerStrokeWidth, let outerStrokeColor {
+            drawLayer(color: outerStrokeColor, bounds: boundsCG,
+                      strokeWidth: outerStrokeWidth, strokeColor: outerStrokeColor)
+        }
+        drawLayer(color: color, bounds: boundsCG,
+                  strokeWidth: strokeWidth, strokeColor: strokeColor)
     }
 
     public static func renderQwenWork(_ quota: QwenWorkQuota, settings: AppSettings,
@@ -2554,7 +2797,8 @@ public enum ScreenRenderer {
     /// Home Assistant 独立卡片单页最多显示的实体数；超出部分在底部显示数量提示。
     public static let haStandalonePageLimit = 4
 
-    /// Home Assistant 键盘卡片：支持多实体（列表排布，每行 图标+名称+状态值；单实体保留大字样式）。
+    /// Home Assistant 键盘卡片：支持多实体与 camera/image 静态帧；单个图片实体
+    /// 使用大图，多实体中的图片实体使用等高横向预览卡，其余实体保持状态列表排布。
     /// 实体图标优先 attributes.icon 的 mdi 名映射 SF Symbol，否则按实体域默认图标；
     /// 加载失败/未配置时显示明确提示而非空白；
     /// 已绑定但在当前服务器查不到的实体按「失效」灰显行保留原值（换服务器后不静默消失、不错绑）
@@ -2640,6 +2884,7 @@ public enum ScreenRenderer {
             // 先测量每一行的最小卡片高度，再由可用高度统一分配上下/行间留白。
             // 这样 2–3 个实体会自然铺开，4 个实体仍保持紧凑且不会互相覆盖。
             let minimumHeights: [CGFloat] = shown.map { item in
+                if item.picture != nil { return 74 }
                 let stacked = haRowUsesStackedLayout(name: item.name, value: item.value,
                                                       availableWidth: availableW)
                 if stacked {
@@ -2691,6 +2936,30 @@ public enum ScreenRenderer {
                 // 否则背景框会沿纵轴镜像到实体文字的另一侧。
                 fillRound(ctx, rect(card), radius: 5, color: colors.insetCG)
                 strokeRound(ctx, rect(card), radius: 5, color: colors.borderCG, width: 1)
+                if let picture = item.picture {
+                    // 多实体中也给 camera/image 足够大的完整预览区域，不再只是 16px 缩略图；
+                    // 底部保留名称与状态，因此仍可辨认每路摄像头对应的实体。
+                    let infoH = min(max(card.height * 0.24, 16), 20)
+                    let pictureBox = CGRect(x: card.minX + 4, y: card.minY + 4,
+                                            width: card.width - 8,
+                                            height: max(card.height - infoH - 9, 20))
+                    if drawImageData(ctx, data: picture, into: pictureBox,
+                                     cover: true, radius: 4) {
+                        strokeRound(ctx, rect(pictureBox), radius: 4,
+                                    color: colors.borderCG, width: 1)
+                    }
+                    let infoY = card.maxY - infoH - 2
+                    let nameW = max((card.width - 12) * 0.62, 20)
+                    drawAdaptiveText(ctx, name, maxSize: 9, minSize: 7, bold: true,
+                                     color: colors.primaryTextCG,
+                                     in: rect(card.minX + 6, infoY, nameW, infoH), align: .left)
+                    let valueX = card.minX + 10 + nameW
+                    let valueW = max(card.maxX - 6 - valueX, 16)
+                    drawAdaptiveText(ctx, value, maxSize: 9, minSize: 7, bold: true,
+                                     color: accent,
+                                     in: rect(valueX, infoY, valueW, infoH), align: .right)
+                    continue
+                }
                 if stacked {
                     var nameSize: CGFloat = 10
                     while nameSize > 8 && measureTextWidth(name, size: nameSize, bold: true) > availableW {
@@ -2906,18 +3175,18 @@ public enum ScreenRenderer {
     /// 文件名断行：优先在分隔符（_ . - / 空格 冒号）处断开，避免长 gcode 文件名被硬切在中间；
     /// 找不到合适分隔符时才按宽度硬断，超出 maxLines 的尾巴以「…」标记
     public static func fileNameLines(_ text: String, size: CGFloat, maxW: CGFloat,
-                              maxLines: Int = 2) -> [String] {
+                                     maxLines: Int = 2, bold: Bool = false) -> [String] {
         let separators: Set<Character> = ["_", ".", "-", "/", " ", ":"]
         var lines: [String] = []
         var rest = Substring(text)
         while !rest.isEmpty, lines.count < maxLines {
-            if measureTextWidth(String(rest), size: size, bold: false) <= maxW {
+            if measureTextWidth(String(rest), size: size, bold: bold) <= maxW {
                 lines.append(String(rest))
                 rest = ""
                 break
             }
             var fit = rest.count
-            while fit > 1, measureTextWidth(String(rest.prefix(fit)), size: size, bold: false) > maxW {
+            while fit > 1, measureTextWidth(String(rest.prefix(fit)), size: size, bold: bold) > maxW {
                 fit -= 1
             }
             // 在本行后半段里回退到最近的分隔符（分隔符留在本行行尾）
@@ -2938,6 +3207,59 @@ public enum ScreenRenderer {
             lines[lines.count - 1] += "…"
         }
         return lines
+    }
+
+    /// 独立设备画板的打印任务名排版：优先较大的单行；过宽时改为最多两行，
+    /// 并同时按横向宽度与两行可用高度收缩字号。返回值公开供布局回归测试使用。
+    public static func bambuCanvasTaskLayout(_ text: String,
+                                             maxWidth: CGFloat,
+                                             maxHeight: CGFloat,
+                                             preferredSize: CGFloat,
+                                             bold: Bool = true) -> (lines: [String], size: CGFloat) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return ([], preferredSize) }
+        let width = max(maxWidth, 10)
+        let height = max(maxHeight, 8)
+        let minimum = min(8.5, preferredSize)
+        var size = min(preferredSize, max(height * 0.62, minimum))
+
+        // 能以清晰大字单行容纳时不主动拆行。
+        if measureTextWidth(value, size: size, bold: bold) <= width {
+            return ([value], size)
+        }
+
+        // 长任务名最多两行；字号需要同时满足两行总高度和尽可能完整的横向排布。
+        size = min(size, max((height - 1) / 2.35, minimum))
+        var lines = fileNameLines(value, size: size, maxW: width, maxLines: 2, bold: bold)
+        while size > minimum {
+            let lineHeight = size * 1.16
+            let truncated = lines.last?.hasSuffix("…") == true
+            if !truncated, lineHeight * CGFloat(lines.count) <= height { break }
+            size -= 0.5
+            lines = fileNameLines(value, size: size, maxW: width, maxLines: 2, bold: bold)
+        }
+        return (lines, size)
+    }
+
+    /// 绘制最多两行、字号自适应的打印任务名。
+    private static func drawBambuCanvasTask(_ ctx: CGContext, _ text: String,
+                                            in row: CGRect, preferredSize: CGFloat,
+                                            color: CGColor, bold: Bool) {
+        let layout = bambuCanvasTaskLayout(text,
+                                           maxWidth: max(row.width - 4, 10),
+                                           maxHeight: max(row.height - 2, 8),
+                                           preferredSize: preferredSize,
+                                           bold: bold)
+        guard !layout.lines.isEmpty else { return }
+        let lineH = min(layout.size * 1.16,
+                        max((row.height - 2) / CGFloat(layout.lines.count), 8))
+        let blockH = lineH * CGFloat(layout.lines.count)
+        let y = row.midY - blockH / 2
+        for (index, line) in layout.lines.enumerated() {
+            drawText(ctx, line, size: layout.size, bold: bold, color: color,
+                     in: rect(row.minX + 2, y + CGFloat(index) * lineH,
+                              row.width - 4, lineH), align: .center)
+        }
     }
 
     /// 画板模块内的一行居中文本：超宽自动缩字号（下限 6pt），用于打印机模块的信息行
@@ -3024,22 +3346,32 @@ public enum ScreenRenderer {
 
     /// Bambu Lab 品牌绿（卡片主题色选项「Bambu Lab 强调色」使用；用户指定的品牌色 #629E4E）
     public static let bambuLabAccentColor = CGColor(red: 98.0 / 255.0, green: 158.0 / 255.0, blue: 78.0 / 255.0, alpha: 1)
+    /// 大字布局的进度数字保持原来的 34pt；百分号缩小为数字的一半，降低视觉抢占。
+    public static let bambuLargeProgressNumberSize: CGFloat = 34
+    public static let bambuLargeProgressPercentSize: CGFloat = bambuLargeProgressNumberSize / 2
+    /// 大字布局中状态作为进度数字背后的超大辅助信息，按宽度自适应缩小。
+    public static let bambuLargeStatusBackdropSize: CGFloat = 35
+    /// 数据更新时间需要在实体屏幕上保持可读，不能沿用普通辅助文字的 7.5pt。
+    public static let bambuDataFooterSize: CGFloat = 9.5
 
     /// Bambu Lab 打印机状态卡：聚合显示工作状态/进度/任务名/喷嘴与热床温度/剩余时间；
     /// 字段由实体映射配置（未映射字段自动隐藏）；状态=error 或错误码实体非空时显示错误警示
     public static func renderBambuLab(_ bambu: BambuLabCardSettings, entities: [HAEntity],
                                       image: Data? = nil,
-                                      settings: AppSettings, now: Date = Date()) throws -> RenderResult {
+                                      settings: AppSettings, now: Date = Date(),
+                                      dataUpdatedAt: Date? = nil) throws -> RenderResult {
         let colors = settings.resolvedPalette
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
         let c = drawCanvas(ctx, safeArea: safe, colors: colors)
         // 主题色：跟随全局强调色，或固定使用 Bambu Lab 品牌青绿（按打印机各自设置）
         let accent = bambu.themeAccent == .bambuLab ? Self.bambuLabAccentColor : colors.accentCG
-        // 头部徽标显示打印机名称（多台打印机时区分各自卡片；未命名回退 BAMBU）
+        // 打印机设备名作为头部主标题显示，不能只塞进 6pt 的右上角徽标：
+        // 多台打印机切换卡片时，用户需要一眼确认当前卡片对应哪台设备。
         let trimmedName = bambu.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        drawHeader(ctx, card: c, title: "PRINTER", badge: trimmedName.isEmpty ? "BAMBU" : trimmedName,
-                   accent: accent, colors: colors, titleSize: 7.5)
+        drawBambuHeader(ctx, card: c,
+                        deviceName: trimmedName.isEmpty ? "打印机" : trimmedName,
+                        accent: accent, colors: colors)
         drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
                  color: colors.borderCG)
         func entity(_ id: String) -> HAEntity? {
@@ -3048,6 +3380,8 @@ public enum ScreenRenderer {
         }
         let status = entity(bambu.statusEntityID)
         let error = entity(bambu.errorEntityID)
+        let hasStatusBinding = !bambu.statusEntityID
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         // 错误码新鲜度阈值：2×刷新间隔（至少 10 分钟）；更早的错误码视为已恢复（残留旧值不误报）
         let staleSeconds = TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60)
         let isError = (status?.state.lowercased() == "error")
@@ -3073,7 +3407,8 @@ public enum ScreenRenderer {
             progressStep = 12; taskStep = 16; tempStep = 14; remainStep = 14
             infoSize = 8; progressH = 6; taskBaseSize = 9
         case .large:
-            statusSize = 26; topOffset = 42
+            // 大字布局只突出打印百分比；工作状态与标准布局保持同字号、横向排布。
+            statusSize = 20; topOffset = 43
             progressStep = 19; taskStep = 24; tempStep = 21; remainStep = 21
             infoSize = 10; progressH = 9; taskBaseSize = 13
         case .standard:
@@ -3095,34 +3430,58 @@ public enum ScreenRenderer {
         }
         let taskLineH = taskLines.count > 1 ? max(taskStep * 0.62, 12) : taskStep
         let taskBlockH = taskLines.isEmpty ? 0 : taskLineH * CGFloat(taskLines.count)
-        // 状态大字（空闲/打印中/报错…，中文汉化），错误时用警示色；关闭「显示状态」则不画
-        var y: CGFloat
-        if bambu.showStatus {
-            let statusChars = Array(statusText)
-            if bambu.layout == .large, statusChars.count >= 2, statusChars.count <= 4 {
-                // 大字模式：状态逐字竖排（每行一个字，垂直堆叠居中），进度条等内容整体下移
-                let lineH: CGFloat = 42
-                let blockH = CGFloat(statusChars.count) * lineH
-                for (i, ch) in statusChars.enumerated() {
-                    drawText(ctx, String(ch), size: statusSize, bold: true, color: statusColor,
-                             in: rect(c.minX + 8, top + CGFloat(i) * lineH, c.maxX - c.minX - 16, lineH),
-                             align: .center)
-                }
-                y = top + blockH + 6
-            } else {
-                drawText(ctx, statusText, size: statusSize, bold: true, color: statusColor,
-                         in: rect(c.minX + 8, top, c.maxX - c.minX - 16, statusSize + 6), align: .center)
-                y = top + statusSize + 12
+        let progressEntity = entity(bambu.progressEntityID)
+        let progressValue = progressEntity.flatMap { Double($0.state) }
+        let prominentProgress = bambu.layout == .large && bambu.showProgress && progressValue != nil
+        let contentBottom = c.maxY - (settings.nowPlayingFooterVisible ? 36 : 8)
+
+        // 正文严格限制在页脚上方。极端的双行任务名 + 温度 + 错误说明场景即使空间不足，
+        // 也只会在正文边界内截断，不会覆盖“数据更新”页脚。
+        ctx.saveGState()
+        ctx.clip(to: rect(c.minX, c.minY + 39,
+                          c.maxX - c.minX, contentBottom - c.minY - 39))
+
+        // 大字布局：状态是浅色超大背景字；进度数字与半号百分号叠在前景，
+        // 粗进度条紧随其后。三者合成一个信息区，不再让状态单独占一整行。
+        var y = top
+        if prominentProgress, let value = progressValue {
+            let clampedPercent = min(max(value, 0), 100)
+            let numberText = String(format: "%.0f", clampedPercent)
+            let numberSize = Self.bambuLargeProgressNumberSize
+            let percentSize = Self.bambuLargeProgressPercentSize
+            let innerX = c.minX + 10
+            let innerW = c.maxX - c.minX - 20
+            if bambu.showStatus && hasStatusBinding {
+                let backdropColor = colors.secondaryTextCG.copy(alpha: 0.38) ?? colors.tertiaryTextCG
+                drawAdaptiveText(ctx, statusText,
+                                 maxSize: Self.bambuLargeStatusBackdropSize,
+                                 minSize: 23, bold: true, color: backdropColor,
+                                 in: rect(innerX, top - 5, innerW, 48), align: .center)
             }
-        } else {
-            y = top + statusSize + 12
+            drawBambuProgressLabel(ctx, number: numberText,
+                                   numberSize: numberSize, percentSize: percentSize,
+                                   numberColor: colors.primaryTextCG,
+                                   percentColor: colors.secondaryTextCG,
+                                   in: rect(innerX, top + 16, innerW, 46))
+            // 给数字字形下沿留出明确呼吸空间，避免与轨道粘在一起。
+            let barY = top + 72
+            let barBounds = rect(innerX, barY, innerW, 12)
+            drawProgress(ctx, barBounds, progress: clampedPercent / 100,
+                         accent: accent, background: colors.borderCG)
+            strokeRound(ctx, barBounds, radius: 6, color: colors.secondaryTextCG, width: 1)
+            y = barY + 20
+        }
+
+        // 标准/紧凑布局中的状态仍是独立横排；大字布局已将它叠入进度信息区。
+        if bambu.showStatus, hasStatusBinding, !prominentProgress {
+            drawText(ctx, statusText, size: statusSize, bold: true, color: statusColor,
+                     in: rect(c.minX + 8, y, c.maxX - c.minX - 16, statusSize + 6), align: .center)
+            y += statusSize + 12
         }
         // 画面区块（状态下方）：image.* 实体画面（摄像头快照 / 模型封面）
         // 先给后续文字行留出空间，再按 16:9 铺一张圆角图；空间不足 34pt 时整块跳过
         if bambu.showImage, let picture = image {
-            let footerSpace: CGFloat = settings.nowPlayingFooterVisible ? 40 : 8
-            let contentBottom = c.maxY - footerSpace
-            let textReserve: CGFloat = (bambu.showProgress ? progressStep : 0)
+            let textReserve: CGFloat = (bambu.showProgress && !prominentProgress ? progressStep : 0)
                 + taskBlockH
                 + (bambu.showTemperature ? tempStep : 0)
                 + (bambu.showRemaining ? remainStep : 0)
@@ -3133,14 +3492,14 @@ public enum ScreenRenderer {
             if pictureH >= 34 {
                 let box = CGRect(x: c.minX + 10, y: y, width: pictureW, height: pictureH)
                 if drawImageData(ctx, data: picture, into: box, cover: true, radius: 6) {
-                    strokeRound(ctx, box, radius: 6, color: colors.borderCG, width: 1)
+                    strokeRound(ctx, rect(box), radius: 6, color: colors.borderCG, width: 1)
                     y += pictureH + 6
                 }
             }
         }
         // 进度条（左）+ 百分比（右）：同一行两端排布，不与状态文本重叠
-        if bambu.showProgress,
-           let progress = entity(bambu.progressEntityID),
+        if bambu.showProgress, !prominentProgress,
+           let progress = progressEntity,
            let value = Double(progress.state) {
             let pctText = String(format: "%.0f%%", value)
             drawProgress(ctx, rect(c.minX + 10, y, c.maxX - c.minX - 52, progressH),
@@ -3208,8 +3567,10 @@ public enum ScreenRenderer {
             drawText(ctx, "在设备管理中配置实体映射", size: 8, bold: false, color: colors.tertiaryTextCG,
                      in: rect(c.minX + 10, y, c.maxX - c.minX - 20, 16), align: .center)
         }
+        ctx.restoreGState()
         if settings.nowPlayingFooterVisible {
-            drawFooterClock(ctx, card: c, settings: settings, colors: colors, now: now, accent: accent)
+            drawBambuDataFooter(ctx, card: c, colors: colors,
+                                updatedAt: dataUpdatedAt ?? now)
         }
         return try encode(ctx, quality: settings.jpegQuality)
     }
@@ -3396,16 +3757,26 @@ public enum ScreenRenderer {
         let time = formatDate(now, settings.timeFormat)
         let date = formatDate(now, settings.dateFormat)
         let text = "\(time)  ·  \(date)"
-        var size: CGFloat = 7.5
         let maxW = c.maxX - c.minX - 20
-        let measured = measureTextWidth(text, size: size, bold: false)
-        if measured > maxW {
-            size = max(size * maxW / measured, 6)
-        }
+        let size = adaptiveFontSize(text, maxSize: 7.5, minSize: 5,
+                                    bold: false, maxWidth: maxW)
         drawLine(ctx, x1: c.minX + 18, y1: c.maxY - 25,
                  x2: c.maxX - 18, y2: c.maxY - 25, color: colors.borderCG)
         drawText(ctx, text, size: size, bold: false, color: colors.tertiaryTextCG,
                  in: rect(c.minX + 10, c.maxY - 23, maxW, 15), align: .center)
+    }
+
+    /// Bambu 卡片只显示数据更新时间：不再复用“当前时间 + 时间 + 日期”的大号三行页脚，
+    /// 既能判断状态新鲜度，也把垂直空间还给打印进度、任务与摄像头画面。
+    private static func drawBambuDataFooter(_ ctx: CGContext, card c: CGRect,
+                                             colors: ScreenPalette, updatedAt: Date) {
+        let text = "数据更新  \(formatDate(updatedAt, "HH:mm:ss"))"
+        let maxW = c.maxX - c.minX - 20
+        drawLine(ctx, x1: c.minX + 18, y1: c.maxY - 30,
+                 x2: c.maxX - 18, y2: c.maxY - 30, color: colors.borderCG)
+        drawText(ctx, text, size: Self.bambuDataFooterSize, bold: true,
+                 color: colors.secondaryTextCG,
+                 in: rect(c.minX + 10, c.maxY - 27, maxW, 19), align: .center)
     }
 
     /// 页脚时钟：当前时间（上：时钟，下：日期），格式/字号随设置、可整体隐藏。
@@ -3417,8 +3788,20 @@ public enum ScreenRenderer {
                                         shadowAlpha: CGFloat = 0.55,
                                         shadowOffset: CGFloat = 0.9) {
         let bottom = c.maxY - 15
-        let dateHeight = max(CGFloat(settings.nowPlayingDateSize) + 8, 18)
-        let timeHeight = max(CGFloat(settings.nowPlayingTimeSize) + 10, 24)
+        let preferredDateSize = CGFloat(settings.nowPlayingDateSize)
+        let preferredTimeSize = CGFloat(settings.nowPlayingTimeSize)
+        let footerTextWidth = max(c.maxX - c.minX - 10, 1)
+        let timeText = clockTimeText(now, format: settings.timeFormat)
+        let dateText = formatDate(now, settings.dateFormat)
+        let fittedTimeSize = adaptiveFontSize(
+            timeText, maxSize: preferredTimeSize, minSize: min(preferredTimeSize, 6),
+            bold: true, maxWidth: footerTextWidth)
+        let fittedDateSize = adaptiveFontSize(
+            dateText, maxSize: preferredDateSize, minSize: min(preferredDateSize, 5),
+            bold: true, maxWidth: footerTextWidth)
+        // 高度仍按用户设定的目标字号预留，避免仅因格式变长导致整个页脚上下跳动。
+        let dateHeight = max(preferredDateSize + 8, 18)
+        let timeHeight = max(preferredTimeSize + 10, 24)
         let labelTop = bottom - dateHeight - timeHeight - 16
         func draw(_ text: String, size: CGFloat, bold: Bool, color: CGColor, in r: CGRect) {
             if shadowed {
@@ -3431,10 +3814,10 @@ public enum ScreenRenderer {
         // tintAll=true 时「当前时间」标签与日期也用强调色（正在播放卡片跟随封面强调色）
         draw("当前时间", size: 9, bold: true, color: tintAll ? accent : colors.tertiaryTextCG,
              in: rect(c.minX + 9, labelTop, c.maxX - c.minX - 18, 16))
-        draw(formatDate(now, settings.timeFormat), size: CGFloat(settings.nowPlayingTimeSize),
+        draw(timeText, size: fittedTimeSize,
              bold: true, color: accent,
              in: rect(c.minX + 5, bottom - dateHeight - timeHeight, c.maxX - c.minX - 10, timeHeight))
-        draw(formatDate(now, settings.dateFormat), size: CGFloat(settings.nowPlayingDateSize),
+        draw(dateText, size: fittedDateSize,
              bold: true, color: tintAll ? accent : colors.primaryTextCG,
              in: rect(c.minX + 5, bottom - dateHeight, c.maxX - c.minX - 10, dateHeight))
     }
@@ -4000,6 +4383,240 @@ public enum ScreenRenderer {
         return (CGFloat(r / count / 255), CGFloat(g / count / 255), CGFloat(b / count / 255))
     }
 
+    /// Material You 风格的壁纸时钟色调阶。先提取种子色，再在感知均匀的 OKLCH
+    /// 色彩空间中只改变明度、保留色相与主要色度。亮/暗色阶会按与壁纸的实际
+    /// WCAG 对比度择优，而非只用一个固定明暗阈值。
+    public static func wallpaperClockColors(
+        of image: CGImage, style: WallpaperColorStyle = .natural
+    ) -> (primary: (CGFloat, CGFloat, CGFloat),
+          secondary: (CGFloat, CGFloat, CGFloat),
+          primaryOutline: (CGFloat, CGFloat, CGFloat),
+          secondaryOutline: (CGFloat, CGFloat, CGFloat),
+          usesLightTones: Bool) {
+        let background = dominantColor(of: image)
+        let seed = wallpaperSeedColor(of: image)
+
+        // 以 AOSP Monet 的三种常见动态配色方向生成 Accent 1/2：
+        // Natural(Tonal Spot) 保持种子色相；Vibrant 提高色度并轻偏次色；
+        // Expressive 对主色做明显色相偏移、次色做轻微偏移，形成更活泼的层次。
+        // 最终仍由 OKLCH 色域映射与实际对比度选择保证屏幕可读性。
+        let source = rgbToOKLCH(seed)
+        let hasUsableChroma = source.chroma >= 0.025
+        let primaryHueOffset: Double
+        let secondaryHueOffset: Double
+        let accent1Chroma: Double
+        let accent2Chroma: Double
+        switch style {
+        case .natural:
+            primaryHueOffset = 0
+            secondaryHueOffset = 0
+            accent1Chroma = hasUsableChroma ? 0.145 : source.chroma
+            accent2Chroma = hasUsableChroma ? 0.052 : source.chroma
+        case .vibrant:
+            primaryHueOffset = 0
+            secondaryHueOffset = .pi / 12       // +15°
+            accent1Chroma = hasUsableChroma ? 0.19 : source.chroma
+            accent2Chroma = hasUsableChroma ? 0.09 : source.chroma
+        case .expressive:
+            primaryHueOffset = .pi * 4 / 3      // +240°
+            secondaryHueOffset = .pi / 12       // +15°
+            accent1Chroma = hasUsableChroma ? 0.125 : source.chroma
+            accent2Chroma = hasUsableChroma ? 0.075 : source.chroma
+        }
+        let lightPrimary = perceptualTone(of: seed, lightness: 0.92, chroma: accent1Chroma,
+                                          hueOffset: primaryHueOffset)
+        let lightSecondary = perceptualTone(of: seed, lightness: 0.84, chroma: accent2Chroma,
+                                            hueOffset: secondaryHueOffset)
+        let darkPrimary = perceptualTone(of: seed, lightness: 0.32, chroma: accent1Chroma,
+                                         hueOffset: primaryHueOffset)
+        let darkSecondary = perceptualTone(of: seed, lightness: 0.42, chroma: accent2Chroma,
+                                           hueOffset: secondaryHueOffset)
+        // 描边也跟随底图明暗反色：暗图使用同色相浅描边，亮图使用同色相深描边。
+        // 描边与数字本体保持一档明度差，使约 5px 的外圈既能衬托字形，也不会脱离
+        // 壁纸种子色与用户选择的 Material You 方案。
+        let lightPrimaryOutline = perceptualTone(of: seed, lightness: 0.98,
+                                                 chroma: accent1Chroma * 0.38,
+                                                 hueOffset: primaryHueOffset)
+        let lightSecondaryOutline = perceptualTone(of: seed, lightness: 0.94,
+                                                   chroma: accent2Chroma * 0.48,
+                                                   hueOffset: secondaryHueOffset)
+        let darkPrimaryOutline = perceptualTone(of: seed, lightness: 0.14,
+                                                chroma: accent1Chroma * 0.56,
+                                                hueOffset: primaryHueOffset)
+        let darkSecondaryOutline = perceptualTone(of: seed, lightness: 0.20,
+                                                  chroma: accent2Chroma * 0.62,
+                                                  hueOffset: secondaryHueOffset)
+        let lightScore = contrastRatio(lightPrimary, background: background)
+            + contrastRatio(lightSecondary, background: background) * 0.35
+        let darkScore = contrastRatio(darkPrimary, background: background)
+            + contrastRatio(darkSecondary, background: background) * 0.35
+        if lightScore >= darkScore {
+            return (lightPrimary, lightSecondary,
+                    lightPrimaryOutline, lightSecondaryOutline, true)
+        }
+        return (darkPrimary, darkSecondary,
+                darkPrimaryOutline, darkSecondaryOutline, false)
+    }
+
+    /// 兼容既有调用：强调色取同一 Material You 色调阶中的次级色。
+    public static func wallpaperAccentColor(of image: CGImage) -> (CGFloat, CGFloat, CGFloat) {
+        wallpaperClockColors(of: image).secondary
+    }
+
+    /// 与整图求平均不同，按色相聚类并优先选择占比高、色度清晰且不过曝的种子色，
+    /// 避免多色照片被平均成灰褐色；低饱和图片则自然回退为中性色调阶。
+    private static func wallpaperSeedColor(of image: CGImage) -> (CGFloat, CGFloat, CGFloat) {
+        let size = 32
+        guard let ctx = CGContext(data: nil, width: size, height: size,
+                                  bitsPerComponent: 8, bytesPerRow: size * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let data = ctx.data else {
+            return dominantColor(of: image)
+        }
+        ctx.interpolationQuality = .medium
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+
+        struct Bucket {
+            var score: CGFloat = 0
+            var red: CGFloat = 0
+            var green: CGFloat = 0
+            var blue: CGFloat = 0
+        }
+        var buckets = Array(repeating: Bucket(), count: 12)
+        let ptr = data.assumingMemoryBound(to: UInt8.self)
+        for index in 0..<(size * size) {
+            let offset = index * 4
+            guard ptr[offset + 3] >= 200 else { continue }
+            let r = CGFloat(ptr[offset]) / 255
+            let g = CGFloat(ptr[offset + 1]) / 255
+            let b = CGFloat(ptr[offset + 2]) / 255
+            let maximum = max(r, g, b)
+            let minimum = min(r, g, b)
+            let chroma = maximum - minimum
+            let saturation = maximum > 0.001 ? chroma / maximum : 0
+            guard chroma > 0.035, saturation > 0.10 else { continue }
+
+            let hue: CGFloat
+            if maximum == r {
+                hue = ((g - b) / chroma).truncatingRemainder(dividingBy: 6) / 6
+            } else if maximum == g {
+                hue = ((b - r) / chroma + 2) / 6
+            } else {
+                hue = ((r - g) / chroma + 4) / 6
+            }
+            let normalizedHue = hue < 0 ? hue + 1 : hue
+            let bucketIndex = min(Int(normalizedHue * 12), 11)
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            let exposureWeight = max(0.28, 1 - abs(luminance - 0.5) * 1.25)
+            let weight = (0.32 + saturation * 1.68) * exposureWeight
+            buckets[bucketIndex].score += weight
+            buckets[bucketIndex].red += r * weight
+            buckets[bucketIndex].green += g * weight
+            buckets[bucketIndex].blue += b * weight
+        }
+
+        guard let winner = buckets.max(by: { $0.score < $1.score }), winner.score > 0 else {
+            return dominantColor(of: image)
+        }
+        return (winner.red / winner.score,
+                winner.green / winner.score,
+                winner.blue / winner.score)
+    }
+
+    private struct OKLCHColor {
+        var lightness: Double
+        var chroma: Double
+        var hue: Double
+    }
+
+    private static func perceptualTone(
+        of rgb: (CGFloat, CGFloat, CGFloat), lightness: Double, chroma: Double,
+        hueOffset: Double = 0
+    ) -> (CGFloat, CGFloat, CGFloat) {
+        let source = rgbToOKLCH(rgb)
+        // 极亮/极暗端会在转回 sRGB 时自动压缩色度以入色域。
+        return oklchToRGB(OKLCHColor(lightness: lightness, chroma: chroma,
+                                    hue: source.hue + hueOffset))
+    }
+
+    private static func rgbToOKLCH(_ rgb: (CGFloat, CGFloat, CGFloat)) -> OKLCHColor {
+        let r = srgbToLinear(Double(rgb.0))
+        let g = srgbToLinear(Double(rgb.1))
+        let b = srgbToLinear(Double(rgb.2))
+        let l = 0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b
+        let m = 0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b
+        let s = 0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b
+        let lRoot = cbrt(l)
+        let mRoot = cbrt(m)
+        let sRoot = cbrt(s)
+        let lightness = 0.210_454_255_3 * lRoot + 0.793_617_785 * mRoot
+            - 0.004_072_046_8 * sRoot
+        let a = 1.977_998_495_1 * lRoot - 2.428_592_205 * mRoot
+            + 0.450_593_709_9 * sRoot
+        let labB = 0.025_904_037_1 * lRoot + 0.782_771_766_2 * mRoot
+            - 0.808_675_766 * sRoot
+        return OKLCHColor(lightness: lightness,
+                          chroma: hypot(a, labB),
+                          hue: atan2(labB, a))
+    }
+
+    private static func oklchToRGB(_ color: OKLCHColor) -> (CGFloat, CGFloat, CGFloat) {
+        var chroma = color.chroma
+        for _ in 0..<18 {
+            let a = chroma * cos(color.hue)
+            let b = chroma * sin(color.hue)
+            let lRoot = color.lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b
+            let mRoot = color.lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b
+            let sRoot = color.lightness - 0.089_484_177_5 * a - 1.291_485_548 * b
+            let l = lRoot * lRoot * lRoot
+            let m = mRoot * mRoot * mRoot
+            let s = sRoot * sRoot * sRoot
+            let redLinear = 4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s
+            let greenLinear = -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s
+            let blueLinear = -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701 * s
+            if redLinear >= 0, redLinear <= 1,
+               greenLinear >= 0, greenLinear <= 1,
+               blueLinear >= 0, blueLinear <= 1 {
+                return (CGFloat(linearToSRGB(redLinear)),
+                        CGFloat(linearToSRGB(greenLinear)),
+                        CGFloat(linearToSRGB(blueLinear)))
+            }
+            chroma *= 0.84
+        }
+        let neutral = CGFloat(linearToSRGB(pow(color.lightness, 3)))
+        return (neutral, neutral, neutral)
+    }
+
+    private static func srgbToLinear(_ component: Double) -> Double {
+        component <= 0.04045
+            ? component / 12.92
+            : pow((component + 0.055) / 1.055, 2.4)
+    }
+
+    private static func linearToSRGB(_ component: Double) -> Double {
+        component <= 0.0031308
+            ? component * 12.92
+            : 1.055 * pow(component, 1 / 2.4) - 0.055
+    }
+
+    private static func relativeLuminance(_ rgb: (CGFloat, CGFloat, CGFloat)) -> Double {
+        0.2126 * srgbToLinear(Double(rgb.0))
+            + 0.7152 * srgbToLinear(Double(rgb.1))
+            + 0.0722 * srgbToLinear(Double(rgb.2))
+    }
+
+    private static func contrastRatio(
+        _ foreground: (CGFloat, CGFloat, CGFloat),
+        background: (CGFloat, CGFloat, CGFloat)
+    ) -> Double {
+        let foregroundLuminance = relativeLuminance(foreground)
+        let backgroundLuminance = relativeLuminance(background)
+        let lighter = max(foregroundLuminance, backgroundLuminance)
+        let darker = min(foregroundLuminance, backgroundLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
     /// 由封面主色生成整卡调色板（按明暗自动适配文字，保留主题强调色）
     public static func artworkPalette(baseColor: (CGFloat, CGFloat, CGFloat),
                                       themeAccent: (CGFloat, CGFloat, CGFloat)) -> ScreenPalette {
@@ -4195,6 +4812,26 @@ public enum ScreenRenderer {
                  in: rect(card.maxX - 10 - badgeW, card.minY + 10, badgeW, 20), align: .right)
     }
 
+    /// Bambu 键盘独立卡片头部：设备名是主信息，品牌名退居辅助行。
+    /// 设备名会在 11–7pt 之间自动收缩，仍过长时由 drawText 统一加省略号。
+    private static func drawBambuHeader(_ ctx: CGContext, card: CGRect, deviceName: String,
+                                        accent: CGColor, colors: ScreenPalette) {
+        let center = CGPoint(x: card.minX + 13.5, y: CGFloat(height) - (card.minY + 18.5))
+        ctx.setFillColor(accent)
+        ctx.fillEllipse(in: CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7))
+
+        let textX = card.minX + 22
+        let textW = card.maxX - textX - 9
+        var nameSize: CGFloat = 11
+        while nameSize > 7 && measureTextWidth(deviceName, size: nameSize, bold: true) > textW {
+            nameSize -= 0.5
+        }
+        drawText(ctx, deviceName, size: nameSize, bold: true, color: colors.primaryTextCG,
+                 in: rect(textX, card.minY + 4, textW, 20), align: .left)
+        drawText(ctx, "BAMBU LAB", size: 5.5, bold: true, color: accent,
+                 in: rect(textX, card.minY + 22, textW, 10), align: .left)
+    }
+
     /// 负载状态指示灯颜色：低负载绿 / 适中黄 / 高负载红（以 CPU 使用率为依据）
     private static func loadIndicatorColor(percent: Double) -> CGColor {
         if percent < 40 {
@@ -4208,10 +4845,17 @@ public enum ScreenRenderer {
 
     private static func drawText(_ ctx: CGContext, _ text: String, size: CGFloat, bold: Bool,
                                  color: CGColor, in bounds: CGRect, align: NSTextAlignment,
-                                 fontName: String? = nil) {
+                                 fontName: String? = nil,
+                                 strokeWidth: CGFloat? = nil,
+                                 strokeColor: CGColor? = nil) {
         let resolvedFont = fontName ?? (bold ? "PingFangSC-Semibold" : "PingFangSC-Regular")
         let font = CTFontCreateWithName(resolvedFont as CFString, size, nil)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        if let strokeWidth, strokeWidth > 0 {
+            // CoreText 使用字体大小百分比表示描边宽度；负值代表同时绘制填充与描边。
+            attributes[.strokeWidth] = -strokeWidth
+            attributes[.strokeColor] = strokeColor ?? color
+        }
         let measure: (String) -> CGFloat = fontName != nil
             ? { measureTextWidth($0, fontName: resolvedFont, size: size) }
             : { measureTextWidth($0, size: size, bold: bold) }
@@ -4238,6 +4882,38 @@ public enum ScreenRenderer {
         CTLineDraw(line, ctx)
     }
 
+    /// Bambu 大字进度使用同一条 CoreText 基线绘制两端对齐的不同字号：
+    /// 大号数字靠左、小号百分号靠右，缩小后仍不会上下漂移。
+    private static func drawBambuProgressLabel(_ ctx: CGContext, number: String,
+                                               numberSize: CGFloat, percentSize: CGFloat,
+                                               numberColor: CGColor, percentColor: CGColor,
+                                               in bounds: CGRect) {
+        let numberFont = CTFontCreateWithName("PingFangSC-Semibold" as CFString, numberSize, nil)
+        let percentFont = CTFontCreateWithName("PingFangSC-Semibold" as CFString, percentSize, nil)
+        let numberLine = CTLineCreateWithAttributedString(NSAttributedString(
+            string: number,
+            attributes: [.font: numberFont, .foregroundColor: numberColor]
+        ))
+        let percentLine = CTLineCreateWithAttributedString(NSAttributedString(
+            string: "%",
+            attributes: [.font: percentFont, .foregroundColor: percentColor]
+        ))
+        var numberAscent: CGFloat = 0
+        var numberDescent: CGFloat = 0
+        _ = CTLineGetTypographicBounds(numberLine, &numberAscent, &numberDescent, nil)
+        var percentAscent: CGFloat = 0
+        var percentDescent: CGFloat = 0
+        let percentWidth = CGFloat(CTLineGetTypographicBounds(
+            percentLine, &percentAscent, &percentDescent, nil))
+        let ascent = max(numberAscent, percentAscent)
+        let descent = max(numberDescent, percentDescent)
+        let baselineY = bounds.midY - (ascent + descent) / 2
+        ctx.textPosition = CGPoint(x: bounds.minX, y: baselineY)
+        CTLineDraw(numberLine, ctx)
+        ctx.textPosition = CGPoint(x: bounds.maxX - percentWidth, y: baselineY)
+        CTLineDraw(percentLine, ctx)
+    }
+
     /// 用 PingFang SC 度量文本宽度（粗体/常规）
     private static func measureTextWidth(_ text: String, size: CGFloat, bold: Bool) -> CGFloat {
         let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
@@ -4253,6 +4929,17 @@ public enum ScreenRenderer {
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
         return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+    }
+
+    /// 自定义字体版本的自适应字号，用于图片上的全局时钟叠加。
+    private static func adaptiveFontSize(_ text: String, maxSize: CGFloat, minSize: CGFloat,
+                                         fontName: String, maxWidth: CGFloat) -> CGFloat {
+        var size = maxSize
+        while size > minSize,
+              measureTextWidth(text, fontName: fontName, size: size) > maxWidth {
+            size -= 0.5
+        }
+        return max(size, minSize)
     }
 
     /// 自适应字号：从 maxSize 逐步缩小直到放得下 maxWidth，缩到 minSize 为止

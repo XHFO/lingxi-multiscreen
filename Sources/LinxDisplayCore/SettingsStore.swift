@@ -131,19 +131,27 @@ public final class AppSettings: ObservableObject {
     @Published public var customImageClock: CustomImageClockOverlay = .none {
         didSet { onChange() }
     }
-    /// 时钟字号（横向时间使用；竖向数字按比例派生；上限 96pt）
-    @Published public var clockFontSize = 36 {
+    /// 壁纸种子色生成时钟前景色的 Material 动态配色风格。
+    @Published public var wallpaperColorStyle: WallpaperColorStyle = .natural {
         didSet { onChange() }
     }
-    /// 叠加时钟字体粗细（Pixel 锁屏风格，默认纤细）
-    @Published public var clockFontWeight: ClockFontWeight = .thin {
+    /// 是否在 Pixel 叠排时钟下方显示日期（按键盘设备独立保存）。
+    @Published public var clockDateVisible = true {
+        didSet { onChange() }
+    }
+    /// Pixel 叠排时钟整体图层组尺寸（32–42；四位数字、间距、日期同步缩放）。
+    @Published public var clockFontSize = StackedClockSizing.defaultValue {
+        didSet { onChange() }
+    }
+    /// 叠加时钟字体粗细（Pixel 锁屏风格，默认中粗）
+    @Published public var clockFontWeight: ClockFontWeight = .medium {
         didSet { onChange() }
     }
     /// 叠加时钟字体家族（默认 Helvetica Neue，Pixel 锁屏风格）
     @Published public var clockFont: ClockFont = .helveticaNeue {
         didSet { onChange() }
     }
-    /// 时钟叠加水平偏移（px，正值向右；横向布局作用于时间+日期整组）
+    /// Pixel 叠排时钟图层组水平偏移（px，正值向右）
     @Published public var clockOffsetX = 0 {
         didSet { onChange() }
     }
@@ -319,6 +327,13 @@ public final class AppSettings: ObservableObject {
     @Published public var oracleAutoPushMinutes = 30 {
         didSet { onChange() }
     }
+    /// 口袋先知多画板：按保存顺序定时切换到下一块画板并立即推送。
+    @Published public var oracleBoardRotationEnabled = false {
+        didSet { onChange() }
+    }
+    @Published public var oracleBoardRotationMinutes = 5 {
+        didSet { onChange() }
+    }
     /// 摘录画板：自动推送开关与间隔（分钟）
     @Published public var excerptAutoPushEnabled = false {
         didSet { onChange() }
@@ -376,6 +391,11 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     @Published public var keyboardPageDownShortcut = GlobalShortcut.defaultPageDown {
+        didSet { onChange() }
+    }
+    /// 使用灵犀68 的 Fn + 旋钮手动翻页；启用时独占该键盘的媒体控制接口并拦截系统音量。
+    /// 涉及系统输入行为，必须由用户主动开启，默认关闭。
+    @Published public var lingxi68KnobPagingEnabled = false {
         didSet { onChange() }
     }
     /// Home Assistant：服务器地址（全局唯一，所有设备共享；如 http://192.168.x.x:8123）
@@ -465,8 +485,16 @@ public final class AppSettings: ObservableObject {
     @Published public var bambuErrorEntityID = "" {
         didSet { onChange() }
     }
-    /// 画面实体（活动 Bambu 设备的镜像；image.* 实体，如打印机摄像头快照 / 模型封面）
+    /// 摄像头实体（活动 Bambu 设备的镜像；保留旧字段名兼容已有配置）
     @Published public var bambuImageEntityID = "" {
+        didSet { onChange() }
+    }
+    /// 打印任务封面实体（活动 Bambu 设备的镜像）
+    @Published public var bambuTaskImageEntityID = "" {
+        didSet { onChange() }
+    }
+    /// 卡片当前显示的画面来源（摄像头 / 任务图片）
+    @Published public var bambuImageSource: BambuImageSource = .camera {
         didSet { onChange() }
     }
     /// Bambu Lab 打印机名称（活动 Bambu 设备的镜像；设备名独立存储于各设备快照）
@@ -703,7 +731,7 @@ public final class AppSettings: ObservableObject {
             \.cardRotationEnabled, \.networkChart, \.showCpu, \.showMemory, \.showNetwork,
             \.showUptime, \.showDisk, \.pomodoroPraiseEnabled, \.qwenQuotaShowPercent,
             \.showExcerptSource, \.canvasNowPlayingCover, \.canvasNowPlayingSmartBg,
-            \.canvasSspaiRandom, \.imageRotationEnabled,
+            \.canvasSspaiRandom, \.imageRotationEnabled, \.clockDateVisible,
         ]
         let intPaths: [WritableKeyPath<DeviceSettings, Int?>] = [
             \.safeAreaHeight, \.jpegQuality, \.dynamicUploadSeconds, \.cardRotationMinutes,
@@ -732,6 +760,7 @@ public final class AppSettings: ObservableObject {
             if s.canvasImageMode == nil { s.canvasImageMode = seed.canvasImageMode }
             if s.imageRotationMode == nil { s.imageRotationMode = seed.imageRotationMode }
             if s.customImageClock == nil { s.customImageClock = seed.customImageClock }
+            if s.wallpaperColorStyle == nil { s.wallpaperColorStyle = seed.wallpaperColorStyle }
             if s.clockFontWeight == nil { s.clockFontWeight = seed.clockFontWeight }
             if s.clockFont == nil { s.clockFont = seed.clockFont }
             if s.emojiWallpaperLayout == nil { s.emojiWallpaperLayout = seed.emojiWallpaperLayout }
@@ -829,7 +858,7 @@ public final class AppSettings: ObservableObject {
     @Published public var rand0ButtonTargetDeviceID: UUID? {
         didSet { onChange() }
     }
-    /// 受管设备列表（每台设备独立记录连接与画布设置；首次运行自动按当前设置创建每类一台）
+    /// 受管设备列表（每台设备独立记录连接与画布设置；首次运行保持为空并进入添加引导）
     @Published public var devices: [ManagedDevice] = [] {
         didSet { onChange() }
     }
@@ -925,9 +954,13 @@ public final class AppSettings: ObservableObject {
         jpegQuality = min(max(jpegQuality, 50), 100)
         dynamicUploadSeconds = min(max(dynamicUploadSeconds, 2), 60)
         imageRotationSeconds = min(max(imageRotationSeconds, Int(RotationInterval.minSeconds)), Int(RotationInterval.maxSeconds))
-        clockFontSize = min(max(clockFontSize, 18), 96)
+        clockFontSize = min(max(clockFontSize, StackedClockSizing.minimum),
+                            StackedClockSizing.maximum)
+        customImageClock = customImageClock.stackedOnly
+        clockFontWeight = clockFontWeight.modernized
         clockOffsetX = min(max(clockOffsetX, -60), 60)
-        clockOffsetY = min(max(clockOffsetY, -80), 80)
+        clockOffsetY = min(max(clockOffsetY, StackedClockSizing.minimumYOffset),
+                           StackedClockSizing.maximumYOffset)
         pomodoroTaskFontSize = min(max(pomodoroTaskFontSize, 7), 16)
         // 快捷键钳制：键码 0–127、修饰键只保留 ⌘⇧⌥⌃
         pomodoroToggleShortcut = pomodoroToggleShortcut.clamped()
@@ -960,6 +993,7 @@ public final class AppSettings: ObservableObject {
         canvasNowPlayingTitleSize = min(max(canvasNowPlayingTitleSize, 7), 24)
         canvasNowPlayingArtistSize = min(max(canvasNowPlayingArtistSize, 6), 20)
         oracleAutoPushMinutes = min(max(oracleAutoPushMinutes, 1), 1440)
+        oracleBoardRotationMinutes = min(max(oracleBoardRotationMinutes, 1), 1440)
         excerptAutoPushMinutes = min(max(excerptAutoPushMinutes, 1), 1440)
         cardRotationMinutes = min(max(cardRotationMinutes, 1), 60)
         sidebarWidth = min(max(sidebarWidth, 48), 320)
@@ -1030,7 +1064,8 @@ public final class AppSettings: ObservableObject {
              showCpu, showMemory, showNetwork, showUptime, showDisk,
              networkChart,
              imageRotationEnabled, imageRotationSeconds, imageRotationMode,
-             customImageClock, clockFontSize, clockTimeFormat, clockFontWeight, clockFont,
+             customImageClock, wallpaperColorStyle, clockDateVisible,
+             clockFontSize, clockTimeFormat, clockFontWeight, clockFont,
              clockOffsetX, clockOffsetY, timeFormat, dateFormat,
              canvasModules, canvasText,
              canvasClockFormat, canvasDateFormat, canvasNowPlayingCover, canvasNowPlayingSmartBg,
@@ -1042,12 +1077,13 @@ public final class AppSettings: ObservableObject {
              canvasModuleMargins, canvasPrinterFields, oracleCanvasPrinterFields, excerptCanvasPrinterFields, qwenQuotaShowPercent,
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
-             keyboardPageUpShortcut, keyboardPageDownShortcut,
+             keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled,
              haServerURL, haToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
              bambuNozzleTempEntityID, bambuBedTempEntityID, bambuRemainingEntityID, bambuErrorEntityID,
+             bambuImageEntityID, bambuTaskImageEntityID, bambuImageSource,
              bambuPrinterName, bambuPrinters,
              nowPlayingTitleSize, nowPlayingArtistSize,
              nowPlayingFooterVisible, nowPlayingTimeFormat, nowPlayingDateFormat,
@@ -1055,6 +1091,7 @@ public final class AppSettings: ObservableObject {
              canvasNowPlayingTitleSize, canvasNowPlayingArtistSize,
              oracleBackgroundMode,
              oracleAutoPushEnabled, oracleAutoPushMinutes,
+             oracleBoardRotationEnabled, oracleBoardRotationMinutes,
              excerptAutoPushEnabled, excerptAutoPushMinutes,
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
@@ -1107,6 +1144,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(imageRotationSeconds, forKey: .imageRotationSeconds)
         try container.encode(imageRotationMode.rawValue, forKey: .imageRotationMode)
         try container.encode(customImageClock.rawValue, forKey: .customImageClock)
+        try container.encode(wallpaperColorStyle.rawValue, forKey: .wallpaperColorStyle)
+        try container.encode(clockDateVisible, forKey: .clockDateVisible)
         try container.encode(clockFontSize, forKey: .clockFontSize)
         try container.encode(clockFontWeight.rawValue, forKey: .clockFontWeight)
         try container.encode(clockFont.rawValue, forKey: .clockFont)
@@ -1149,6 +1188,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(pomodoroResetShortcut, forKey: .pomodoroResetShortcut)
         try container.encode(keyboardPageUpShortcut, forKey: .keyboardPageUpShortcut)
         try container.encode(keyboardPageDownShortcut, forKey: .keyboardPageDownShortcut)
+        try container.encode(lingxi68KnobPagingEnabled, forKey: .lingxi68KnobPagingEnabled)
         try container.encode(haServerURL, forKey: .haServerURL)
         try container.encode(haToken, forKey: .haToken)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
@@ -1171,6 +1211,9 @@ public final class AppSettings: ObservableObject {
         try container.encode(bambuBedTempEntityID, forKey: .bambuBedTempEntityID)
         try container.encode(bambuRemainingEntityID, forKey: .bambuRemainingEntityID)
         try container.encode(bambuErrorEntityID, forKey: .bambuErrorEntityID)
+        try container.encode(bambuImageEntityID, forKey: .bambuImageEntityID)
+        try container.encode(bambuTaskImageEntityID, forKey: .bambuTaskImageEntityID)
+        try container.encode(bambuImageSource.rawValue, forKey: .bambuImageSource)
         try container.encode(bambuPrinterName, forKey: .bambuPrinterName)
         try container.encode(bambuPrinters, forKey: .bambuPrinters)
         try container.encode(nowPlayingTitleSize, forKey: .nowPlayingTitleSize)
@@ -1185,6 +1228,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(oracleBackgroundMode.rawValue, forKey: .oracleBackgroundMode)
         try container.encode(oracleAutoPushEnabled, forKey: .oracleAutoPushEnabled)
         try container.encode(oracleAutoPushMinutes, forKey: .oracleAutoPushMinutes)
+        try container.encode(oracleBoardRotationEnabled, forKey: .oracleBoardRotationEnabled)
+        try container.encode(oracleBoardRotationMinutes, forKey: .oracleBoardRotationMinutes)
         try container.encode(excerptAutoPushEnabled, forKey: .excerptAutoPushEnabled)
         try container.encode(excerptAutoPushMinutes, forKey: .excerptAutoPushMinutes)
         try container.encode(cardRotationEnabled, forKey: .cardRotationEnabled)
@@ -1285,8 +1330,14 @@ extension AppSettings: Codable {
         }
         if let raw = try container.decodeIfPresent(Int.self, forKey: .customImageClock),
            let overlay = CustomImageClockOverlay(rawValue: raw) {
-            customImageClock = overlay
+            customImageClock = overlay.stackedOnly
         }
+        if let raw = try container.decodeIfPresent(Int.self, forKey: .wallpaperColorStyle),
+           let style = WallpaperColorStyle(rawValue: raw) {
+            wallpaperColorStyle = style
+        }
+        clockDateVisible = try container.decodeIfPresent(Bool.self, forKey: .clockDateVisible)
+            ?? clockDateVisible
         clockFontSize = try container.decodeIfPresent(Int.self, forKey: .clockFontSize) ?? clockFontSize
         if let raw = try container.decodeIfPresent(Int.self, forKey: .clockFontWeight),
            let weight = ClockFontWeight(rawValue: raw) {
@@ -1345,6 +1396,7 @@ extension AppSettings: Codable {
         pomodoroResetShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .pomodoroResetShortcut) ?? .defaultReset
         keyboardPageUpShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageUpShortcut) ?? .defaultPageUp
         keyboardPageDownShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageDownShortcut) ?? .defaultPageDown
+        lingxi68KnobPagingEnabled = try container.decodeIfPresent(Bool.self, forKey: .lingxi68KnobPagingEnabled) ?? false
         haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
         haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
@@ -1373,6 +1425,12 @@ extension AppSettings: Codable {
         bambuBedTempEntityID = try container.decodeIfPresent(String.self, forKey: .bambuBedTempEntityID) ?? bambuBedTempEntityID
         bambuRemainingEntityID = try container.decodeIfPresent(String.self, forKey: .bambuRemainingEntityID) ?? bambuRemainingEntityID
         bambuErrorEntityID = try container.decodeIfPresent(String.self, forKey: .bambuErrorEntityID) ?? bambuErrorEntityID
+        bambuImageEntityID = try container.decodeIfPresent(String.self, forKey: .bambuImageEntityID) ?? bambuImageEntityID
+        bambuTaskImageEntityID = try container.decodeIfPresent(String.self, forKey: .bambuTaskImageEntityID) ?? bambuTaskImageEntityID
+        if let raw = try container.decodeIfPresent(Int.self, forKey: .bambuImageSource),
+           let source = BambuImageSource(rawValue: raw) {
+            bambuImageSource = source
+        }
         bambuPrinterName = try container.decodeIfPresent(String.self, forKey: .bambuPrinterName) ?? bambuPrinterName
         bambuPrinters = try container.decodeIfPresent([BambuLabCardSettings].self, forKey: .bambuPrinters) ?? bambuPrinters
         nowPlayingTitleSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingTitleSize) ?? nowPlayingTitleSize
@@ -1390,6 +1448,8 @@ extension AppSettings: Codable {
         }
         oracleAutoPushEnabled = try container.decodeIfPresent(Bool.self, forKey: .oracleAutoPushEnabled) ?? oracleAutoPushEnabled
         oracleAutoPushMinutes = try container.decodeIfPresent(Int.self, forKey: .oracleAutoPushMinutes) ?? oracleAutoPushMinutes
+        oracleBoardRotationEnabled = try container.decodeIfPresent(Bool.self, forKey: .oracleBoardRotationEnabled) ?? oracleBoardRotationEnabled
+        oracleBoardRotationMinutes = try container.decodeIfPresent(Int.self, forKey: .oracleBoardRotationMinutes) ?? oracleBoardRotationMinutes
         excerptAutoPushEnabled = try container.decodeIfPresent(Bool.self, forKey: .excerptAutoPushEnabled) ?? excerptAutoPushEnabled
         excerptAutoPushMinutes = try container.decodeIfPresent(Int.self, forKey: .excerptAutoPushMinutes) ?? excerptAutoPushMinutes
         cardRotationEnabled = try container.decodeIfPresent(Bool.self, forKey: .cardRotationEnabled) ?? cardRotationEnabled

@@ -3,6 +3,7 @@
 //       Codex 用量解析、自动同步规划、系统监控采样、设置往返。
 import AppKit
 import CoreGraphics
+import CoreText
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -459,6 +460,39 @@ func exportPreviews(to directory: String) throws {
     CGImageDestinationAddImage(playingDest, playingScaled, nil)
     _ = CGImageDestinationFinalize(playingDest)
     print("已导出 \(playingURL.path)")
+
+    // Bambu 大字布局：状态背景字 + 前景百分比 + 摄像头/任务图片区块。
+    let bambuPreviewSettings = AppSettings()
+    bambuPreviewSettings.cardTheme = .deepSpace
+    let bambuPreviewConfig = BambuLabCardSettings(
+        name: "X2D", statusEntityID: "sensor.x2d_status",
+        progressEntityID: "sensor.x2d_progress", taskEntityID: "sensor.x2d_task",
+        nozzleTempEntityID: "sensor.x2d_nozzle", bedTempEntityID: "sensor.x2d_bed",
+        remainingEntityID: "sensor.x2d_remaining", imageEntityID: "camera.x2d",
+        taskImageEntityID: "image.x2d_cover", layout: .large)
+    let bambuPreviewEntities = [
+        HAEntity(entityId: "sensor.x2d_status", friendlyName: "X2D 状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.x2d_progress", friendlyName: "X2D 进度", state: "50", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.x2d_task", friendlyName: "X2D 任务", state: "Luna 头饰", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.x2d_nozzle", friendlyName: "X2D 喷嘴", state: "220", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.x2d_bed", friendlyName: "X2D 热床", state: "55", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.x2d_remaining", friendlyName: "X2D 剩余", state: "42", unitOfMeasurement: "min")
+    ]
+    let bambuPreview = try ScreenRenderer.renderBambuLab(
+        bambuPreviewConfig, entities: bambuPreviewEntities, image: artData as Data,
+        settings: bambuPreviewSettings, dataUpdatedAt: Date())
+    let bambuCtx = CGContext(data: nil, width: Int(142 * scale), height: Int(428 * scale),
+                             bitsPerComponent: 8, bytesPerRow: 0,
+                             space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    bambuCtx.interpolationQuality = .high
+    bambuCtx.draw(bambuPreview.image, in: CGRect(x: 0, y: 0, width: 142 * scale, height: 428 * scale))
+    let bambuURL = outURL.appendingPathComponent("Bambu-大字布局.png")
+    let bambuDest = CGImageDestinationCreateWithURL(
+        bambuURL as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(bambuDest, bambuCtx.makeImage()!, nil)
+    _ = CGImageDestinationFinalize(bambuDest)
+    print("已导出 \(bambuURL.path)")
 
     // 系统监控动态排版：仅 CPU
     let sysSettings = AppSettings()
@@ -1409,6 +1443,89 @@ func testClockOverlay() throws {
     let settings = AppSettings()
     settings.customImagePath = path.path
 
+    checkEqual(CustomImageClockOverlay.horizontalTop.title, "Pixel 大时钟 · 顶部", "Pixel 顶部样式标题")
+    checkEqual(CustomImageClockOverlay.verticalCenter.title, "Pixel 叠排大时钟 · 居中", "Pixel 叠排样式标题")
+    checkEqual(CustomImageClockOverlay.allCases,
+               [.none, .verticalLeft, .verticalCenter], "时钟叠加只提供两种 Pixel 叠排布局")
+    checkEqual(CustomImageClockOverlay.horizontalTop.stackedOnly, .verticalLeft,
+               "旧顶部横向时钟迁移到上方叠排")
+    checkEqual(CustomImageClockOverlay.horizontalBottom.stackedOnly, .verticalCenter,
+               "旧底部横向时钟迁移到居中叠排")
+
+    // 图片强调色按壁纸采样，纯红/纯蓝均保留自己的色相，并自动提升反差。
+    func solidImage(_ color: CGColor) -> CGImage {
+        let colorContext = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8,
+                                     bytesPerRow: 32 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        colorContext.setFillColor(color)
+        colorContext.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        return colorContext.makeImage()!
+    }
+    let redAccent = ScreenRenderer.wallpaperAccentColor(
+        of: solidImage(CGColor(red: 0.72, green: 0.06, blue: 0.04, alpha: 1)))
+    let blueAccent = ScreenRenderer.wallpaperAccentColor(
+        of: solidImage(CGColor(red: 0.04, green: 0.12, blue: 0.76, alpha: 1)))
+    check(redAccent.0 > redAccent.1 && redAccent.0 > redAccent.2,
+          "红色图片应采样出偏红强调色")
+    check(blueAccent.2 > blueAccent.0 && blueAccent.2 > blueAccent.1,
+          "蓝色图片应采样出偏蓝强调色")
+    check(redAccent != blueAccent, "不同壁纸应得到不同强调色")
+    func linear(_ value: CGFloat) -> Double {
+        let value = Double(value)
+        return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    func luminance(_ color: (CGFloat, CGFloat, CGFloat)) -> Double {
+        0.2126 * linear(color.0) + 0.7152 * linear(color.1) + 0.0722 * linear(color.2)
+    }
+    func contrast(_ first: (CGFloat, CGFloat, CGFloat),
+                  _ second: (CGFloat, CGFloat, CGFloat)) -> Double {
+        let values = [luminance(first), luminance(second)].sorted()
+        return (values[1] + 0.05) / (values[0] + 0.05)
+    }
+    let redBackground: (CGFloat, CGFloat, CGFloat) = (0.72, 0.06, 0.04)
+    let redTones = ScreenRenderer.wallpaperClockColors(
+        of: solidImage(CGColor(red: redBackground.0, green: redBackground.1,
+                               blue: redBackground.2, alpha: 1)))
+    check(redTones.usesLightTones, "深色壁纸应选择 Material You 浅色调阶")
+    check(contrast(redTones.primary, redBackground) >= 5,
+          "深色壁纸与主时钟色应有强烈对比")
+    check(redTones.primary != redTones.secondary, "同色系主次色调应有明暗层级")
+    check(luminance(redTones.primaryOutline) > luminance(redTones.primary),
+          "每个数字应具有比本体更浅的同色系外轮廓")
+    check(contrast(redTones.primaryOutline, redBackground) >= 5,
+          "深色壁纸上的浅描边应保持强对比")
+    check(redTones.primary.0 - max(redTones.primary.1, redTones.primary.2) > 0.08,
+          "Material Accent 1 应保留明显的红色种子色")
+    let lightBackground: (CGFloat, CGFloat, CGFloat) = (0.92, 0.84, 0.30)
+    let lightTones = ScreenRenderer.wallpaperClockColors(
+        of: solidImage(CGColor(red: lightBackground.0, green: lightBackground.1,
+                               blue: lightBackground.2, alpha: 1)))
+    check(!lightTones.usesLightTones, "浅色壁纸应选择 Material You 深色调阶")
+    check(contrast(lightTones.primary, lightBackground) >= 5,
+          "浅色壁纸与主时钟色应有强烈对比")
+    check(luminance(lightTones.primaryOutline) < luminance(lightTones.primary),
+          "浅色壁纸应自动切换为比数字本体更深的外轮廓")
+    check(contrast(lightTones.primaryOutline, lightBackground) >= 5,
+          "浅色壁纸上的深描边应保持强对比")
+    let stackedFont = CTFontCreateWithName("Arial-Black" as CFString, 40, nil)
+    checkEqual(CTFontCopyPostScriptName(stackedFont) as String,
+               "Arial-Black", "叠排时钟使用 Arial Black 字体")
+    checkEqual(WallpaperColorStyle.allCases.count, 3, "Pixel 动态取色提供三种样式")
+    checkEqual(WallpaperColorStyle.natural.title, "自然", "自然取色标题")
+    checkEqual(WallpaperColorStyle.vibrant.title, "鲜艳", "鲜艳取色标题")
+    checkEqual(WallpaperColorStyle.expressive.title, "表现力", "表现力取色标题")
+    let redImage = solidImage(CGColor(red: redBackground.0, green: redBackground.1,
+                                      blue: redBackground.2, alpha: 1))
+    let naturalColors = ScreenRenderer.wallpaperClockColors(of: redImage, style: .natural)
+    let vibrantColors = ScreenRenderer.wallpaperClockColors(of: redImage, style: .vibrant)
+    let expressiveColors = ScreenRenderer.wallpaperClockColors(of: redImage, style: .expressive)
+    check(naturalColors.primary != vibrantColors.primary, "鲜艳样式应改变动态色板")
+    check(naturalColors.primary != expressiveColors.primary, "表现力样式应改变动态色板")
+    check(contrast(vibrantColors.primary, redBackground) >= 5,
+          "鲜艳样式仍应保持强对比")
+    check(contrast(expressiveColors.primary, redBackground) >= 5,
+          "表现力样式仍应保持强对比")
+
     // 各布局渲染成功且尺寸正确
     for overlay in CustomImageClockOverlay.allCases {
         settings.customImageClock = overlay
@@ -1421,7 +1538,7 @@ func testClockOverlay() throws {
     // 叠加与不叠加渲染结果不同（时钟确实画上去了）
     settings.customImageClock = .none
     let noneResult = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    settings.customImageClock = .horizontalTop
+    settings.customImageClock = .verticalLeft
     let pillResult = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     check(noneResult.data != pillResult.data, "叠加时钟后画面应变化")
 
@@ -1437,55 +1554,85 @@ func testClockOverlay() throws {
                                                  now: base.addingTimeInterval(60))
     check(r1.data != r3.data, "跨分钟时钟画面应变化")
 
-    // 横向底部与横向顶部布局不同
-    settings.customImageClock = .horizontalTop
-    let ht = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    settings.customImageClock = .horizontalBottom
-    let hb = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(ht.data != hb.data, "横向顶部/底部布局应不同")
+    // 两种保留布局的位置不同；旧横向值渲染时直接归一为相应叠排样式
     settings.customImageClock = .verticalLeft
     let vl = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(vl.data != ht.data, "竖向布局应与横向布局不同")
+    settings.customImageClock = .verticalCenter
+    let vc = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(vl.data != vc.data, "上方/居中叠排布局应不同")
+    settings.customImageClock = .horizontalTop
+    let legacyTop = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(legacyTop.data == vl.data, "旧横向顶部渲染归一为上方叠排")
 
     // 设置往返
     let roundTrip = AppSettings()
     roundTrip.customImageClock = .horizontalBottom
     let encoded = try JSONEncoder().encode(roundTrip)
     let decoded = try JSONDecoder().decode(AppSettings.self, from: encoded)
-    checkEqual(decoded.customImageClock, .horizontalBottom, "时钟叠加设置往返")
+    checkEqual(decoded.customImageClock, .verticalCenter, "旧横向时钟设置解码迁移为叠排")
+    checkEqual(decoded.wallpaperColorStyle, .natural, "旧设置默认使用自然取色")
+    checkEqual(decoded.clockDateVisible, true, "旧设置默认显示叠排时钟日期")
+    roundTrip.wallpaperColorStyle = .expressive
+    let styleDecoded = try JSONDecoder().decode(AppSettings.self,
+                                                from: JSONEncoder().encode(roundTrip))
+    checkEqual(styleDecoded.wallpaperColorStyle, .expressive, "动态取色样式设置往返")
 
-    // 字体粗细：枚举/字体名、设置往返、不同字重渲染不同
-    checkEqual(ClockFontWeight.allCases.count, 5, "时钟字重数量")
+    // 日期可独立隐藏；关闭后连同日期间距一起释放，四位数字仍保持完整图层组布局。
+    settings.customImageClock = .verticalCenter
+    settings.clockDateVisible = true
+    let withClockDate = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    settings.clockDateVisible = false
+    let withoutClockDate = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(withClockDate.data != withoutClockDate.data, "日期开关应改变叠排时钟渲染")
+    settings.clockDateVisible = true
+
+    // 旧字体设置仍可解码，但 Pixel 叠排时钟固定使用 Arial Black，不再受其影响
+    checkEqual(ClockFontWeight.allCases.count, 6, "时钟字重数量")
+    checkEqual(ClockFontWeight.modernCases, [.regular, .medium, .bold], "现代时钟可选字重")
     checkEqual(ClockFontWeight.thin.title, "纤细", "时钟字重标题")
     checkEqual(ClockFontWeight.thin.fontName, "HelveticaNeue-Thin", "纤细对应字体名")
     checkEqual(ClockFontWeight.ultraLight.fontName, "HelveticaNeue-UltraLight", "极细字体名")
     checkEqual(ClockFontWeight.medium.fontName, "HelveticaNeue-Medium", "中粗字体名")
+    checkEqual(ClockFontWeight.bold.fontName, "HelveticaNeue-Bold", "粗体字体名")
+    checkEqual(ClockFontWeight.thin.modernized, .medium, "旧纤细字重自动提升为中粗")
     let weightRT = AppSettings()
     weightRT.clockFontWeight = .medium
     let weightDecoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(weightRT))
     checkEqual(weightDecoded.clockFontWeight, .medium, "时钟字重设置往返")
-    checkEqual(AppSettings().clockFontWeight, .thin, "时钟字重默认纤细")
+    checkEqual(AppSettings().clockFontWeight, .medium, "时钟字重默认中粗")
     settings.customImageClock = .verticalCenter
-    let thinRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     settings.clockFontWeight = .medium
     let mediumRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(thinRender.data != mediumRender.data, "时钟字重调整应改变渲染")
+    settings.clockFontWeight = .bold
+    let boldRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    check(boldRender.data == mediumRender.data, "Pixel 叠排时钟固定 Arial Black，不受旧字重影响")
 
-    // 字号调节：不同字号渲染结果不同
-    settings.customImageClock = .horizontalTop
-    settings.clockFontSize = 24
+    // 整体大小：有效范围每一端都会统一缩放整个时钟组
+    checkEqual(StackedClockSizing.minimum, 32, "叠排时钟整体大小下界")
+    checkEqual(StackedClockSizing.maximum, 42, "叠排时钟整体大小上界")
+    checkEqual(StackedClockSizing.outlineExpansion, 5, "数字浅色外轮廓扩展半径")
+    checkEqual(StackedClockSizing.percent(for: 32), 76, "最小整体缩放比例")
+    checkEqual(StackedClockSizing.percent(for: 42), 100, "最大整体缩放比例")
+    settings.customImageClock = .verticalCenter
+    settings.clockFontSize = 32
     let small = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    settings.clockFontSize = 52
+    settings.clockFontSize = 42
     let big = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(small.data != big.data, "字号 24/52 渲染应不同")
+    check(small.data != big.data, "整体大小 76%/100% 渲染应不同")
 
     // 时间格式：不同格式渲染不同
-    settings.clockFontSize = 36
+    settings.clockFontSize = StackedClockSizing.defaultValue
     settings.timeFormat = "HH:mm"
     let fmtHM = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     settings.timeFormat = "HH:mm:ss"
     let fmtHMS = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(fmtHM.data != fmtHMS.data, "HH:mm 与 HH:mm:ss 渲染应不同")
+    check(fmtHM.data == fmtHMS.data, "叠排四位时钟忽略秒字段并保持紧密 2×2 布局")
+    settings.timeFormat = "a hh:mm:ss zzzz"
+    settings.dateFormat = "yyyy年MM月dd日 EEEE"
+    let longFormat = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
+    checkEqual(longFormat.image.width, 142, "长时间格式仍保持画布宽度")
+    check(longFormat.data.count <= ScreenRenderer.maximumFileSize,
+          "长时间与日期格式应自适应并保持文件大小限制")
     // 用下午时间对比（HH:mm=14:40 vs hh:mm=02:40 必然不同）
     let afternoon = base.addingTimeInterval(12 * 3600)
     settings.timeFormat = "HH:mm"
@@ -1503,12 +1650,14 @@ func testClockOverlay() throws {
 
     // 字号/格式设置往返
     let rt2 = AppSettings()
-    rt2.clockFontSize = 44
+    rt2.clockFontSize = 40
     rt2.clockTimeFormat = "HH:mm:ss"
+    rt2.clockDateVisible = false
     let data2 = try JSONEncoder().encode(rt2)
     let decoded2 = try JSONDecoder().decode(AppSettings.self, from: data2)
-    checkEqual(decoded2.clockFontSize, 44, "时钟字号往返")
+    checkEqual(decoded2.clockFontSize, 40, "时钟整体大小往返")
     checkEqual(decoded2.clockTimeFormat, "HH:mm:ss", "时钟格式往返")
+    checkEqual(decoded2.clockDateVisible, false, "时钟日期开关往返")
 
     // 字体家族：枚举数量/标题/字重映射、设置往返、不同字体渲染不同
     checkEqual(ClockFont.allCases.count, 7, "时钟字体数量")
@@ -1516,6 +1665,7 @@ func testClockOverlay() throws {
     checkEqual(ClockFont.songti.fontName(weight: .regular), "STSongti-SC-Regular", "宋体常规字体名")
     checkEqual(ClockFont.songti.fontName(weight: .medium), "STSongti-SC-Bold", "宋体中粗回退粗体")
     checkEqual(ClockFont.menlo.fontName(weight: .regular), "Menlo-Regular", "Menlo 常规字体名")
+    checkEqual(ClockFont.menlo.fontName(weight: .bold), "Menlo-Bold", "Menlo 粗体字体名")
     checkEqual(AppSettings().clockFont, .helveticaNeue, "时钟字体默认 Helvetica Neue")
     let fontRT = AppSettings()
     fontRT.clockFont = .songti
@@ -1527,7 +1677,7 @@ func testClockOverlay() throws {
     let hnRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
     settings.clockFont = .songti
     let songtiRender = try ScreenRenderer.renderCustomImage(path: path.path, settings: settings, now: base)
-    check(hnRender.data != songtiRender.data, "不同字体应改变渲染")
+    check(hnRender.data == songtiRender.data, "Pixel 叠排时钟不受旧字体家族影响")
 
     // 偏移设置：X/Y 往返、钳制、偏移改变渲染
     let offRT = AppSettings()
@@ -1542,8 +1692,14 @@ func testClockOverlay() throws {
     offClamp.clockFontSize = 200
     offClamp.clamped()
     checkEqual(offClamp.clockOffsetX, 60, "X 偏移上界钳制")
-    checkEqual(offClamp.clockOffsetY, -80, "Y 偏移下界钳制")
-    checkEqual(offClamp.clockFontSize, 96, "时钟字号上界提到 96")
+    checkEqual(offClamp.clockOffsetY, -160, "Y 偏移下界钳制")
+    offClamp.clockOffsetY = 200
+    offClamp.clamped()
+    checkEqual(offClamp.clockOffsetY, 160, "Y 偏移上界钳制")
+    checkEqual(offClamp.clockFontSize, 42, "时钟整体大小钳制到有效上界")
+    offClamp.clockFontSize = 0
+    offClamp.clamped()
+    checkEqual(offClamp.clockFontSize, 32, "时钟整体大小钳制到有效下界")
     settings.clockFont = .helveticaNeue
     settings.clockOffsetX = 0
     settings.clockOffsetY = 0
@@ -1559,15 +1715,21 @@ func testClockOverlay() throws {
     // 设备快照：字体/偏移随键盘设备捕获与套用
     let devSrc = AppSettings()
     devSrc.clockFont = .menlo
+    devSrc.wallpaperColorStyle = .vibrant
+    devSrc.clockDateVisible = false
     devSrc.clockOffsetX = -12
     devSrc.clockOffsetY = 40
     let devCap = DeviceSettings.capture(from: devSrc, type: .keyboard)
     checkEqual(devCap.clockFont, .menlo, "键盘快照-时钟字体")
+    checkEqual(devCap.wallpaperColorStyle, .vibrant, "键盘快照-动态取色样式")
+    checkEqual(devCap.clockDateVisible, false, "键盘快照-时钟日期开关")
     checkEqual(devCap.clockOffsetX, -12, "键盘快照-时钟 X 偏移")
     checkEqual(devCap.clockOffsetY, 40, "键盘快照-时钟 Y 偏移")
     let devTgt = AppSettings()
     devCap.apply(to: devTgt, type: .keyboard)
     checkEqual(devTgt.clockFont, .menlo, "键盘套用-时钟字体")
+    checkEqual(devTgt.wallpaperColorStyle, .vibrant, "键盘套用-动态取色样式")
+    checkEqual(devTgt.clockDateVisible, false, "键盘套用-时钟日期开关")
     checkEqual(devTgt.clockOffsetX, -12, "键盘套用-时钟 X 偏移")
     checkEqual(devTgt.clockOffsetY, 40, "键盘套用-时钟 Y 偏移")
     print("  时钟叠加通过")
@@ -1862,6 +2024,30 @@ func testCanvasCustomization() throws {
                                                               nowPlaying: np, pomodoro: pomodoro,
                                                               customText: "", settings: unified, now: fixed)
     check(unifiedClockDefault.data != unifiedClockSeconds.data, "全局时间格式改变画板时钟模块")
+    let compactClockSize = ScreenRenderer.adaptiveFontSize(
+        "23:59", maxSize: 32, minSize: 5.5, bold: true, maxWidth: 120)
+    let longClockSize = ScreenRenderer.adaptiveFontSize(
+        "下午 11:59:59 中国标准时间", maxSize: 32, minSize: 5.5,
+        bold: true, maxWidth: 120)
+    check(longClockSize < compactClockSize,
+          "全局时间格式变长时应按可用宽度自动缩小字号")
+    var longGlobalFormat = AppSettings()
+    longGlobalFormat.timeFormat = "a hh:mm:ss zzzz"
+    longGlobalFormat.dateFormat = "yyyy年MM月dd日 EEEE"
+    longGlobalFormat.nowPlayingFooterVisible = true
+    longGlobalFormat.nowPlayingTimeSize = 40
+    longGlobalFormat.nowPlayingDateSize = 30
+    let longFormatCanvas = try ScreenRenderer.renderCanvas(
+        modules: [.clock, .date], system: system,
+        nowPlaying: np, pomodoro: pomodoro,
+        customText: "", settings: longGlobalFormat, now: fixed)
+    checkEqual(longFormatCanvas.image.width, ScreenRenderer.width,
+               "灵犀画板可渲染长时间与日期格式")
+    let longFormatFooter = try ScreenRenderer.renderNowPlaying(
+        NowPlayingInfo(title: "歌", artist: "手"),
+        settings: longGlobalFormat, now: fixed)
+    checkEqual(longFormatFooter.image.height, ScreenRenderer.height,
+               "卡片页脚可渲染长时间与日期格式并自适应字号")
     let footerDefault = try ScreenRenderer.renderNowPlaying(NowPlayingInfo(title: "歌", artist: "手"),
                                                             settings: { var x = AppSettings(); x.nowPlayingFooterVisible = true; return x }(),
                                                             now: fixed)
@@ -2418,6 +2604,8 @@ func testCanvasOracleExcerpt() async throws {
     rt.rand0IP = "192.168.100.170"
     rt.oracleAutoPushEnabled = true
     rt.oracleAutoPushMinutes = 45
+    rt.oracleBoardRotationEnabled = true
+    rt.oracleBoardRotationMinutes = 12
     rt.excerptAutoPushEnabled = true
     rt.excerptAutoPushMinutes = 90
     rt.excerptImageRotate180 = true
@@ -2431,6 +2619,8 @@ func testCanvasOracleExcerpt() async throws {
     checkEqual(decoded.rand0IP, "192.168.100.170", "Rand/0 IP 往返")
     checkEqual(decoded.oracleAutoPushEnabled, true, "先知定时推送开关往返")
     checkEqual(decoded.oracleAutoPushMinutes, 45, "先知定时推送间隔往返")
+    checkEqual(decoded.oracleBoardRotationEnabled, true, "先知画板轮换开关往返")
+    checkEqual(decoded.oracleBoardRotationMinutes, 12, "先知画板轮换间隔往返")
     checkEqual(decoded.excerptAutoPushEnabled, true, "摘录定时推送开关往返")
     checkEqual(decoded.excerptAutoPushMinutes, 90, "摘录定时推送间隔往返")
     checkEqual(decoded.excerptImageRotate180, true, "摘录旋转 180° 往返")
@@ -2439,9 +2629,11 @@ func testCanvasOracleExcerpt() async throws {
     // 定时推送间隔钳制：1 分钟 – 24 小时
     let autoPushClamp = AppSettings()
     autoPushClamp.oracleAutoPushMinutes = 0
+    autoPushClamp.oracleBoardRotationMinutes = 99999
     autoPushClamp.excerptAutoPushMinutes = 99999
     autoPushClamp.clamped()
     checkEqual(autoPushClamp.oracleAutoPushMinutes, 1, "先知推送间隔下界钳制")
+    checkEqual(autoPushClamp.oracleBoardRotationMinutes, 1440, "先知画板轮换间隔上界钳制")
     checkEqual(autoPushClamp.excerptAutoPushMinutes, 1440, "摘录推送间隔上界钳制")
 
     // 口袋先知画板：200×200 黑白模块组合渲染
@@ -3562,14 +3754,28 @@ func testDeviceManagement() throws {
     // 设备快照捕获/套用包含画板列表与下标
     source.oracleCanvasBoards = [boardA, boardB]
     source.oracleCanvasBoardIndex = 1
+    source.oracleBoardRotationEnabled = true
+    source.oracleBoardRotationMinutes = 8
     let oraCap2 = DeviceSettings.capture(from: source, type: .oracle)
     checkEqual(oraCap2.oracleCanvasBoards?.count, 2, "设备快照-画板数量")
     checkEqual(oraCap2.oracleCanvasBoardIndex, 1, "设备快照-画板下标")
+    checkEqual(oraCap2.oracleBoardRotationEnabled, true, "设备快照-画板轮换开关")
+    checkEqual(oraCap2.oracleBoardRotationMinutes, 8, "设备快照-画板轮换间隔")
     let oraTarget2 = AppSettings()
     oraCap2.apply(to: oraTarget2, type: .oracle)
     checkEqual(oraTarget2.oracleCanvasBoards.count, 2, "设备套用-画板数量")
     checkEqual(oraTarget2.oracleCanvasBoardIndex, 1, "设备套用-画板下标")
+    checkEqual(oraTarget2.oracleBoardRotationEnabled, true, "设备套用-画板轮换开关")
+    checkEqual(oraTarget2.oracleBoardRotationMinutes, 8, "设备套用-画板轮换间隔")
     checkEqual(oraTarget2.oracleCanvasBoards[1].modules, [10, 5], "设备套用-画板内容")
+    // 旧设备快照没有新字段时回退默认关闭，不能沿用上一台先知的轮换设置。
+    let legacyOracleSnapshot = DeviceSettings()
+    let legacyOracleTarget = AppSettings()
+    legacyOracleTarget.oracleBoardRotationEnabled = true
+    legacyOracleTarget.oracleBoardRotationMinutes = 99
+    legacyOracleSnapshot.apply(to: legacyOracleTarget, type: .oracle)
+    checkEqual(legacyOracleTarget.oracleBoardRotationEnabled, false, "旧先知快照默认关闭画板轮换")
+    checkEqual(legacyOracleTarget.oracleBoardRotationMinutes, 5, "旧先知快照使用默认轮换间隔")
     // 编码往返
     let boardRT = AppSettings()
     boardRT.oracleCanvasBoards = [boardB]
@@ -3628,6 +3834,17 @@ func testDeviceManagement() throws {
     checkEqual(decoded.type, .excerpt, "设备类型往返")
     checkEqual(decoded.settings.excerptCanvasModules, [13, 0], "设备设置往返")
     checkEqual(ManagedDevice.defaultName(for: .keyboard, index: 0), "灵犀68 键盘 1", "默认设备名")
+    var renamedPrinter = ManagedDevice(type: .bambuLab, name: "打印机 1", settings: DeviceSettings())
+    renamedPrinter.rename(to: "")
+    checkEqual(renamedPrinter.name, "", "编辑打印机名清空时不应回填默认名")
+    renamedPrinter.rename(to: "  工作室 X1C  ")
+    checkEqual(renamedPrinter.name, "  工作室 X1C  ", "编辑打印机名时应原样保留输入")
+    let haEntryModes: Set<DisplayMode> = [.homeAssistant, .bambuLab, .bambuLab2, .bambuLab3,
+                                          .bambuLab4, .bambuLab5]
+    for mode in DisplayMode.allCases {
+        checkEqual(mode.refreshesHomeAssistantOnEntry, haEntryModes.contains(mode),
+                   "HA 即时刷新入口策略-\(mode.title)")
+    }
     // 启用开关：往返保留；旧档案缺键回退为启用
     var disabledDevice = device
     disabledDevice.isEnabled = false
@@ -3874,6 +4091,7 @@ func testGlobalShortcuts() throws {
     rt.pomodoroSkipShortcut = GlobalShortcut(keyCode: 26, modifiers: GlobalShortcut.controlKey | GlobalShortcut.shiftKey)
     rt.keyboardPageUpShortcut = GlobalShortcut(keyCode: 116, modifiers: GlobalShortcut.cmdKey)
     rt.keyboardPageDownShortcut = GlobalShortcut(keyCode: 121, modifiers: GlobalShortcut.optionKey)
+    rt.lingxi68KnobPagingEnabled = true
     let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt))
     checkEqual(decoded.pomodoroToggleShortcut.keyCode, 18, "快捷键往返 keyCode")
     checkEqual(decoded.pomodoroToggleShortcut.modifiers, GlobalShortcut.cmdKey, "快捷键往返 modifiers")
@@ -3883,6 +4101,8 @@ func testGlobalShortcuts() throws {
                GlobalShortcut(keyCode: 116, modifiers: GlobalShortcut.cmdKey), "上一页快捷键往返")
     checkEqual(decoded.keyboardPageDownShortcut,
                GlobalShortcut(keyCode: 121, modifiers: GlobalShortcut.optionKey), "下一页快捷键往返")
+    checkEqual(decoded.lingxi68KnobPagingEnabled, true, "Fn + 旋钮翻页开关往返")
+    checkEqual(AppSettings().lingxi68KnobPagingEnabled, false, "Fn + 旋钮翻页默认关闭")
 
     // 钳制：键码越界回落、修饰键只保留 ⌘⇧⌥⌃
     var clamp = AppSettings()
@@ -3906,6 +4126,11 @@ func testGlobalShortcuts() throws {
 
 func testHomeAssistant() throws {
     checkEqual(ScreenRenderer.haStandalonePageLimit, 4, "HA 独立卡片单页最多四个实体")
+    checkEqual(HAEntityPicker.pictureEntityIDs(in: [
+        "sensor.room_temperature", " camera.front_door ", "image.weather_map",
+        "camera.front_door", "light.desk"
+    ]), ["camera.front_door", "image.weather_map"],
+               "HA 卡片仅按用户顺序抓取 camera/image 静态帧并去重")
     // 实体较少时均匀分配顶部/行间/底部留白；密集时回落到固定 4pt 行距。
     let roomyFrames = ScreenRenderer.haAdaptiveRowFrames(
         minimumHeights: [24, 24], region: CGRect(x: 0, y: 0, width: 120, height: 120))
@@ -4157,26 +4382,73 @@ func testHomeAssistant() throws {
     check(printerCardA.data != printerCardB.data, "两台打印机卡片应各自渲染自身数据（名称/状态不同）")
     let printerCardA2 = try ScreenRenderer.renderBambuLab(printerA, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
     check(printerCardA.data == printerCardA2.data, "同一台打印机重复渲染应一致（不受另一台影响）")
+    let dataUpdateAt = Date(timeIntervalSince1970: 1_749_999_900)
+    let dataFooterA = try ScreenRenderer.renderBambuLab(
+        printerA, entities: crosstalkEntities, settings: haSettings,
+        now: crosstalkNow, dataUpdatedAt: dataUpdateAt)
+    let dataFooterSame = try ScreenRenderer.renderBambuLab(
+        printerA, entities: crosstalkEntities, settings: haSettings,
+        now: crosstalkNow.addingTimeInterval(86_400), dataUpdatedAt: dataUpdateAt)
+    checkEqual(dataFooterA.data, dataFooterSame.data,
+               "Bambu 页脚只随数据更新时间变化，不再显示当前时间/日期")
+    let dataFooterNew = try ScreenRenderer.renderBambuLab(
+        printerA, entities: crosstalkEntities, settings: haSettings,
+        now: crosstalkNow, dataUpdatedAt: dataUpdateAt.addingTimeInterval(1))
+    check(dataFooterA.data != dataFooterNew.data, "Bambu 页脚应显示最新数据更新时间")
+    var renamedPrinterA = printerA
+    renamedPrinterA.name = "书房 A1"
+    let renamedPrinterCardA = try ScreenRenderer.renderBambuLab(renamedPrinterA, entities: crosstalkEntities,
+                                                                 settings: haSettings, now: crosstalkNow)
+    check(renamedPrinterCardA.data != printerCardA.data, "键盘卡片头部应明确渲染对应打印机设备名")
     var printerA3 = printerA
     printerA3.statusEntityID = "sensor.b"
     let printerCardA3 = try ScreenRenderer.renderBambuLab(printerA3, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
     check(printerCardA3.data != printerCardA.data, "更换实体映射后卡片应变化（字段独立生效）")
-    // 显示选项：布局样式与各区块开关影响渲染；from/apply/Codable 往返保留
+    // 显示选项：旧“紧凑”设置迁移到标准；各区块开关仍正常往返
     var displayBambu = BambuLabCardSettings(statusEntityID: "sensor.a", progressEntityID: "sensor.p1p_progress",
                                             layout: .compact, showStatus: false)
     var displaySnap = DeviceSettings()
     displayBambu.apply(to: &displaySnap)
     let displayBack = BambuLabCardSettings.from(displaySnap)
-    checkEqual(displayBack.layout, .compact, "布局样式 apply/from 往返")
+    checkEqual(displayBack.layout, .standard, "旧紧凑布局自动迁移为标准")
+    checkEqual(BambuCardLayout.selectableCases, [.standard, .large],
+               "布局选择器只保留标准与大字")
     checkEqual(displayBack.showStatus, false, "显示状态开关 apply/from 往返")
     checkEqual(displayBack.showProgress, true, "显示进度开关默认开启")
     let cardNoStatus = try ScreenRenderer.renderBambuLab(displayBambu, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
     check(cardNoStatus.data != printerCardA3.data, "关闭显示状态后卡片渲染应不同")
+    var clearedStatus = displayBambu
+    clearedStatus.statusEntityID = ""
+    clearedStatus.showStatus = true
+    var clearedStatusHidden = clearedStatus
+    clearedStatusHidden.showStatus = false
+    let clearedStatusCard = try ScreenRenderer.renderBambuLab(
+        clearedStatus, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    let clearedStatusHiddenCard = try ScreenRenderer.renderBambuLab(
+        clearedStatusHidden, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
+    checkEqual(clearedStatusCard.data, clearedStatusHiddenCard.data,
+               "解除工作状态实体关联后应直接隐藏该项，不再显示未配置占位")
     var displayLarge = displayBambu
     displayLarge.layout = .large
     displayLarge.showStatus = true
     let cardLarge = try ScreenRenderer.renderBambuLab(displayLarge, entities: crosstalkEntities, settings: haSettings, now: crosstalkNow)
-    check(cardLarge.data != cardNoStatus.data, "大字布局渲染应不同于紧凑布局")
+    check(cardLarge.data != cardNoStatus.data, "大字布局渲染应不同于标准布局")
+    let largeProgressEntity = HAEntity(entityId: "sensor.p1p_progress", friendlyName: "打印进度",
+                                       state: "68", unitOfMeasurement: "%")
+    let cardLargeWithProgress = try ScreenRenderer.renderBambuLab(
+        displayLarge, entities: crosstalkEntities + [largeProgressEntity],
+        settings: haSettings, now: crosstalkNow)
+    check(cardLargeWithProgress.data != cardLarge.data,
+          "大字布局应在顶部渲染进度条与带百分号的放大打印进度")
+    checkEqual(ScreenRenderer.bambuLargeProgressNumberSize, 34,
+               "大字布局进度数字保持原有字号")
+    checkEqual(ScreenRenderer.bambuLargeProgressPercentSize,
+               ScreenRenderer.bambuLargeProgressNumberSize / 2,
+               "大字布局百分号字号应为数字的一半")
+    check(ScreenRenderer.bambuLargeStatusBackdropSize > ScreenRenderer.bambuLargeProgressNumberSize,
+          "大字布局状态背景字应比进度数字更大")
+    check(ScreenRenderer.bambuDataFooterSize >= 9,
+          "Bambu 数据更新时间字号应在实体屏幕上清晰可读")
     // 主题色：Bambu Lab 强调色选项在 apply/from/Codable 往返保留，且渲染不同于跟随全局
     var accentBambu = displayBambu
     accentBambu.themeAccent = .bambuLab
@@ -4606,12 +4878,25 @@ func testHomeAssistant() throws {
     // 画板模块含 BambuLab
     var bCanvas = AppSettings()
     bCanvas.canvasModules = [CanvasModule.bambuLab.rawValue]
+    var bDeviceSettings = DeviceSettings()
+    detected.apply(to: &bDeviceSettings)
+    let bDevice = ManagedDevice(type: .bambuLab, name: "Bambu 打印机",
+                                settings: bDeviceSettings)
+    bCanvas.devices = [bDevice]
+    bCanvas.activeBambuLabDeviceID = bDevice.id
     var bSnap = HASnapshot(entities: bambuEntities)
     let bModule = try ScreenRenderer.renderCanvas(modules: bCanvas.canvasModuleList, system: system,
                                                   nowPlaying: .sample, pomodoro: pomo,
                                                   customText: "", settings: bCanvas, ha: bSnap)
+    let bModuleLegacyLayout = try ScreenRenderer.renderCanvas(
+        modules: bCanvas.canvasModuleList, system: system,
+        nowPlaying: .sample, pomodoro: pomo,
+        customText: "", settings: bCanvas, ha: bSnap,
+        bambuHeroLayout: false)
     checkEqual(bModule.image.width, 142, "Bambu 画板模块宽度")
     check(bModule.data.count <= ScreenRenderer.maximumFileSize, "Bambu 画板模块大小")
+    check(bModule.data != bModuleLegacyLayout.data,
+          "灵犀画板默认同步状态背景字、前景百分比和数据更新时间的新仪表布局")
     // 多打印机画板：bambuLab→第 1 台、bambuLab2→第 2 台（与卡片管理槽位一致）
     var multiCanvas = AppSettings()
     var p1Dev = DeviceSettings()
@@ -5017,15 +5302,63 @@ func testHomeAssistant() throws {
                                                       customText: "", settings: bCanvas, ha: bSnap,
                                                       width: ScreenRenderer.oracleCanvasSize,
                                                       height: ScreenRenderer.oracleCanvasSize,
-                                                      palette: ScreenThemes.einkMono)
+                                                      palette: ScreenThemes.einkMono,
+                                                      optimizeBambuForOracleEInk: true,
+                                                      bambuHeroLayout: true,
+                                                      showBambuCamera: false)
     checkEqual(oraModule.width, ScreenRenderer.oracleCanvasSize, "先知画板 Bambu 模块宽度")
+    let oraLegacyLayout = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: system, nowPlaying: .placeholder, pomodoro: pomo,
+        customText: "", settings: bCanvas, ha: bSnap,
+        width: ScreenRenderer.oracleCanvasSize, height: ScreenRenderer.oracleCanvasSize,
+        palette: ScreenThemes.einkMono, optimizeBambuForOracleEInk: true)
+    check(!bitmapEqual(oraModule, oraLegacyLayout),
+          "先知画板应采用状态背景字、前景百分比和底部更新时间的新仪表布局")
+    let standardBambuType = ScreenRenderer.bambuCanvasTypography(
+        sizeBase: 40, optimizeForOracleEInk: false)
+    let oracleBambuType = ScreenRenderer.bambuCanvasTypography(
+        sizeBase: 40, optimizeForOracleEInk: true)
+    check(oracleBambuType.label > standardBambuType.label
+          && oracleBambuType.value > standardBambuType.value
+          && oracleBambuType.body > standardBambuType.body,
+          "先知/摘录画板 Bambu 模块应放大全部文字层级")
+    let shortTaskLayout = ScreenRenderer.bambuCanvasTaskLayout(
+        "校准立方体", maxWidth: 150, maxHeight: 42, preferredSize: 18)
+    checkEqual(shortTaskLayout.lines, ["校准立方体"], "短任务名保持清晰单行")
+    let longTaskLayout = ScreenRenderer.bambuCanvasTaskLayout(
+        "工作室_A1_多色支架_最终打印版本.3mf",
+        maxWidth: 105, maxHeight: 46, preferredSize: 19)
+    checkEqual(longTaskLayout.lines.count, 2, "长任务名在设备画板中拆为两行")
+    check(longTaskLayout.size <= 19 && longTaskLayout.size >= 8.5,
+          "双行任务名按可用空间自适应字号")
+    check(ScreenRenderer.bambuCanvasProgressBarHeight(
+            rowHeight: 40, optimizeForOracleEInk: true)
+          > ScreenRenderer.bambuCanvasProgressBarHeight(
+            rowHeight: 40, optimizeForOracleEInk: false),
+          "先知画板 Bambu 进度条应明显加粗")
+    let lightOutline = ScreenRenderer.einkDeepColorRGB(against: (1, 1, 1))
+    let darkOutline = ScreenRenderer.einkDeepColorRGB(against: (0, 0, 0))
+    check(lightOutline.0 == 0 && lightOutline.1 == 0 && lightOutline.2 == 0,
+          "先知画板浅色模式进度条应使用纯黑描边")
+    check(darkOutline.0 == 1 && darkOutline.1 == 1 && darkOutline.2 == 1,
+          "先知画板深色模式进度条应反色为纯白描边")
     let excerptModule = ScreenRenderer.renderDeviceCanvas(modules: [.bambuLab], system: system,
                                                           nowPlaying: .placeholder, pomodoro: pomo,
                                                           customText: "", settings: bCanvas, ha: bSnap,
                                                           width: ScreenRenderer.excerptCanvasWidth,
                                                           height: ScreenRenderer.excerptCanvasHeight,
-                                                          palette: ScreenThemes.einkMono)
+                                                          palette: ScreenThemes.einkMono,
+                                                          optimizeBambuForOracleEInk: true,
+                                                          bambuHeroLayout: true,
+                                                          showBambuCamera: false)
     checkEqual(excerptModule.width, ScreenRenderer.excerptCanvasWidth, "摘录画板 Bambu 模块宽度")
+    let excerptLegacyLayout = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: system, nowPlaying: .placeholder, pomodoro: pomo,
+        customText: "", settings: bCanvas, ha: bSnap,
+        width: ScreenRenderer.excerptCanvasWidth, height: ScreenRenderer.excerptCanvasHeight,
+        palette: ScreenThemes.einkMono)
+    check(!bitmapEqual(excerptModule, excerptLegacyLayout),
+          "摘录画板应采用状态背景字、前景百分比和底部更新时间的新仪表布局")
     print("  Bambu Lab 通过")
 
     // 实体图标映射：mdi 名优先，其次 domain 默认，最后回退通用；
@@ -5428,18 +5761,21 @@ func testHomeAssistant() throws {
     let cardDisconnected = try ScreenRenderer.renderHA([], errorText: "无法连接 Home Assistant",
                                                        settings: haCardSettings)
     check(cardDisconnected.data != cardNoStale.data, "未连接时卡片显示明确提示")
-    // 打印机卡片：未映射 / 已映射但失效 / 实体池尚未拿到，三者可区分
+    // 打印机卡片：未映射与已绑定但无数据可区分；后两种缺数据场景统一显示“未配置”。
+    // 固定渲染时间，避免两次调用跨秒后“数据更新”页脚让 JPEG 基线随机变化。
+    let mappingRenderNow = Date(timeIntervalSince1970: 1_788_448_400)
     let cardUnmapped = try ScreenRenderer.renderBambuLab(BambuLabCardSettings(name: "A1"),
                                                          entities: [liveEntity],
-                                                         settings: haCardSettings)
+                                                         settings: haCardSettings,
+                                                         now: mappingRenderNow)
     let cardStaleMapping = try ScreenRenderer.renderBambuLab(
         BambuLabCardSettings(name: "A1", statusEntityID: "sensor.gone"),
-        entities: [liveEntity], settings: haCardSettings)
+        entities: [liveEntity], settings: haCardSettings, now: mappingRenderNow)
     let cardNoPool = try ScreenRenderer.renderBambuLab(
         BambuLabCardSettings(name: "A1", statusEntityID: "sensor.gone"),
-        entities: [], settings: haCardSettings)
+        entities: [], settings: haCardSettings, now: mappingRenderNow)
     check(cardUnmapped.data != cardStaleMapping.data, "映射失效与未映射渲染不同")
-    checkEqual(cardNoPool.data.count, cardStaleMapping.data.count,
+    checkEqual(cardNoPool.data, cardStaleMapping.data,
                "基线：不区分实体池未就绪与映射失效（统一显示未配置）")
     // 两台键盘卡片内容不同，但 HA 模块读同一份服务器数据 → 模块画面一致
     var kbShareA = AppSettings()
@@ -5480,6 +5816,12 @@ func testHomeAssistant() throws {
                "parseStates 解析 entity_picture")
     check(pictureEntities[0].hasPicture, "image 实体标记为可展示画面")
     check(!pictureEntities[1].hasPicture, "非 image 实体不算画面实体")
+    let cameraJSON = """
+    {"entity_id":"camera.bambu_lab_a1","state":"streaming",
+     "attributes":{"friendly_name":"A1 摄像头"}}
+    """
+    let cameraEntity = try HomeAssistantClient.parseState(data: Data(cameraJSON.utf8))
+    check(cameraEntity.hasPicture, "camera 实体无需 entity_picture 也可通过代理抓静态帧")
     // 2) 画面地址解析（相对路径补服务器 + access_token；绝对地址原样；裸主机补 http://）
     checkEqual(HomeAssistantClient.imageURL(server: "http://192.168.1.9:8123",
                                             picture: "/api/x.png", token: "tk")?.absoluteString,
@@ -5494,8 +5836,13 @@ func testHomeAssistant() throws {
                                             picture: "/api/x.png")?.absoluteString,
                "http://192.168.1.9:8123/api/x.png", "裸主机地址自动补 http://")
     checkEqual(HomeAssistantClient.imageURL(server: "http://a", picture: "  "), nil, "空画面地址返回 nil")
+    checkEqual(HomeAssistantClient.imageURL(server: "http://192.168.1.9:8123",
+                                            entity: cameraEntity)?.absoluteString,
+               "http://192.168.1.9:8123/api/camera_proxy/camera.bambu_lab_a1",
+               "camera 实体无 entity_picture 时回退 camera_proxy 单帧接口")
     // 3) image 域进入打印机候选域与中文分类
     check(HAEntityPicker.printerDomains.contains("image"), "image 域纳入打印机候选域")
+    check(HAEntityPicker.printerDomains.contains("camera"), "camera 域纳入打印机候选域")
     checkEqual(HAEntityPicker.chineseDomain("image"), "图片", "image 域中文名")
     check(HAEntityPicker.printerRelevant(pictureEntities).count == 2,
           "打印机候选集包含画面实体")
@@ -5511,17 +5858,88 @@ func testHomeAssistant() throws {
     let bound = BambuEntityMatcher.detect(from: a1Status,
                                           allEntities: [a1Status, coverA1, camA1, camP1S])
     checkEqual(bound.imageEntityID, "image.bambu_lab_a1_camera",
-               "画面绑定优先本机摄像头（不会错绑到别的打印机）")
+               "摄像头绑定本机实体（不会错绑到别的打印机）")
+    checkEqual(bound.taskImageEntityID, "image.bambu_lab_a1_cover_image",
+               "自动匹配同时保存本机打印任务封面")
+    let taskNamedCover = HAEntity(entityId: "image.bambu_lab_a1_current_task_cover",
+                                  friendlyName: "A1 当前任务封面", state: "ready",
+                                  unitOfMeasurement: nil, entityPicture: "/api/task-cover")
+    let taskNamedCoverBound = BambuEntityMatcher.detect(
+        from: a1Status, allEntities: [a1Status, taskNamedCover])
+    checkEqual(taskNamedCoverBound.taskEntityID, "",
+               "任务封面图片不能误绑定到当前任务文本实体")
+    checkEqual(taskNamedCoverBound.taskImageEntityID, taskNamedCover.entityId,
+               "带 current_task 命名的 image.* 正确归入任务封面")
     let coverOnly = BambuEntityMatcher.detect(from: a1Status, allEntities: [a1Status, coverA1])
-    checkEqual(coverOnly.imageEntityID, "image.bambu_lab_a1_cover_image", "无摄像头时退回模型封面")
+    checkEqual(coverOnly.imageEntityID, "", "没有摄像头时不把任务封面误填入摄像头字段")
+    checkEqual(coverOnly.taskImageEntityID, "image.bambu_lab_a1_cover_image", "单独匹配模型封面")
     let singleFallback = BambuEntityMatcher.detect(
         from: a1Status,
         allEntities: [a1Status, HAEntity(entityId: "image.other_thing", friendlyName: "其他",
                                          state: "ok", unitOfMeasurement: nil, entityPicture: "/api/o")])
-    checkEqual(singleFallback.imageEntityID, "image.other_thing",
-               "池内只有一张画面时兜底绑定（单打印机命名不一致场景）")
+    checkEqual(singleFallback.taskImageEntityID, "image.other_thing",
+               "池内只有一张普通 image 时兜底绑定为任务图片")
+    let cameraBound = BambuEntityMatcher.detect(from: a1Status,
+                                                 allEntities: [a1Status, cameraEntity])
+    checkEqual(cameraBound.imageEntityID, "camera.bambu_lab_a1",
+               "自动匹配支持 camera 域静态帧源")
+    checkEqual(BambuEntityMatcher.pictureCandidates(
+        [camA1, coverA1, cameraEntity], source: .camera).map(\.entityId),
+        ["camera.bambu_lab_a1", "image.bambu_lab_a1_camera"],
+        "摄像头选择器只列 camera.* 与带摄像头特征的 image.*")
+    checkEqual(BambuEntityMatcher.pictureCandidates(
+        [camA1, coverA1, cameraEntity], source: .taskCover).map(\.entityId),
+        ["image.bambu_lab_a1_cover_image"],
+        "任务封面选择器不再混入摄像头实体")
+    let delayedImage = HAEntity(entityId: "image.renamed_cover", friendlyName: "自定义封面",
+                                state: "unknown", unitOfMeasurement: nil)
+    check(BambuEntityMatcher.pictureCandidates(
+        [delayedImage], source: .taskCover).isEmpty,
+        "自动匹配继续排除当前不可抓取的 image 实体")
+    checkEqual(BambuEntityMatcher.pictureCandidates(
+        [delayedImage], source: .taskCover, requireAvailablePicture: false).map(\.entityId),
+        [delayedImage.entityId],
+        "手动选择仍显示暂时没有 entity_picture 的 image 实体")
+    // 跨域实体以去掉字段后缀后的设备根名称精确关联；即使根名称只有数字也可以匹配。
+    let numericStatus = HAEntity(entityId: "sensor.2_print_status", friendlyName: "自定义打印机",
+                                 state: "printing", unitOfMeasurement: nil)
+    let numericCamera = HAEntity(entityId: "camera.2_camera", friendlyName: "任意名称",
+                                 state: "streaming", unitOfMeasurement: nil)
+    let numericCover = HAEntity(entityId: "image.2_cover_image", friendlyName: "任意图片",
+                                state: "ready", unitOfMeasurement: nil,
+                                entityPicture: "/api/cover2")
+    let numericBound = BambuEntityMatcher.detect(
+        from: numericStatus, allEntities: [numericStatus, numericCamera, numericCover])
+    checkEqual(numericBound.imageEntityID, numericCamera.entityId,
+               "数字设备根名称可跨 sensor/camera 域精确关联摄像头")
+    checkEqual(numericBound.taskImageEntityID, numericCover.entityId,
+               "数字设备根名称可跨 sensor/image 域精确关联任务封面")
+    // ID 不同但显示名称/型号一致时可辅助关联；若多个候选得分完全相同则保持未绑定，避免错配。
+    let renamedPictureStatus = HAEntity(entityId: "sensor.custom_print_status",
+                                        friendlyName: "工作室 X2D", state: "printing",
+                                        unitOfMeasurement: nil)
+    let renamedPictureCamera = HAEntity(entityId: "image.9_camera",
+                                        friendlyName: "工作室 X2D 摄像头", state: "ready",
+                                        unitOfMeasurement: nil, entityPicture: "/api/cam9")
+    let renamedPictureBound = BambuEntityMatcher.detect(
+        from: renamedPictureStatus,
+        allEntities: [renamedPictureStatus, renamedPictureCamera])
+    checkEqual(renamedPictureBound.imageEntityID, renamedPictureCamera.entityId,
+               "摄像头 entity_id 改名后可用打印机显示名称/型号辅助关联")
+    let ambiguousCameraA = HAEntity(entityId: "image.8_camera", friendlyName: "X2D 摄像头 A",
+                                    state: "ready", unitOfMeasurement: nil,
+                                    entityPicture: "/api/cam8")
+    let ambiguousCameraB = HAEntity(entityId: "image.9_camera", friendlyName: "X2D 摄像头 B",
+                                    state: "ready", unitOfMeasurement: nil,
+                                    entityPicture: "/api/cam9")
+    let ambiguousPictures = BambuEntityMatcher.detect(
+        from: renamedPictureStatus,
+        allEntities: [renamedPictureStatus, ambiguousCameraA, ambiguousCameraB])
+    checkEqual(ambiguousPictures.imageEntityID, "",
+               "多个摄像头关联证据相同时保持未绑定，避免自动错配")
     let noneMatch = BambuEntityMatcher.detect(from: a1Status, allEntities: [a1Status])
     checkEqual(noneMatch.imageEntityID, "", "无画面实体时不绑")
+    checkEqual(noneMatch.taskImageEntityID, "", "无任务封面实体时不绑")
     // 画面实体按设备编号命名（image.2_camera）时，靠显示名称里的型号词匹配
     let p1pStatus = HAEntity(entityId: "sensor.bambu_lab_p1p_status", friendlyName: "P1P 状态",
                              state: "printing", unitOfMeasurement: nil)
@@ -5535,28 +5953,54 @@ func testHomeAssistant() throws {
                "画面实体按显示名称的型号词匹配（不误绑无关摄像头）")
     let autoDetectPictures = BambuLabCardSettings.autoDetect(
         entities: [a1Status, camA1, coverA1, camP1S])
-    check(autoDetectPictures.imageEntityID.hasPrefix("image.bambu_lab_a1"),
-          "关键词自动识别同样绑定本机画面")
+    checkEqual(autoDetectPictures.imageEntityID, "image.bambu_lab_a1_camera",
+               "关键词自动识别绑定本机摄像头")
+    checkEqual(autoDetectPictures.taskImageEntityID, "image.bambu_lab_a1_cover_image",
+               "关键词自动识别绑定本机任务封面")
     // 5) 旧档案兼容：缺画面字段的 JSON 回退默认
     let legacyBambuJSON = #"{"name":"A1","statusEntityID":"sensor.a1_status"}"#
     let legacyBambu = try JSONDecoder().decode(BambuLabCardSettings.self,
                                                from: Data(legacyBambuJSON.utf8))
     checkEqual(legacyBambu.imageEntityID, "", "旧打印机配置缺画面字段回退空")
+    checkEqual(legacyBambu.taskImageEntityID, "", "旧打印机配置缺任务封面字段回退空")
+    checkEqual(legacyBambu.imageSource, .camera, "旧打印机配置默认继续显示摄像头")
     checkEqual(legacyBambu.showImage, true, "旧打印机配置默认开启画面区块")
     let pictureRoundTrip = try JSONDecoder().decode(BambuLabCardSettings.self,
                                                     from: try JSONEncoder().encode(bound))
     checkEqual(pictureRoundTrip.imageEntityID, "image.bambu_lab_a1_camera", "画面映射持久化往返")
+    checkEqual(pictureRoundTrip.taskImageEntityID, "image.bambu_lab_a1_cover_image",
+               "任务封面映射持久化往返")
     // 6) 打印机设备快照携带画面映射与开关
     var pictureMirror = AppSettings()
     pictureMirror.bambuImageEntityID = "image.bambu_lab_a1_camera"
+    pictureMirror.bambuTaskImageEntityID = "image.bambu_lab_a1_cover_image"
+    pictureMirror.bambuImageSource = .taskCover
     pictureMirror.bambuShowImage = false
+    let pictureMirrorRoundTrip = try JSONDecoder().decode(
+        AppSettings.self, from: JSONEncoder().encode(pictureMirror))
+    checkEqual(pictureMirrorRoundTrip.bambuTaskImageEntityID,
+               "image.bambu_lab_a1_cover_image", "全局镜像持久化任务封面实体")
+    checkEqual(pictureMirrorRoundTrip.bambuImageSource, .taskCover,
+               "全局镜像持久化画面来源")
     let pictureSnap = DeviceSettings.capture(from: pictureMirror, type: .bambuLab)
     checkEqual(pictureSnap.bambuImageEntityID, "image.bambu_lab_a1_camera", "打印机快照捕获画面映射")
+    checkEqual(pictureSnap.bambuTaskImageEntityID, "image.bambu_lab_a1_cover_image",
+               "打印机快照捕获任务封面映射")
+    checkEqual(pictureSnap.bambuImageSource, .taskCover, "打印机快照捕获画面来源")
     checkEqual(pictureSnap.bambuShowImage, false, "打印机快照捕获画面开关")
     var pictureRestored = AppSettings()
     pictureSnap.apply(to: pictureRestored, type: .bambuLab)
     checkEqual(pictureRestored.bambuImageEntityID, "image.bambu_lab_a1_camera", "切回该打印机恢复画面映射")
+    checkEqual(pictureRestored.bambuTaskImageEntityID, "image.bambu_lab_a1_cover_image",
+               "切回该打印机恢复任务封面映射")
+    checkEqual(pictureRestored.bambuImageSource, .taskCover, "切回该打印机恢复画面来源")
     checkEqual(pictureRestored.bambuShowImage, false, "切回该打印机恢复画面开关")
+    var sourceSelection = bound
+    checkEqual(sourceSelection.selectedImageEntityID, "image.bambu_lab_a1_camera",
+               "摄像头来源选择摄像头实体")
+    sourceSelection.imageSource = .taskCover
+    checkEqual(sourceSelection.selectedImageEntityID, "image.bambu_lab_a1_cover_image",
+               "任务图片来源选择任务封面实体")
     // 7) 画板模块：画面行只在有图时占位且更高
     var fields = CanvasPrinterFields.default
     checkEqual(fields.showImage, false, "画板画面默认关闭（不改旧布局）")
@@ -5592,6 +6036,60 @@ func testHomeAssistant() throws {
     let imageEntity = HAEntity(entityId: "image.bambu_lab_a1_camera", friendlyName: "A1 摄像头",
                                state: "captured", unitOfMeasurement: nil,
                                entityPicture: "/api/x")
+    let coverEntity = HAEntity(entityId: "image.bambu_lab_a1_cover_image", friendlyName: "A1 任务封面",
+                               state: "captured", unitOfMeasurement: nil,
+                               entityPicture: "/api/cover")
+    var boardPrinter = mappedPrinter
+    boardPrinter.progressEntityID = "sensor.a1_progress"
+    boardPrinter.taskImageEntityID = coverEntity.entityId
+    var boardPrinterFields = DeviceSettings()
+    boardPrinter.apply(to: &boardPrinterFields)
+    let boardPrinterDevice = ManagedDevice(type: .bambuLab, name: "A1", settings: boardPrinterFields)
+    let boardSettings = AppSettings()
+    boardSettings.devices = [boardPrinterDevice]
+    boardSettings.activeBambuLabDeviceID = boardPrinterDevice.id
+    let boardEntities = printerEntitiesForCard + [
+        HAEntity(entityId: "sensor.a1_progress", friendlyName: "A1 进度",
+                 state: "60", unitOfMeasurement: "%"), imageEntity, coverEntity
+    ]
+    let cameraBoardSnapshot = HASnapshot(
+        entities: boardEntities,
+        images: [imageEntity.entityId: pictureData, coverEntity.entityId: pictureData])
+    let cameraAllowedBoard = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: system, nowPlaying: .placeholder, pomodoro: pomo,
+        customText: "", settings: boardSettings, ha: cameraBoardSnapshot,
+        width: ScreenRenderer.oracleCanvasSize, height: ScreenRenderer.oracleCanvasSize,
+        palette: ScreenThemes.einkMono,
+        printerFields: [CanvasModule.bambuLab.rawValue: fields],
+        optimizeBambuForOracleEInk: true, bambuHeroLayout: true,
+        showBambuCamera: true)
+    let cameraSuppressedBoard = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: system, nowPlaying: .placeholder, pomodoro: pomo,
+        customText: "", settings: boardSettings, ha: cameraBoardSnapshot,
+        width: ScreenRenderer.oracleCanvasSize, height: ScreenRenderer.oracleCanvasSize,
+        palette: ScreenThemes.einkMono,
+        printerFields: [CanvasModule.bambuLab.rawValue: fields],
+        optimizeBambuForOracleEInk: true, bambuHeroLayout: true,
+        showBambuCamera: false)
+    check(!bitmapEqual(cameraAllowedBoard, cameraSuppressedBoard),
+          "口袋先知/摘录新仪表布局应明确排除摄像头画面")
+    var taskCoverPrinter = boardPrinter
+    taskCoverPrinter.imageSource = .taskCover
+    var taskCoverFields = DeviceSettings()
+    taskCoverPrinter.apply(to: &taskCoverFields)
+    let taskCoverDevice = ManagedDevice(type: .bambuLab, name: "A1", settings: taskCoverFields)
+    boardSettings.devices = [taskCoverDevice]
+    boardSettings.activeBambuLabDeviceID = taskCoverDevice.id
+    let taskCoverBoard = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: system, nowPlaying: .placeholder, pomodoro: pomo,
+        customText: "", settings: boardSettings, ha: cameraBoardSnapshot,
+        width: ScreenRenderer.oracleCanvasSize, height: ScreenRenderer.oracleCanvasSize,
+        palette: ScreenThemes.einkMono,
+        printerFields: [CanvasModule.bambuLab.rawValue: fields],
+        optimizeBambuForOracleEInk: true, bambuHeroLayout: true,
+        showBambuCamera: false)
+    check(!bitmapEqual(taskCoverBoard, cameraSuppressedBoard),
+          "排除摄像头后仍允许用户选择显示打印任务封面")
     let haPlain = try ScreenRenderer.renderHA([imageEntity], errorText: nil,
                                               settings: pictureCardSettings)
     let haPicture = try ScreenRenderer.renderHA([imageEntity], images: ["image.bambu_lab_a1_camera": pictureData],
@@ -5602,7 +6100,26 @@ func testHomeAssistant() throws {
     let haListPicture = try ScreenRenderer.renderHA([imageEntity, printerEntitiesForCard[0]],
                                                     images: ["image.bambu_lab_a1_camera": pictureData],
                                                     errorText: nil, settings: pictureCardSettings)
-    check(haListPlain.data != haListPicture.data, "HA 卡片列表缩略图生效")
+    check(haListPlain.data != haListPicture.data, "HA 卡片混排横向图片预览生效")
+    let cameraPlain = try ScreenRenderer.renderHA([cameraEntity], errorText: nil,
+                                                  settings: pictureCardSettings)
+    let cameraPicture = try ScreenRenderer.renderHA(
+        [cameraEntity], images: [cameraEntity.entityId: pictureData],
+        errorText: nil, settings: pictureCardSettings)
+    check(cameraPlain.data != cameraPicture.data,
+          "HA camera 实体通过代理取得静态帧后使用大图卡片")
+    let fourPictureEntities = (0..<4).map { index in
+        HAEntity(entityId: "camera.room_\(index)", friendlyName: "房间摄像头 \(index + 1)",
+                 state: "streaming", unitOfMeasurement: nil)
+    }
+    let fourPictureData = Dictionary(uniqueKeysWithValues: fourPictureEntities.map {
+        ($0.entityId, pictureData)
+    })
+    let fourPictureCard = try ScreenRenderer.renderHA(
+        fourPictureEntities, images: fourPictureData,
+        errorText: nil, settings: pictureCardSettings)
+    check(!fourPictureCard.data.isEmpty,
+          "HA 单页四路摄像头静态预览可在等高卡片中完成渲染")
     let successPlain = try ScreenRenderer.renderPrintSuccess(printerName: "A1",
                                                              taskName: "cube.gcode",
                                                              settings: pictureCardSettings)
