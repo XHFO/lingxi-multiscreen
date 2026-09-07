@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>LingxiAIMacScreen</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.lingxi.multiscreen.aimac.experimental</string>
+    <key>CFBundleName</key>
+    <string>灵犀小屏实验版</string>
+    <key>CFBundleDisplayName</key>
+    <string>灵犀小屏实验版</string>
+    <key>CFBundleIconFile</key>
+    <string>Icon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>用于通过局域网向 AI Mac 240×240 小屏幕推送图片帧。</string>
+</dict>
+</plist>
