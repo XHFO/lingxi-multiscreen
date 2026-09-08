@@ -4689,6 +4689,8 @@ func testAIMacScreen() throws {
     checkEqual(aiBoard.haEntityIDs, ["sensor.room"], "AI Mac 画板实体去空去重")
     check(aiBoard.isSidebarVisible && aiBoard.participatesInRotation,
           "AI Mac 新画板默认显示在侧栏并参与轮播")
+    check(aiBoard.usesNowPlayingSmartBackground,
+          "AI Mac 新彩色画板默认启用专辑封面取色背景")
     let aiCanvasConfig = AIMacScreenDeviceSettings(
         host: "10.0.0.20", mode: .canvas, canvasBoards: [aiBoard],
         boardRotationEnabled: true, boardRotationMinutes: 8)
@@ -4705,6 +4707,16 @@ func testAIMacScreen() throws {
     checkEqual(migratedAIMacConfig.mode, .clock, "旧 AI Mac 显示模式保持不变")
     check(migratedAIMacConfig.canvasBoards.isEmpty,
           "旧 AI Mac 配置缺少画板字段时可安全迁移为空列表")
+
+    let legacyAIMacBoard = """
+    {"id":"\(UUID().uuidString)","name":"旧彩色画板","modules":[6],
+     "backgroundMode":0,"sspaiCount":3,"sspaiRandom":false,
+     "nowPlayingHorizontal":false,"printerFields":{},"haEntityIDs":[]}
+    """.data(using: .utf8)!
+    let migratedAIMacBoard = try JSONDecoder().decode(AIMacCanvasBoard.self,
+                                                       from: legacyAIMacBoard)
+    check(migratedAIMacBoard.usesNowPlayingSmartBackground,
+          "旧 AI Mac 画板缺少取色字段时默认启用")
 
     let legacyJSON = """
     {"id":"\(UUID().uuidString)","type":6,"name":"旧小屏幕","isEnabled":true,"settings":{}}
@@ -4729,6 +4741,47 @@ func testAIMacScreen() throws {
     checkEqual(clock.width, 240, "小屏幕时钟宽度")
     checkEqual(clock.height, 240, "小屏幕时钟高度")
     checkEqual(blankCanvas.width, 240, "空白彩色画板仍生成有效 240×240 帧")
+
+    let coverContext = CGContext(data: nil, width: 64, height: 64,
+                                 bitsPerComponent: 8, bytesPerRow: 64 * 4,
+                                 space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    coverContext.setFillColor(CGColor(red: 0.92, green: 0.22, blue: 0.16, alpha: 1))
+    coverContext.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+    let coverData = NSMutableData()
+    let coverDestination = CGImageDestinationCreateWithData(
+        coverData, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(coverDestination, coverContext.makeImage()!, nil)
+    check(CGImageDestinationFinalize(coverDestination), "AI Mac 彩色取色测试封面生成")
+    var colorNowPlaying = NowPlayingInfo.sample
+    colorNowPlaying.artwork = coverData as Data
+    let colorSettings = AppSettings()
+    let colorPomodoro = PomodoroSnapshot(phase: .idle, effectivePhase: .idle,
+                                         taskName: "", remaining: 0, duration: 0,
+                                         completedFocusSessions: 0)
+    let colorPalette = ScreenThemes.resolved(theme: colorSettings.cardTheme,
+                                             backgroundTone: .dark,
+                                             customBackgroundHex: nil,
+                                             accentTone: colorSettings.accentTone,
+                                             customAccentHex: colorSettings.customAccentHex,
+                                             softwareIsDark: true)
+    let smartColorCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying, .cpu], system: snapshot,
+        nowPlaying: colorNowPlaying, pomodoro: colorPomodoro,
+        customText: "", settings: colorSettings,
+        width: 240, height: 240, palette: colorPalette,
+        optimizeForEInk: false, nowPlayingSmartBackground: true)
+    let plainColorCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying, .cpu], system: snapshot,
+        nowPlaying: colorNowPlaying, pomodoro: colorPomodoro,
+        customText: "", settings: colorSettings,
+        width: 240, height: 240, palette: colorPalette,
+        optimizeForEInk: false, nowPlayingSmartBackground: false)
+    let smartCorner = pixelAt(smartColorCanvas, 2, 2)
+    check(smartCorner.0 > smartCorner.1 + 0.35 && smartCorner.0 > smartCorner.2 + 0.35,
+          "AI Mac 智能取色应把封面主色填充到整块彩色画板（实测 \(smartCorner)）")
+    check(!bitmapEqual(smartColorCanvas, plainColorCanvas),
+          "AI Mac 关闭智能取色后应恢复手动主题背景")
     let jpeg = try AIMacScreenSupport.encodeJPEG(dashboard, preferredQuality: 82)
     check(jpeg.count <= AIMacScreenSupport.maximumJPEGBytes, "JPEG 兼容帧不超过 24KB")
 

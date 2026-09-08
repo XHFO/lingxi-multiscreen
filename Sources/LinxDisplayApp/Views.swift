@@ -3212,6 +3212,11 @@ struct SettingsView: View {
                 set: { model.setNowPlayingHorizontal($0, for: owner) })
     }
 
+    private func nowPlayingSmartBackgroundBinding(for owner: AppModel.CanvasOwner) -> Binding<Bool> {
+        Binding(get: { model.nowPlayingSmartBackground(for: owner) },
+                set: { model.setNowPlayingSmartBackground($0, for: owner) })
+    }
+
     /// 模块行内展开的设置内容
     @ViewBuilder
     private func canvasModuleSettings(_ module: CanvasModule, owner: AppModel.CanvasOwner) -> some View {
@@ -3247,16 +3252,16 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             case .nowPlaying:
                 Toggle("大尺寸专辑封面", isOn: model.canvasNowPlayingCoverBinding)
-                // 智能封面取色背景：仅键盘画板使用（整卡背景替换为封面主色）；
-                // 墨水屏画板（先知/摘录）不使用智能取色，保持手动底色
-                if owner == .keyboard {
-                    Toggle(isOn: model.canvasNowPlayingSmartBgBinding) {
+                // 键盘和 AI Mac 彩色画板可使用整板封面取色；墨水屏保持手动底色。
+                if owner == .keyboard || owner == .aiMac {
+                    Toggle(isOn: nowPlayingSmartBackgroundBinding(for: owner)) {
                         HStack(spacing: 4) {
                             Text("智能封面取色背景")
-                            HelpIcon(text: "使用专辑封面主色替换整张画板背景色调，并自动配置可读的文字颜色。")
+                            HelpIcon(text: "使用专辑封面主色替换整张画板背景，并自动生成高对比文字、进度强调色与封面描边。")
                         }
                     }
-                } else {
+                }
+                if owner != .keyboard {
                     Toggle(isOn: nowPlayingHorizontalBinding(for: owner)) {
                         HStack(spacing: 4) {
                             Text("横向排布（封面在左）")

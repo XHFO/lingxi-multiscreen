@@ -748,6 +748,7 @@ public enum ScreenRenderer {
 
     /// 独立设备画布渲染：把模块组合渲染为指定尺寸的画布（无键盘卡片外壳/安全区）。
     /// 图像模块一律按「叠加」处理（铺满自己的横带）；
+    /// optimizeForEInk=false 时保留完整彩色主题，并允许封面取色驱动整板背景；
     /// flipVertical/flipHorizontal 上下/左右翻转整幅画面（同开 = 旋转 180°）；
     /// columns=2 时模块按双列排列，fullWidthModules 中的模块占满整行（摘录画板用）。
     public static func renderDeviceCanvas(modules: [CanvasModule], system: SystemSnapshot,
@@ -761,6 +762,7 @@ public enum ScreenRenderer {
                                           now: Date = Date(),
                                           width: Int, height: Int,
                                           palette: ScreenPalette,
+                                          optimizeForEInk: Bool = true,
                                           flipVertical: Bool = false,
                                           flipHorizontal: Bool = false,
                                           columns: Int = 1,
@@ -770,17 +772,28 @@ public enum ScreenRenderer {
                                           printerFields: [Int: CanvasPrinterFields] = [:],
                                           optimizeBambuForOracleEInk: Bool = false,
                                           bambuHeroLayout: Bool = false,
-                                          showBambuCamera: Bool = true) -> CGImage {
+                                          showBambuCamera: Bool = true,
+                                          nowPlayingSmartBackground: Bool = false) -> CGImage {
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
             fatalError("create device canvas context")
         }
-        // 墨水屏设备画板：所有文字与强调色统一为最深对比色（无色相）。
-        // 浅色底取纯黑、深色底取纯白，保证任何底色模式都清晰可读。
-        let einkPalette = einkTextPalette(palette)
-        ctx.setFillColor(einkPalette.backgroundCG)
+        // 口袋先知/摘录继续锁定黑白高对比文字；AI Mac 彩屏直接保留主题色、
+        // 打印机品牌色、封面光晕与进度强调色。
+        let coverArt = nowPlayingSmartBackground && modules.contains(.nowPlaying)
+            ? nowPlaying.artwork.flatMap { decodeArtwork($0) } : nil
+        let coverDominant = coverArt.map { dominantColor(of: $0) }
+        let basePalette = optimizeForEInk ? einkTextPalette(palette) : palette
+        let canvasPalette: ScreenPalette
+        if !optimizeForEInk, let coverDominant {
+            canvasPalette = artworkPalette(baseColor: coverDominant,
+                                           themeAccent: palette.accent)
+        } else {
+            canvasPalette = basePalette
+        }
+        ctx.setFillColor(canvasPalette.backgroundCG)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         // 模块绘制助手统一按键盘画板高度（428）做 Skia→CG 翻转；
         // 平移 CTM 使同一套坐标正确落到当前尺寸的画布上
@@ -792,7 +805,7 @@ public enum ScreenRenderer {
                             height: CGFloat(height) - inset * 2)
         if modules.isEmpty {
             drawText(ctx, "请在面板中添加模块", size: 9, bold: false,
-                     color: einkPalette.secondaryTextCG,
+                     color: canvasPalette.secondaryTextCG,
                      in: rect(region.minX, region.minY + region.height / 2 - 8, region.width, 16),
                      align: .center)
         } else {
@@ -802,24 +815,31 @@ public enum ScreenRenderer {
                                     printerFields: printerFields,
                                     formlabsItems: formlabsItems,
                                     bambuHeroLayout: bambuHeroLayout)
+            let accentOverride: CGColor? = coverDominant.map { dominant in
+                let accent = coverProgressAccent(dominant)
+                return CGColor(red: accent.0, green: accent.1, blue: accent.2, alpha: 1)
+            }
             for (index, module) in modules.enumerated() {
-                drawCanvasModule(ctx, module, band: bands[index], colors: einkPalette,
+                drawCanvasModule(ctx, module, band: bands[index], colors: canvasPalette,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
                                  codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
-                                 nowPlayingSmartBg: false,
+                                 nowPlayingSmartBg: nowPlayingSmartBackground,
+                                 canvasCoverBgActive: coverArt != nil,
                                  fullWidth: fullWidthModules.contains(module.rawValue),
                                  deviceCanvas: true,
                                  nowPlayingHorizontal: nowPlayingHorizontal,
                                  canvasImagePath: canvasImagePath,
+                                 accentOverride: accentOverride,
                                  printerFields: printerFields,
                                  optimizeBambuForOracleEInk: optimizeBambuForOracleEInk,
                                  bambuHeroLayout: bambuHeroLayout,
                                  showBambuCamera: showBambuCamera,
-                                 singleModuleCanvas: modules.count == 1)
+                                 singleModuleCanvas: modules.count == 1,
+                                 monochromeDeviceCanvas: optimizeForEInk)
             }
         }
         var result = ctx.makeImage() ?? placeholderCanvas()
@@ -1045,7 +1065,8 @@ public enum ScreenRenderer {
                                          showBambuCamera: Bool = true,
                                          compactBambuSummary: Bool = false,
                                          singleModuleCanvas: Bool = false,
-                                         hideBambuLargeStatusText: Bool = false) {
+                                         hideBambuLargeStatusText: Bool = false,
+                                         monochromeDeviceCanvas: Bool = true) {
         let w = band.width
         let typography = canvasTypography()
         switch module {
@@ -1566,6 +1587,7 @@ public enum ScreenRenderer {
             let item = formlabsItems.indices.contains(slot) ? formlabsItems[slot] : nil
             drawFormlabsCanvasModule(ctx, band: band, colors: colors,
                                      item: item, deviceCanvas: deviceCanvas,
+                                     monochrome: monochromeDeviceCanvas,
                                      accent: accentOverride ?? colors.accentCG,
                                      emphasizeThumbnail: deviceCanvas && singleModuleCanvas)
         case .clock:
@@ -1630,7 +1652,7 @@ public enum ScreenRenderer {
                 let luminance = 0.299 * dominant.0 + 0.587 * dominant.1 + 0.114 * dominant.2
                 fillRound(ctx, rect(band), radius: 6,
                           color: CGColor(red: dominant.0, green: dominant.1, blue: dominant.2, alpha: 1))
-                if deviceCanvas {
+                if monochromeDeviceCanvas {
                     // 墨水屏：模块底为封面主色，文字取最深对比色（无色相）
                     let deep = einkDeepColorRGB(against: dominant)
                     let deepCG = CGColor(red: deep.0, green: deep.1, blue: deep.2, alpha: 1)
@@ -1664,7 +1686,7 @@ public enum ScreenRenderer {
                     ctx.restoreGState()
                     // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体；
                     // 键盘画板开启「智能封面取色背景」时封面描边用封面主色强调色（跟随封面）
-                    if deviceCanvas {
+                    if monochromeDeviceCanvas {
                         strokeRound(ctx, coverRect, radius: 6,
                                     color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), width: 2)
                     } else if nowPlayingSmartBg {
@@ -1749,7 +1771,7 @@ public enum ScreenRenderer {
                     ctx.restoreGState()
                     // 墨水屏设备画板：封面加 2px 黑色描边，避免浅色封面与背景融为一体；
                     // 键盘画板开启「智能封面取色背景」时封面描边用封面主色强调色（跟随封面）
-                    if deviceCanvas {
+                    if monochromeDeviceCanvas {
                         strokeRound(ctx, coverRect, radius: 8,
                                     color: CGColor(red: 0, green: 0, blue: 0, alpha: 1), width: 2)
                     } else if nowPlayingSmartBg {
@@ -1911,20 +1933,21 @@ public enum ScreenRenderer {
                                                   colors: ScreenPalette,
                                                   item: FormlabsCanvasItem?,
                                                   deviceCanvas: Bool,
+                                                  monochrome: Bool,
                                                   accent: CGColor,
                                                   emphasizeThumbnail: Bool = false) {
         guard band.width > 8, band.height > 8 else { return }
         // 与 Bambu 墨水屏模块统一：白色圆角卡片、最深黑字和黑色进度强调；
         // 键盘画板继续沿用用户主题配色。
-        let primary = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.primaryTextCG
-        let secondary = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.secondaryTextCG
-        let cardFill = deviceCanvas ? CGColor(gray: 1, alpha: 1) : colors.insetCG
-        let cardBorder = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.borderCG
-        let progressAccent = deviceCanvas ? CGColor(gray: 0, alpha: 1) : accent
-        let progressTrack = deviceCanvas ? CGColor(gray: 0.82, alpha: 1) : colors.borderCG
+        let primary = monochrome ? CGColor(gray: 0, alpha: 1) : colors.primaryTextCG
+        let secondary = monochrome ? CGColor(gray: 0, alpha: 1) : colors.secondaryTextCG
+        let cardFill = monochrome ? CGColor(gray: 1, alpha: 1) : colors.insetCG
+        let cardBorder = monochrome ? CGColor(gray: 0, alpha: 1) : colors.borderCG
+        let progressAccent = monochrome ? CGColor(gray: 0, alpha: 1) : accent
+        let progressTrack = monochrome ? CGColor(gray: 0.82, alpha: 1) : colors.borderCG
         fillRound(ctx, rect(band), radius: 7, color: cardFill)
         strokeRound(ctx, rect(band), radius: 7, color: cardBorder,
-                    width: deviceCanvas ? 1.5 : 1)
+                    width: monochrome ? 1.5 : 1)
         // 灵犀画板固定左上内边距，与 Bambu 标头完全对齐；
         // 墨水屏仍按画面尺寸适配。
         let insetX: CGFloat = deviceCanvas ? min(max(band.width * 0.045, 4), 7) : 5
@@ -2027,7 +2050,7 @@ public enum ScreenRenderer {
             drawProgress(ctx, progressBounds, progress: progress,
                          accent: progressAccent, background: progressTrack)
             strokeRound(ctx, progressBounds, radius: barH / 2,
-                        color: cardBorder, width: deviceCanvas ? 1.5 : 0.8)
+                        color: cardBorder, width: monochrome ? 1.5 : 0.8)
             // 使用实际 glyph 边界居中，避免数字基线让百分比看起来比进度条低。
             let fittedPercentSize = adaptiveFontSize(
                 percent, maxSize: percentSize, minSize: 7.5, bold: true,

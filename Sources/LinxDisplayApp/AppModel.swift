@@ -1608,11 +1608,13 @@ public final class AppModel: ObservableObject {
             ha: haSnapshot.selecting(entityIDs: board.haEntityIDs),
             formlabsItems: formlabsCanvasItems(), now: now,
             width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
-            palette: palette, nowPlayingHorizontal: board.nowPlayingHorizontal,
+            palette: palette, optimizeForEInk: false,
+            nowPlayingHorizontal: board.nowPlayingHorizontal,
             canvasImagePath: board.imagePath, printerFields: board.printerFields,
             optimizeBambuForOracleEInk: false,
             bambuHeroLayout: true,
-            showBambuCamera: true)
+            showBambuCamera: true,
+            nowPlayingSmartBackground: board.usesNowPlayingSmartBackground)
     }
 
     public func refreshAIMacScreenPreview(deviceID: UUID) {
@@ -3057,11 +3059,20 @@ public func setClockTimeFormat(_ format: String) {
             glow = (min(glow.0 * boost, 1), min(glow.1 * boost, 1), min(glow.2 * boost, 1))
         }
         sidebarArtworkGlow = NSColor(srgbRed: glow.0, green: glow.1, blue: glow.2, alpha: 1)
-        // 封面变化时立即刷新两个设备画板的预览，实时反映专辑封面变化
+        // 封面变化时立即刷新所有设备画板预览。AI Mac 保留完整彩色主色，
+        // 下一次自动推送会按设备自己的间隔与内容指纹发送新画面。
         if lastSidebarArtworkData != nowPlaying.artwork {
             lastSidebarArtworkData = nowPlaying.artwork
             refreshOracleCanvasPreview()
             refreshExcerptCanvasPreview()
+            for device in enabledDevices(for: .aiMacScreen) {
+                let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+                guard config.mode == .canvas,
+                      config.canvasBoards.indices.contains(config.canvasBoardIndex),
+                      config.canvasBoards[config.canvasBoardIndex].moduleList.contains(.nowPlaying)
+                else { continue }
+                refreshAIMacScreenPreview(deviceID: device.id)
+            }
         }
     }
 
@@ -4285,6 +4296,27 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: settings.oracleNowPlayingHorizontal = enabled
         case .excerpt: settings.excerptNowPlayingHorizontal = enabled
         case .aiMac: mutateCurrentAIMacCanvasBoard { $0.nowPlayingHorizontal = enabled }
+        }
+    }
+
+    func nowPlayingSmartBackground(for owner: CanvasOwner) -> Bool {
+        switch owner {
+        case .keyboard: return settings.canvasNowPlayingSmartBg
+        case .oracle, .excerpt: return false
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return true }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return true }
+            return config.canvasBoards[config.canvasBoardIndex].usesNowPlayingSmartBackground
+        }
+    }
+
+    func setNowPlayingSmartBackground(_ enabled: Bool, for owner: CanvasOwner) {
+        switch owner {
+        case .keyboard: settings.canvasNowPlayingSmartBg = enabled
+        case .oracle, .excerpt: break
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard { $0.nowPlayingSmartBackground = enabled }
         }
     }
 

@@ -195,7 +195,7 @@ public final class AppSettings: ObservableObject {
     @Published public var canvasNowPlayingCover = false {
         didSet { onChange() }
     }
-    /// 键盘画板「智能封面取色背景」开关（整卡背景替换为封面主色；墨水屏画板不使用）
+    /// 键盘画板「智能封面取色背景」开关（AI Mac 在自己的画板记录中独立保存；墨水屏不使用）
     @Published public var canvasNowPlayingSmartBg = false {
         didSet { onChange() }
     }

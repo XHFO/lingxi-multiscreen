@@ -35,6 +35,9 @@ public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
     public var sspaiCount: Int
     public var sspaiRandom: Bool
     public var nowPlayingHorizontal: Bool
+    /// 彩色画板包含“正在播放”模块时，是否用专辑封面生成整板背景、文字与强调色。
+    /// 可选字段保证旧版画板无损迁移；旧记录默认启用彩色取色效果。
+    public var nowPlayingSmartBackground: Bool?
     public var printerFields: [Int: CanvasPrinterFields]
     public var haEntityIDs: [String]
     public var imagePath: String?
@@ -45,6 +48,7 @@ public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
                 modules: [Int] = [], backgroundMode: CanvasBackgroundMode = .dark,
                 sspaiCount: Int = 3, sspaiRandom: Bool = false,
                 nowPlayingHorizontal: Bool = false,
+                nowPlayingSmartBackground: Bool? = true,
                 printerFields: [Int: CanvasPrinterFields] = [:],
                 haEntityIDs: [String] = [], imagePath: String? = nil,
                 imageName: String? = nil) {
@@ -57,6 +61,7 @@ public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
         self.sspaiCount = min(max(sspaiCount, 1), 6)
         self.sspaiRandom = sspaiRandom
         self.nowPlayingHorizontal = nowPlayingHorizontal
+        self.nowPlayingSmartBackground = nowPlayingSmartBackground
         self.printerFields = printerFields
         self.haEntityIDs = haEntityIDs
         self.imagePath = imagePath
@@ -65,6 +70,7 @@ public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
 
     public var isSidebarVisible: Bool { sidebarVisible ?? true }
     public var participatesInRotation: Bool { rotationEnabled ?? true }
+    public var usesNowPlayingSmartBackground: Bool { nowPlayingSmartBackground ?? true }
     public var moduleList: [CanvasModule] { modules.compactMap(CanvasModule.init(rawValue:)) }
 
     public mutating func clamp() {
