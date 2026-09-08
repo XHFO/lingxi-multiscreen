@@ -489,6 +489,10 @@ struct SettingsView: View {
     @State private var haSetupVisible = false
     /// 添加服务器时填写的长期访问令牌草稿
     @State private var haTokenDraft = ""
+    /// AI Mac 小屏幕固件刷写必须由用户二次确认；记录完成后是否顺便创建设备档案。
+    @State private var showAIMacFlashConfirmation = false
+    @State private var aiMacFlashShouldAddDevice = true
+    @State private var showAIMacFlashLog = false
 
     init(model: AppModel) {
         self.model = model
@@ -522,6 +526,19 @@ struct SettingsView: View {
                 Button("好", role: .cancel) {}
             } message: {
                 Text(shortcutConflictText)
+            }
+            .confirmationDialog(
+                "确认刷入 AI Mac 小屏幕固件？",
+                isPresented: $showAIMacFlashConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(aiMacFlashShouldAddDevice ? "刷入并添加设备" : "仅刷入固件") {
+                    let shouldAdd = aiMacFlashShouldAddDevice
+                    Task { await model.flashAIMacFirmware(addDeviceAfterSuccess: shouldAdd) }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("刷写会覆盖所选 ESP8266 小屏幕中的现有固件。请确认串口选择正确，刷写完成前不要拔掉 USB 数据线。")
             }
     }
 
@@ -998,6 +1015,10 @@ struct SettingsView: View {
         Group {
             ForEach(DeviceType.allCases) { type in
                 Section {
+                    if type == .aiMacScreen {
+                        aiMacFirmwareFlasherInline
+                        Divider()
+                    }
                     ForEach(model.devices(for: type)) { device in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 8) {
@@ -1147,6 +1168,121 @@ struct SettingsView: View {
         .task {
             await model.ensureBambuEntityCatalog()
         }
+    }
+
+    /// AI Mac 小屏幕属于主应用的一种设备；首次使用时可在设备管理中完成固件准备，
+    /// 无需安装 Python、esptool 或另一个独立应用。
+    private var aiMacFirmwareFlasherInline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("固件准备", systemImage: "memorychip")
+                    .font(.headline)
+                Text("v\(EmbeddedAIMacFirmware.version)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Label(model.embeddedAIMacFirmwareReady ? "内置固件已校验" : "内置固件不可用",
+                      systemImage: model.embeddedAIMacFirmwareReady
+                        ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(model.embeddedAIMacFirmwareReady ? Color.green : Color.red)
+            }
+
+            Text("首次使用时，将 AI Mac 小屏幕通过 USB 数据线连接到 Mac，在这里刷入多屏灵犀定制固件。完成 Wi-Fi 配网后，再填写设备 IP 即可推送画面。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Picker("USB 串口", selection: $model.selectedAIMacFlashPort) {
+                    if model.aiMacFlashPorts.isEmpty {
+                        Text("未发现设备").tag("")
+                    } else {
+                        ForEach(model.aiMacFlashPorts) { port in
+                            Text(port.displayName).tag(port.path)
+                        }
+                    }
+                }
+                .frame(maxWidth: 360)
+                .disabled(model.aiMacFlashBusy)
+
+                Button {
+                    model.refreshAIMacFlashPorts()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.aiMacFlashBusy)
+            }
+
+            HStack(spacing: 8) {
+                Button("刷入固件并添加设备") {
+                    aiMacFlashShouldAddDevice = true
+                    showAIMacFlashConfirmation = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.embeddedAIMacFirmwareReady
+                          || model.selectedAIMacFlashPort.isEmpty
+                          || model.aiMacFlashBusy)
+
+                Button("仅刷入固件") {
+                    aiMacFlashShouldAddDevice = false
+                    showAIMacFlashConfirmation = true
+                }
+                .disabled(!model.embeddedAIMacFirmwareReady
+                          || model.selectedAIMacFlashPort.isEmpty
+                          || model.aiMacFlashBusy)
+
+                if model.aiMacFlashBusy {
+                    Button("取消", role: .destructive) {
+                        model.cancelAIMacFirmwareFlash()
+                    }
+                }
+            }
+
+            if model.aiMacFlashBusy || model.aiMacFlashProgress > 0 {
+                ProgressView(value: model.aiMacFlashProgress)
+                    .progressViewStyle(.linear)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if model.aiMacFlashBusy {
+                    ProgressView().controlSize(.small)
+                }
+                Text(model.aiMacFlashStatus)
+                    .font(.caption)
+                    .foregroundStyle(model.aiMacFlashStatus.contains("失败")
+                                     || model.aiMacFlashStatus.contains("缺失")
+                                     || model.aiMacFlashStatus.contains("校验失败")
+                                     ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                if !model.aiMacFlashLog.isEmpty {
+                    Button(showAIMacFlashLog ? "收起日志" : "查看日志") {
+                        withAnimation { showAIMacFlashLog.toggle() }
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+
+            if showAIMacFlashLog, !model.aiMacFlashLog.isEmpty {
+                ScrollView {
+                    Text(model.aiMacFlashLog)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(height: 120)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Label("请使用支持数据传输的 USB 线；刷写过程中不要拔线或关闭应用。",
+                  systemImage: "exclamationmark.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
+        .onAppear { model.refreshAIMacFlashPorts() }
     }
 
     @ViewBuilder

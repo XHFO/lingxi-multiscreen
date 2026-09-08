@@ -49,6 +49,27 @@ fi
 if [ -f "$ROOT/Resources/akko2.png" ]; then
     cp "$ROOT/Resources/akko2.png" "$APP/Contents/Resources/"
 fi
+# AI Mac 小屏幕内置固件与 Apple Silicon 刷机助手。正常运行不会启动助手，
+# 只有用户在设备管理中二次确认刷写时才会执行。
+FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.7.0.bin"
+FLASH_HELPER_SOURCE="$ROOT/Resources/Firmware/lingxi-esptool"
+FIRMWARE_SHA256="0283b882808bd55cb31210e32659fb1d0dc901cfdf49fc9d717bf777999a3831"
+if [ ! -f "$FIRMWARE_SOURCE" ] || [ ! -f "$FLASH_HELPER_SOURCE" ]; then
+    echo "错误：AI Mac 小屏幕固件或刷机助手缺失" >&2
+    exit 1
+fi
+ACTUAL_FIRMWARE_SHA256="$(shasum -a 256 "$FIRMWARE_SOURCE" | awk '{print $1}')"
+if [ "$ACTUAL_FIRMWARE_SHA256" != "$FIRMWARE_SHA256" ]; then
+    echo "错误：AI Mac 小屏幕固件完整性校验失败" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Resources/Firmware"
+cp "$FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
+cp "$FLASH_HELPER_SOURCE" "$APP/Contents/Resources/Firmware/"
+chmod 755 "$APP/Contents/Resources/Firmware/lingxi-esptool"
+if [ -f "$ROOT/Resources/Firmware/THIRD_PARTY_NOTICES.txt" ]; then
+    cp "$ROOT/Resources/Firmware/THIRD_PARTY_NOTICES.txt" "$APP/Contents/Resources/Firmware/"
+fi
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -92,6 +113,8 @@ xattr -cr "$APP"
 # 但它们会让 codesign 报 “resource fork, Finder information … not allowed”。
 xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "$APP" 2>/dev/null || true
+# 嵌套可执行文件先单独签名，再签整个应用，避免 Gatekeeper 将刷机助手识别为未签名组件。
+codesign --force --sign - "$APP/Contents/Resources/Firmware/lingxi-esptool"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 

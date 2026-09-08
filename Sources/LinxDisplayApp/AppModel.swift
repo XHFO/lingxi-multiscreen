@@ -53,6 +53,7 @@ public final class AppModel: ObservableObject {
     private let nowPlayingClient = NowPlayingClient()
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
+    private let esp8266Flasher = ESP8266FirmwareFlasher()
     private let monitor = SystemMonitor()
     private let startup = StartupManager()
     private let pomodoro: PomodoroService
@@ -219,6 +220,12 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacScreenLastPushText: [UUID: String] = [:]
     @Published public var aiMacScreenLosslessIDs: Set<UUID> = []
     @Published public var aiMacScreenBusyIDs: Set<UUID> = []
+    @Published public var aiMacFlashPorts: [ESPSerialPort] = []
+    @Published public var selectedAIMacFlashPort = ""
+    @Published public var aiMacFlashProgress = 0.0
+    @Published public var aiMacFlashStatus = "连接小屏幕 USB 数据线后刷新串口列表"
+    @Published public var aiMacFlashLog = ""
+    @Published public var aiMacFlashBusy = false
     /// Bambu 实体选择候选缓存；依靠 haSnapshot 的发布通知驱动界面读取，无需单独发布。
     var bambuEntityCatalog = BambuEntityCatalog()
     /// HA 异常监控告警：异常标题（如打印机名）与详情（错误码等）；非空即处于告警状态
@@ -343,6 +350,7 @@ public final class AppModel: ObservableObject {
         applyLingxi68KnobPaging()
         applyStartupState()
         lastCustomImageRevision = currentCustomImageRevision()
+        refreshAIMacFlashPorts()
         startTimer()
         renderPreview()
         Task { await activateMode() }
@@ -1150,6 +1158,98 @@ public final class AppModel: ObservableObject {
     }
 
     // MARK: - AI Mac 240×240 小屏幕
+
+    private var embeddedAIMacFirmwareURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("Firmware", isDirectory: true)
+            .appendingPathComponent(EmbeddedAIMacFirmware.fileName)
+    }
+
+    private var embeddedAIMacFlashHelperURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("Firmware", isDirectory: true)
+            .appendingPathComponent(EmbeddedAIMacFirmware.helperName)
+    }
+
+    /// 固件资源随应用包固定不变，首次读取后缓存校验结果，避免刷写进度刷新 UI 时反复计算 SHA-256。
+    public private(set) lazy var embeddedAIMacFirmwareReady: Bool = {
+        guard let firmwareURL = embeddedAIMacFirmwareURL,
+              let helperURL = embeddedAIMacFlashHelperURL,
+              let firmware = try? Data(contentsOf: firmwareURL) else { return false }
+        return EmbeddedAIMacFirmware.validate(firmware)
+            && FileManager.default.isExecutableFile(atPath: helperURL.path)
+    }()
+
+    public func refreshAIMacFlashPorts() {
+        aiMacFlashPorts = ESP8266FirmwareFlasher.discoverSerialPorts()
+        if !aiMacFlashPorts.contains(where: { $0.path == selectedAIMacFlashPort }) {
+            selectedAIMacFlashPort = aiMacFlashPorts.first?.path ?? ""
+        }
+        if aiMacFlashPorts.isEmpty {
+            aiMacFlashStatus = "没有发现 USB 串口，请检查数据线或 USB 转串口驱动"
+        } else if !aiMacFlashBusy {
+            aiMacFlashStatus = "已发现 \(aiMacFlashPorts.count) 个可用串口"
+        }
+    }
+
+    public func flashAIMacFirmware(addDeviceAfterSuccess: Bool) async {
+        guard !aiMacFlashBusy else { return }
+        guard let port = aiMacFlashPorts.first(where: { $0.path == selectedAIMacFlashPort }) else {
+            aiMacFlashStatus = ESP8266FlashError.noPort.localizedDescription
+            return
+        }
+        guard let firmwareURL = embeddedAIMacFirmwareURL,
+              let helperURL = embeddedAIMacFlashHelperURL else {
+            aiMacFlashStatus = ESP8266FlashError.missingResource("AI Mac 固件").localizedDescription
+            return
+        }
+        aiMacFlashBusy = true
+        aiMacFlashProgress = 0
+        aiMacFlashLog = ""
+        aiMacFlashStatus = "正在让设备进入刷写模式…"
+        defer { aiMacFlashBusy = false }
+        do {
+            try await esp8266Flasher.flash(
+                port: port, helperURL: helperURL, firmwareURL: firmwareURL,
+                progress: { [weak self] value in
+                    Task { @MainActor in
+                        self?.aiMacFlashProgress = value
+                        self?.aiMacFlashStatus = value > 0
+                            ? "正在刷入固件… \(Int((value * 100).rounded()))%"
+                            : "正在连接 ESP8266…"
+                    }
+                },
+                log: { [weak self] text in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.aiMacFlashLog += text
+                        if self.aiMacFlashLog.count > 20_000 {
+                            self.aiMacFlashLog = String(self.aiMacFlashLog.suffix(20_000))
+                        }
+                    }
+                })
+            aiMacFlashProgress = 1
+            aiMacFlashStatus = "固件刷入完成，设备正在重新启动"
+            status = "AI Mac 小屏幕固件刷入完成"
+            if addDeviceAfterSuccess {
+                if settings.canAddDevice(of: .aiMacScreen) {
+                    let id = addDevice(type: .aiMacScreen)
+                    aiMacScreenStatuses[id] = "固件已刷入，请完成 Wi-Fi 配网后填写屏幕 IP"
+                } else {
+                    aiMacFlashStatus += "；设备列表已达到 5 台上限"
+                }
+            }
+        } catch {
+            aiMacFlashStatus = error.localizedDescription
+            status = "AI Mac 小屏幕固件刷入失败"
+        }
+        refreshAIMacFlashPorts()
+    }
+
+    public func cancelAIMacFirmwareFlash() {
+        esp8266Flasher.cancel()
+        aiMacFlashStatus = "正在停止刷写…"
+    }
 
     public func aiMacScreenSettings(for id: UUID) -> AIMacScreenDeviceSettings {
         settings.devices.first(where: { $0.id == id && $0.type == .aiMacScreen })?

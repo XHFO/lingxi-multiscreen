@@ -1,0 +1,19 @@
+AI Mac 小屏幕刷机资源
+======================
+
+lingxi-esptool
+--------------
+This application bundles esptool.py 3.0 as an Apple Silicon helper executable.
+Project: https://github.com/espressif/esptool
+Copyright (c) 2014-2020 Fredrik Ahlberg, Angus Gratton, Espressif Systems (Shanghai) PTE LTD, and contributors.
+License: GNU General Public License, version 2 or later.
+
+The helper is used only when the user explicitly starts an ESP8266 firmware
+flash from Device Management. It is not started during normal application use.
+
+aimac-screen-0.7.0.bin
+----------------------
+Customized ESP8266 firmware for the AI Mac 240 x 240 screen. The source is
+maintained separately from the MultiScreen application repository; this bundle
+contains only the compiled firmware image required by the in-app flasher.
+

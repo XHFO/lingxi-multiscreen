@@ -18,14 +18,6 @@ let package = Package(
             name: "LinxDisplaySmokeTests",
             dependencies: ["LinxDisplayCore"],
             path: "Tests/LinxDisplaySmokeTests"
-        ),
-        // ESP8266 AI Mac 240x240 experimental build.  It intentionally has a
-        // separate executable, bundle identifier and data directory so it can
-        // never read or overwrite the production MultiScreen configuration.
-        .executableTarget(
-            name: "AIMacScreenApp",
-            dependencies: ["LinxDisplayCore"],
-            path: "Sources/AIMacScreenApp"
         )
     ],
     // 保持 Swift 5 语言模式：仅提升 tools 版本以支持 .v26 平台（macOS 26 官方玻璃 API），

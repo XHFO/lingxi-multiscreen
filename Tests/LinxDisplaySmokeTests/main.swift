@@ -4586,6 +4586,22 @@ func testAIMacScreen() throws {
     checkEqual(ManagedDevice.defaultName(for: .aiMacScreen, index: 0),
                "AI Mac 小屏幕 1", "AI Mac 小屏幕默认名称")
 
+    checkEqual(EmbeddedAIMacFirmware.version, "0.7.0-lossless-rgb565",
+               "内置小屏幕固件版本稳定")
+    checkEqual(EmbeddedAIMacFirmware.flashAddress, "0x0",
+               "ESP8266 固件写入地址稳定")
+    check(!EmbeddedAIMacFirmware.validate(Data()), "空数据不能通过固件完整性校验")
+    let ports = ESP8266FirmwareFlasher.serialPorts(in: [
+        "cu.usbserial-11440", "cu.wchusbserial1420", "cu.SLAB_USBtoUART",
+        "cu.usbmodem2101", "cu.CH341", "cu.cp210-test",
+        "cu.Bluetooth-Incoming-Port", "cu.debug-console", "tty.usbserial-ignored"
+    ])
+    checkEqual(Set(ports.map(\.path)), Set([
+        "/dev/cu.usbserial-11440", "/dev/cu.wchusbserial1420",
+        "/dev/cu.SLAB_USBtoUART", "/dev/cu.usbmodem2101",
+        "/dev/cu.CH341", "/dev/cu.cp210-test"
+    ]), "刷机串口只保留支持的 USB 设备")
+
     checkEqual(AIMacScreenSupport.normalizedHost(" http://192.168.1.66/path "),
                "192.168.1.66", "小屏幕地址去协议与路径")
     checkEqual(AIMacScreenSupport.normalizedHost("https://screen.local/"),
