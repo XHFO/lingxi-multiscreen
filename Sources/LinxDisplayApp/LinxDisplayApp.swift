@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var windowController: NSWindowController?
     private var modeItems: [NSMenuItem] = []
     private var pomodoroSubmenu: NSMenu?
+    private var keyboardCanvasSubmenu: NSMenu?
+    private var oracleCanvasSubmenu: NSMenu?
+    private var excerptCanvasSubmenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
@@ -102,15 +105,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // 显示内容：直接作为顶层菜单项（每个模式一项，当前项带勾选，无需二次点击）
-        let modeOrder: [DisplayMode] = [.qwenWork, .codex, .pomodoro, .systemMonitor, .nowPlaying, .customImage, .canvas, .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5]
-        for mode in modeOrder {
-            let modeItem = NSMenuItem(title: mode.title, action: #selector(switchMode(_:)), keyEquivalent: "")
-            modeItem.target = self
-            modeItem.representedObject = mode.rawValue
-            modeItems.append(modeItem)
-            menu.addItem(modeItem)
-        }
+        // 三类画板统一折叠为二级菜单：只列出用户实际添加并保持可见的卡片/画板，
+        // 避免所有内容平铺在系统菜单栏造成层级混乱。
+        let keyboardCanvasSubmenu = NSMenu(title: "灵犀画板")
+        let keyboardEntry = NSMenuItem(title: "灵犀画板", action: nil, keyEquivalent: "")
+        keyboardEntry.submenu = keyboardCanvasSubmenu
+        menu.addItem(keyboardEntry)
+        self.keyboardCanvasSubmenu = keyboardCanvasSubmenu
+
+        let oracleCanvasSubmenu = NSMenu(title: "口袋先知画板")
+        let oracleEntry = NSMenuItem(title: "口袋先知画板", action: nil, keyEquivalent: "")
+        oracleEntry.submenu = oracleCanvasSubmenu
+        menu.addItem(oracleEntry)
+        self.oracleCanvasSubmenu = oracleCanvasSubmenu
+
+        let excerptCanvasSubmenu = NSMenu(title: "摘录画板")
+        let excerptEntry = NSMenuItem(title: "摘录画板", action: nil, keyEquivalent: "")
+        excerptEntry.submenu = excerptCanvasSubmenu
+        menu.addItem(excerptEntry)
+        self.excerptCanvasSubmenu = excerptCanvasSubmenu
 
         menu.addItem(.separator())
 
@@ -149,19 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let model else { return }
         MainActor.assumeIsolated {
             if menu === self.statusItem?.menu {
-                for item in self.modeItems {
-                    guard let raw = item.representedObject as? Int,
-                          let mode = DisplayMode(rawValue: raw) else { continue }
-                    item.state = (mode == model.settings.displayMode) ? .on : .off
-                    // 未添加（或已停用）的打印机没有对应卡片，不在菜单里占据空位置。
-                    if let slot = mode.bambuSlotIndex {
-                        item.isHidden = slot >= model.enabledDevices(for: .bambuLab).count
-                    } else {
-                        item.isHidden = false
-                    }
-                    // 打印机项显示用户自定义的设备名（与侧栏、卡片一致）；其余项用模式标题
-                    item.title = model.menuTitle(for: mode)
-                }
+                self.rebuildCanvasSubmenus(model: model)
             }
             if menu === self.pomodoroSubmenu || menu === self.statusItem?.menu {
                 let items = self.pomodoroSubmenu?.items ?? []
@@ -173,6 +174,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    /// 每次展开菜单时按当前设备快照重建三个画板子菜单，确保新增、删除、重命名、
+    /// 显示/隐藏与设备切换都无需重启即可同步，且不同设备的画板不会串到一起。
+    @MainActor
+    private func rebuildCanvasSubmenus(model: AppModel) {
+        modeItems.removeAll(keepingCapacity: true)
+        keyboardCanvasSubmenu?.removeAllItems()
+        oracleCanvasSubmenu?.removeAllItems()
+        excerptCanvasSubmenu?.removeAllItems()
+
+        let targetKeyboard = model.settings.menuBarKeyboardDeviceID.flatMap { targetID in
+            model.enabledDevices(for: .keyboard).first { $0.id == targetID }
+        } ?? model.activeDevice(for: .keyboard)
+        if let keyboard = targetKeyboard {
+            let panels = model.keyboardCardList(for: keyboard.id)
+            for panel in panels {
+                guard let mode = panel.displayMode else { continue }
+                let item = NSMenuItem(title: model.menuTitle(for: mode),
+                                      action: #selector(switchMode(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = mode.rawValue
+                item.state = mode == model.settings.displayMode ? .on : .off
+                modeItems.append(item)
+                keyboardCanvasSubmenu?.addItem(item)
+            }
+        }
+        addEmptyHintIfNeeded(to: keyboardCanvasSubmenu, title: "尚未添加卡片")
+
+        let oracleDevices = model.enabledDevices(for: .oracle)
+        for device in oracleDevices {
+            for board in model.visibleOracleCanvasBoards(for: device.id) {
+                let title = oracleDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let item = NSMenuItem(title: title,
+                                      action: #selector(switchOracleBoard(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
+                item.state = model.activeDeviceID(for: .oracle) == device.id
+                    && model.isCurrentOracleCanvasBoard(deviceID: device.id, boardID: board.id)
+                    ? .on : .off
+                oracleCanvasSubmenu?.addItem(item)
+            }
+        }
+        addEmptyHintIfNeeded(to: oracleCanvasSubmenu, title: "尚未创建可见画板")
+
+        let excerptDevices = model.enabledDevices(for: .excerpt)
+        for device in excerptDevices {
+            for board in model.visibleExcerptCanvasBoards(for: device.id) {
+                let title = excerptDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let item = NSMenuItem(title: title,
+                                      action: #selector(switchExcerptBoard(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
+                item.state = model.activeDeviceID(for: .excerpt) == device.id
+                    && model.isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: board.id)
+                    ? .on : .off
+                excerptCanvasSubmenu?.addItem(item)
+            }
+        }
+        addEmptyHintIfNeeded(to: excerptCanvasSubmenu, title: "尚未创建可见画板")
+    }
+
+    @MainActor
+    private func addEmptyHintIfNeeded(to menu: NSMenu?, title: String) {
+        guard let menu, menu.items.isEmpty else { return }
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
     }
 
     // MARK: - 主窗口（iOS 26 风格：透明标题栏 + 毛玻璃背景）
@@ -244,6 +313,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let mode = DisplayMode(rawValue: raw),
               let model else { return }
         MainActor.assumeIsolated { model.menuBarSetMode(mode) }
+    }
+
+    @objc private func switchOracleBoard(_ sender: NSMenuItem) {
+        guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
+        MainActor.assumeIsolated {
+            model.menuBarSelectOracleBoard(deviceID: deviceID, boardID: boardID)
+        }
+    }
+
+    @objc private func switchExcerptBoard(_ sender: NSMenuItem) {
+        guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
+        MainActor.assumeIsolated {
+            model.menuBarSelectExcerptBoard(deviceID: deviceID, boardID: boardID)
+        }
+    }
+
+    private func boardIDs(from sender: NSMenuItem) -> (UUID, UUID)? {
+        guard let key = sender.representedObject as? String else { return nil }
+        let parts = key.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let deviceID = UUID(uuidString: String(parts[0])),
+              let boardID = UUID(uuidString: String(parts[1])) else { return nil }
+        return (deviceID, boardID)
     }
 
     @objc private func pomodoroToggle() {

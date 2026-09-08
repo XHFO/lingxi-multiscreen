@@ -30,6 +30,7 @@ extension Panel {
     var isBeta: Bool {
         self == .homeAssistant || self == .bambuLab || self == .bambuLab2
             || self == .bambuLab3 || self == .bambuLab4 || self == .bambuLab5
+            || isFormlabsCard
     }
 
     /// 是否为 Bambu Lab 打印机卡片位（第 1/2/3/4/5 台；显示在键盘设备分组内，
@@ -62,6 +63,30 @@ extension Panel {
         default: return nil
         }
     }
+
+    var isFormlabsCard: Bool { formlabsSlotIndex != nil }
+
+    var formlabsSlotIndex: Int? {
+        switch self {
+        case .formlabs: return 0
+        case .formlabs2: return 1
+        case .formlabs3: return 2
+        case .formlabs4: return 3
+        case .formlabs5: return 4
+        default: return nil
+        }
+    }
+
+    static func formlabsPanel(forSlotIndex i: Int) -> Panel? {
+        switch i {
+        case 0: return .formlabs
+        case 1: return .formlabs2
+        case 2: return .formlabs3
+        case 3: return .formlabs4
+        case 4: return .formlabs5
+        default: return nil
+        }
+    }
 }
 
 enum Panel: String, CaseIterable, Identifiable, Hashable {
@@ -83,9 +108,16 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case bambuLab3
     case bambuLab4
     case bambuLab5
+    case formlabs
+    case formlabs2
+    case formlabs3
+    case formlabs4
+    case formlabs5
     case devices
     case buttonControl
     case cardRotation
+    case oracleBoardManagement
+    case excerptBoardManagement
     case oracleCanvas
     case excerptCanvas
     case general
@@ -97,6 +129,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         [.qwenWork, .codex, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
          .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant,
          .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+         .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5,
          .devices, .oracleCanvas, .excerptCanvas]
     }
 
@@ -155,6 +188,11 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .bambuLab3: return .bambuLab3
         case .bambuLab4: return .bambuLab4
         case .bambuLab5: return .bambuLab5
+        case .formlabs: return .formlabs
+        case .formlabs2: return .formlabs2
+        case .formlabs3: return .formlabs3
+        case .formlabs4: return .formlabs4
+        case .formlabs5: return .formlabs5
         }
     }
 
@@ -179,9 +217,16 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .bambuLab3: return "Bambu Lab 打印机 3"
         case .bambuLab4: return "Bambu Lab 打印机 4"
         case .bambuLab5: return "Bambu Lab 打印机 5"
+        case .formlabs: return "Formlabs 打印机"
+        case .formlabs2: return "Formlabs 打印机 2"
+        case .formlabs3: return "Formlabs 打印机 3"
+        case .formlabs4: return "Formlabs 打印机 4"
+        case .formlabs5: return "Formlabs 打印机 5"
         case .devices: return "设备管理"
         case .buttonControl: return "按键控制"
         case .cardRotation: return "卡片管理"
+        case .oracleBoardManagement: return "口袋先知画板管理"
+        case .excerptBoardManagement: return "摘录画板管理"
         case .oracleCanvas: return "口袋先知画板"
         case .excerptCanvas: return "摘录画板"
         }
@@ -203,10 +248,13 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .sspai: return "newspaper"
         case .emojiWallpaper: return "face.smiling"
         case .homeAssistant: return "house"
-        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return "printer"
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+             .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
         case .cardRotation: return "tray.full"
+        case .oracleBoardManagement: return "rectangle.stack"
+        case .excerptBoardManagement: return "rectangle.stack"
         case .oracleCanvas: return "sparkles"
         case .excerptCanvas: return "quote.opening"
         }
@@ -216,7 +264,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     var displayMode: DisplayMode? {
         switch self {
         case .welcome, .general, .appearance: return nil
-        case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .cardRotation: return nil
+        case .oracleCanvas, .excerptCanvas, .devices, .buttonControl,
+             .cardRotation, .oracleBoardManagement, .excerptBoardManagement: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
         case .pomodoro: return .pomodoro
@@ -233,6 +282,11 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .bambuLab3: return .bambuLab3
         case .bambuLab4: return .bambuLab4
         case .bambuLab5: return .bambuLab5
+        case .formlabs: return .formlabs
+        case .formlabs2: return .formlabs2
+        case .formlabs3: return .formlabs3
+        case .formlabs4: return .formlabs4
+        case .formlabs5: return .formlabs5
         }
     }
 }
@@ -366,6 +420,7 @@ private func reorderList<Item: Identifiable & Equatable, Row: View>(
 private let dotImageAPIDocsURL = URL(string: "https://dot.mindreset.tech/docs/service/open/image_api")!
 /// Rand/0 显示模式官方文档（先知设备 IP 帮助图标跳转）
 private let rand0DisplayModeDocsURL = URL(string: "https://dot.mindreset.tech/docs/rand_0/start/features/display_mode")!
+private let formlabsDeveloperDocsURL = URL(string: "https://formlabs.com/support/Formlabs-Developer-Platform-overview/")!
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
@@ -400,6 +455,8 @@ struct SettingsView: View {
     /// 口袋先知多画板拖拽排序状态（拖动中仅更新本地列表，松手统一提交）
     @State private var draggedBoard: OracleCanvasBoard?
     @State private var dragBoards: [OracleCanvasBoard]?
+    @State private var draggedExcerptBoard: ExcerptCanvasBoard?
+    @State private var dragExcerptBoards: [ExcerptCanvasBoard]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
@@ -408,6 +465,8 @@ struct SettingsView: View {
     /// 待重命名的先知画板（非 nil 时弹出重命名输入框）
     @State private var boardRenameTarget: OracleCanvasBoard?
     @State private var boardRenameDraft = ""
+    @State private var excerptBoardRenameTarget: ExcerptCanvasBoard?
+    @State private var excerptBoardRenameDraft = ""
     /// 全局快捷键录制：正在录制的动作（nil = 未录制）与本地按键监听器
     @State private var recordingShortcutAction: GlobalHotkeyManager.Action?
     @State private var recordingMonitor: Any?
@@ -473,7 +532,8 @@ struct SettingsView: View {
     private var hidesPreviewPanel: Bool {
         if model.settings.devices.isEmpty { return true }
         switch selected {
-        case .oracleCanvas, .excerptCanvas, .devices, .general:
+        case .oracleCanvas, .excerptCanvas, .oracleBoardManagement,
+             .excerptBoardManagement, .devices, .general:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -556,6 +616,14 @@ struct SettingsView: View {
                 dragCardPanels = nil
                 draggedCardPanel = nil
             }
+            .onChange(of: model.activeDeviceID(for: .oracle)) { _ in
+                dragBoards = nil
+                draggedBoard = nil
+            }
+            .onChange(of: model.activeDeviceID(for: .excerpt)) { _ in
+                dragExcerptBoards = nil
+                draggedExcerptBoard = nil
+            }
         }
     }
 
@@ -608,6 +676,10 @@ struct SettingsView: View {
                         excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
                     } else if selected == .oracleCanvas {
                         oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
+                    } else if selected == .oracleBoardManagement {
+                        oracleBoardManagementForm
+                    } else if selected == .excerptBoardManagement {
+                        excerptBoardManagementForm
                     } else {
                         Form { panelContent(for: selected) }
                             .formStyle(.grouped)
@@ -667,7 +739,10 @@ struct SettingsView: View {
 
             HStack(spacing: 6) {
                 Text(model.settings.devices.isEmpty && !worksWithoutDevices(selected)
-                     ? "开始使用" : selected.title)
+                     ? "开始使用"
+                     : selected == .oracleCanvas ? model.oracleCanvasBoardName
+                     : selected == .excerptCanvas ? model.excerptCanvasBoardName
+                     : selected.title)
                     .font(.headline)
                 if selected.isBeta {
                     BetaBadge()
@@ -706,9 +781,12 @@ struct SettingsView: View {
         case .emojiWallpaper: emojiWallpaperForm
         case .homeAssistant: homeAssistantForm
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
+        case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
         case .cardRotation: cardRotationForm
+        case .oracleBoardManagement: oracleBoardManagementForm
+        case .excerptBoardManagement: excerptBoardManagementForm
         case .oracleCanvas: oracleCanvasForm
         case .excerptCanvas: excerptCanvasForm
         }
@@ -725,15 +803,9 @@ struct SettingsView: View {
             draftField(key: "\(deviceID.uuidString)#\(label)", label: label,
                        binding: binding, fieldWidth: fieldWidth)
             if let helpText, let helpURL {
-                Button {
-                    NSWorkspace.shared.open(helpURL)
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help(helpText)
+                HelpIcon(text: helpText, linkURL: helpURL)
+            } else if let helpText {
+                HelpIcon(text: helpText)
             }
         }
     }
@@ -741,6 +813,7 @@ struct SettingsView: View {
     /// 草稿式连接输入：输入框 + 「应用」（避免逐字符触发拉取/持久化）；key 为草稿存储键
     private func draftField(key: String, label: String, binding: Binding<String>,
                             fieldWidth: CGFloat? = nil, secure: Bool = false,
+                            helpText: String? = nil,
                             onApply: (() -> Void)? = nil) -> some View {
         HStack(spacing: 6) {
             Group {
@@ -764,13 +837,17 @@ struct SettingsView: View {
             .controlSize(.small)
             .disabled((self.connectionDrafts[key] ?? binding.wrappedValue) == binding.wrappedValue)
             .help("确认并应用此连接信息")
+            if let helpText {
+                HelpIcon(text: helpText)
+            }
         }
     }
 
     /// Home Assistant 长期访问令牌输入（密码框 + 草稿 + 应用，与连接字段一致）
     private func haTokenField(_ deviceID: UUID) -> some View {
         draftField(key: "\(deviceID.uuidString)#HA令牌", label: "长期访问令牌",
-                   binding: model.deviceHATokenBinding(for: deviceID), fieldWidth: 320, secure: true)
+                   binding: model.deviceHATokenBinding(for: deviceID), fieldWidth: 320, secure: true,
+                   helpText: "长期访问令牌在 Home Assistant 网页“个人资料 → 安全 → 长期访问令牌”生成；仅保存在本机，不会随发布包外泄。")
     }
 
     /// 口袋先知按键控制页：配置当前口袋先知设备的按键控制目标
@@ -781,7 +858,7 @@ struct SettingsView: View {
                 LabeledContent("设备",
                                value: model.activeDevice(for: .oracle)?.name ?? "未设置")
             }
-            Section("按键控制") {
+            Section {
                 if let oracleID = model.activeDevice(for: .oracle)?.id {
                     Picker("按键控制设备", selection: model.deviceRand0ControlTargetBinding(for: oracleID)) {
                         ForEach(model.rand0ControlOptions(), id: \.key) { option in
@@ -805,11 +882,11 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-            Section {
-                Text("口袋先知设备按键（短按）控制所选目标：控制自身时下键手动更新画布（保存了多块画板时上下键在画板间循环切换并推送）；控制灵犀68 键盘时上下键翻页；控制摘录时下键切换到 Dot 云端内容下一项、上键推送本地摘录画板。每台先知设备各自记住自己的控制目标。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("按键控制")
+                    HelpIcon(text: "口袋先知设备按键（短按）控制所选目标：控制自身时下键手动更新画布（保存了多块画板时上下键可循环切换并推送）；控制灵犀68 键盘时上下键翻页；控制摘录时下键切换 Dot 云端下一项、上键推送本地摘录画板。每台设备独立保存控制目标。")
+                }
             }
         }
         .onAppear { model.ensureRand0Session() }
@@ -881,11 +958,10 @@ struct SettingsView: View {
                                                 .foregroundStyle(haTestResult.hasPrefix("连接成功") ? Color.secondary : Color.red)
                                         }
                                     }
-                                    Text("长期访问令牌在 Home Assistant 网页「个人资料 → 安全 → 长期访问令牌」生成；仅保存在本机，不会随发布包外泄。")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
                                 } else if type == .bambuLab {
                                     bambuDeviceConfigInline(device.id)
+                                } else if type == .formlabs {
+                                    formlabsDeviceConfigInline(device.id)
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
                                                           binding: model.deviceDotApiKeyBinding(for: device.id),
@@ -928,13 +1004,11 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text(type.title)
+                    HStack(spacing: 4) {
+                        Text(type.title)
+                        HelpIcon(text: "连接信息填写后需点“应用”才生效；每台设备独立记录连接与画板设置，切换设备后会恢复该设备之前的设置。灵犀68 键盘与口袋先知填写 IP，摘录填写 API Key 与设备序列号。")
+                    }
                 }
-            }
-            Section {
-                Text("灵犀68 键盘与口袋先知只需填写 IP 地址（键盘会自动补全推送地址 http://IP/image/upload），摘录需 API Key 与设备序列号。连接信息填写后需点「应用」才生效；每台设备独立记录连接与画板设置，切换设备后恢复该设备之前的设置。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .confirmationDialog(
@@ -958,6 +1032,598 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func formlabsDeviceConfigInline(_ deviceID: UUID) -> some View {
+        let discovered = model.formlabsDiscoveredDevices[deviceID] ?? []
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                Text("Formlabs Dashboard API")
+                    .font(.system(size: 12, weight: .semibold))
+                HelpIcon(text: "纯云端模式：设备状态、任务名、准确进度、层数、耗材种类与缩略图均来自 Formlabs Dashboard API。")
+            }
+            Toggle(isOn: model.formlabsBoolBinding(for: deviceID, \.useBrandAccent)) {
+                HStack(spacing: 4) {
+                    Text("使用 Formlabs 品牌强调色")
+                    HelpIcon(text: "开启时使用 Formlabs 品牌蓝；关闭后跟随软件的全局主题强调色。")
+                }
+            }
+            deviceConnectionField(deviceID, label: "Client ID",
+                                  binding: model.formlabsStringBinding(for: deviceID, \.clientID),
+                                  fieldWidth: 320,
+                                  helpText: "在 Formlabs Developer Platform 创建应用后获得。",
+                                  helpURL: formlabsDeveloperDocsURL)
+            draftField(key: "\(deviceID.uuidString)#FormlabsSecret", label: "Client Secret",
+                       binding: model.formlabsStringBinding(for: deviceID, \.clientSecret),
+                       fieldWidth: 320, secure: true)
+            HStack {
+                Button("读取云端打印机") { Task { await model.discoverFormlabsDevices(deviceID) } }
+                HelpIcon(text: "先应用 Client ID 和 Client Secret，再从账号中读取打印机。")
+            }
+            if !discovered.isEmpty {
+                Picker("云端打印机", selection: model.formlabsStringBinding(for: deviceID, \.printerSerial)) {
+                    Text("请选择").tag("")
+                    ForEach(discovered) { printer in
+                        Text("\(printer.productName) · \(printer.id)").tag(printer.id)
+                    }
+                }
+                .frame(width: 420)
+                .onChange(of: model.formlabsStringBinding(for: deviceID, \.printerSerial).wrappedValue) { _, serial in
+                    if let printer = discovered.first(where: { $0.id == serial }) {
+                        model.chooseFormlabsCloudPrinter(printer, for: deviceID)
+                    }
+                }
+            } else {
+                deviceConnectionField(deviceID, label: "打印机序列号",
+                                      binding: model.formlabsStringBinding(for: deviceID, \.printerSerial),
+                                      fieldWidth: 320)
+            }
+            HStack {
+                Button("测试云端连接") { Task { await model.testFormlabsConnection(deviceID) } }
+                Button("立即刷新") {
+                    Task { await model.refreshFormlabs(deviceID: deviceID, force: true, pushIfVisible: true) }
+                }
+                Spacer()
+            }
+            if let status = model.formlabsConnectionStatus[deviceID], !status.isEmpty {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(status.contains("失败") || status.contains("异常") ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    /// 口袋先知画板管理：每台设备独立排序，并分别控制侧栏显示与自动轮播参与状态。
+    private var oracleBoardManagementForm: some View {
+        Form {
+            Section {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(.secondary)
+                    Text("正在管理")
+                    HelpIcon(text: "每台口袋先知的画板、显示顺序和轮播设置相互独立；此页只影响当前选中的设备。")
+                    Spacer()
+                    if model.enabledDevices(for: .oracle).count > 1 {
+                        Picker("", selection: model.activeOracleBinding) {
+                            ForEach(model.enabledDevices(for: .oracle)) { device in
+                                Text(device.name).tag(device.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 200)
+                    } else {
+                        Text(model.activeDevice(for: .oracle)?.name ?? "未选择设备")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.clear)
+                    Image(systemName: "rectangle.stack")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.clear)
+                        .frame(width: 16)
+                    Text("画板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("侧栏")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                    Text("轮播")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                    Color.clear.frame(width: 50, height: 1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+
+                let boards = dragBoards ?? model.settings.oracleCanvasBoards
+                if boards.isEmpty {
+                    Text("尚未创建画板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                } else {
+                    reorderList(items: boards, dragged: $draggedBoard, dragItems: $dragBoards,
+                                commit: { model.commitOracleCanvasBoards($0) }) { board in
+                        oracleBoardManagementRow(board)
+                    }
+                }
+                Button("创建新的画板") {
+                    model.addOracleCanvasBoard()
+                    selected = .oracleCanvas
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("画板（拖拽排序）")
+                    HelpIcon(text: "拖动排序决定侧栏与自动轮播顺序；关闭“侧栏”后不再显示在设备折叠菜单中，关闭“轮播”后不会被自动切换。")
+                }
+            }
+
+            Section("显示设置") {
+                HStack(spacing: 4) {
+                    Text("底色模式")
+                    HelpIcon(text: "手动切换深色/亮色底色：亮色模式为白底深字，避免墨水屏长时间显示黑色底色；不随电脑或软件主题同步。")
+                }
+                Picker("", selection: model.oracleBackgroundModeBinding) {
+                    ForEach(CanvasBackgroundMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Toggle(isOn: model.oracleImageRotate180Binding) {
+                    HStack(spacing: 4) {
+                        Text("旋转 180°")
+                        HelpIcon(text: "仅将实际推送到设备的画面旋转 180°，适配设备安装方向；软件预览始终保持正向，也不会产生镜像。")
+                    }
+                }
+                Picker(selection: model.oracleDisplayModeBinding) {
+                    ForEach(OracleDisplayMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("显示模式")
+                        HelpIcon(text: "黑白模式：灰值 > 128 显示为白，其余为黑（通过 /display/bw 推送）。4 级灰阶：白/浅灰/深灰/黑（通过 /display/gray4 推送）。")
+                    }
+                }
+                .pickerStyle(.segmented)
+                Picker(selection: model.oracleGrayAlgorithmBinding) {
+                    ForEach(OracleGrayAlgorithm.allCases) { algorithm in
+                        Text(algorithm.title).tag(algorithm)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("灰阶算法")
+                        HelpIcon(text: "灰阶转换：\(model.settings.oracleGrayAlgorithm.subtitle)")
+                    }
+                }
+                Picker(selection: model.oracleDitherKernelBinding) {
+                    ForEach(OracleDitherKernel.allCases) { kernel in
+                        Text(kernel.title).tag(kernel)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("抖动算法")
+                        HelpIcon(text: "抖动：\(model.settings.oracleDitherKernel.subtitle)（参考官方墨水屏 ditherKernel）")
+                    }
+                }
+            }
+
+            Section {
+                HStack(spacing: 4) {
+                    Button("推送到 Rand/0 设备") {
+                        Task { await model.pushOracleCanvas() }
+                    }
+                    HelpIcon(text: "设备 IP 地址与按键控制目标请在“设备管理”中按设备设置。")
+                }
+                if model.rand0SessionConnected {
+                    Label("显示模式已连接：设备按键信号实时回传", systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !model.settings.rand0IP.isEmpty {
+                    Text("显示模式未连接：设备可能离线或不在同一局域网，将自动重连；连接后推送即时上屏、按键信号回传。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("Rand/0 设备")
+                    HelpIcon(text: "通过局域网 WebSocket（ws://<IP>/display/bw 或 /display/gray4）把图像推送到 Rand/0 墨水屏，发送即显示、无需在设备上按键刷新。保持连接时设备按键信号会回传给软件，可在「设备管理」中配置每台先知设备按键控制的目标。")
+                }
+            }
+
+            Section("自动推送与轮换") {
+                Toggle(isOn: model.oracleAutoPushEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("自动推送画布")
+                        HelpIcon(text: "开启后立即推送一次；之后内容变化时立即推送，无变化则按间隔推送。")
+                    }
+                }
+                if model.settings.oracleAutoPushEnabled {
+                    Stepper("推送间隔 \(model.settings.oracleAutoPushMinutes) 分钟",
+                            value: model.oracleAutoPushMinutesBinding, in: 1...1440)
+                }
+                Divider()
+                Toggle(isOn: model.oracleBoardRotationEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("自动轮换画板")
+                        HelpIcon(text: "按画板管理中的顺序循环切换同时开启“侧栏”和“轮播”的画板；每次切换后立即推送。")
+                    }
+                }
+                if model.settings.oracleBoardRotationEnabled {
+                    Stepper("轮换间隔 \(model.settings.oracleBoardRotationMinutes) 分钟",
+                            value: model.oracleBoardRotationMinutesBinding, in: 1...1440)
+                }
+                if model.oracleRotationBoardCount < 2 {
+                    Text("至少需要两块同时开启“侧栏”和“轮播”的画板，自动轮播才会开始。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if model.settings.oracleBoardRotationEnabled {
+                    Text("当前：\(model.oracleCanvasBoardName) · 下一块：\(model.nextOracleCanvasBoardName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .alert("重命名画板", isPresented: Binding(
+            get: { boardRenameTarget != nil },
+            set: { if !$0 { boardRenameTarget = nil } })) {
+            TextField("画板名称", text: $boardRenameDraft)
+            Button("确定") {
+                if let board = boardRenameTarget {
+                    model.renameOracleCanvasBoard(id: board.id, to: boardRenameDraft)
+                }
+                boardRenameTarget = nil
+            }
+            Button("取消", role: .cancel) { boardRenameTarget = nil }
+        }
+        .onAppear {
+            model.ensureRand0Session()
+        }
+    }
+
+    private func oracleBoardManagementRow(_ board: OracleCanvasBoard) -> some View {
+        let index = model.settings.oracleCanvasBoards.firstIndex(where: { $0.id == board.id }) ?? 0
+        let isCurrent = model.settings.oracleCanvasBoards.indices.contains(index)
+            && index == model.settings.oracleCanvasBoardIndex
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Image(systemName: "rectangle.stack")
+                .font(.system(size: 12))
+                .frame(width: 16)
+            Button {
+                model.applyOracleCanvasBoard(at: index)
+                selected = .oracleCanvas
+            } label: {
+                HStack(spacing: 5) {
+                    Text(board.name).lineLimit(1)
+                    if isCurrent {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { board.isSidebarVisible },
+                set: { model.setOracleCanvasBoardSidebarVisible(id: board.id, visible: $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .frame(width: 44)
+                .help("在该设备的侧边栏中显示")
+            Toggle("", isOn: Binding(
+                get: { board.participatesInRotation },
+                set: { model.setOracleCanvasBoardRotationEnabled(id: board.id, enabled: $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .frame(width: 44)
+                .help("加入自动轮播")
+            HStack(spacing: 6) {
+                Button {
+                    boardRenameTarget = board
+                    boardRenameDraft = board.name
+                } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless)
+                    .help("重命名画板")
+                Button(role: .destructive) {
+                    model.removeOracleCanvasBoard(at: index)
+                } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("删除画板")
+            }
+            .frame(width: 50)
+        }
+        .padding(.vertical, 2)
+        .onDrag {
+            draggedBoard = board
+            dragBoards = model.settings.oracleCanvasBoards
+            return NSItemProvider(object: board.id.uuidString as NSString)
+        }
+        .help("点击名称编辑；拖拽排序")
+    }
+
+    /// 摘录画板管理：每台设备独立排序，并分别控制侧边栏显示、自动轮播与设备推送。
+    private var excerptBoardManagementForm: some View {
+        Form {
+            Section {
+                HStack(spacing: 8) {
+                    Image(systemName: "quote.opening")
+                        .foregroundStyle(.secondary)
+                    Text("正在管理")
+                    HelpIcon(text: "每台摘录设备的画板、显示顺序、推送与轮播设置相互独立；此页只影响当前选中的设备。")
+                    Spacer()
+                    if model.enabledDevices(for: .excerpt).count > 1 {
+                        Picker("", selection: model.activeExcerptBinding) {
+                            ForEach(model.enabledDevices(for: .excerpt)) { device in
+                                Text(device.name).tag(device.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 200)
+                    } else {
+                        Text(model.activeDevice(for: .excerpt)?.name ?? "未选择设备")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.clear)
+                    Image(systemName: "rectangle.stack")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.clear)
+                        .frame(width: 16)
+                    Text("画板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("侧栏")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                    Text("轮播")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                    Color.clear.frame(width: 50, height: 1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+
+                let boards = dragExcerptBoards ?? model.settings.excerptCanvasBoards
+                if boards.isEmpty {
+                    Text("尚未创建画板")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                } else {
+                    reorderList(items: boards,
+                                dragged: $draggedExcerptBoard,
+                                dragItems: $dragExcerptBoards,
+                                commit: { model.commitExcerptCanvasBoards($0) }) { board in
+                        excerptBoardManagementRow(board)
+                    }
+                }
+                Button("创建新的画板") {
+                    model.addExcerptCanvasBoard()
+                    selected = .excerptCanvas
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("画板（拖拽排序）")
+                    HelpIcon(text: "拖动排序决定侧边栏、系统菜单与自动轮播顺序；关闭“侧栏”后不再显示，关闭“轮播”后不会被自动切换。")
+                }
+            }
+
+            Section("显示设置") {
+                HStack(spacing: 4) {
+                    Text("底色模式")
+                    HelpIcon(text: "手动切换深色/亮色底色：亮色模式为白底深字，避免墨水屏长时间显示黑色底色。")
+                }
+                Picker("", selection: model.excerptBackgroundModeBinding) {
+                    ForEach(CanvasBackgroundMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Toggle(isOn: model.excerptImageRotate180Binding) {
+                    HStack(spacing: 4) {
+                        Text("旋转 180°")
+                        HelpIcon(text: "仅将实际推送的画面旋转 180°；软件预览始终保持正向。")
+                    }
+                }
+                Picker(selection: model.excerptLayoutColumnsBinding) {
+                    Text("单列").tag(1)
+                    Text("双列").tag(2)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("模块布局")
+                        HelpIcon(text: "双列布局中，可在具体画板的“当前组合”内让模块占满整行。")
+                    }
+                }
+                .pickerStyle(.segmented)
+                Toggle(isOn: model.showExcerptSourceBinding) {
+                    HStack(spacing: 4) {
+                        Text("显示语录出处")
+                        HelpIcon(text: "摘录语录模块在底部显示语录出处；没有确切出处的语录不显示。")
+                    }
+                }
+                Toggle(isOn: model.excerptPushRawImageBinding) {
+                    HStack(spacing: 4) {
+                        Text("推送原始彩色图片")
+                        HelpIcon(text: "开启后由 Dot 服务端按所选算法转换；关闭时推送本地灰阶与抖动处理后的画面。")
+                    }
+                }
+                if model.settings.excerptPushRawImage {
+                    Picker("服务端抖动方式", selection: model.excerptServerDitherTypeBinding) {
+                        ForEach(DotServerDitherType.allCases) { type in
+                            Text(type.title).tag(type)
+                        }
+                    }
+                    Picker("服务端抖动核", selection: model.excerptServerDitherKernelBinding) {
+                        ForEach(DotServerDitherKernel.allCases) { kernel in
+                            Text(kernel.title).tag(kernel)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                HStack {
+                    Button("测试推送") { Task { await model.pushExcerptCanvas() } }
+                    Button("查询设备状态") { Task { await model.checkDotDeviceStatus() } }
+                        .controlSize(.small)
+                }
+                if !model.dotDeviceStatusText.isEmpty {
+                    Text(model.dotDeviceStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("摘录设备")
+                    HelpIcon(text: "API Key 与序列号请在“设备管理”中设置。测试推送会立即发送当前画板。")
+                }
+            }
+
+            Section("自动推送与轮换") {
+                Toggle(isOn: model.excerptAutoPushEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("自动推送画布")
+                        HelpIcon(text: "开启后立即推送一次；之后内容变化时立即推送，无变化则按间隔检查。")
+                    }
+                }
+                if model.settings.excerptAutoPushEnabled {
+                    Stepper("推送间隔 \(model.settings.excerptAutoPushMinutes) 分钟",
+                            value: model.excerptAutoPushMinutesBinding, in: 1...1440)
+                }
+                Divider()
+                Toggle(isOn: model.excerptBoardRotationEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("自动轮换画板")
+                        HelpIcon(text: "按管理页排序循环切换同时开启“侧栏”和“轮播”的画板，每次切换后立即推送。")
+                    }
+                }
+                if model.settings.excerptBoardRotationEnabled {
+                    Stepper("轮换间隔 \(model.settings.excerptBoardRotationMinutes) 分钟",
+                            value: model.excerptBoardRotationMinutesBinding, in: 1...1440)
+                }
+                if model.excerptRotationBoardCount < 2 {
+                    Text("至少需要两块同时开启“侧栏”和“轮播”的画板，自动轮播才会开始。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if model.settings.excerptBoardRotationEnabled {
+                    Text("当前：\(model.excerptCanvasBoardName) · 下一块：\(model.nextExcerptCanvasBoardName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .alert("重命名摘录画板", isPresented: Binding(
+            get: { excerptBoardRenameTarget != nil },
+            set: { if !$0 { excerptBoardRenameTarget = nil } })) {
+            TextField("画板名称", text: $excerptBoardRenameDraft)
+            Button("确定") {
+                if let board = excerptBoardRenameTarget {
+                    model.renameExcerptCanvasBoard(id: board.id, to: excerptBoardRenameDraft)
+                }
+                excerptBoardRenameTarget = nil
+            }
+            Button("取消", role: .cancel) { excerptBoardRenameTarget = nil }
+        }
+        .task { await model.checkDotDeviceStatus() }
+    }
+
+    private func excerptBoardManagementRow(_ board: ExcerptCanvasBoard) -> some View {
+        let index = model.settings.excerptCanvasBoards.firstIndex(where: { $0.id == board.id }) ?? 0
+        let isCurrent = model.settings.excerptCanvasBoards.indices.contains(index)
+            && index == model.settings.excerptCanvasBoardIndex
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Image(systemName: "rectangle.stack")
+                .font(.system(size: 12))
+                .frame(width: 16)
+            Button {
+                model.applyExcerptCanvasBoard(at: index)
+                selected = .excerptCanvas
+            } label: {
+                HStack(spacing: 5) {
+                    Text(board.name).lineLimit(1)
+                    if isCurrent {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { board.isSidebarVisible },
+                set: { model.setExcerptCanvasBoardSidebarVisible(id: board.id, visible: $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .frame(width: 44)
+                .help("在该设备的侧边栏与系统菜单中显示")
+            Toggle("", isOn: Binding(
+                get: { board.participatesInRotation },
+                set: { model.setExcerptCanvasBoardRotationEnabled(id: board.id, enabled: $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .frame(width: 44)
+                .help("加入自动轮播")
+            HStack(spacing: 6) {
+                Button {
+                    excerptBoardRenameTarget = board
+                    excerptBoardRenameDraft = board.name
+                } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless)
+                    .help("重命名画板")
+                Button(role: .destructive) {
+                    model.removeExcerptCanvasBoard(at: index)
+                } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("删除画板")
+            }
+            .frame(width: 50)
+        }
+        .padding(.vertical, 2)
+        .onDrag {
+            draggedExcerptBoard = board
+            dragExcerptBoards = model.settings.excerptCanvasBoards
+            return NSItemProvider(object: board.id.uuidString as NSString)
+        }
+        .help("点击名称编辑；拖拽排序")
+    }
+
     /// 卡片轮换（键盘功能设置）：开关、间隔与轮换卡片内容排序（按键盘设备独立记录）
     private var cardRotationForm: some View {
         Group {
@@ -966,6 +1632,7 @@ struct SettingsView: View {
                     Image(systemName: "keyboard")
                         .foregroundStyle(.secondary)
                     Text("正在管理")
+                    HelpIcon(text: "每台灵犀68 键盘的卡片列表与卡片内容相互独立；此页只影响当前选中的键盘。")
                     Spacer()
                     if model.enabledDevices(for: .keyboard).count > 1 {
                         Picker("", selection: model.activeKeyboardBinding) {
@@ -980,12 +1647,14 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("每台灵犀68 键盘的卡片列表与卡片内容相互独立：此页只影响上面选中的这台键盘。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Section("自动轮播") {
-                Toggle("卡片页面自动轮播", isOn: model.cardRotationEnabledBinding)
+                Toggle(isOn: model.cardRotationEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("卡片页面自动轮播")
+                        HelpIcon(text: "开启后按卡片管理中的顺序，在键盘上循环切换已加入自动循环的卡片。轮换范围 1 分钟至 1 小时。")
+                    }
+                }
                 if model.settings.cardRotationEnabled {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
@@ -996,13 +1665,10 @@ struct SettingsView: View {
                                 .monospacedDigit()
                         }
                         Slider(value: model.cardRotationMinutesBinding, in: 1...60, step: 1)
-                        Text("范围 1 分钟–1 小时；到点后在键盘上循环切换已加入自动循环的卡片。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
-            Section("卡片（拖拽排序）") {
+            Section {
                 // 表头：说明每列开关对应的功能
                 HStack(spacing: 10) {
                     Image(systemName: "line.3.horizontal")
@@ -1040,10 +1706,11 @@ struct SettingsView: View {
                         cardManagementRow(panel)
                     }
                 }
-                Text("拖动排序决定侧栏顺序与自动轮播顺序；「侧栏」关闭后该卡片不在侧栏显示，「轮换」开启后该卡片参与自动轮播。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("卡片（拖拽排序）")
+                    HelpIcon(text: "拖动排序决定侧栏和自动轮播顺序；“侧栏”关闭后不显示该卡片，“轮换”开启后该卡片参与自动轮播。")
+                }
             }
             if !model.keyboardHiddenCardList.isEmpty {
                 Section("添加到侧栏") {
@@ -1065,11 +1732,6 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                     }
                 }
-            }
-            Section {
-                Text("卡片管理是灵犀68 键盘的功能：管理各卡片在侧栏的显示、自动轮播的参与与顺序，每台键盘设备独立记录。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1128,12 +1790,7 @@ struct SettingsView: View {
             canvasModuleEditor(owner: .keyboard,
                                modulesRaw: model.settings.canvasModules,
                                moduleList: dragModules ?? model.settings.canvasModuleList,
-                               available: CanvasModule.keyboardModules)
-            Section {
-                Text("模块自上而下排列成一张卡片，模块越多每块越紧凑。带设置项的模块展开其右侧箭头即可调整；右侧可实时预览，组合满意后按「立即推送」发到键盘。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                               available: availableCanvasModules(CanvasModule.keyboardModules))
         }
     }
 
@@ -1146,15 +1803,13 @@ struct SettingsView: View {
                     Button("切换到下一条") {
                         model.nextQuote()
                     }
+                    HelpIcon(text: "语录每分钟自动轮换；切到本页即推送到键盘，之后语录变化时更新。手动切换会暂时固定当前语录。")
                     if model.quoteOverrideIndex != nil {
                         Button("恢复自动轮换") {
                             model.resetQuoteRotation()
                         }
                     }
                 }
-                Text("语录每分钟自动轮换；切到本页即推送到键盘，之后语录变化时更新。手动「切换到下一条」会暂时固定展示所选语录。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Section {
                 ForEach(ExcerptQuoteCategory.allCases) { category in
@@ -1169,10 +1824,12 @@ struct SettingsView: View {
                 }
             }
             Section {
-                Toggle("显示语录出处", isOn: model.showExcerptSourceBinding)
-                Text("开启后在页脚时钟位置显示语录出处并隐藏时钟；没有确切出处的语录（如谚语）回退为正常页脚。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: model.showExcerptSourceBinding) {
+                    HStack(spacing: 4) {
+                        Text("显示语录出处")
+                        HelpIcon(text: "开启后在页脚时钟位置显示语录出处并隐藏时钟；没有确切出处的语录会回退为正常页脚。")
+                    }
+                }
             }
         }
     }
@@ -1188,49 +1845,47 @@ struct SettingsView: View {
         Group {
             Section("表情与布局") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Emoji 表情")
+                    HStack(spacing: 4) {
+                        Text("Emoji 表情")
+                        HelpIcon(text: "多个 emoji 会循环重复排列并铺满整个键盘屏幕。")
+                    }
                     TextField("输入要用作壁纸的 emoji，如 🌈🌟🦄", text: model.emojiWallpaperTextBinding,
                               prompt: Text("输入 emoji"))
                         .textFieldStyle(.roundedBorder)
-                    Text("多个 emoji 会循环重复排列，铺满整个键盘屏幕。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
-                Picker("排列方式", selection: model.emojiWallpaperLayoutBinding) {
+                Picker(selection: model.emojiWallpaperLayoutBinding) {
                     ForEach(EmojiWallpaperLayout.allCases) { layout in
                         Text(layout.title).tag(layout)
                     }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("排列方式")
+                        HelpIcon(text: model.settings.emojiWallpaperLayout.subtitle)
+                    }
                 }
-                Text(model.settings.emojiWallpaperLayout.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Section("大小与间隔") {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("Emoji 大小")
+                        HelpIcon(text: "越大单个表情越大、铺满所需数量越少；越小越密集。")
                         Spacer()
                         Text("\(model.settings.emojiWallpaperSize) px")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     Slider(value: model.emojiWallpaperSizeBinding, in: 16...96, step: 2)
-                    Text("越大单个表情越大、铺满所需数量越少；越小越密集。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("表情间隔")
+                        HelpIcon(text: "控制表情之间的空隙；0 为紧挨着排列。")
                         Spacer()
                         Text("\(model.settings.emojiWallpaperSpacing) px")
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     Slider(value: model.emojiWallpaperSpacingBinding, in: 0...40, step: 2)
-                    Text("控制表情之间的空隙；0 为紧挨着排列。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 Toggle("显示底部时间", isOn: model.nowPlayingFooterVisibleBinding)
             }
@@ -1241,9 +1896,6 @@ struct SettingsView: View {
     private var sspaiForm: some View {
         Group {
             Section {
-                Text("推送到键盘的少数派推荐卡片最多显示三条内容。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if model.sspaiArticles.isEmpty {
                     Text("正在获取少数派推荐文章…")
                         .font(.caption)
@@ -1272,28 +1924,43 @@ struct SettingsView: View {
                         .help("在浏览器中打开：https://sspai.com/post/\(article.id)")
                     }
                 }
-                Button("刷新推荐") {
-                    Task { await model.refresh() }
+                HStack(spacing: 4) {
+                    Button("刷新推荐") {
+                        Task { await model.refresh() }
+                    }
+                    HelpIcon(text: "推送到键盘的少数派推荐卡片最多显示三条内容。")
                 }
             }
             Section("推送") {
-                Toggle("文章多于三条时，进入本页随机推送三条到键盘", isOn: model.sspaiRandomPushBinding)
-                Text("开启后每次进入本页都会重新随机抽取三条推荐内容推送到键盘（文章不超过三条时按全部推送）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: model.sspaiRandomPushBinding) {
+                    HStack(spacing: 4) {
+                        Text("文章多于三条时，进入本页随机推送三条到键盘")
+                        HelpIcon(text: "每次进入本页都会重新随机抽取三条推荐内容；文章不超过三条时按全部推送。")
+                    }
+                }
             }
-            Section("刷新周期") {
+            Section {
                 Stepper("\(model.settings.sspaiRefreshMinutes) 分钟",
                         value: model.sspaiRefreshMinutesBinding, in: 5...240, step: 5)
-                Text("到点自动重新抓取编辑推荐文章并推送到键盘（内容变化时才会推送）；点击标题可在浏览器打开原文。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } header: {
+                HStack(spacing: 4) {
+                    Text("刷新周期")
+                    HelpIcon(text: "到点自动重新抓取编辑推荐文章并推送到键盘；内容无变化时不会推送。点击标题可在浏览器打开原文。")
+                }
             }
         }
         .onAppear {
             if model.settings.sspaiRandomPush {
                 Task { await model.enterSspaiPage() }
             }
+        }
+    }
+
+    /// 打印机模块只展示已经添加并启用的设备位，避免出现无法配置的空模块。
+    private func availableCanvasModules(_ modules: [CanvasModule]) -> [CanvasModule] {
+        let formlabsCount = model.enabledDevices(for: .formlabs).count
+        return modules.filter { module in
+            module.formlabsSlotIndex.map { $0 < formlabsCount } ?? true
         }
     }
 
@@ -1304,7 +1971,7 @@ struct SettingsView: View {
                                     moduleList: [CanvasModule],
                                     available: [CanvasModule],
                                     showFullWidthToggle: Bool = false) -> some View {
-        Section("当前组合（自上而下）") {
+        Section {
             if moduleList.isEmpty {
                 Text("尚未添加模块，从下方选择添加。")
                     .font(.caption)
@@ -1315,6 +1982,11 @@ struct SettingsView: View {
                     canvasModuleCurrentRow(module, owner: owner, moduleList: moduleList,
                                           showFullWidthToggle: showFullWidthToggle)
                 }
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("当前组合（自上而下）")
+                HelpIcon(text: "模块自上而下排列成一张卡片；模块越多，每块会越紧凑。拖动模块可以调整顺序，展开右侧箭头可以调整模块设置。")
             }
         }
         Section("添加模块") {
@@ -1408,137 +2080,32 @@ struct SettingsView: View {
         .disabled(modulesRaw.contains(module.rawValue))
     }
 
-    /// 口袋先知画板：主内容（显示设置 / 模块组合 / Rand/0 设备 / 自动推送）
-    /// + 右侧预览边栏（处理前 / 处理后 纵向排列）
+    /// 单块口袋先知画板：只保留当前画板的模块内容编辑与预览。
+    /// 排序、显示模式、设备推送、自动推送和轮换均集中在独立的画板管理页。
     private var oracleCanvasForm: some View {
         HStack(alignment: .top, spacing: 0) {
             // 左侧主内容
             Form {
-                Section("画板") {
-                    if model.settings.oracleCanvasBoards.isEmpty {
-                        Text("当前为默认画布。可把常用配置保存为多块画板，按键控制目标为自身时，设备上下键在多块画板间循环切换并推送。")
-                            .font(.caption)
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.stack")
+                            .foregroundStyle(Color.accentColor)
+                        Text(model.oracleCanvasBoardName)
+                            .font(.headline)
+                        Spacer()
+                        Text(model.activeDevice(for: .oracle)?.name ?? "未选择设备")
                             .foregroundStyle(.secondary)
-                    } else {
-                        reorderList(items: model.settings.oracleCanvasBoards,
-                                    dragged: $draggedBoard,
-                                    dragItems: $dragBoards,
-                                    commit: { model.commitOracleCanvasBoards($0) }) { board in
-                            oracleCanvasBoardRow(board)
-                        }
                     }
-                    Button("将当前配置保存为新画板") {
-                        model.addOracleCanvasBoard()
-                    }
-                }
-                Section("显示设置") {
+                } header: {
                     HStack(spacing: 4) {
-                        Text("底色模式")
-                        HelpIcon(text: "手动切换深色/亮色底色：亮色模式为白底深字，避免墨水屏长时间显示黑色底色；不随电脑或软件主题同步。")
-                    }
-                    Picker("", selection: model.oracleBackgroundModeBinding) {
-                        ForEach(CanvasBackgroundMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    Toggle(isOn: model.oracleImageRotate180Binding) {
-                        HStack(spacing: 4) {
-                            Text("旋转 180°")
-                            HelpIcon(text: "仅将实际推送到设备的画面旋转 180°，适配设备安装方向；软件预览始终保持正向，也不会产生镜像。")
-                        }
-                    }
-                    Picker(selection: model.oracleDisplayModeBinding) {
-                        ForEach(OracleDisplayMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("显示模式")
-                            HelpIcon(text: "黑白模式：灰值 > 128 显示为白，其余为黑（通过 /display/bw 推送）。4 级灰阶：白/浅灰/深灰/黑（通过 /display/gray4 推送）。")
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Picker(selection: model.oracleGrayAlgorithmBinding) {
-                        ForEach(OracleGrayAlgorithm.allCases) { algorithm in
-                            Text(algorithm.title).tag(algorithm)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("灰阶算法")
-                            HelpIcon(text: "灰阶转换：\(model.settings.oracleGrayAlgorithm.subtitle)")
-                        }
-                    }
-                    Picker(selection: model.oracleDitherKernelBinding) {
-                        ForEach(OracleDitherKernel.allCases) { kernel in
-                            Text(kernel.title).tag(kernel)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("抖动算法")
-                            HelpIcon(text: "抖动：\(model.settings.oracleDitherKernel.subtitle)（参考官方墨水屏 ditherKernel）")
-                        }
+                        Text("当前画板")
+                        HelpIcon(text: "本页只编辑这块画板的内容与模块。排序、显示模式、设备推送和自动轮换请前往“口袋先知画板管理”。")
                     }
                 }
                 canvasModuleEditor(owner: .oracle,
                                    modulesRaw: model.settings.oracleCanvasModules,
                                    moduleList: dragModules ?? model.settings.oracleCanvasModuleList,
-                                   available: CanvasModule.oraclePanelModules)
-                Section {
-                    Text("设备 IP 地址与按键控制设备请在「设备管理」中按设备设置。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("推送到 Rand/0 设备") {
-                        Task { await model.pushOracleCanvas() }
-                    }
-                    if model.rand0SessionConnected {
-                        Label("显示模式已连接：设备按键信号实时回传", systemImage: "checkmark.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if !model.settings.rand0IP.isEmpty {
-                        Text("显示模式未连接：设备可能离线或不在同一局域网，将自动重连；连接后推送即时上屏、按键信号回传。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    HStack(spacing: 4) {
-                        Text("Rand/0 设备")
-                        HelpIcon(text: "通过局域网 WebSocket（ws://<IP>/display/bw 或 /display/gray4）把图像推送到 Rand/0 墨水屏，发送即显示、无需在设备上按键刷新。保持连接时设备按键信号会回传给软件，可在「设备管理」中配置每台先知设备按键控制的目标（自身更新画布 / 灵犀68 键盘翻页 / 摘录切换语录）。请确认设备在线且与电脑在同一局域网。")
-                    }
-                }
-                Section("自动推送与轮换") {
-                    Toggle(isOn: model.oracleAutoPushEnabledBinding) {
-                        HStack(spacing: 4) {
-                            Text("自动推送画布")
-                            HelpIcon(text: "开启后立即推送一次；之后内容变化（专辑封面、时间等）时立即推送，无变化则按间隔推送。")
-                        }
-                    }
-                    if model.settings.oracleAutoPushEnabled {
-                        Stepper("推送间隔 \(model.settings.oracleAutoPushMinutes) 分钟",
-                                value: model.oracleAutoPushMinutesBinding, in: 1...1440)
-                    }
-                    Divider()
-                    Toggle(isOn: model.oracleBoardRotationEnabledBinding) {
-                        HStack(spacing: 4) {
-                            Text("自动轮换画板")
-                            HelpIcon(text: "按上方画板列表的顺序循环切换；每次切换后立即推送到口袋先知。该功能与“自动推送画布”相互独立。")
-                        }
-                    }
-                    if model.settings.oracleBoardRotationEnabled {
-                        Stepper("轮换间隔 \(model.settings.oracleBoardRotationMinutes) 分钟",
-                                value: model.oracleBoardRotationMinutesBinding, in: 1...1440)
-                    }
-                    if model.settings.oracleCanvasBoards.count < 2 {
-                        Text("至少保存两块画板后才会开始轮换。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if model.settings.oracleBoardRotationEnabled {
-                        Text("当前：\(model.oracleCanvasBoardName) · 下一块：\(model.nextOracleCanvasBoardName)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                                   available: availableCanvasModules(CanvasModule.oraclePanelModules))
             }
             .formStyle(.grouped)
             .frame(maxWidth: .infinity, alignment: .top)
@@ -1639,10 +2206,39 @@ struct SettingsView: View {
         .help("点击选中；拖拽排序")
     }
 
-    /// 摘录画板：主内容（画板预览 / 显示设置 / 模块组合）+ 右侧设备边栏（Dot 设备 / 自动推送）
+    /// 单块摘录画板：只保留当前画板的模块内容编辑与预览。
+    /// 排序、显示设置、设备推送、自动推送和轮换均集中在独立管理页。
     private var excerptCanvasForm: some View {
         HStack(alignment: .top, spacing: 0) {
-            // 左侧主内容
+            Form {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.stack")
+                            .foregroundStyle(Color.accentColor)
+                        Text(model.excerptCanvasBoardName)
+                            .font(.headline)
+                        Spacer()
+                        Text(model.activeDevice(for: .excerpt)?.name ?? "未选择设备")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("当前画板")
+                        HelpIcon(text: "本页只编辑这块画板的内容与模块。排序、显示设置、设备推送和自动轮换请前往“摘录画板管理”。")
+                    }
+                }
+                canvasModuleEditor(owner: .excerpt,
+                                   modulesRaw: model.settings.excerptCanvasModules,
+                                   moduleList: dragModules ?? model.settings.excerptCanvasModuleList,
+                                   available: availableCanvasModules(CanvasModule.excerptPanelModules),
+                                   showFullWidthToggle: model.settings.excerptLayoutColumns == 2)
+            }
+            .formStyle(.grouped)
+            .frame(maxWidth: .infinity, alignment: .top)
+
+            Divider()
+                .padding(.vertical, 4)
+
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1662,7 +2258,118 @@ struct SettingsView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text("画板预览")
-                        HelpIcon(text: "上下两图均为设备效果图：画布按 296×152 与设备屏幕显示范围 1:1 对齐叠加；上方为灰阶/抖动处理前的彩色原始渲染，下方为处理后的实际效果。")
+                        HelpIcon(text: "上下两图按摘录设备 296×152 显示范围对齐；上方为彩色原始渲染，下方为设备处理后的效果。")
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .frame(minWidth: 310, maxWidth: .infinity, alignment: .top)
+        }
+        .padding(.bottom, 12)
+        .onAppear { model.refreshExcerptCanvasPreview() }
+    }
+
+    /// 旧版合并页面保留为过渡实现；导航已切换到独立画板编辑与管理页。
+    private var legacyExcerptCanvasForm: some View {
+        HStack(alignment: .top, spacing: 0) {
+            // 左侧主内容
+            Form {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "quote.opening")
+                            .foregroundStyle(.secondary)
+                        Text("正在管理")
+                        HelpIcon(text: "画板编辑、排序、设备推送与自动推送均集中在本页；每台摘录设备相互独立。")
+                        Spacer()
+                        if model.enabledDevices(for: .excerpt).count > 1 {
+                            Picker("", selection: model.activeExcerptBinding) {
+                                ForEach(model.enabledDevices(for: .excerpt)) { device in
+                                    Text(device.name).tag(device.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 200)
+                        } else {
+                            Text(model.activeDevice(for: .excerpt)?.name ?? "未选择设备")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if model.settings.excerptCanvasBoards.isEmpty {
+                        Text("当前为默认画布")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        reorderList(items: model.settings.excerptCanvasBoards,
+                                    dragged: $draggedExcerptBoard,
+                                    dragItems: $dragExcerptBoards,
+                                    commit: { model.commitExcerptCanvasBoards($0) }) { board in
+                            excerptCanvasBoardRow(board)
+                        }
+                    }
+                    Button("创建新的画板") {
+                        model.addExcerptCanvasBoard()
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("画板")
+                        HelpIcon(text: "创建画板后自动保存当前修改；拖动决定侧栏和系统菜单栏中的显示顺序。")
+                    }
+                }
+                Section {
+                    Toggle(isOn: model.excerptPushRawImageBinding) {
+                        HStack(spacing: 4) {
+                            Text("推送原始彩色图片")
+                            HelpIcon(text: "开启后直接推送彩色原图，由 Dot 服务端按所选抖动方式与抖动核转换；关闭时使用本地灰阶与抖动处理后的画面。")
+                        }
+                    }
+                    if model.settings.excerptPushRawImage {
+                        Picker(selection: model.excerptServerDitherTypeBinding) {
+                            ForEach(DotServerDitherType.allCases) { type in
+                                Text(type.title).tag(type)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("服务端抖动方式")
+                                HelpIcon(text: "按官方指南传 ditherType 与 ditherKernel，由服务端完成灰度量化与抖动。")
+                            }
+                        }
+                        Picker("服务端抖动核", selection: model.excerptServerDitherKernelBinding) {
+                            ForEach(DotServerDitherKernel.allCases) { kernel in
+                                Text(kernel.title).tag(kernel)
+                            }
+                        }
+                    }
+                    HStack {
+                        Button("测试推送") {
+                            Task { await model.pushExcerptCanvas() }
+                        }
+                        Button("查询设备状态") {
+                            Task { await model.checkDotDeviceStatus() }
+                        }
+                        .controlSize(.small)
+                    }
+                    if !model.dotDeviceStatusText.isEmpty {
+                        Text(model.dotDeviceStatusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("设备推送")
+                        HelpIcon(text: "API Key 与序列号请在「设备管理」中设置。测试推送会立即把当前画板发送到对应 Dot 墨水屏。")
+                    }
+                }
+                Section("自动推送") {
+                    Toggle(isOn: model.excerptAutoPushEnabledBinding) {
+                        HStack(spacing: 4) {
+                            Text("自动推送画布")
+                            HelpIcon(text: "开启后立即推送一次；之后内容变化时立即推送，无变化则按间隔推送。")
+                        }
+                    }
+                    if model.settings.excerptAutoPushEnabled {
+                        Stepper("推送间隔 \(model.settings.excerptAutoPushMinutes) 分钟",
+                                value: model.excerptAutoPushMinutesBinding, in: 1...1440)
                     }
                 }
                 Section("显示设置") {
@@ -1703,7 +2410,7 @@ struct SettingsView: View {
                 canvasModuleEditor(owner: .excerpt,
                                    modulesRaw: model.settings.excerptCanvasModules,
                                    moduleList: dragModules ?? model.settings.excerptCanvasModuleList,
-                                   available: CanvasModule.excerptPanelModules,
+                                   available: availableCanvasModules(CanvasModule.excerptPanelModules),
                                    showFullWidthToggle: model.settings.excerptLayoutColumns == 2)
             }
             .formStyle(.grouped)
@@ -1712,64 +2419,27 @@ struct SettingsView: View {
             Divider()
                 .padding(.vertical, 4)
 
-            // 右侧设备边栏：Dot 设备推送 + 自动推送
+            // 右侧只保留预览；设备推送与间隔统一归入左侧画板管理。
             Form {
                 Section {
-                    HStack(spacing: 4) {
-                        Text("API Key 与序列号请在「设备管理」的摘录设备中设置。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Toggle(isOn: model.excerptPushRawImageBinding) {
-                        HStack(spacing: 4) {
-                            Text("推送原始彩色图片")
-                            HelpIcon(text: "开启后直接推送灰阶/抖动处理前的彩色原图，由 Dot 服务端按所选抖动方式/抖动核自行转换（官方 ditherType/ditherKernel）；关闭时使用本地 4 级灰阶 + 抖动处理后的画面（ditherType=NONE）。")
+                    VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("处理前（彩色原始渲染）")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            excerptHeroPreview(model.excerptCanvasRawImage)
                         }
-                    }
-                    if model.settings.excerptPushRawImage {
-                        Picker("服务端抖动方式", selection: model.excerptServerDitherTypeBinding) {
-                            ForEach(DotServerDitherType.allCases) { type in
-                                Text(type.title).tag(type)
-                            }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("处理后（按服务端算法近似）")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            excerptHeroPreview(model.excerptCanvasImage)
                         }
-                        Picker("服务端抖动核", selection: model.excerptServerDitherKernelBinding) {
-                            ForEach(DotServerDitherKernel.allCases) { kernel in
-                                Text(kernel.title).tag(kernel)
-                            }
-                        }
-                        Text("按官方指南传 ditherType 与 ditherKernel，由服务端完成灰度量化与抖动，软件端无需本地处理。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("推送到 Dot 设备") {
-                        Task { await model.pushExcerptCanvas() }
-                    }
-                    Button("查询设备状态") {
-                        Task { await model.checkDotDeviceStatus() }
-                    }
-                    .controlSize(.small)
-                    if !model.dotDeviceStatusText.isEmpty {
-                        Text(model.dotDeviceStatusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
                     }
                 } header: {
                     HStack(spacing: 4) {
-                        Text("Dot 设备")
-                        HelpIcon(text: "通过 dot.mindreset.tech 图像接口把卡片推送到 Dot 墨水屏。需先在 Dot App 的 Content Studio 中加入 Image API 内容；设备离线或休眠时，内容会在下次刷新时显示。")
-                    }
-                }
-                Section("自动推送") {
-                    Toggle(isOn: model.excerptAutoPushEnabledBinding) {
-                        HStack(spacing: 4) {
-                            Text("自动推送画布")
-                            HelpIcon(text: "开启后立即推送一次；之后内容变化（专辑封面、时间等）时立即推送，无变化则按间隔推送。")
-                        }
-                    }
-                    if model.settings.excerptAutoPushEnabled {
-                        Stepper("推送间隔 \(model.settings.excerptAutoPushMinutes) 分钟",
-                                value: model.excerptAutoPushMinutesBinding, in: 1...1440)
+                        Text("画板预览")
+                        HelpIcon(text: "上下两图按摘录设备 296×152 显示范围对齐；上方为彩色原始渲染，下方为设备处理后的效果。")
                     }
                 }
             }
@@ -1777,8 +2447,67 @@ struct SettingsView: View {
             .frame(minWidth: 310, maxWidth: .infinity, alignment: .top)
         }
         .padding(.bottom, 12)
+        .alert("重命名摘录画板", isPresented: Binding(
+            get: { excerptBoardRenameTarget != nil },
+            set: { if !$0 { excerptBoardRenameTarget = nil } })) {
+            TextField("画板名称", text: $excerptBoardRenameDraft)
+            Button("确定") {
+                if let board = excerptBoardRenameTarget {
+                    model.renameExcerptCanvasBoard(id: board.id, to: excerptBoardRenameDraft)
+                }
+                excerptBoardRenameTarget = nil
+            }
+            Button("取消", role: .cancel) {
+                excerptBoardRenameTarget = nil
+            }
+        }
         .onAppear { model.refreshExcerptCanvasPreview() }
         .task { await model.checkDotDeviceStatus() }
+    }
+
+    /// 摘录画板列表行：选中、重命名、删除、拖拽排序。
+    private func excerptCanvasBoardRow(_ board: ExcerptCanvasBoard) -> some View {
+        let index = model.settings.excerptCanvasBoards.firstIndex(of: board) ?? 0
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Button {
+                model.applyExcerptCanvasBoard(at: index)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(board.name)
+                    if index == model.settings.excerptCanvasBoardIndex {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Button {
+                excerptBoardRenameTarget = board
+                excerptBoardRenameDraft = board.name
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("重命名画板")
+            Button(role: .destructive) {
+                model.removeExcerptCanvasBoard(at: index)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("删除该画板")
+        }
+        .contentShape(Rectangle())
+        .onDrag {
+            draggedExcerptBoard = board
+            dragExcerptBoards = model.settings.excerptCanvasBoards
+            return NSItemProvider(object: board.id.uuidString as NSString)
+        }
+        .help("点击选中；拖拽排序")
     }
 
     /// 摘录画布在 quote_0 hero 设备框内的预览（画布对齐屏幕显示区）；无 hero 资源时回退纯图
@@ -1904,6 +2633,7 @@ struct SettingsView: View {
                 HStack {
                     Label("上下边距", systemImage: "arrow.up.and.down")
                         .font(.system(size: 12, weight: .medium))
+                    HelpIcon(text: "0 为自适应；数值越大，模块越紧凑。自适应会按模块类型选择合适间距。")
                     Spacer()
                     if model.settings.manualCanvasMargin(for: module) == 0 {
                         Text("自适应")
@@ -1915,18 +2645,16 @@ struct SettingsView: View {
                     }
                 }
                 Slider(value: canvasMarginBinding(for: module), in: 0...40, step: 1)
-                Text("0 为自适应；数值越大，模块越紧凑。自适应会按模块类型选择合适间距。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.primary.opacity(0.04)))
             switch module {
             case .clock, .date:
-                Text("时间 / 日期格式在「设置 → 时间与日期」统一调整，所有界面共用同一份。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text("使用全局时间与日期格式")
+                    HelpIcon(text: "时间和日期格式在“设置 → 时间与日期”统一调整，所有界面共用同一份。")
+                }
             case .text:
                 TextField("画板文字", text: model.canvasTextBinding)
                     .textFieldStyle(.roundedBorder)
@@ -1935,19 +2663,24 @@ struct SettingsView: View {
                 // 智能封面取色背景：仅键盘画板使用（整卡背景替换为封面主色）；
                 // 墨水屏画板（先知/摘录）不使用智能取色，保持手动底色
                 if owner == .keyboard {
-                    Toggle("智能封面取色背景", isOn: model.canvasNowPlayingSmartBgBinding)
-                    Text("智能背景使用专辑封面主色替换整张画板背景色调，并自动配置可读的文字颜色。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Toggle(isOn: model.canvasNowPlayingSmartBgBinding) {
+                        HStack(spacing: 4) {
+                            Text("智能封面取色背景")
+                            HelpIcon(text: "使用专辑封面主色替换整张画板背景色调，并自动配置可读的文字颜色。")
+                        }
+                    }
                 } else {
-                    Toggle("横向排布（封面在左）", isOn: nowPlayingHorizontalBinding(for: owner))
-                    Text("开启后封面居左、歌名歌手居右；关闭为竖向大封面（封面在上、文字在下）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Toggle(isOn: nowPlayingHorizontalBinding(for: owner)) {
+                        HStack(spacing: 4) {
+                            Text("横向排布（封面在左）")
+                            HelpIcon(text: "开启后封面居左、歌名歌手居右；关闭后使用封面在上、文字在下的竖向布局。")
+                        }
+                    }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("歌名字号")
+                        HelpIcon(text: "画板内正在播放模块的字号；文字过宽时仍会自动收缩以保证完整显示。")
                         Spacer()
                         Text("\(model.settings.canvasNowPlayingTitleSize) pt")
                             .foregroundStyle(.secondary)
@@ -1962,54 +2695,53 @@ struct SettingsView: View {
                             .monospacedDigit()
                     }
                     Slider(value: model.canvasNowPlayingArtistSizeBinding, in: 6...20, step: 1)
-                    Text("画板内「正在播放」模块字号；超宽时自动收缩以保证显示完整。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             case .image:
                 if owner == .keyboard {
-                    Picker("图像模式", selection: model.canvasImageModeBinding) {
+                    Picker(selection: model.canvasImageModeBinding) {
                         ForEach(CanvasImageMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("图像模式")
+                            HelpIcon(text: "“背景”会完整显示为底层并自动加深，其他模块叠加在上方；“叠加”会把图片作为普通模块显示。")
+                        }
                     }
-                    Text("背景：完整显示作为底层，其他模块叠加其上（自动加深）。叠加：作为一个模块显示。「自定义图片」中选择的图片即为此模块使用的图片。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } else {
                     HStack {
                         Button("选择图片…") { Task { await model.pickCanvasImage(for: owner) } }
+                        HelpIcon(text: "为当前画板独立选择图片，与键盘自定义图片互不影响；图片模块固定作为模块叠加显示。")
                         Spacer()
                         Text(model.canvasImageName(for: owner) ?? "未选择")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text("为该画板独立选择图片（与键盘自定义图片互不影响），可随时替换；图片模块固定作为模块叠加显示。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             case .sspai:
                 Stepper("显示 \(model.sspaiCount(for: owner)) 条",
                         value: model.sspaiCountBinding(for: owner), in: 1...6)
-                Toggle("随机显示", isOn: model.sspaiRandomBinding(for: owner))
-                Text("抓取到的文章多于显示条数时，勾选后每次刷新随机挑一批显示；不勾选固定显示最新几篇。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: model.sspaiRandomBinding(for: owner)) {
+                    HStack(spacing: 4) {
+                        Text("随机显示")
+                        HelpIcon(text: "文章多于显示条数时，每次刷新随机挑选一批；关闭后固定显示最新几篇。")
+                    }
+                }
             case .qwenQuota:
-                Picker("显示方式", selection: model.qwenQuotaShowPercentBinding) {
+                Picker(selection: model.qwenQuotaShowPercentBinding) {
                     Text("百分比").tag(true)
                     Text("额度数值").tag(false)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("显示方式")
+                        HelpIcon(text: "百分比会大字显示剩余百分比；额度数值会大字显示剩余额度数字。")
+                    }
                 }
                 .pickerStyle(.segmented)
-                Text("百分比：与其他模块一致，大字显示剩余百分比；额度数值：大字仅显示剩余额度数字。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             case .homeAssistant:
                 let selectedIDs = model.canvasHAEntityIDs(for: owner)
-                Text("模块会根据此画板选择的实体数量自动调整画面占比：实体越少越紧凑，实体越多占用空间越大。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                EntityDomainPicker(title: "显示实体（可多选）",
+                HStack(spacing: 4) {
+                    EntityDomainPicker(title: "显示实体（可多选）",
                                    selection: .constant(""),
                                    entities: model.haSnapshot.entities,
                                    emptyLabel: "\(selectedIDs.count) 个已选",
@@ -2017,8 +2749,10 @@ struct SettingsView: View {
                                    multiSelect: true,
                                    lockedIDs: Set(selectedIDs),
                                    onMultiConfirm: { model.addCanvasHAEntities($0, for: owner) })
+                    HelpIcon(text: "模块会根据当前画板选择的实体数量自动调整占比；各画板分别保存自己的实体列表，不会自动沿用其他卡片或画板。")
+                }
                 if selectedIDs.isEmpty {
-                    Text("尚未选择实体。此画板不会自动沿用 Home Assistant 键盘卡片或其他画板的实体。")
+                    Text("尚未选择实体")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -2050,25 +2784,36 @@ struct SettingsView: View {
                         .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(Color.primary.opacity(0.035)))
                     }
-                    Text("这里只影响当前画板；灵犀画板、口袋先知画板、摘录画板分别保存自己的实体列表。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
                 }
             case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
-                Text("显示信息（每项在模块内各占一行）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text("显示信息")
+                    HelpIcon(text: "每个打印机模块独立配置；关闭项目会释放对应空间。多台打印机或空间较小时会自动缩小状态文字、使用细进度条，并把时间合并到进度附近。")
+                }
                 Toggle("工作状态", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showStatus))
                 Toggle("打印进度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showProgress))
                 Toggle("当前任务", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showTask))
                 Toggle("喷嘴温度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showNozzleTemp))
                 Toggle("热床温度", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showBedTemp))
-                Toggle("剩余时间", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showRemaining))
+                Toggle("时间信息", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showRemaining))
                 Toggle("错误码 / 故障原因", isOn: canvasPrinterFieldBinding(module, owner: owner, \.showError))
-                Text("每个打印机模块独立配置；勾选的条目越多，模块内每行越矮。配合上方「上下边距」调节整体紧凑度。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
+                if let device = model.formlabsDevice(for: module) {
+                    HStack(spacing: 4) {
+                        Text("显示内容")
+                        HelpIcon(text: "这些选项与该打印机的独立卡片同步。画板会根据空间自动切换纵向或左右布局，空间不足时优先保留设备名、状态、进度、任务名称和剩余时间。")
+                    }
+                    Toggle("任务缩略图",
+                           isOn: model.formlabsBoolBinding(for: device.id, \.showThumbnail))
+                    Toggle("当前层数",
+                           isOn: model.formlabsBoolBinding(for: device.id, \.showLayers))
+                    Toggle("耗材种类",
+                           isOn: model.formlabsBoolBinding(for: device.id, \.showMaterial))
+                } else {
+                    Text("对应的 Formlabs 打印机已经停用或移除。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             default:
                 EmptyView()
             }
@@ -2104,6 +2849,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("歌名字号")
+                    HelpIcon(text: "推送到键盘的「正在播放」卡片字号；超宽时自动收缩以保证显示完整。")
                     Spacer()
                     Text("\(model.settings.nowPlayingTitleSize) pt")
                         .foregroundStyle(.secondary)
@@ -2118,9 +2864,6 @@ struct SettingsView: View {
                         .monospacedDigit()
                 }
                 Slider(value: model.nowPlayingArtistSizeBinding, in: 6...20, step: 1)
-                Text("推送到键盘的「正在播放」卡片字号；超宽时自动收缩以保证显示完整。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Toggle(isOn: model.nowPlayingFooterVisibleBinding) {
                 HStack(spacing: 4) {
@@ -2129,15 +2872,10 @@ struct SettingsView: View {
                 }
             }
             if model.settings.nowPlayingFooterVisible {
-                HStack(spacing: 4) {
-                    Text("页脚时间与日期使用全局格式，在「设置 → 时间与日期」调整。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("时间字号")
+                        HelpIcon(text: "页脚时间与日期使用全局格式，可在「设置 → 时间与日期」调整。")
                         Spacer()
                         Text("\(model.settings.nowPlayingTimeSize) pt")
                             .foregroundStyle(.secondary)
@@ -2154,36 +2892,48 @@ struct SettingsView: View {
                     Slider(value: model.nowPlayingDateSizeBinding, in: 8...30, step: 1)
                 }
             }
-            Button("刷新") {
-                Task { await model.refresh() }
+            HStack(spacing: 4) {
+                Button("刷新") {
+                    Task { await model.refresh() }
+                }
+                HelpIcon(text: "数据来自系统「正在播放」，支持音乐、浏览器、Spotify 等播放器；封面主色会自动用作卡片背景。")
             }
-            Text("数据来自系统「正在播放」，支持音乐、浏览器、Spotify 等播放器。封面主色会自动用作卡片背景。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
     private var appearanceForm: some View {
         Section {
-            Picker("软件明暗模式", selection: model.appearanceBinding) {
+            Picker(selection: model.appearanceBinding) {
                 ForEach(AppearanceMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("软件明暗模式")
+                    HelpIcon(text: "控制软件窗口界面（菜单、面板、预览区域）的明暗显示：跟随系统、浅色或深色。")
+                }
             }
-            Text("控制软件窗口界面（菜单、面板、预览区域）的明暗显示：跟随系统 / 浅色 / 深色。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         Section("卡片外观") {
-            Picker("卡片主题", selection: model.themeBinding) {
+            Picker(selection: model.themeBinding) {
                 ForEach(CardTheme.allCases) { theme in
                     Text(theme.title).tag(theme)
                 }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("卡片主题")
+                    HelpIcon(text: "卡片主题决定强调色基调（选择「跟随主题」时生效）；这些设置作用于推送到设备的卡片画面。")
+                }
             }
-            Picker("背景底色", selection: model.backgroundToneBinding) {
+            Picker(selection: model.backgroundToneBinding) {
                 ForEach(BackgroundTone.allCases) { tone in
                     Text(tone.title).tag(tone)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("背景底色")
+                    HelpIcon(text: "选择「跟随软件明暗」时，卡片背景会随软件明暗模式切换深浅。")
                 }
             }
             if model.settings.backgroundTone == .custom {
@@ -2197,12 +2947,6 @@ struct SettingsView: View {
             if model.settings.accentTone == .custom {
                 ColorPicker("自定义强调色", selection: model.customAccentBinding, supportsOpacity: false)
             }
-            HStack(spacing: 4) {
-                Text("卡片主题决定强调色基调（「跟随主题」时生效）；背景底色「跟随软件明暗」随上方软件明暗切换深浅。以上均作用于推送到键盘的卡片画面。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
         }
     }
 
@@ -2210,12 +2954,9 @@ struct SettingsView: View {
     @ViewBuilder
     private var homeAssistantForm: some View {
         Section {
-            Text("实体状态将显示在键盘「Home Assistant」卡片与画板模块中；camera.* 与 image.* 会抓取当前静态帧显示，不会建立视频流。服务器地址与令牌请在「设备管理 → Home Assistant」中按设备填写。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             let entityRefs = dragHAEntities ?? model.haEntityList.map(HAEntityRef.init)
             if entityRefs.isEmpty {
-                Text("尚未添加实体：点下方「添加实体」按分类选择要显示的实体（可多选）。")
+                Text("尚未添加实体")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -2245,7 +2986,7 @@ struct SettingsView: View {
         } header: {
             HStack(spacing: 4) {
                 Text("实体选择")
-                HelpIcon(text: "这里选中的实体用于键盘「Home Assistant」卡片，按列表顺序显示；camera.* 与 image.* 支持静态画面，单个图片实体显示大图，和其他实体混排时显示横向预览卡。拖拽排序、点 × 移除。")
+                HelpIcon(text: "这里选中的实体用于键盘「Home Assistant」卡片和画板模块，按列表顺序显示；camera.* 与 image.* 会抓取静态帧，不建立视频流。单个图片实体显示大图，和其他实体混排时显示横向预览卡。拖拽排序、点 × 移除；服务器地址与令牌请在「设备管理 → Home Assistant」中填写。")
             }
         }
         Section("异常监控") {
@@ -2289,15 +3030,25 @@ struct SettingsView: View {
         Group {
             if let device = model.bambuDevice(for: panel) {
                 Section("卡片 · \(device.name)") {
-                    Picker("布局样式", selection: model.bambuLayoutBinding(for: device.id)) {
+                    Picker(selection: model.bambuLayoutBinding(for: device.id)) {
                         ForEach(BambuCardLayout.selectableCases) { layout in
                             Text(layout.title).tag(layout)
                         }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("布局样式")
+                            HelpIcon(text: "「大字」把工作状态作为浅色背景大字，并在前景显示进度数字、百分号与加粗进度条。")
+                        }
                     }
                     .pickerStyle(.segmented)
-                    Picker("画面内容", selection: model.bambuImageSourceBinding(for: device.id)) {
+                    Picker(selection: model.bambuImageSourceBinding(for: device.id)) {
                         ForEach(BambuImageSource.allCases) { source in
                             Text(source.title).tag(source)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("画面内容")
+                            HelpIcon(text: "摄像头和任务封面两个图片实体会同时保留，切换显示内容不会清除实体映射。")
                         }
                     }
                     .pickerStyle(.segmented)
@@ -2307,41 +3058,61 @@ struct SettingsView: View {
                             HelpIcon(text: "按上方选择显示摄像头静态帧或当前打印任务封面。摄像头只抓单帧，不会建立实时视频流；状态先推送，图片获取完成后再更新画面。")
                         }
                     }
-                    Text("「大字」把工作状态作为浅色背景大字，并在前景显示进度数字、% 与加粗进度条。两个图片实体会同时保留，切换画面内容不会清除映射。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Picker("主题色", selection: model.bambuThemeAccentBinding(for: device.id)) {
+                    if model.bambuImageSourceBinding(for: device.id).wrappedValue == .camera {
+                        Toggle(isOn: model.bambuAutoCameraZoomBinding(for: device.id)) {
+                            HStack(spacing: 4) {
+                                Text("自动放大小模型")
+                                HelpIcon(text: "开启时会先处理当前缓存画面并立即推送；后续每次准备推送到键盘前再抓取一张最新静态帧，在本机识别打印床中心的模型并自动裁切。取景范围会随打印进度逐步扩大；识别不可靠时自动恢复完整画面。")
+                            }
+                        }
+                    }
+                    Picker(selection: model.bambuThemeAccentBinding(for: device.id)) {
                         ForEach(BambuThemeAccent.allCases) { accent in
                             Text(accent.title).tag(accent)
                         }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("主题色")
+                            HelpIcon(text: "「跟随全局」使用外观设置里的强调色；「Bambu Lab 强调色」固定使用品牌绿，用于徽标、进度条与状态高亮。")
+                        }
                     }
                     .pickerStyle(.segmented)
-                    Text("「跟随全局」使用外观设置里的强调色；「Bambu Lab 强调色」固定使用品牌绿（徽标/进度条/状态高亮）。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Picker(selection: model.bambuTimeDisplayModeBinding(for: device.id)) {
+                        ForEach(BambuTimeDisplayMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("时间显示")
+                            HelpIcon(text: "默认显示剩余时间；选择结束时间后读取设备管理中绑定的预计结束时间实体。两个实体映射会同时保留。")
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                Section("显示区块") {
+                Section {
                     Toggle("显示工作状态", isOn: model.bambuShowBinding(for: device.id, \.bambuShowStatus))
                     Toggle("显示打印进度", isOn: model.bambuShowBinding(for: device.id, \.bambuShowProgress))
                     Toggle("显示当前任务", isOn: model.bambuShowBinding(for: device.id, \.bambuShowTask))
                     Toggle("显示喷嘴 / 热床温度", isOn: model.bambuShowBinding(for: device.id, \.bambuShowTemperature))
-                    Toggle("显示剩余时间", isOn: model.bambuShowBinding(for: device.id, \.bambuShowRemaining))
+                    Toggle("显示时间信息", isOn: model.bambuShowBinding(for: device.id, \.bambuShowRemaining))
                     Toggle("显示错误码", isOn: model.bambuShowBinding(for: device.id, \.bambuShowError))
-                    Text("关闭的区块即使已映射实体也不显示；未映射实体的区块本就自动隐藏。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("显示区块")
+                        HelpIcon(text: "关闭的区块即使已映射实体也不显示；未映射实体的区块会自动隐藏。")
+                    }
                 }
                 Section {
-                    Button("实体映射与自动匹配 → 设备管理") {
-                        selected = .devices
+                    HStack(spacing: 4) {
+                        Button("实体映射与自动匹配 → 设备管理") {
+                            selected = .devices
+                        }
+                        HelpIcon(text: "打印机实体映射、自动匹配与报错告警在「设备管理 → Bambu Lab 打印机」中按设备配置；卡片渲染效果见右侧实时预览。")
                     }
-                    Text("打印机实体映射、自动匹配与报错告警在「设备管理 → Bambu Lab 打印机」中按设备配置；卡片渲染效果见右侧实时预览。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             } else {
                 Section {
-                    Text("该卡片位尚未绑定打印机设备：请到「设备管理 → Bambu Lab 打印机」添加设备，添加后卡片自动出现在本页与卡片管理中。")
+                    Text("该卡片位尚未绑定打印机设备")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("前往设备管理") {
@@ -2349,6 +3120,52 @@ struct SettingsView: View {
                     }
                     .controlSize(.small)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func formlabsForm(for panel: Panel) -> some View {
+        if let device = model.formlabsDevice(for: panel) {
+            let snapshot = model.formlabsSnapshots[device.id] ?? .empty
+            Section("当前打印机") {
+                LabeledContent("设备", value: device.name)
+                LabeledContent("云端设备", value: snapshot.device?.productName ?? "等待刷新")
+                LabeledContent("状态", value: ScreenRenderer.formlabsStatusText(
+                    snapshot.print?.status.isEmpty == false
+                        ? snapshot.print!.status : (snapshot.device?.status ?? "unknown")))
+                if let progress = snapshot.print?.progress {
+                    LabeledContent("任务进度", value: "\(Int((progress * 100).rounded()))%")
+                }
+                if let sampledAt = snapshot.sampledAt {
+                    LabeledContent("数据更新", value: sampledAt.formatted(date: .omitted, time: .standard))
+                }
+            }
+            Section {
+                Toggle("显示任务缩略图", isOn: model.formlabsBoolBinding(for: device.id, \.showThumbnail))
+                Toggle("显示当前层数", isOn: model.formlabsBoolBinding(for: device.id, \.showLayers))
+                Toggle("显示耗材种类", isOn: model.formlabsBoolBinding(for: device.id, \.showMaterial))
+            } header: {
+                HStack(spacing: 4) {
+                    Text("显示内容")
+                    HelpIcon(text: "卡片优先使用层数计算准确进度；层数不可用时，自动改用已用时长与预计总时长。")
+                }
+            }
+            Section {
+                HStack {
+                    Button("立即刷新并推送") {
+                        Task { await model.refreshFormlabs(deviceID: device.id, force: true, pushIfVisible: true) }
+                    }
+                    Button("连接设置 → 设备管理") { selected = .devices }
+                    HelpIcon(text: "云端短暂断开时会保留上一次有效数据，并在卡片底部标出连接异常。")
+                }
+            }
+        } else {
+            Section {
+                Text("该卡片位尚未绑定 Formlabs 打印机")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("前往设备管理") { selected = .devices }
             }
         }
     }
@@ -2404,7 +3221,7 @@ struct SettingsView: View {
                     }
                 }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间、错误、摄像头与任务封面实体；结果可手动修改，点击每行右侧 × 可解除单项关联并停止显示。")
+                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间、结束时间、错误、摄像头与任务封面实体；结果可手动修改，点击每行右侧 × 可解除单项关联并停止显示。")
                 Text("实体映射")
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 4)
@@ -2424,6 +3241,7 @@ struct SettingsView: View {
             bambuFieldRow("喷嘴温度", keyPath: \.bambuNozzleTempEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("热床温度", keyPath: \.bambuBedTempEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("剩余时间", keyPath: \.bambuRemainingEntityID, deviceID: deviceID, entities: printerEntities)
+            bambuFieldRow("预计结束时间", keyPath: \.bambuEndTimeEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("错误码", keyPath: \.bambuErrorEntityID, deviceID: deviceID, entities: printerEntities)
             bambuFieldRow("打印任务封面", keyPath: \.bambuTaskImageEntityID,
                           deviceID: deviceID, entities: taskCoverEntities)
@@ -2590,14 +3408,6 @@ struct SettingsView: View {
     private var generalForm: some View {
         Group {
         Section {
-            Text("键盘 IP 地址等设备连接信息请在「设备管理」中按设备设置。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        Section("灵犀68 屏幕控制") {
-            Text("以下选项仅适用于灵犀68 键盘，不影响口袋先知与摘录。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             Picker(selection: model.menuBarTargetBinding()) {
                 Text("跟随当前活动键盘").tag("follow")
                 ForEach(model.enabledDevices(for: .keyboard)) { device in
@@ -2622,18 +3432,21 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("JPEG 质量")
+                    HelpIcon(text: "100% 为 4:4:4 无彩色抽样，画质接近无损；越低文件越小、压缩痕迹越明显。键盘仅支持 JPEG 格式。")
                     Spacer()
                     Text("\(model.settings.jpegQuality)%")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
                 Slider(value: model.qualityBinding, in: 50...100, step: 1)
-                Text("100% 为 4:4:4 无彩色抽样，画质接近无损；越低文件越小、压缩痕迹越明显。键盘仅支持 JPEG 格式。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("灵犀68 屏幕控制")
+                HelpIcon(text: "以下选项仅适用于灵犀68 键盘，不影响口袋先知与摘录。键盘 IP 地址等连接信息请在「设备管理」中按设备设置。")
             }
         }
-        Section("手动上下翻页快捷键") {
+        Section {
             shortcutBindingRow("上一页", action: .keyboardPageUp)
             shortcutBindingRow("下一页", action: .keyboardPageDown)
             HStack {
@@ -2641,20 +3454,18 @@ struct SettingsView: View {
                     Text("正在录制…按下新的快捷键（Esc 取消）")
                         .font(.caption)
                         .foregroundStyle(Color.accentColor)
-                } else {
-                    Text("在系统任意界面手动切换灵犀68 的上一张或下一张卡片；作用目标与上方菜单栏目标键盘一致。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("恢复默认") { showRestorePageShortcutsConfirm = true }
                     .controlSize(.small)
             }
             Divider()
-            Toggle("使用 Fn + 旋钮翻页", isOn: model.lingxi68KnobPagingBinding)
-            Text("默认关闭。开启后，灵犀68 的 Fn + 顺时针切换下一页、Fn + 逆时针切换上一页；软件会独占该键盘的媒体控制接口，因此系统将不再响应这把键盘的音量增加、音量减少和静音操作。其他键盘与 Mac 自身音量键不受影响。")
-                .font(.caption)
-                .foregroundStyle(model.settings.lingxi68KnobPagingEnabled ? .orange : .secondary)
+            Toggle(isOn: model.lingxi68KnobPagingBinding) {
+                HStack(spacing: 4) {
+                    Text("使用 Fn + 旋钮翻页")
+                    HelpIcon(text: "默认关闭。开启后，灵犀68 的 Fn + 顺时针切换下一页、Fn + 逆时针切换上一页；软件会独占该键盘的媒体控制接口，因此系统将不再响应这把键盘的音量增加、音量减少和静音操作。其他键盘与 Mac 自身音量键不受影响。")
+                }
+            }
             if model.settings.lingxi68KnobPagingEnabled {
                 HStack {
                     Label(model.lingxi68KnobPagingStatus,
@@ -2670,21 +3481,32 @@ struct SettingsView: View {
                         .controlSize(.small)
                 }
             }
+        } header: {
+            HStack(spacing: 4) {
+                Text("手动上下翻页快捷键")
+                HelpIcon(text: "可在系统任意界面手动切换灵犀68 的上一张或下一张卡片；作用目标与上方菜单栏目标键盘一致。")
+            }
         }
         Section {
-            Picker("时间格式", selection: model.clockFormatPresetBinding) {
+            Picker(selection: model.clockFormatPresetBinding) {
                 Text("24 小时 · HH:mm").tag(0)
                 Text("24 小时 · H:mm").tag(1)
                 Text("24 小时 · HH:mm:ss").tag(2)
                 Text("12 小时 · hh:mm").tag(3)
                 Text("自定义…").tag(4)
+            } label: {
+                HStack(spacing: 4) {
+                    Text("时间格式")
+                    HelpIcon(text: "时间格式含秒时，键盘画面会按秒刷新推送。")
+                }
             }
             if model.clockFormatPresetBinding.wrappedValue == 4 {
-                TextField("自定义时间格式", text: model.clockTimeFormatBinding)
-                    .textFieldStyle(.roundedBorder)
-                Text("可用符号：HH 两位小时 · H 小时 · hh 12 小时 · mm 分 · ss 秒 · a 上午/下午")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("自定义时间格式", text: model.clockTimeFormatBinding)
+                        .textFieldStyle(.roundedBorder)
+                    HelpIcon(text: "可用符号：HH 两位小时 · H 小时 · hh 12 小时 · mm 分 · ss 秒 · a 上午/下午")
+                        .fixedSize()
+                }
             }
             Picker("日期格式", selection: model.dateFormatPresetBinding) {
                 Text("yyyy年M月d日 EEE").tag(0)
@@ -2694,29 +3516,25 @@ struct SettingsView: View {
                 Text("自定义…").tag(4)
             }
             if model.dateFormatPresetBinding.wrappedValue == 4 {
-                TextField("自定义日期格式", text: model.dateFormatBinding)
-                    .textFieldStyle(.roundedBorder)
-                Text("可用符号：yyyy 年 · MM 月 · M 月 · dd 日 · d 日 · EEE 星期")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    TextField("自定义日期格式", text: model.dateFormatBinding)
+                        .textFieldStyle(.roundedBorder)
+                    HelpIcon(text: "可用符号：yyyy 年 · MM 月 · M 月 · dd 日 · d 日 · EEE 星期")
+                        .fixedSize()
+                }
             }
             Text("当前显示：\(model.previewTimeString) · \(model.previewDateString)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
-            if model.settings.timeFormat.contains("s") {
-                Text("时间格式含秒时，键盘画面会按秒刷新推送。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         } header: {
             HStack(spacing: 4) {
                 Text("时间与日期")
                 HelpIcon(text: "软件内所有时间与日期显示统一使用这里的一份格式：时钟卡片、自定义图片上的时钟、画板时钟/日期模块、正在播放页脚、番茄钟与各类卡片页脚。较长格式会按所在区域自动缩小字号，避免超出画面。")
             }
         }
-        Section("系统权限") {
+        Section {
             Toggle("登录时自动启动", isOn: model.startWithSystemBinding)
             HStack {
                 LabeledContent("辅助功能", value: model.accessibilityGranted ? "已授权" : "未授权")
@@ -2728,9 +3546,11 @@ struct SettingsView: View {
                 Button("打开设置") { model.openInputMonitoringSettings() }
                     .controlSize(.small)
             }
-            Text("全局快捷键：⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置。快捷键在系统范围内生效，无需额外权限。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        } header: {
+            HStack(spacing: 4) {
+                Text("系统权限")
+                HelpIcon(text: "全局快捷键：⌃⌥Space 开始/暂停 · ⌃⌥→ 跳过 · ⌃⌥⌫ 重置。快捷键在系统范围内生效，无需额外权限。")
+            }
         }
         Section {
             LabeledContent("应用", value: "多屏灵犀（Lingxi MultiScreen）")
@@ -2777,6 +3597,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Text("版本更新日志")
                         .font(.headline)
+                    HelpIcon(text: "点击版本行可展开或收起对应版本的更新日志；最新版本号以「关于」中的版本为准。")
                     Spacer()
                     if showVersionLog {
                         Text("收起")
@@ -2836,18 +3657,17 @@ struct SettingsView: View {
                     .padding(.vertical, 2)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
-                Text("点击版本行可展开/收起对应版本的更新日志；最新版本号以「关于」中的版本为准。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
-        Section("高级") {
-            Button("恢复初始设定…", role: .destructive) {
-                showResetConfirm1 = true
+        Section {
+            HStack(spacing: 4) {
+                Button("恢复初始设定…", role: .destructive) {
+                    showResetConfirm1 = true
+                }
+                HelpIcon(text: "清除全部设置、已添加的设备、自定义内容与自定义图片缓存，软件回到首次启动状态。需要两次确认，请谨慎操作。")
             }
-            Text("清除全部设置、已添加的设备、自定义内容与自定义图片缓存，软件回到首次启动状态。需要两次确认，请谨慎操作。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        } header: {
+            Text("高级")
         }
         }
         .confirmationDialog("恢复手动翻页快捷键？", isPresented: $showRestorePageShortcutsConfirm,
@@ -2875,17 +3695,21 @@ struct SettingsView: View {
             LabeledContent("剩余额度", value: model.qwenQuotaText)
             LabeledContent("剩余百分比", value: model.qwenQuotaPercentText)
             LabeledContent("百分比基线", value: model.quotaBaselineText)
-            Button("将当前额度设为 100% 基线") {
-                model.captureQuotaBaseline()
+            HStack(spacing: 4) {
+                Button("将当前额度设为 100% 基线") {
+                    model.captureQuotaBaseline()
+                }
+                HelpIcon(text: "额度百分比按「当前剩余 ÷ 基线」计算。基线每日自动采样：跨天后以当天额度重新采样；同一日内额度回升超过基线时自动把基线拉高到当前额度。也可随时手动重设基线。")
             }
-            Text("额度百分比按「当前剩余 ÷ 基线」计算。基线每日自动采样：跨天后以当天额度重新采样；同一日内额度回升超过基线（如每日赠送积分入账）时自动把基线拉高到当前额度，无需手动维护。也可点上方按钮随时手动重设基线。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             LabeledContent("最后采样", value: model.qwenQuota.available
                            ? Self.formatSample(model.qwenQuota.sampledAt) : "尚未读取")
-            Text("额度数据来自本机千问办公客户端（本地服务），请保持千问办公运行。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text("数据来源")
+                HelpIcon(text: "额度数据来自本机千问办公客户端的本地服务，请保持千问办公运行。")
+                Spacer()
+                Text("千问办公")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -2932,6 +3756,8 @@ struct SettingsView: View {
                 editableMinutesRow("专注时长", binding: model.focusMinutesBinding)
                 editableMinutesRow("短休息", binding: model.shortBreakMinutesBinding)
                 editableMinutesRow("长休息", binding: model.longBreakMinutesBinding)
+                Stepper("键盘推送间隔 \(model.settings.pomodoroUploadSeconds) 秒",
+                        value: model.pomodoroUploadBinding, in: 2...60)
                 HStack {
                     Button(model.pomodoroAction) {
                         Task { await model.togglePomodoro() }
@@ -2949,19 +3775,21 @@ struct SettingsView: View {
                 }
             }
             Section("完成夸夸") {
-                Toggle("每完成一个时间段进行夸夸", isOn: model.pomodoroPraiseEnabledBinding)
+                Toggle(isOn: model.pomodoroPraiseEnabledBinding) {
+                    HStack(spacing: 4) {
+                        Text("每完成一个时间段进行夸夸")
+                        HelpIcon(text: "任何界面下，每完成一个时间阶段都会显示夸夸内容约 12 秒，然后恢复正常卡片。")
+                    }
+                }
                 if model.settings.pomodoroPraiseEnabled {
                     Picker("内容来源", selection: model.pomodoroPraiseSourceBinding) {
                         ForEach(PraiseSource.allCases) { source in
                             Text(source.title).tag(source)
                         }
                     }
-                    Text("任何界面下，每完成一个时间阶段都会显示夸夸内容约 12 秒，然后恢复正常卡片。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
-            Section("全局快捷键") {
+            Section {
                 shortcutBindingRow("开始 / 暂停", action: .togglePomodoro)
                 shortcutBindingRow("跳过", action: .skipPomodoro)
                 shortcutBindingRow("重置", action: .resetPomodoro)
@@ -2970,14 +3798,15 @@ struct SettingsView: View {
                         Text("正在录制…按下新的快捷键（Esc 取消）")
                             .font(.caption)
                             .foregroundStyle(Color.accentColor)
-                    } else {
-                        Text("快捷键在系统范围内生效，无需额外权限。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("恢复初始快捷键") { showRestoreShortcutsConfirm = true }
                         .controlSize(.small)
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("全局快捷键")
+                    HelpIcon(text: "快捷键在系统范围内生效，无需额外权限。")
                 }
             }
         }
@@ -3100,36 +3929,39 @@ struct SettingsView: View {
                 Button("选择图片…") {
                     Task { await model.pickCustomImage() }
                 }
+                HelpIcon(text: "图片会自动居中裁切为 142×428，顶部保留 44–80 px 安全区。")
                 Spacer()
                 Text(model.customImageName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text("图片会自动居中裁切为 142×428，顶部保留安全区（44–80px）。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Picker("时钟叠加", selection: model.customImageClockBinding) {
+            Picker(selection: model.customImageClockBinding) {
                 ForEach(CustomImageClockOverlay.allCases) { overlay in
                     Text(overlay.title).tag(overlay)
                 }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("时钟叠加")
+                    HelpIcon(text: "叠加时钟跟随系统时间，每分钟自动刷新推送；不叠加则保持静态图片。")
+                }
             }
-            Text("叠加时钟跟随系统时间，每分钟自动刷新推送；不叠加则保持静态图片。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             if model.settings.customImageClock != .none {
-                Picker("动态取色", selection: model.wallpaperColorStyleBinding) {
+                Picker(selection: model.wallpaperColorStyleBinding) {
                     ForEach(WallpaperColorStyle.allCases) { style in
                         Text(style.title).tag(style)
                     }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("动态取色")
+                        HelpIcon(text: model.settings.wallpaperColorStyle.description)
+                    }
                 }
                 .pickerStyle(.segmented)
-                Text(model.settings.wallpaperColorStyle.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Toggle("显示日期", isOn: model.clockDateVisibleBinding)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("整体大小")
+                        HelpIcon(text: "Pixel 叠排大时钟把四位时间与日期视为一个图层组统一缩放，数字间距不会随大小变化。叠排样式固定使用纵向压缩、加粗描边的 Arial Black 数字；配色从当前图片实时取色，并按 Material You 规则生成同色系高反差色调。时间格式在「设置 → 时间与日期」统一调整。")
                         Spacer()
                         Text("\(StackedClockSizing.percent(for: model.settings.clockFontSize))%")
                             .foregroundStyle(.secondary)
@@ -3173,21 +4005,12 @@ struct SettingsView: View {
                             }
                         )
                 }
-                Text("Pixel 叠排大时钟把四位时间与日期视为一个图层组统一缩放，数字之间的紧密关系不会随大小变化。X 正值向右、Y 正值向下，双击滑块可将偏移恢复为 0。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("叠排样式固定使用纵向压缩、加粗描边的 Arial Black 数字。配色会实时从当前图片提取种子色，并按 Android Material You 规则生成同色相的 Accent 1/2 色调阶，与壁纸保持同一色系并拉开强烈反差。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("时间格式在「设置 → 时间与日期」统一调整（所有界面共用）。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("恢复默认样式") {
-                    model.resetClockOverlay()
+                HStack(spacing: 4) {
+                    Button("恢复默认样式") {
+                        model.resetClockOverlay()
+                    }
+                    HelpIcon(text: "恢复为自然取色、显示日期、Arial Black、100% 整体大小、HH:mm、无偏移；叠加开关与布局保持不变。")
                 }
-                Text("恢复为自然取色、显示日期、Arial Black、100% 整体大小、HH:mm、无偏移；叠加开关与布局保持不变。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         recentImagesSection
@@ -3209,15 +4032,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text("轮换间隔")
+                        HelpIcon(text: "范围 5 秒–5 分钟；滑杆非线性，时间越长档位越粗。")
                         Spacer()
                         Text(RotationInterval.label(forSeconds: model.settings.imageRotationSeconds))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     Slider(value: model.imageRotationSliderBinding, in: 0...1)
-                    Text("范围 5 秒–5 分钟；滑杆非线性，时间越长档位越粗。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 if model.settings.customImageHistory.count < 2 {
                     Text("至少需要 2 张最近图片才能轮换。")
@@ -3355,14 +4176,19 @@ struct RecentImageCell: View {
 
 // MARK: - 侧边栏（纯按钮，避免 List 自动选中覆盖持久化模式；底部项经 Spacer 固定置底）
 
-/// 感叹号提示图标：点击弹出注释（替代长段 caption 文字，节省页面空间）
+/// 感叹号提示图标：悬停自动弹出注释，点击可固定切换或打开对应文档。
 struct HelpIcon: View {
     let text: String
+    var linkURL: URL? = nil
     @State private var showPopover = false
 
     var body: some View {
         Button {
-            showPopover.toggle()
+            if let linkURL {
+                NSWorkspace.shared.open(linkURL)
+            } else {
+                showPopover.toggle()
+            }
         } label: {
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 10))
@@ -3370,6 +4196,9 @@ struct HelpIcon: View {
         }
         .buttonStyle(.plain)
         .help(text)
+        .onHover { hovering in
+            showPopover = hovering
+        }
         .popover(isPresented: $showPopover) {
             Text(text)
                 .font(.system(size: 11))
@@ -3456,7 +4285,7 @@ struct Sidebar: View {
         // 侧栏不展示 HA 设备与 Bambu Lab 打印机独立分组：
         // HA 配置在设备管理维护（卡片/画板模块嵌入）；Bambu 打印机卡片归入键盘分组，
         // 实体映射与告警在「设备管理」中配置
-        DeviceType.allCases.filter { $0 != .homeAssistant && $0 != .bambuLab }.flatMap { type in
+        DeviceType.allCases.filter { $0 != .homeAssistant && $0 != .bambuLab && $0 != .formlabs }.flatMap { type in
             model.enabledDevices(for: type).map { (type, $0) }
         }
     }
@@ -3473,18 +4302,22 @@ struct Sidebar: View {
         case .oracle:
             return AnyView(deviceInstanceGroup(icon: "sparkles", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id),
-                                               panels: [.oracleCanvas, .buttonControl],
-                                               switchType: .oracle, deviceID: device.id))
+                                               panels: [.oracleBoardManagement, .buttonControl],
+                                               switchType: .oracle, deviceID: device.id,
+                                               oracleBoards: model.visibleOracleCanvasBoards(for: device.id)))
         case .excerpt:
             return AnyView(deviceInstanceGroup(icon: "quote.opening", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id),
-                                               panels: [.excerptCanvas],
-                                               switchType: .excerpt, deviceID: device.id))
+                                               panels: [.excerptBoardManagement],
+                                               switchType: .excerpt, deviceID: device.id,
+                                               excerptBoards: model.visibleExcerptCanvasBoards(for: device.id)))
         case .homeAssistant:
             // HA 设备不在侧栏显示独立分组（配置在设备管理维护，以卡片/画板模块嵌入）
             return AnyView(EmptyView())
         case .bambuLab:
             // Bambu Lab 打印机不在侧栏独立分组：卡片归入键盘分组，配置在设备管理维护
+            return AnyView(EmptyView())
+        case .formlabs:
             return AnyView(EmptyView())
         }
     }
@@ -3507,16 +4340,49 @@ struct Sidebar: View {
     /// 展开的二级菜单整体向右缩进（图标与文字一起），与设备名层级拉开。
     private func deviceInstanceGroup(icon: String, title: String, isExpanded: Binding<Bool>,
                                      panels: [Panel], switchType: DeviceType?, deviceID: UUID?,
-                                     emptyHint: String? = nil) -> some View {
+                                     emptyHint: String? = nil,
+                                     oracleBoards: [OracleCanvasBoard] = [],
+                                     excerptBoards: [ExcerptCanvasBoard] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
                     cardRotationRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
+                } else if panel == .oracleBoardManagement,
+                          switchType == .oracle, let deviceID {
+                    oracleBoardManagementSidebarRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
+                } else if panel == .excerptBoardManagement,
+                          switchType == .excerpt, let deviceID {
+                    excerptBoardManagementSidebarRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
                 } else {
                     sidebarRow(panel, switchingTo: switchType, deviceID: deviceID)
                         .padding(.leading, Self.submenuIndent)
                 }
+                if panel == .oracleBoardManagement, switchType == .oracle, let deviceID {
+                    ForEach(oracleBoards) { board in
+                        oracleBoardSidebarRow(board, deviceID: deviceID)
+                            .padding(.leading, Self.submenuIndent + 14)
+                    }
+                }
+                if panel == .excerptBoardManagement, switchType == .excerpt, let deviceID {
+                    ForEach(excerptBoards) { board in
+                        excerptBoardSidebarRow(board, deviceID: deviceID)
+                            .padding(.leading, Self.submenuIndent + 14)
+                    }
+                }
+            }
+            if (switchType == .oracle && oracleBoards.isEmpty)
+                || (switchType == .excerpt && excerptBoards.isEmpty) {
+                Text(switchType == .oracle && deviceID.map({ !model.oracleCanvasBoards(for: $0).isEmpty }) == true
+                     || switchType == .excerpt && deviceID.map({ !model.excerptCanvasBoards(for: $0).isEmpty }) == true
+                     ? "所有画板已隐藏" : "尚未创建画板")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
+                    .padding(.leading, Self.submenuIndent + 22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let emptyHint {
                 Button {
@@ -3559,8 +4425,151 @@ struct Sidebar: View {
         .padding(.horizontal, 2)
     }
 
+    private func oracleBoardSidebarRow(_ board: OracleCanvasBoard, deviceID: UUID) -> some View {
+        let isCurrent = model.activeDeviceID(for: .oracle) == deviceID
+            && model.isCurrentOracleCanvasBoard(deviceID: deviceID, boardID: board.id)
+        return Button {
+            model.applyOracleCanvasBoard(deviceID: deviceID, boardID: board.id)
+            selection = .oracleCanvas
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 14)
+                Text(board.name)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isCurrent && selection == .oracleCanvas
+                          ? Color.accentColor.opacity(0.18) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+        .help("切换到这台口袋先知并应用「\(board.name)」")
+    }
+
+    /// 摘录设备下的画板行。选中依据“设备 ID + 画板 ID”，相同下标不会跨设备误高亮。
+    private func excerptBoardSidebarRow(_ board: ExcerptCanvasBoard, deviceID: UUID) -> some View {
+        let isCurrent = model.activeDeviceID(for: .excerpt) == deviceID
+            && model.isCurrentExcerptCanvasBoard(deviceID: deviceID, boardID: board.id)
+        return Button {
+            model.applyExcerptCanvasBoard(deviceID: deviceID, boardID: board.id)
+            selection = .excerptCanvas
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 14)
+                Text(board.name)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isCurrent && selection == .excerptCanvas
+                          ? Color.accentColor.opacity(0.18) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+        .help("切换到这台摘录设备并应用「\(board.name)」")
+    }
+
     /// 设备二级菜单相对设备名的缩进宽度（图标与文字整体右移）
     private static let submenuIndent: CGFloat = 16
+
+    /// 口袋先知「画板管理」行：与灵犀键盘卡片管理一致，右侧直接控制该设备自动轮播。
+    private func oracleBoardManagementSidebarRow(_ deviceID: UUID) -> some View {
+        let rotationOn = model.settings.devices.first(where: { $0.id == deviceID })?
+            .settings.oracleBoardRotationEnabled ?? false
+        return HStack(spacing: 8) {
+            Button {
+                model.switchDevice(type: .oracle, to: deviceID)
+                selection = .oracleBoardManagement
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: Panel.oracleBoardManagement.icon)
+                        .frame(width: 18, height: 18)
+                    Text(Panel.oracleBoardManagement.title)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selection == .oracleBoardManagement ? Color.accentColor : Color.primary)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rotationOn ? Color.accentColor : Color.secondary)
+                .help("自动轮播快捷开关")
+            Toggle("", isOn: model.oracleDeviceBoardRotationBinding(for: deviceID))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("该口袋先知设备的自动轮播开关（间隔、排序与参与内容在“画板管理”中调整）")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(selection == .oracleBoardManagement
+                      ? Color.accentColor.opacity(0.25) : Color.clear)
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// 摘录「画板管理」行：右侧直接控制该设备的自动轮播。
+    private func excerptBoardManagementSidebarRow(_ deviceID: UUID) -> some View {
+        let rotationOn = model.settings.devices.first(where: { $0.id == deviceID })?
+            .settings.excerptBoardRotationEnabled ?? false
+        return HStack(spacing: 8) {
+            Button {
+                model.switchDevice(type: .excerpt, to: deviceID)
+                selection = .excerptBoardManagement
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: Panel.excerptBoardManagement.icon)
+                        .frame(width: 18, height: 18)
+                    Text(Panel.excerptBoardManagement.title)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selection == .excerptBoardManagement ? Color.accentColor : Color.primary)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rotationOn ? Color.accentColor : Color.secondary)
+                .help("自动轮播快捷开关")
+            Toggle("", isOn: model.excerptDeviceBoardRotationBinding(for: deviceID))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("该摘录设备的自动轮播开关（间隔、排序与参与内容在“画板管理”中调整）")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(selection == .excerptBoardManagement
+                      ? Color.accentColor.opacity(0.25) : Color.clear)
+        )
+        .contentShape(Rectangle())
+    }
 
     /// 「卡片轮换」行：左侧打开轮换设置页，右侧是该键盘设备的自动轮播开关
     private func cardRotationRow(_ deviceID: UUID) -> some View {
@@ -3692,7 +4701,8 @@ struct Sidebar: View {
             // 用户进入 HA/Bambu 卡片时显式激活一次。切换键盘设备可能已从设备快照恢复出
             // 相同 displayMode，因此这里允许同模式重新激活；随后 selection 的 onChange
             // 再调用普通 setMode 会因模式未变化而短路，不会产生第二次查询。
-            if let mode = panel.displayMode, mode.refreshesHomeAssistantOnEntry {
+            if let mode = panel.displayMode,
+               mode.refreshesHomeAssistantOnEntry || mode.formlabsSlotIndex != nil {
                 model.setMode(mode, reactivateIfUnchanged: true)
             }
             selection = panel
@@ -3734,10 +4744,10 @@ struct MiniSidebar: View {
                 deviceIconButton(icon: "keyboard", title: "灵犀68 键盘", panel: .canvas)
             }
             if !model.enabledDevices(for: .oracle).isEmpty {
-                deviceIconButton(icon: "sparkles", title: "口袋先知", panel: .oracleCanvas)
+                deviceIconButton(icon: "sparkles", title: "口袋先知", panel: .oracleBoardManagement)
             }
             if !model.enabledDevices(for: .excerpt).isEmpty {
-                deviceIconButton(icon: "quote.opening", title: "摘录", panel: .excerptCanvas)
+                deviceIconButton(icon: "quote.opening", title: "摘录", panel: .excerptBoardManagement)
             }
             Spacer(minLength: 0)
             // 正在播放：专辑封面（点击跳转到正在播放页）
@@ -4017,10 +5027,13 @@ struct CropEditorView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Text("拖动选择要显示的区域 · 滑动缩放")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
+            HStack(spacing: 4) {
+                Text("裁切区域")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HelpIcon(text: "拖动图片选择要显示的区域，滑动可缩放。")
+            }
+            .padding(.top, 8)
 
             GeometryReader { geo in
                 ZStack {
@@ -4284,14 +5297,20 @@ private struct EntityPickerContent: View {
             if let defaultFilter {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Toggle("使用默认筛选", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { defaultFilter.wrappedValue },
                             set: { newValue in
                                 defaultFilter.wrappedValue = newValue
                                 keyword = ""
                                 expandedDomains.removeAll()
                             }
-                        ))
+                        )) {
+                            HStack(spacing: 4) {
+                                Text("使用默认筛选")
+                                HelpIcon(text: defaultFilter.wrappedValue
+                                         ? filterEnabledDescription : filterDisabledDescription)
+                            }
+                        }
                         .toggleStyle(.switch)
                         .controlSize(.small)
                         Spacer()
@@ -4299,11 +5318,6 @@ private struct EntityPickerContent: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text(defaultFilter.wrappedValue
-                         ? filterEnabledDescription : filterDisabledDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Divider()
                     .padding(.bottom, 2)
@@ -4531,11 +5545,11 @@ private struct PrinterAlertPreviewSheet: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Text("所有打印机报错界面预览")
-                .font(.headline)
-            Text("彩蛋：为每台打印机展示报错告警卡效果（错误码 07FE-4500-0002-0003，含故障原因）")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text("所有打印机报错界面预览")
+                    .font(.headline)
+                HelpIcon(text: "彩蛋：为每台打印机展示报错告警卡效果，使用错误码 07FE-4500-0002-0003 并包含故障原因。")
+            }
             let printers = model.settings.devices
                 .filter { $0.type == .bambuLab }
                 .map { BambuLabCardSettings.from($0) }
@@ -4677,6 +5691,10 @@ extension AppModel {
     var dynamicUploadBinding: Binding<Double> {
         Binding(get: { Double(self.settings.dynamicUploadSeconds) },
                 set: { self.settings.dynamicUploadSeconds = Int($0) })
+    }
+    var pomodoroUploadBinding: Binding<Int> {
+        Binding(get: { self.settings.pomodoroUploadSeconds },
+                set: { self.settings.pomodoroUploadSeconds = $0 })
     }
     var sspaiRefreshMinutesBinding: Binding<Double> {
         Binding(get: { Double(self.settings.sspaiRefreshMinutes) },
@@ -5043,6 +6061,14 @@ extension AppModel {
     var excerptAutoPushMinutesBinding: Binding<Double> {
         Binding(get: { Double(self.settings.excerptAutoPushMinutes) },
                 set: { self.settings.excerptAutoPushMinutes = Int($0.rounded()) })
+    }
+    var excerptBoardRotationEnabledBinding: Binding<Bool> {
+        Binding(get: { self.settings.excerptBoardRotationEnabled },
+                set: { self.setExcerptBoardRotationEnabled($0) })
+    }
+    var excerptBoardRotationMinutesBinding: Binding<Double> {
+        Binding(get: { Double(self.settings.excerptBoardRotationMinutes) },
+                set: { self.settings.excerptBoardRotationMinutes = Int($0.rounded()) })
     }
     var startWithSystemBinding: Binding<Bool> {
         Binding(get: { self.settings.startWithSystem },

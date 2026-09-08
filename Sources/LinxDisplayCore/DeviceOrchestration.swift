@@ -18,7 +18,7 @@ public enum DeviceOnboardingPolicy {
 extension AppSettings {
     /// 各设备类型的数量上限（未列出的类型不限）：
     /// Home Assistant 只允许一个实例；Bambu Lab 打印机最多 5 台（对应 5 张独立卡片位）
-    public static let deviceLimits: [DeviceType: Int] = [.homeAssistant: 1, .bambuLab: 5]
+    public static let deviceLimits: [DeviceType: Int] = [.homeAssistant: 1, .bambuLab: 5, .formlabs: 5]
 
     /// 是否还能再添加该类型设备
     public func canAddDevice(of type: DeviceType) -> Bool {
@@ -34,6 +34,8 @@ extension AppSettings {
             return "只允许添加一个 Home Assistant 实例；如需更换服务器，请直接修改该设备的地址与长期访问令牌。"
         case .bambuLab:
             return "最多支持 5 台 Bambu Lab 打印机（对应 5 张独立卡片位）。"
+        case .formlabs:
+            return "最多支持 5 台 Formlabs 打印机（对应 5 张独立卡片位）。"
         default:
             return nil
         }
@@ -57,6 +59,7 @@ extension AppSettings {
         case .excerpt: return activeExcerptDeviceID
         case .homeAssistant: return activeHomeAssistantDeviceID
         case .bambuLab: return activeBambuLabDeviceID
+        case .formlabs: return activeFormlabsDeviceID
         }
     }
 
@@ -68,6 +71,7 @@ extension AppSettings {
         case .excerpt: activeExcerptDeviceID = id
         case .homeAssistant: activeHomeAssistantDeviceID = id
         case .bambuLab: activeBambuLabDeviceID = id
+        case .formlabs: activeFormlabsDeviceID = id
         }
     }
 
@@ -85,6 +89,8 @@ extension AppSettings {
         for type in DeviceType.allCases {
             guard let device = activeDevice(for: type),
                   let index = devices.firstIndex(where: { $0.id == device.id }) else { continue }
+            // Formlabs 没有全局镜像：连接配置在设备快照里直接编辑，不能用空 capture 覆盖。
+            if type == .formlabs { continue }
             devices[index].settings = DeviceSettings.capture(from: self, type: type)
         }
     }
@@ -113,10 +119,12 @@ extension AppSettings {
     public func keyboardCardPanelRawValues(for deviceID: UUID, fallback: [String]) -> [String] {
         guard let device = devices.first(where: { $0.id == deviceID }) else { return [] }
         let printerCount = enabledDevices(for: .bambuLab).count
+        let formlabsCount = enabledDevices(for: .formlabs).count
         let stored = device.settings.keyboardCardPanels ?? fallback
         return stored.filter { raw in
-            guard let slot = Self.bambuSlotIndex(in: raw) else { return true }
-            return slot < printerCount
+            if let slot = Self.bambuSlotIndex(in: raw) { return slot < printerCount }
+            if let slot = Self.formlabsSlotIndex(in: raw) { return slot < formlabsCount }
+            return true
         }
     }
 
@@ -128,6 +136,17 @@ extension AppSettings {
         case "bambuLab3": return 2
         case "bambuLab4": return 3
         case "bambuLab5": return 4
+        default: return nil
+        }
+    }
+
+    static func formlabsSlotIndex(in raw: String) -> Int? {
+        switch raw {
+        case "formlabs": return 0
+        case "formlabs2": return 1
+        case "formlabs3": return 2
+        case "formlabs4": return 3
+        case "formlabs5": return 4
         default: return nil
         }
     }

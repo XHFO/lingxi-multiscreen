@@ -97,6 +97,21 @@ public enum BambuImageSource: Int, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Bambu 卡片时间信息的显示来源。两个实体映射始终保留，切换时只改变当前展示内容。
+public enum BambuTimeDisplayMode: Int, CaseIterable, Identifiable, Codable {
+    case remaining = 0
+    case endTime = 1
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .remaining: return "剩余时间"
+        case .endTime: return "结束时间"
+        }
+    }
+}
+
 /// Bambu Lab 打印机卡片字段配置（实体映射 + 告警 + 显示选项；每台打印机独立）
 public struct BambuLabCardSettings: Codable, Equatable {
     /// 打印机名称（多打印机时区分；如「客厅 A1」「工作室 P1S」）
@@ -108,6 +123,10 @@ public struct BambuLabCardSettings: Codable, Equatable {
     public var nozzleTempEntityID: String
     public var bedTempEntityID: String
     public var remainingEntityID: String
+    /// 预计结束/完成时间实体（通常是 ISO8601 时间戳 sensor）
+    public var endTimeEntityID: String
+    /// 当前显示剩余时间或预计结束时间；旧配置默认剩余时间。
+    public var timeDisplayMode: BambuTimeDisplayMode
     public var errorEntityID: String
     /// 摄像头实体（兼容旧版 imageEntityID 字段名；支持 image.* / camera.* 静态帧）
     public var imageEntityID: String
@@ -115,6 +134,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
     public var taskImageEntityID: String
     /// 卡片当前选择显示摄像头还是打印任务封面
     public var imageSource: BambuImageSource
+    /// 摄像头静态帧在每次键盘推送前自动识别中心小模型并动态裁切（默认关闭）
+    public var autoCameraZoom: Bool
     /// 卡片布局样式（标准 / 紧凑 / 大字）
     public var layout: BambuCardLayout
     /// 卡片主题色（跟随全局 / Bambu Lab 强调色）
@@ -134,9 +155,12 @@ public struct BambuLabCardSettings: Codable, Equatable {
                 statusEntityID: String = "", progressEntityID: String = "",
                 taskEntityID: String = "", nozzleTempEntityID: String = "",
                 bedTempEntityID: String = "", remainingEntityID: String = "",
+                endTimeEntityID: String = "",
+                timeDisplayMode: BambuTimeDisplayMode = .remaining,
                 errorEntityID: String = "", imageEntityID: String = "",
                 taskImageEntityID: String = "",
                 imageSource: BambuImageSource = .camera,
+                autoCameraZoom: Bool = false,
                 layout: BambuCardLayout = .standard,
                 themeAccent: BambuThemeAccent = .global,
                 showStatus: Bool = true, showProgress: Bool = true, showTask: Bool = true,
@@ -150,10 +174,13 @@ public struct BambuLabCardSettings: Codable, Equatable {
         self.nozzleTempEntityID = nozzleTempEntityID
         self.bedTempEntityID = bedTempEntityID
         self.remainingEntityID = remainingEntityID
+        self.endTimeEntityID = endTimeEntityID
+        self.timeDisplayMode = timeDisplayMode
         self.errorEntityID = errorEntityID
         self.imageEntityID = imageEntityID
         self.taskImageEntityID = taskImageEntityID
         self.imageSource = imageSource
+        self.autoCameraZoom = autoCameraZoom
         self.layout = layout.selectableValue
         self.themeAccent = themeAccent
         self.showStatus = showStatus
@@ -175,6 +202,14 @@ public struct BambuLabCardSettings: Codable, Equatable {
         }
     }
 
+    /// 当前时间显示选中的实体。未配置时保持空白，不暗中改用另一个实体。
+    public var selectedTimeEntityID: String {
+        switch timeDisplayMode {
+        case .remaining: return remainingEntityID
+        case .endTime: return endTimeEntityID
+        }
+    }
+
     /// 从设备快照读取（旧版单台字段 + 显示选项）
     public static func from(_ s: DeviceSettings) -> BambuLabCardSettings {
         BambuLabCardSettings(name: s.bambuPrinterName ?? "打印机",
@@ -185,10 +220,13 @@ public struct BambuLabCardSettings: Codable, Equatable {
                              nozzleTempEntityID: s.bambuNozzleTempEntityID ?? "",
                              bedTempEntityID: s.bambuBedTempEntityID ?? "",
                              remainingEntityID: s.bambuRemainingEntityID ?? "",
+                             endTimeEntityID: s.bambuEndTimeEntityID ?? "",
+                             timeDisplayMode: s.bambuTimeDisplayMode ?? .remaining,
                              errorEntityID: s.bambuErrorEntityID ?? "",
                              imageEntityID: s.bambuImageEntityID ?? "",
                              taskImageEntityID: s.bambuTaskImageEntityID ?? "",
                              imageSource: s.bambuImageSource ?? .camera,
+                             autoCameraZoom: s.bambuAutoCameraZoom ?? false,
                              layout: (s.bambuLayout ?? .standard).selectableValue,
                              themeAccent: s.bambuThemeAccent ?? .global,
                              showStatus: s.bambuShowStatus ?? true,
@@ -220,10 +258,13 @@ public struct BambuLabCardSettings: Codable, Equatable {
         s.bambuNozzleTempEntityID = nozzleTempEntityID
         s.bambuBedTempEntityID = bedTempEntityID
         s.bambuRemainingEntityID = remainingEntityID
+        s.bambuEndTimeEntityID = endTimeEntityID
+        s.bambuTimeDisplayMode = timeDisplayMode
         s.bambuErrorEntityID = errorEntityID
         s.bambuImageEntityID = imageEntityID
         s.bambuTaskImageEntityID = taskImageEntityID
         s.bambuImageSource = imageSource
+        s.bambuAutoCameraZoom = autoCameraZoom
         s.bambuLayout = layout
         s.bambuThemeAccent = themeAccent
         s.bambuShowStatus = showStatus
@@ -239,8 +280,9 @@ public struct BambuLabCardSettings: Codable, Equatable {
     // 解码时缺失键回退默认值，避免老配置崩溃
     private enum CodingKeys: String, CodingKey {
         case name, enableAlert, statusEntityID, progressEntityID, taskEntityID,
-             nozzleTempEntityID, bedTempEntityID, remainingEntityID, errorEntityID,
-             imageEntityID, taskImageEntityID, imageSource,
+             nozzleTempEntityID, bedTempEntityID, remainingEntityID,
+             endTimeEntityID, timeDisplayMode, errorEntityID,
+             imageEntityID, taskImageEntityID, imageSource, autoCameraZoom,
              layout, themeAccent, showStatus, showProgress, showTask,
              showTemperature, showRemaining, showError, showImage
     }
@@ -255,10 +297,14 @@ public struct BambuLabCardSettings: Codable, Equatable {
         nozzleTempEntityID = try c.decodeIfPresent(String.self, forKey: .nozzleTempEntityID) ?? ""
         bedTempEntityID = try c.decodeIfPresent(String.self, forKey: .bedTempEntityID) ?? ""
         remainingEntityID = try c.decodeIfPresent(String.self, forKey: .remainingEntityID) ?? ""
+        endTimeEntityID = try c.decodeIfPresent(String.self, forKey: .endTimeEntityID) ?? ""
+        timeDisplayMode = try c.decodeIfPresent(BambuTimeDisplayMode.self,
+                                                forKey: .timeDisplayMode) ?? .remaining
         errorEntityID = try c.decodeIfPresent(String.self, forKey: .errorEntityID) ?? ""
         imageEntityID = try c.decodeIfPresent(String.self, forKey: .imageEntityID) ?? ""
         taskImageEntityID = try c.decodeIfPresent(String.self, forKey: .taskImageEntityID) ?? ""
         imageSource = try c.decodeIfPresent(BambuImageSource.self, forKey: .imageSource) ?? .camera
+        autoCameraZoom = try c.decodeIfPresent(Bool.self, forKey: .autoCameraZoom) ?? false
         layout = (try c.decodeIfPresent(BambuCardLayout.self, forKey: .layout) ?? .standard)
             .selectableValue
         themeAccent = try c.decodeIfPresent(BambuThemeAccent.self, forKey: .themeAccent) ?? .global
@@ -281,10 +327,13 @@ public struct BambuLabCardSettings: Codable, Equatable {
         try c.encode(nozzleTempEntityID, forKey: .nozzleTempEntityID)
         try c.encode(bedTempEntityID, forKey: .bedTempEntityID)
         try c.encode(remainingEntityID, forKey: .remainingEntityID)
+        try c.encode(endTimeEntityID, forKey: .endTimeEntityID)
+        try c.encode(timeDisplayMode, forKey: .timeDisplayMode)
         try c.encode(errorEntityID, forKey: .errorEntityID)
         try c.encode(imageEntityID, forKey: .imageEntityID)
         try c.encode(taskImageEntityID, forKey: .taskImageEntityID)
         try c.encode(imageSource, forKey: .imageSource)
+        try c.encode(autoCameraZoom, forKey: .autoCameraZoom)
         try c.encode(layout, forKey: .layout)
         try c.encode(themeAccent, forKey: .themeAccent)
         try c.encode(showStatus, forKey: .showStatus)
@@ -310,7 +359,8 @@ public struct BambuLabCardSettings: Codable, Equatable {
             printer.first { e in
                 guard domains.contains(HAEntityPicker.domain(of: e.entityId)) else { return false }
                 let id = e.entityId.lowercased()
-                return keywords.contains { id.contains($0) }
+                let text = "\(id) \(e.friendlyName.lowercased())"
+                return keywords.contains { text.contains($0) }
             }?.entityId
         }
         let valueDomains: Set<String> = ["sensor", "number"]
@@ -326,6 +376,11 @@ public struct BambuLabCardSettings: Codable, Equatable {
             ["bed_temp", "temp_bed", "bed_temperature"], domains: valueDomains) ?? ""
         s.remainingEntityID = match(
             ["remaining_time", "remaining"], domains: valueDomains) ?? ""
+        s.endTimeEntityID = match(
+            ["estimated_end_time", "estimated_finish_time", "estimated_completion_time",
+             "end_time", "finish_time", "completion_time", "estimated_finish", "estimated_end",
+             "预计结束", "结束时间", "预计完成", "完成时间"],
+            domains: valueDomains) ?? ""
         s.errorEntityID = match(
             ["hms_error", "hms_errors", "error", "err"],
             domains: ["sensor", "binary_sensor"]) ?? ""
@@ -948,13 +1003,17 @@ public enum BambuEntityMatcher {
         "current_task", "print_task", "job_name", "current_job",
         "nozzle_temperature", "hotend_temp", "nozzle_temp", "temp_nozzle",
         "bed_temperature", "bed_temp", "temp_bed",
-        "remaining_time", "hms_error", "hms_errors", "current_stage",
+        "remaining_time", "estimated_end_time", "estimated_finish_time",
+        "estimated_completion_time", "end_time", "finish_time", "completion_time",
+        "estimated_finish", "estimated_end",
+        "hms_error", "hms_errors", "current_stage",
         "cooling_fan_speed", "aux_fan_speed", "chamber_temperature",
         // 画面实体跨 image/camera 域时也按相同设备根名称比较。
         "cover_image", "task_cover", "print_cover", "model_preview",
         "camera_image", "camera_snapshot", "snapshot", "camera",
         "thumbnail", "thumb", "preview", "cover",
-        "status", "state", "progress", "task", "remaining", "error", "err", "hms",
+        "status", "state", "progress", "task", "remaining", "finish", "completion",
+        "error", "err", "hms",
     ]
 
     /// 自动匹配只允许从打印机的“打印状态实体”开始。
@@ -985,6 +1044,8 @@ public enum BambuEntityMatcher {
         ["nozzle_temp", "hotend_temp", "nozzle_temperature", "temp_nozzle"],
         ["bed_temp", "bed_temperature", "temp_bed"],
         ["remaining_time", "remaining"],
+        ["estimated_end_time", "estimated_finish_time", "estimated_completion_time",
+         "end_time", "finish_time", "completion_time", "estimated_finish", "estimated_end"],
         ["hms_error", "hms_errors", "error", "err"],
     ]
 
@@ -1267,7 +1328,8 @@ public enum BambuEntityMatcher {
                     let object = id.split(separator: ".", maxSplits: 1).last.map(String.init) ?? id
                     let samePrinter = baseObject.isEmpty || object == baseObject
                         || object.hasPrefix(baseObject + "_")
-                    return samePrinter && id.contains(keyword)
+                    let text = "\(id) \(e.friendlyName.lowercased())"
+                    return samePrinter && text.contains(keyword)
                 }) {
                     return entity.entityId
                 }
@@ -1289,6 +1351,11 @@ public enum BambuEntityMatcher {
                 ["bed_temp", "bed_temperature", "temp_bed"], domains: valueDomains),
             remainingEntityID: match(
                 ["remaining_time", "remaining"], domains: valueDomains),
+            endTimeEntityID: match(
+                ["estimated_end_time", "estimated_finish_time", "estimated_completion_time",
+                 "end_time", "finish_time", "completion_time", "estimated_finish",
+                 "estimated_end", "预计结束", "结束时间", "完成时间"],
+                domains: valueDomains),
             errorEntityID: match(
                 ["hms_error", "hms_errors", "error", "err"],
                 domains: ["sensor", "binary_sensor"]),

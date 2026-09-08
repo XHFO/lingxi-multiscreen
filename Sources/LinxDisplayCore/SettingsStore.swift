@@ -22,6 +22,10 @@ public final class AppSettings: ObservableObject {
     @Published public var dynamicUploadSeconds = 5 {
         didSet { onChange() }
     }
+    /// 键盘独立番茄钟的刷新/推送间隔（秒），与电脑端预览共用同一刻度。
+    @Published public var pomodoroUploadSeconds = 5 {
+        didSet { onChange() }
+    }
     @Published public var safeAreaHeight = 56 {
         didSet { onChange() }
     }
@@ -211,6 +215,14 @@ public final class AppSettings: ObservableObject {
     @Published public var excerptNowPlayingHorizontal = false {
         didSet { onChange() }
     }
+    /// 摘录多画板：当前活动摘录设备的画板列表镜像。
+    @Published public var excerptCanvasBoards: [ExcerptCanvasBoard] = [] {
+        didSet { onChange() }
+    }
+    /// 摘录多画板：当前活动摘录设备选中的画板下标。
+    @Published public var excerptCanvasBoardIndex = 0 {
+        didSet { onChange() }
+    }
     /// 灵犀画板「少数派推荐」模块显示条数（1–6）
     @Published public var canvasSspaiCount = 2 {
         didSet { onChange() }
@@ -339,6 +351,13 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     @Published public var excerptAutoPushMinutes = 30 {
+        didSet { onChange() }
+    }
+    /// 摘录多画板：按画板管理顺序定时切换并立即推送。
+    @Published public var excerptBoardRotationEnabled = false {
+        didSet { onChange() }
+    }
+    @Published public var excerptBoardRotationMinutes = 5 {
         didSet { onChange() }
     }
     @Published public var canvasImageMode: CanvasImageMode = .background {
@@ -482,6 +501,14 @@ public final class AppSettings: ObservableObject {
     @Published public var bambuRemainingEntityID = "" {
         didSet { onChange() }
     }
+    /// 预计结束/完成时间实体（活动 Bambu 设备的镜像）
+    @Published public var bambuEndTimeEntityID = "" {
+        didSet { onChange() }
+    }
+    /// 时间区块显示剩余时间或结束时间；旧配置默认剩余时间。
+    @Published public var bambuTimeDisplayMode: BambuTimeDisplayMode = .remaining {
+        didSet { onChange() }
+    }
     @Published public var bambuErrorEntityID = "" {
         didSet { onChange() }
     }
@@ -495,6 +522,10 @@ public final class AppSettings: ObservableObject {
     }
     /// 卡片当前显示的画面来源（摄像头 / 任务图片）
     @Published public var bambuImageSource: BambuImageSource = .camera {
+        didSet { onChange() }
+    }
+    /// 每次键盘推送前本地分析当前摄像头静态帧，自动聚焦中心小模型（默认关闭）
+    @Published public var bambuAutoCameraZoom = false {
         didSet { onChange() }
     }
     /// Bambu Lab 打印机名称（活动 Bambu 设备的镜像；设备名独立存储于各设备快照）
@@ -534,6 +565,10 @@ public final class AppSettings: ObservableObject {
     }
     /// 当前活动 Bambu Lab 打印机设备 ID（对应键盘 Bambu Lab 卡片渲染的打印机）
     @Published public var activeBambuLabDeviceID: UUID? {
+        didSet { onChange() }
+    }
+    /// 当前活动 Formlabs 打印机设备 ID；连接配置直接保存在对应设备快照中。
+    @Published public var activeFormlabsDeviceID: UUID? {
         didSet { onChange() }
     }
 
@@ -734,7 +769,8 @@ public final class AppSettings: ObservableObject {
             \.canvasSspaiRandom, \.imageRotationEnabled, \.clockDateVisible,
         ]
         let intPaths: [WritableKeyPath<DeviceSettings, Int?>] = [
-            \.safeAreaHeight, \.jpegQuality, \.dynamicUploadSeconds, \.cardRotationMinutes,
+            \.safeAreaHeight, \.jpegQuality, \.dynamicUploadSeconds, \.pomodoroUploadSeconds,
+            \.cardRotationMinutes,
             \.canvasNowPlayingTitleSize, \.canvasNowPlayingArtistSize, \.canvasSspaiCount,
             \.nowPlayingTitleSize, \.nowPlayingArtistSize, \.nowPlayingTimeSize, \.nowPlayingDateSize,
             \.clockFontSize, \.clockOffsetX, \.clockOffsetY, \.imageRotationSeconds,
@@ -787,7 +823,8 @@ public final class AppSettings: ObservableObject {
         case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
         case .pomodoro: return 4
         case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
-             .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return 4
+             .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+             .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return 4
         case .clock, .date, .text: return 2
         }
     }
@@ -953,6 +990,7 @@ public final class AppSettings: ObservableObject {
         safeAreaHeight = min(max(safeAreaHeight, 44), 80)
         jpegQuality = min(max(jpegQuality, 50), 100)
         dynamicUploadSeconds = min(max(dynamicUploadSeconds, 2), 60)
+        pomodoroUploadSeconds = min(max(pomodoroUploadSeconds, 2), 60)
         imageRotationSeconds = min(max(imageRotationSeconds, Int(RotationInterval.minSeconds)), Int(RotationInterval.maxSeconds))
         clockFontSize = min(max(clockFontSize, StackedClockSizing.minimum),
                             StackedClockSizing.maximum)
@@ -995,6 +1033,7 @@ public final class AppSettings: ObservableObject {
         oracleAutoPushMinutes = min(max(oracleAutoPushMinutes, 1), 1440)
         oracleBoardRotationMinutes = min(max(oracleBoardRotationMinutes, 1), 1440)
         excerptAutoPushMinutes = min(max(excerptAutoPushMinutes, 1), 1440)
+        excerptBoardRotationMinutes = min(max(excerptBoardRotationMinutes, 1), 1440)
         cardRotationMinutes = min(max(cardRotationMinutes, 1), 60)
         sidebarWidth = min(max(sidebarWidth, 48), 320)
         // 轮换卡片列表：去重 + 过滤无效模式
@@ -1039,6 +1078,26 @@ public final class AppSettings: ObservableObject {
         } else {
             oracleCanvasBoardIndex = min(max(oracleCanvasBoardIndex, 0), oracleCanvasBoards.count - 1)
         }
+        // 摘录多画板：清洗模块、HA 实体、布局及当前下标。
+        excerptCanvasBoards = excerptCanvasBoards.map { board in
+            var cleaned = board
+            cleaned.modules = Self.cleanModuleList(board.modules)
+            cleaned.fullWidthModules = Self.cleanModuleList(board.fullWidthModules)
+            cleaned.layoutColumns = min(max(board.layoutColumns, 1), 2)
+            cleaned.sspaiCount = min(max(board.sspaiCount, 1), 6)
+            cleaned.haEntityIDs = cleanEntityList(board.haEntityIDs)
+            let excerptBoardValidQuoteCats = Set(ExcerptQuoteCategory.allCases.map(\.rawValue))
+            var seenBoardQuoteCats = Set<Int>()
+            cleaned.quoteCategories = board.quoteCategories.filter {
+                excerptBoardValidQuoteCats.contains($0) && seenBoardQuoteCats.insert($0).inserted
+            }
+            return cleaned
+        }
+        if excerptCanvasBoards.isEmpty {
+            excerptCanvasBoardIndex = 0
+        } else {
+            excerptCanvasBoardIndex = min(max(excerptCanvasBoardIndex, 0), excerptCanvasBoards.count - 1)
+        }
         emojiWallpaperSize = min(max(emojiWallpaperSize, 16), 96)
         emojiWallpaperSpacing = min(max(emojiWallpaperSpacing, 0), 40)
         // 摘录语录分类：去重 + 过滤无效
@@ -1055,7 +1114,8 @@ public final class AppSettings: ObservableObject {
     // MARK: - Codable（手动实现，与 @Published 兼容）
 
     private enum CodingKeys: String, CodingKey {
-        case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, sspaiRandomPush, dynamicUploadSeconds, safeAreaHeight,
+        case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, sspaiRandomPush,
+             dynamicUploadSeconds, pomodoroUploadSeconds, safeAreaHeight,
              jpegQuality, qwenQuotaBaseline, qwenQuotaBaselineDay, displayMode, cardTheme, customImagePath, customImageName,
              oracleCanvasImagePath, oracleCanvasImageName, excerptCanvasImagePath, excerptCanvasImageName,
              customImageHistory,
@@ -1082,8 +1142,9 @@ public final class AppSettings: ObservableObject {
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
-             bambuNozzleTempEntityID, bambuBedTempEntityID, bambuRemainingEntityID, bambuErrorEntityID,
-             bambuImageEntityID, bambuTaskImageEntityID, bambuImageSource,
+             bambuNozzleTempEntityID, bambuBedTempEntityID, bambuRemainingEntityID,
+             bambuEndTimeEntityID, bambuTimeDisplayMode, bambuErrorEntityID,
+             bambuImageEntityID, bambuTaskImageEntityID, bambuImageSource, bambuAutoCameraZoom,
              bambuPrinterName, bambuPrinters,
              nowPlayingTitleSize, nowPlayingArtistSize,
              nowPlayingFooterVisible, nowPlayingTimeFormat, nowPlayingDateFormat,
@@ -1093,10 +1154,11 @@ public final class AppSettings: ObservableObject {
              oracleAutoPushEnabled, oracleAutoPushMinutes,
              oracleBoardRotationEnabled, oracleBoardRotationMinutes,
              excerptAutoPushEnabled, excerptAutoPushMinutes,
+             excerptBoardRotationEnabled, excerptBoardRotationMinutes,
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -1104,7 +1166,8 @@ public final class AppSettings: ObservableObject {
              excerptLayoutColumns, excerptFullWidthModules,
              excerptImageRotate180, excerptBackgroundMode, excerptPushRawImage,
              excerptServerDitherType, excerptServerDitherKernel,
-             oracleCanvasBoards, oracleCanvasBoardIndex
+             oracleCanvasBoards, oracleCanvasBoardIndex,
+             excerptCanvasBoards, excerptCanvasBoardIndex
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1114,6 +1177,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(sspaiRefreshMinutes, forKey: .sspaiRefreshMinutes)
         try container.encode(sspaiRandomPush, forKey: .sspaiRandomPush)
         try container.encode(dynamicUploadSeconds, forKey: .dynamicUploadSeconds)
+        try container.encode(pomodoroUploadSeconds, forKey: .pomodoroUploadSeconds)
         try container.encode(safeAreaHeight, forKey: .safeAreaHeight)
         try container.encode(jpegQuality, forKey: .jpegQuality)
         try container.encodeIfPresent(qwenQuotaBaseline, forKey: .qwenQuotaBaseline)
@@ -1210,10 +1274,13 @@ public final class AppSettings: ObservableObject {
         try container.encode(bambuNozzleTempEntityID, forKey: .bambuNozzleTempEntityID)
         try container.encode(bambuBedTempEntityID, forKey: .bambuBedTempEntityID)
         try container.encode(bambuRemainingEntityID, forKey: .bambuRemainingEntityID)
+        try container.encode(bambuEndTimeEntityID, forKey: .bambuEndTimeEntityID)
+        try container.encode(bambuTimeDisplayMode.rawValue, forKey: .bambuTimeDisplayMode)
         try container.encode(bambuErrorEntityID, forKey: .bambuErrorEntityID)
         try container.encode(bambuImageEntityID, forKey: .bambuImageEntityID)
         try container.encode(bambuTaskImageEntityID, forKey: .bambuTaskImageEntityID)
         try container.encode(bambuImageSource.rawValue, forKey: .bambuImageSource)
+        try container.encode(bambuAutoCameraZoom, forKey: .bambuAutoCameraZoom)
         try container.encode(bambuPrinterName, forKey: .bambuPrinterName)
         try container.encode(bambuPrinters, forKey: .bambuPrinters)
         try container.encode(nowPlayingTitleSize, forKey: .nowPlayingTitleSize)
@@ -1232,6 +1299,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(oracleBoardRotationMinutes, forKey: .oracleBoardRotationMinutes)
         try container.encode(excerptAutoPushEnabled, forKey: .excerptAutoPushEnabled)
         try container.encode(excerptAutoPushMinutes, forKey: .excerptAutoPushMinutes)
+        try container.encode(excerptBoardRotationEnabled, forKey: .excerptBoardRotationEnabled)
+        try container.encode(excerptBoardRotationMinutes, forKey: .excerptBoardRotationMinutes)
         try container.encode(cardRotationEnabled, forKey: .cardRotationEnabled)
         try container.encode(cardRotationMinutes, forKey: .cardRotationMinutes)
         try container.encode(cardRotationModes, forKey: .cardRotationModes)
@@ -1251,6 +1320,7 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeExcerptDeviceID, forKey: .activeExcerptDeviceID)
         try container.encodeIfPresent(activeHomeAssistantDeviceID, forKey: .activeHomeAssistantDeviceID)
         try container.encodeIfPresent(activeBambuLabDeviceID, forKey: .activeBambuLabDeviceID)
+        try container.encodeIfPresent(activeFormlabsDeviceID, forKey: .activeFormlabsDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
         try container.encode(excerptCanvasModules, forKey: .excerptCanvasModules)
         try container.encode(oracleImageRotate180, forKey: .oracleImageRotate180)
@@ -1261,6 +1331,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(excerptServerDitherKernel.rawValue, forKey: .excerptServerDitherKernel)
         try container.encode(oracleCanvasBoards, forKey: .oracleCanvasBoards)
         try container.encode(oracleCanvasBoardIndex, forKey: .oracleCanvasBoardIndex)
+        try container.encode(excerptCanvasBoards, forKey: .excerptCanvasBoards)
+        try container.encode(excerptCanvasBoardIndex, forKey: .excerptCanvasBoardIndex)
         try container.encode(oracleDisplayMode.rawValue, forKey: .oracleDisplayMode)
         try container.encode(oracleGrayAlgorithm.rawValue, forKey: .oracleGrayAlgorithm)
         try container.encode(oracleDitherKernel.rawValue, forKey: .oracleDitherKernel)
@@ -1281,6 +1353,7 @@ extension AppSettings: Codable {
         sspaiRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .sspaiRefreshMinutes) ?? sspaiRefreshMinutes
         sspaiRandomPush = try container.decodeIfPresent(Bool.self, forKey: .sspaiRandomPush) ?? sspaiRandomPush
         dynamicUploadSeconds = try container.decodeIfPresent(Int.self, forKey: .dynamicUploadSeconds) ?? dynamicUploadSeconds
+        pomodoroUploadSeconds = try container.decodeIfPresent(Int.self, forKey: .pomodoroUploadSeconds) ?? pomodoroUploadSeconds
         safeAreaHeight = try container.decodeIfPresent(Int.self, forKey: .safeAreaHeight) ?? safeAreaHeight
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? jpegQuality
         qwenQuotaBaseline = try container.decodeIfPresent(Double.self, forKey: .qwenQuotaBaseline) ?? qwenQuotaBaseline
@@ -1424,6 +1497,11 @@ extension AppSettings: Codable {
         bambuNozzleTempEntityID = try container.decodeIfPresent(String.self, forKey: .bambuNozzleTempEntityID) ?? bambuNozzleTempEntityID
         bambuBedTempEntityID = try container.decodeIfPresent(String.self, forKey: .bambuBedTempEntityID) ?? bambuBedTempEntityID
         bambuRemainingEntityID = try container.decodeIfPresent(String.self, forKey: .bambuRemainingEntityID) ?? bambuRemainingEntityID
+        bambuEndTimeEntityID = try container.decodeIfPresent(String.self, forKey: .bambuEndTimeEntityID) ?? ""
+        if let raw = try container.decodeIfPresent(Int.self, forKey: .bambuTimeDisplayMode),
+           let mode = BambuTimeDisplayMode(rawValue: raw) {
+            bambuTimeDisplayMode = mode
+        }
         bambuErrorEntityID = try container.decodeIfPresent(String.self, forKey: .bambuErrorEntityID) ?? bambuErrorEntityID
         bambuImageEntityID = try container.decodeIfPresent(String.self, forKey: .bambuImageEntityID) ?? bambuImageEntityID
         bambuTaskImageEntityID = try container.decodeIfPresent(String.self, forKey: .bambuTaskImageEntityID) ?? bambuTaskImageEntityID
@@ -1431,6 +1509,7 @@ extension AppSettings: Codable {
            let source = BambuImageSource(rawValue: raw) {
             bambuImageSource = source
         }
+        bambuAutoCameraZoom = try container.decodeIfPresent(Bool.self, forKey: .bambuAutoCameraZoom) ?? false
         bambuPrinterName = try container.decodeIfPresent(String.self, forKey: .bambuPrinterName) ?? bambuPrinterName
         bambuPrinters = try container.decodeIfPresent([BambuLabCardSettings].self, forKey: .bambuPrinters) ?? bambuPrinters
         nowPlayingTitleSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingTitleSize) ?? nowPlayingTitleSize
@@ -1452,6 +1531,8 @@ extension AppSettings: Codable {
         oracleBoardRotationMinutes = try container.decodeIfPresent(Int.self, forKey: .oracleBoardRotationMinutes) ?? oracleBoardRotationMinutes
         excerptAutoPushEnabled = try container.decodeIfPresent(Bool.self, forKey: .excerptAutoPushEnabled) ?? excerptAutoPushEnabled
         excerptAutoPushMinutes = try container.decodeIfPresent(Int.self, forKey: .excerptAutoPushMinutes) ?? excerptAutoPushMinutes
+        excerptBoardRotationEnabled = try container.decodeIfPresent(Bool.self, forKey: .excerptBoardRotationEnabled) ?? excerptBoardRotationEnabled
+        excerptBoardRotationMinutes = try container.decodeIfPresent(Int.self, forKey: .excerptBoardRotationMinutes) ?? excerptBoardRotationMinutes
         cardRotationEnabled = try container.decodeIfPresent(Bool.self, forKey: .cardRotationEnabled) ?? cardRotationEnabled
         cardRotationMinutes = try container.decodeIfPresent(Int.self, forKey: .cardRotationMinutes) ?? cardRotationMinutes
         cardRotationModes = try container.decodeIfPresent([Int].self, forKey: .cardRotationModes) ?? cardRotationModes
@@ -1472,6 +1553,7 @@ extension AppSettings: Codable {
         activeExcerptDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeExcerptDeviceID) ?? activeExcerptDeviceID
         activeHomeAssistantDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeHomeAssistantDeviceID) ?? activeHomeAssistantDeviceID
         activeBambuLabDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeBambuLabDeviceID) ?? activeBambuLabDeviceID
+        activeFormlabsDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeFormlabsDeviceID) ?? activeFormlabsDeviceID
         oracleCanvasModules = try container.decodeIfPresent([Int].self, forKey: .oracleCanvasModules) ?? oracleCanvasModules
         excerptCanvasModules = try container.decodeIfPresent([Int].self, forKey: .excerptCanvasModules) ?? excerptCanvasModules
         oracleImageRotate180 = try container.decodeIfPresent(Bool.self, forKey: .oracleImageRotate180) ?? oracleImageRotate180
@@ -1491,6 +1573,8 @@ extension AppSettings: Codable {
         }
         oracleCanvasBoards = try container.decodeIfPresent([OracleCanvasBoard].self, forKey: .oracleCanvasBoards) ?? oracleCanvasBoards
         oracleCanvasBoardIndex = try container.decodeIfPresent(Int.self, forKey: .oracleCanvasBoardIndex) ?? oracleCanvasBoardIndex
+        excerptCanvasBoards = try container.decodeIfPresent([ExcerptCanvasBoard].self, forKey: .excerptCanvasBoards) ?? excerptCanvasBoards
+        excerptCanvasBoardIndex = try container.decodeIfPresent(Int.self, forKey: .excerptCanvasBoardIndex) ?? excerptCanvasBoardIndex
         if let raw = try container.decodeIfPresent(Int.self, forKey: .oracleDisplayMode),
            let mode = OracleDisplayMode(rawValue: raw) {
             oracleDisplayMode = mode
@@ -1530,6 +1614,10 @@ public final class SettingsStore {
     public var settingsURL: URL { dataDirectory.appendingPathComponent("settings.json") }
     public var pomodoroURL: URL { dataDirectory.appendingPathComponent("pomodoro.json") }
     public var customImageURL: URL { dataDirectory.appendingPathComponent("custom-image.png") }
+    /// 每台 Formlabs 仅保留最近一项任务（含封面），与设置分文件存储。
+    public var formlabsTaskCacheURL: URL {
+        dataDirectory.appendingPathComponent("formlabs-last-tasks.json")
+    }
     /// 原版 (.NET/Avalonia) 使用的设置文件，用于首次启动迁移。
     public var originalSettingsURL: URL { dataDirectory.appendingPathComponent("settings-v2.json") }
     public var originalPomodoroURL: URL { dataDirectory.appendingPathComponent("pomodoro.json") }
@@ -1578,6 +1666,22 @@ public final class SettingsStore {
 
     public func savePomodoro(_ state: PomodoroState) {
         try? write(state, to: pomodoroURL)
+    }
+
+    public func loadFormlabsTaskCache() -> [UUID: FormlabsSnapshot] {
+        (try? read([UUID: FormlabsSnapshot].self, from: formlabsTaskCacheURL)) ?? [:]
+    }
+
+    /// 只持久化确实包含任务的快照；临时连接错误不写入缓存，启动后仍可先显示
+    /// 最近任务，再由下一次 Dashboard 刷新更新设备在线状态。
+    public func saveFormlabsTaskCache(_ snapshots: [UUID: FormlabsSnapshot]) {
+        var retained: [UUID: FormlabsSnapshot] = [:]
+        for (id, snapshot) in snapshots where snapshot.print != nil {
+            var clean = snapshot
+            clean.cloudError = nil
+            retained[id] = clean
+        }
+        write(retained, to: formlabsTaskCacheURL)
     }
 
     /// 把自定义图片复制到应用数据目录，返回目标地址。
@@ -1634,7 +1738,8 @@ public final class SettingsStore {
             "多屏灵犀-恢复初始设定-\(stamp.string(from: Date()))", isDirectory: true)
         try? FileManager.default.createDirectory(at: trashDir, withIntermediateDirectories: true)
         // pomodoro 新旧路径指向同一文件，去重防第二次移动失败
-        let targets = [settingsURL, pomodoroURL, customImageURL, originalSettingsURL, historyDirectory]
+        let targets = [settingsURL, pomodoroURL, customImageURL, formlabsTaskCacheURL,
+                       originalSettingsURL, historyDirectory]
         var seen = Set<String>()
         for target in targets {
             let key = (target.path as NSString).resolvingSymlinksInPath

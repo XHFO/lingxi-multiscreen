@@ -19,10 +19,20 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
     case bambuLab3 = 13
     case bambuLab4 = 14
     case bambuLab5 = 15
+    case formlabs = 16
+    case formlabs2 = 17
+    case formlabs3 = 18
+    case formlabs4 = 19
+    case formlabs5 = 20
 
     /// Bambu 卡片位对应的打印机序号（0..4；非 Bambu 卡片返回 nil）
     public var bambuSlotIndex: Int? {
         let offset = rawValue - DisplayMode.bambuLab.rawValue
+        return (0...4).contains(offset) ? offset : nil
+    }
+
+    public var formlabsSlotIndex: Int? {
+        let offset = rawValue - DisplayMode.formlabs.rawValue
         return (0...4).contains(offset) ? offset : nil
     }
 
@@ -51,6 +61,11 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
         case .bambuLab3: return "Bambu Lab 打印机 3"
         case .bambuLab4: return "Bambu Lab 打印机 4"
         case .bambuLab5: return "Bambu Lab 打印机 5"
+        case .formlabs: return "Formlabs 打印机"
+        case .formlabs2: return "Formlabs 打印机 2"
+        case .formlabs3: return "Formlabs 打印机 3"
+        case .formlabs4: return "Formlabs 打印机 4"
+        case .formlabs5: return "Formlabs 打印机 5"
         }
     }
 }
@@ -111,6 +126,12 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case bambuLab3 = 19
     case bambuLab4 = 20
     case bambuLab5 = 21
+    /// Formlabs Dashboard 云端打印机状态（三个画板通用）；每台打印机一个独立模块。
+    case formlabs = 22
+    case formlabs2 = 23
+    case formlabs3 = 24
+    case formlabs4 = 25
+    case formlabs5 = 26
 
     public var id: Int { rawValue }
 
@@ -138,6 +159,11 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .bambuLab3: return "Bambu Lab 打印机 3"
         case .bambuLab4: return "Bambu Lab 打印机 4"
         case .bambuLab5: return "Bambu Lab 打印机 5"
+        case .formlabs: return "Formlabs 打印机"
+        case .formlabs2: return "Formlabs 打印机 2"
+        case .formlabs3: return "Formlabs 打印机 3"
+        case .formlabs4: return "Formlabs 打印机 4"
+        case .formlabs5: return "Formlabs 打印机 5"
         }
     }
 
@@ -160,7 +186,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .sspai: return "newspaper"
         case .disk: return "internaldrive"
         case .homeAssistant: return "house"
-        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: return "printer"
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+             .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         }
     }
 
@@ -169,6 +196,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         self == .homeAssistant || self == .bambuLab
             || self == .bambuLab2 || self == .bambuLab3
             || self == .bambuLab4 || self == .bambuLab5
+            || self == .formlabs || self == .formlabs2 || self == .formlabs3
+            || self == .formlabs4 || self == .formlabs5
     }
 
     /// Bambu 打印机模块对应的卡片位（0..4；非 Bambu 模块返回 nil）
@@ -179,6 +208,18 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .bambuLab3: return 2
         case .bambuLab4: return 3
         case .bambuLab5: return 4
+        default: return nil
+        }
+    }
+
+    /// Formlabs 打印机模块对应的设备位（0...4；非 Formlabs 模块返回 nil）。
+    public var formlabsSlotIndex: Int? {
+        switch self {
+        case .formlabs: return 0
+        case .formlabs2: return 1
+        case .formlabs3: return 2
+        case .formlabs4: return 3
+        case .formlabs5: return 4
         default: return nil
         }
     }
@@ -194,6 +235,25 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     /// 摘录画板可选模块（含摘录语录，不含先知语录）
     public static let excerptPanelModules: [CanvasModule] =
         [.excerptText] + allCases.filter { $0 != .oracleText && $0 != .excerptText }
+}
+
+/// 键盘独立番茄钟卡片的刷新对齐策略。
+/// 以本轮番茄钟的起点为基准，使电脑预览与键盘都显示同一个间隔刻度；
+/// 例如 5 秒时为 `25:00 → 24:55 → 24:50`，不会因定时器或网络耗时漂移。
+public enum PomodoroRefreshPolicy {
+    public static let defaultIntervalSeconds = 5
+
+    public static func alignedRemainingSeconds(_ remaining: TimeInterval,
+                                               duration: TimeInterval,
+                                               intervalSeconds: Int) -> Int {
+        let interval = min(max(intervalSeconds, 2), 60)
+        let displayedSeconds = max(0, Int(ceil(remaining)))
+        guard displayedSeconds > 0 else { return 0 }
+        let durationSeconds = max(displayedSeconds, Int(ceil(duration)))
+        let elapsedSeconds = max(0, durationSeconds - displayedSeconds)
+        let completedIntervals = elapsedSeconds / interval
+        return max(0, durationSeconds - completedIntervals * interval)
+    }
 }
 
 /// 高频刷新策略集中在纯数据层，避免 UI 每秒无条件重绘整张卡片。
@@ -212,12 +272,13 @@ public enum RuntimePerformancePolicy {
                                        timeFormat: String,
                                        nowPlaying: Bool,
                                        pomodoroRunning: Bool,
-                                       dynamicUploadSeconds: Int) -> TimeInterval {
+                                       dynamicUploadSeconds: Int,
+                                       pomodoroUploadSeconds: Int = PomodoroRefreshPolicy.defaultIntervalSeconds) -> TimeInterval {
         switch mode {
         case .systemMonitor:
             return 1
         case .pomodoro:
-            return pomodoroRunning ? 1 : 10
+            return pomodoroRunning ? TimeInterval(min(max(pomodoroUploadSeconds, 2), 60)) : 10
         case .nowPlaying:
             return nowPlaying ? 1 : 10
         case .canvas:
@@ -235,7 +296,8 @@ public enum RuntimePerformancePolicy {
         case .excerptQuote, .sspai:
             return 30
         case .codex, .qwenWork, .emojiWallpaper, .homeAssistant,
-             .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
+             .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+             .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))
         }
     }
@@ -251,6 +313,15 @@ public enum RuntimePerformancePolicy {
         if modules.contains(.nowPlaying), nowPlaying { return 5 }
         if modules.contains(.clock), timeFormat.contains("s") { return 5 }
         return 30
+    }
+
+    /// 墨水屏自动推送只发送实际发生变化的最终画面。没有成功推送基线时必须发送，
+    /// 以保证首次启用、应用重启或切换设备后的第一帧可以正常到达设备。
+    public static func shouldPushInkDisplay(previousFingerprint: Data?,
+                                            currentFingerprint: Data?) -> Bool {
+        guard let currentFingerprint else { return false }
+        guard let previousFingerprint else { return true }
+        return previousFingerprint != currentFingerprint
     }
 }
 
@@ -1069,6 +1140,7 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
     case excerpt = 2
     case homeAssistant = 3
     case bambuLab = 4
+    case formlabs = 5
 
     public var id: Int { rawValue }
 
@@ -1079,15 +1151,37 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
         case .excerpt: return "摘录"
         case .homeAssistant: return "Home Assistant"
         case .bambuLab: return "Bambu Lab 打印机"
+        case .formlabs: return "Formlabs 打印机"
         }
+    }
+}
+
+/// 新建画板的命名规则：空画板先显示“未命名”，第一次添加模块时才使用
+/// 第一个模块的显示名称；用户已主动命名或画板已有模块时绝不覆盖。
+public enum CanvasBoardNamingPolicy {
+    public static let untitledName = "未命名"
+
+    public static func nameAfterAddingFirstModule(currentName: String,
+                                                  currentModules: [Int],
+                                                  moduleTitle: String) -> String {
+        guard currentModules.isEmpty,
+              currentName.trimmingCharacters(in: .whitespacesAndNewlines) == untitledName else {
+            return currentName
+        }
+        let title = moduleTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? currentName : title
     }
 }
 
 /// 口袋先知画板：一块完整画布配置快照（模块组合/显示模式/灰阶/抖动/底色/旋转/sspai/横向排布）。
 /// 一台先知设备可保存多块画板，按键控制目标为自身时上下键在画板间循环切换并推送。
-public struct OracleCanvasBoard: Codable, Identifiable, Hashable {
+public struct OracleCanvasBoard: Codable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
+    /// 是否显示在所属口袋先知设备的侧边栏中。nil 为旧档案，按显示处理。
+    public var sidebarVisible: Bool?
+    /// 是否参与自动轮播。nil 为旧档案，按参与处理。
+    public var rotationEnabled: Bool?
     public var modules: [Int]
     public var backgroundMode: CanvasBackgroundMode
     public var imageRotate180: Bool
@@ -1097,14 +1191,28 @@ public struct OracleCanvasBoard: Codable, Identifiable, Hashable {
     public var sspaiCount: Int
     public var sspaiRandom: Bool
     public var nowPlayingHorizontal: Bool
+    /// 后续补充的完整画布字段均为可选，确保旧版本已保存的画板仍可解码。
+    public var printerFields: [Int: CanvasPrinterFields]?
+    public var haEntityIDs: [String]?
+    public var imagePath: String?
+    public var imageName: String?
+    public var capturesExtendedFields: Bool?
 
-    public init(id: UUID = UUID(), name: String, modules: [Int],
+    public init(id: UUID = UUID(), name: String,
+                sidebarVisible: Bool? = true, rotationEnabled: Bool? = true,
+                modules: [Int],
                 backgroundMode: CanvasBackgroundMode, imageRotate180: Bool,
                 displayMode: OracleDisplayMode, grayAlgorithm: OracleGrayAlgorithm,
                 ditherKernel: OracleDitherKernel, sspaiCount: Int, sspaiRandom: Bool,
-                nowPlayingHorizontal: Bool) {
+                nowPlayingHorizontal: Bool,
+                printerFields: [Int: CanvasPrinterFields]? = nil,
+                haEntityIDs: [String]? = nil,
+                imagePath: String? = nil, imageName: String? = nil,
+                capturesExtendedFields: Bool? = nil) {
         self.id = id
         self.name = name
+        self.sidebarVisible = sidebarVisible
+        self.rotationEnabled = rotationEnabled
         self.modules = modules
         self.backgroundMode = backgroundMode
         self.imageRotate180 = imageRotate180
@@ -1114,6 +1222,11 @@ public struct OracleCanvasBoard: Codable, Identifiable, Hashable {
         self.sspaiCount = sspaiCount
         self.sspaiRandom = sspaiRandom
         self.nowPlayingHorizontal = nowPlayingHorizontal
+        self.printerFields = printerFields
+        self.haEntityIDs = haEntityIDs
+        self.imagePath = imagePath
+        self.imageName = imageName
+        self.capturesExtendedFields = capturesExtendedFields
     }
 
     /// 从全局设置捕获当前先知画布配置
@@ -1127,8 +1240,35 @@ public struct OracleCanvasBoard: Codable, Identifiable, Hashable {
                           ditherKernel: s.oracleDitherKernel,
                           sspaiCount: s.oracleSspaiCount,
                           sspaiRandom: s.oracleSspaiRandom,
-                          nowPlayingHorizontal: s.oracleNowPlayingHorizontal)
+                          nowPlayingHorizontal: s.oracleNowPlayingHorizontal,
+                          printerFields: s.oracleCanvasPrinterFields,
+                          haEntityIDs: s.oracleCanvasHAEntityIDs,
+                          imagePath: s.oracleCanvasImagePath,
+                          imageName: s.oracleCanvasImageName,
+                          capturesExtendedFields: true)
     }
+
+    /// 创建一块不继承当前功能模块的新画板。设备级显示参数仍沿用当前设置，
+    /// 但画板内容从空白开始，等待用户添加第一个模块后再自动命名。
+    public static func blank(from s: AppSettings) -> OracleCanvasBoard {
+        var board = capture(from: s)
+        board.name = CanvasBoardNamingPolicy.untitledName
+        board.modules = []
+        return board
+    }
+
+    /// 自动保存时刷新配置内容，但画板身份与用户名称保持不变。
+    public func updatingConfiguration(from s: AppSettings) -> OracleCanvasBoard {
+        var updated = OracleCanvasBoard.capture(from: s)
+        updated.id = id
+        updated.name = name
+        updated.sidebarVisible = sidebarVisible
+        updated.rotationEnabled = rotationEnabled
+        return updated
+    }
+
+    public var isSidebarVisible: Bool { sidebarVisible ?? true }
+    public var participatesInRotation: Bool { rotationEnabled ?? true }
 
     /// 把本画板配置套用到全局设置（当前画布即为本画板）
     public func apply(to s: AppSettings) {
@@ -1141,6 +1281,156 @@ public struct OracleCanvasBoard: Codable, Identifiable, Hashable {
         s.oracleSspaiCount = sspaiCount
         s.oracleSspaiRandom = sspaiRandom
         s.oracleNowPlayingHorizontal = nowPlayingHorizontal
+        if capturesExtendedFields == true {
+            s.oracleCanvasPrinterFields = printerFields ?? [:]
+            s.oracleCanvasHAEntityIDs = haEntityIDs ?? []
+            s.oracleCanvasImagePath = imagePath
+            s.oracleCanvasImageName = imageName
+        } else {
+            // 旧画板没有扩展字段时保持旧行为，不清空用户现有的图片与实体选择。
+            if let printerFields { s.oracleCanvasPrinterFields = printerFields }
+            if let haEntityIDs { s.oracleCanvasHAEntityIDs = haEntityIDs }
+            if let imagePath { s.oracleCanvasImagePath = imagePath }
+            if let imageName { s.oracleCanvasImageName = imageName }
+        }
+    }
+}
+
+/// 摘录多画板：一块完整的摘录画布配置快照。
+/// 每台摘录设备分别保存自己的列表；切换设备时列表与当前下标随设备快照一同切换。
+public struct ExcerptCanvasBoard: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    /// 是否显示在所属摘录设备的侧边栏与系统菜单中。nil 为旧档案，按显示处理。
+    public var sidebarVisible: Bool?
+    /// 是否参与自动轮播。nil 为旧档案，按参与处理。
+    public var rotationEnabled: Bool?
+    public var modules: [Int]
+    public var backgroundMode: CanvasBackgroundMode
+    public var imageRotate180: Bool
+    public var layoutColumns: Int
+    public var fullWidthModules: [Int]
+    public var pushRawImage: Bool
+    public var serverDitherType: DotServerDitherType
+    public var serverDitherKernel: DotServerDitherKernel
+    public var displayMode: OracleDisplayMode
+    public var grayAlgorithm: OracleGrayAlgorithm
+    public var ditherKernel: OracleDitherKernel
+    public var sspaiCount: Int
+    public var sspaiRandom: Bool
+    public var nowPlayingHorizontal: Bool
+    public var printerFields: [Int: CanvasPrinterFields]
+    public var haEntityIDs: [String]
+    public var imagePath: String?
+    public var imageName: String?
+    public var quoteCategories: [Int]
+    public var showQuoteSource: Bool
+
+    public init(id: UUID = UUID(), name: String,
+                sidebarVisible: Bool? = true, rotationEnabled: Bool? = true,
+                modules: [Int],
+                backgroundMode: CanvasBackgroundMode, imageRotate180: Bool,
+                layoutColumns: Int, fullWidthModules: [Int], pushRawImage: Bool,
+                serverDitherType: DotServerDitherType,
+                serverDitherKernel: DotServerDitherKernel,
+                displayMode: OracleDisplayMode, grayAlgorithm: OracleGrayAlgorithm,
+                ditherKernel: OracleDitherKernel, sspaiCount: Int, sspaiRandom: Bool,
+                nowPlayingHorizontal: Bool, printerFields: [Int: CanvasPrinterFields],
+                haEntityIDs: [String], imagePath: String?, imageName: String?,
+                quoteCategories: [Int], showQuoteSource: Bool) {
+        self.id = id
+        self.name = name
+        self.sidebarVisible = sidebarVisible
+        self.rotationEnabled = rotationEnabled
+        self.modules = modules
+        self.backgroundMode = backgroundMode
+        self.imageRotate180 = imageRotate180
+        self.layoutColumns = layoutColumns
+        self.fullWidthModules = fullWidthModules
+        self.pushRawImage = pushRawImage
+        self.serverDitherType = serverDitherType
+        self.serverDitherKernel = serverDitherKernel
+        self.displayMode = displayMode
+        self.grayAlgorithm = grayAlgorithm
+        self.ditherKernel = ditherKernel
+        self.sspaiCount = sspaiCount
+        self.sspaiRandom = sspaiRandom
+        self.nowPlayingHorizontal = nowPlayingHorizontal
+        self.printerFields = printerFields
+        self.haEntityIDs = haEntityIDs
+        self.imagePath = imagePath
+        self.imageName = imageName
+        self.quoteCategories = quoteCategories
+        self.showQuoteSource = showQuoteSource
+    }
+
+    public static func capture(from s: AppSettings) -> ExcerptCanvasBoard {
+        ExcerptCanvasBoard(name: "画板 \(s.excerptCanvasBoards.count + 1)",
+                           modules: s.excerptCanvasModules,
+                           backgroundMode: s.excerptBackgroundMode,
+                           imageRotate180: s.excerptImageRotate180,
+                           layoutColumns: s.excerptLayoutColumns,
+                           fullWidthModules: s.excerptFullWidthModules,
+                           pushRawImage: s.excerptPushRawImage,
+                           serverDitherType: s.excerptServerDitherType,
+                           serverDitherKernel: s.excerptServerDitherKernel,
+                           displayMode: s.excerptDisplayMode,
+                           grayAlgorithm: s.excerptGrayAlgorithm,
+                           ditherKernel: s.excerptDitherKernel,
+                           sspaiCount: s.excerptSspaiCount,
+                           sspaiRandom: s.excerptSspaiRandom,
+                           nowPlayingHorizontal: s.excerptNowPlayingHorizontal,
+                           printerFields: s.excerptCanvasPrinterFields,
+                           haEntityIDs: s.excerptCanvasHAEntityIDs,
+                           imagePath: s.excerptCanvasImagePath,
+                           imageName: s.excerptCanvasImageName,
+                           quoteCategories: s.excerptQuoteCategories,
+                           showQuoteSource: s.showExcerptSource)
+    }
+
+    /// 与口袋先知保持一致：新建时为空模块、未命名，首个模块决定默认名称。
+    public static func blank(from s: AppSettings) -> ExcerptCanvasBoard {
+        var board = capture(from: s)
+        board.name = CanvasBoardNamingPolicy.untitledName
+        board.modules = []
+        board.fullWidthModules = []
+        return board
+    }
+
+    /// 自动保存时刷新配置内容，但画板身份与用户名称保持不变。
+    public func updatingConfiguration(from s: AppSettings) -> ExcerptCanvasBoard {
+        var updated = ExcerptCanvasBoard.capture(from: s)
+        updated.id = id
+        updated.name = name
+        updated.sidebarVisible = sidebarVisible
+        updated.rotationEnabled = rotationEnabled
+        return updated
+    }
+
+    public var isSidebarVisible: Bool { sidebarVisible ?? true }
+    public var participatesInRotation: Bool { rotationEnabled ?? true }
+
+    public func apply(to s: AppSettings) {
+        s.excerptCanvasModules = modules
+        s.excerptBackgroundMode = backgroundMode
+        s.excerptImageRotate180 = imageRotate180
+        s.excerptLayoutColumns = layoutColumns
+        s.excerptFullWidthModules = fullWidthModules
+        s.excerptPushRawImage = pushRawImage
+        s.excerptServerDitherType = serverDitherType
+        s.excerptServerDitherKernel = serverDitherKernel
+        s.excerptDisplayMode = displayMode
+        s.excerptGrayAlgorithm = grayAlgorithm
+        s.excerptDitherKernel = ditherKernel
+        s.excerptSspaiCount = sspaiCount
+        s.excerptSspaiRandom = sspaiRandom
+        s.excerptNowPlayingHorizontal = nowPlayingHorizontal
+        s.excerptCanvasPrinterFields = printerFields
+        s.excerptCanvasHAEntityIDs = haEntityIDs
+        s.excerptCanvasImagePath = imagePath
+        s.excerptCanvasImageName = imageName
+        s.excerptQuoteCategories = quoteCategories
+        s.showExcerptSource = showQuoteSource
     }
 }
 
@@ -1172,6 +1462,7 @@ public struct DeviceSettings: Codable, Equatable {
     public var safeAreaHeight: Int?
     public var jpegQuality: Int?
     public var dynamicUploadSeconds: Int?
+    public var pomodoroUploadSeconds: Int?
     public var cardRotationEnabled: Bool?
     public var cardRotationMinutes: Int?
     public var cardRotationModes: [Int]?
@@ -1268,9 +1559,16 @@ public struct DeviceSettings: Codable, Equatable {
     public var excerptDitherKernel: OracleDitherKernel?
     public var excerptAutoPushEnabled: Bool?
     public var excerptAutoPushMinutes: Int?
+    public var excerptBoardRotationEnabled: Bool?
+    public var excerptBoardRotationMinutes: Int?
     public var excerptSspaiCount: Int?
     public var excerptSspaiRandom: Bool?
     public var excerptNowPlayingHorizontal: Bool?
+    public var excerptCanvasQuoteCategories: [Int]?
+    public var excerptCanvasShowQuoteSource: Bool?
+    /// 摘录多画板：按设备独立保存的画板列表及当前选中下标。
+    public var excerptCanvasBoards: [ExcerptCanvasBoard]?
+    public var excerptCanvasBoardIndex: Int?
     // Home Assistant（实体与异常监控按设备独立记录）
     /// 旧档案字段：服务器地址/令牌/刷新间隔已收归全局共享配置（所有设备只有一个 Home Assistant 服务器），
     /// 仅保留用于读取旧设置文件，不再随设备 capture/apply 搬运。
@@ -1295,6 +1593,10 @@ public struct DeviceSettings: Codable, Equatable {
     public var bambuNozzleTempEntityID: String?
     public var bambuBedTempEntityID: String?
     public var bambuRemainingEntityID: String?
+    /// 预计结束/完成时间实体；nil 兼容旧档案。
+    public var bambuEndTimeEntityID: String?
+    /// 时间区块显示模式；nil 兼容旧档案并视为剩余时间。
+    public var bambuTimeDisplayMode: BambuTimeDisplayMode?
     public var bambuErrorEntityID: String?
     /// 自动匹配是否使用默认打印状态候选筛选；nil 兼容旧档案并视为开启。
     /// 关闭后允许用户从全部 sensor 实体中指定改名后的打印状态实体。
@@ -1305,6 +1607,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var bambuTaskImageEntityID: String?
     /// 卡片画面来源（摄像头 / 任务图片）
     public var bambuImageSource: BambuImageSource?
+    /// 每次推送前分析摄像头静态帧并自动放大小模型；nil 兼容旧档案并视为关闭。
+    public var bambuAutoCameraZoom: Bool?
     /// 卡片布局样式（标准/紧凑/大字；详情页可切换，每台打印机独立）
     public var bambuLayout: BambuCardLayout?
     /// 卡片主题色（跟随全局 / Bambu Lab 强调色）
@@ -1320,6 +1624,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var bambuShowImage: Bool?
     /// 多打印机配置列表（每台打印机独立映射与告警；旧版单台字段迁移为首台）
     public var bambuPrinters: [BambuLabCardSettings]?
+    // Formlabs Dashboard API 连接配置直接保存在打印机设备快照中，不经过全局镜像。
+    public var formlabsConnection: FormlabsConnectionSettings?
     /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
     public var canvasImagePath: String?
     public var canvasImageName: String?
@@ -1348,6 +1654,7 @@ public struct DeviceSettings: Codable, Equatable {
             d.safeAreaHeight = s.safeAreaHeight
             d.jpegQuality = s.jpegQuality
             d.dynamicUploadSeconds = s.dynamicUploadSeconds
+            d.pomodoroUploadSeconds = s.pomodoroUploadSeconds
             d.cardRotationEnabled = s.cardRotationEnabled
             d.cardRotationMinutes = s.cardRotationMinutes
             d.cardRotationModes = s.cardRotationModes
@@ -1427,9 +1734,15 @@ public struct DeviceSettings: Codable, Equatable {
             d.excerptDitherKernel = s.excerptDitherKernel
             d.excerptAutoPushEnabled = s.excerptAutoPushEnabled
             d.excerptAutoPushMinutes = s.excerptAutoPushMinutes
+            d.excerptBoardRotationEnabled = s.excerptBoardRotationEnabled
+            d.excerptBoardRotationMinutes = s.excerptBoardRotationMinutes
             d.excerptSspaiCount = s.excerptSspaiCount
             d.excerptSspaiRandom = s.excerptSspaiRandom
             d.excerptNowPlayingHorizontal = s.excerptNowPlayingHorizontal
+            d.excerptCanvasQuoteCategories = s.excerptQuoteCategories
+            d.excerptCanvasShowQuoteSource = s.showExcerptSource
+            d.excerptCanvasBoards = s.excerptCanvasBoards
+            d.excerptCanvasBoardIndex = s.excerptCanvasBoardIndex
             d.excerptCanvasPrinterFields = s.excerptCanvasPrinterFields
             d.excerptCanvasHAEntityIDs = s.excerptCanvasHAEntityIDs
             d.canvasImagePath = s.excerptCanvasImagePath
@@ -1458,10 +1771,13 @@ public struct DeviceSettings: Codable, Equatable {
             d.bambuNozzleTempEntityID = s.bambuNozzleTempEntityID
             d.bambuBedTempEntityID = s.bambuBedTempEntityID
             d.bambuRemainingEntityID = s.bambuRemainingEntityID
+            d.bambuEndTimeEntityID = s.bambuEndTimeEntityID
+            d.bambuTimeDisplayMode = s.bambuTimeDisplayMode
             d.bambuErrorEntityID = s.bambuErrorEntityID
             d.bambuImageEntityID = s.bambuImageEntityID
             d.bambuTaskImageEntityID = s.bambuTaskImageEntityID
             d.bambuImageSource = s.bambuImageSource
+            d.bambuAutoCameraZoom = s.bambuAutoCameraZoom
             d.bambuShowImage = s.bambuShowImage
             d.bambuLayout = s.bambuLayout
             d.bambuThemeAccent = s.bambuThemeAccent
@@ -1471,6 +1787,9 @@ public struct DeviceSettings: Codable, Equatable {
             d.bambuShowTemperature = s.bambuShowTemperature
             d.bambuShowRemaining = s.bambuShowRemaining
             d.bambuShowError = s.bambuShowError
+        case .formlabs:
+            // Formlabs 连接信息由 ManagedDevice.settings 直接持有；此处不从全局镜像覆盖。
+            break
         }
         return d
     }
@@ -1496,6 +1815,7 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = safeAreaHeight { s.safeAreaHeight = v }
             if let v = jpegQuality { s.jpegQuality = v }
             if let v = dynamicUploadSeconds { s.dynamicUploadSeconds = v }
+            if let v = pomodoroUploadSeconds { s.pomodoroUploadSeconds = v }
             if let v = cardRotationEnabled { s.cardRotationEnabled = v }
             if let v = cardRotationMinutes { s.cardRotationMinutes = v }
             if let v = cardRotationModes { s.cardRotationModes = v }
@@ -1576,9 +1896,17 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = excerptDitherKernel { s.excerptDitherKernel = v }
             if let v = excerptAutoPushEnabled { s.excerptAutoPushEnabled = v }
             if let v = excerptAutoPushMinutes { s.excerptAutoPushMinutes = v }
+            s.excerptBoardRotationEnabled = excerptBoardRotationEnabled ?? false
+            s.excerptBoardRotationMinutes = excerptBoardRotationMinutes ?? 5
             if let v = excerptSspaiCount { s.excerptSspaiCount = v }
             if let v = excerptSspaiRandom { s.excerptSspaiRandom = v }
             if let v = excerptNowPlayingHorizontal { s.excerptNowPlayingHorizontal = v }
+            s.excerptQuoteCategories = excerptCanvasQuoteCategories
+                ?? ExcerptQuoteCategory.allCases.map(\.rawValue)
+            s.showExcerptSource = excerptCanvasShowQuoteSource ?? false
+            // nil 表示旧版本快照；显式回退为空列表，不能沿用上一台摘录设备的画板。
+            s.excerptCanvasBoards = excerptCanvasBoards ?? []
+            s.excerptCanvasBoardIndex = excerptCanvasBoardIndex ?? 0
             if let v = excerptCanvasPrinterFields { s.excerptCanvasPrinterFields = v }
             if let v = excerptCanvasHAEntityIDs { s.excerptCanvasHAEntityIDs = v }
             if let v = canvasImagePath { s.excerptCanvasImagePath = v }
@@ -1606,10 +1934,13 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = bambuNozzleTempEntityID { s.bambuNozzleTempEntityID = v }
             if let v = bambuBedTempEntityID { s.bambuBedTempEntityID = v }
             if let v = bambuRemainingEntityID { s.bambuRemainingEntityID = v }
+            if let v = bambuEndTimeEntityID { s.bambuEndTimeEntityID = v }
+            if let v = bambuTimeDisplayMode { s.bambuTimeDisplayMode = v }
             if let v = bambuErrorEntityID { s.bambuErrorEntityID = v }
             if let v = bambuImageEntityID { s.bambuImageEntityID = v }
             if let v = bambuTaskImageEntityID { s.bambuTaskImageEntityID = v }
             if let v = bambuImageSource { s.bambuImageSource = v }
+            if let v = bambuAutoCameraZoom { s.bambuAutoCameraZoom = v }
             if let v = bambuShowImage { s.bambuShowImage = v }
             if let v = bambuLayout { s.bambuLayout = v }
             if let v = bambuThemeAccent { s.bambuThemeAccent = v }
@@ -1619,6 +1950,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = bambuShowTemperature { s.bambuShowTemperature = v }
             if let v = bambuShowRemaining { s.bambuShowRemaining = v }
             if let v = bambuShowError { s.bambuShowError = v }
+        case .formlabs:
+            break
         }
     }
 }
@@ -1657,6 +1990,7 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
     public static func defaultName(for type: DeviceType, index: Int) -> String {
         switch type {
         case .bambuLab: return "打印机 \(index + 1)"
+        case .formlabs: return "Formlabs \(index + 1)"
         default: return "\(type.title) \(index + 1)"
         }
     }

@@ -120,12 +120,19 @@ public enum ScreenRenderer {
                  size: CGFloat(settings.pomodoroTaskFontSize), bold: true, color: colors.primaryTextCG,
                  in: rect(c.minX + 10, c.minY + 50, c.maxX - c.minX - 20, 34), align: .center)
 
-        let seconds = max(0, Int(ceil(snapshot.remaining)))
+        // 键盘番茄钟与电脑预览使用同一个可调间隔刻度，
+        // 避免上传耗时使两端显示的倒计时不一致。
+        let seconds = PomodoroRefreshPolicy.alignedRemainingSeconds(
+            snapshot.remaining, duration: snapshot.duration,
+            intervalSeconds: settings.pomodoroUploadSeconds)
         drawText(ctx, String(format: "%02d:%02d", seconds / 60, seconds % 60),
                  size: 28, bold: true, color: colors.primaryTextCG,
                  in: rect(c.minX + 6, c.minY + 86, c.maxX - c.minX - 12, 45), align: .center)
+        let alignedProgress = snapshot.duration > 0
+            ? min(max(1 - Double(seconds) / snapshot.duration, 0), 1)
+            : 0
         drawProgress(ctx, rect(c.minX + 12, c.minY + 139, c.maxX - c.minX - 24, 8),
-                     progress: snapshot.progress, accent: accent, background: colors.borderCG)
+                     progress: alignedProgress, accent: accent, background: colors.borderCG)
         drawText(ctx, snapshot.isPaused ? "已暂停" : snapshot.isRunning ? "保持节奏" : "点击开始",
                  size: 8, bold: false, color: colors.secondaryTextCG,
                  in: rect(c.minX + 8, c.minY + 153, c.maxX - c.minX - 16, 20), align: .center)
@@ -478,6 +485,7 @@ public enum ScreenRenderer {
                                     qwenQuota: QwenWorkQuota = .unavailable,
                                     sspaiArticles: [SspaiArticle] = [],
                                     ha: HASnapshot = .empty,
+                                    formlabsItems: [FormlabsCanvasItem] = [],
                                     now: Date = Date(),
                                     palette: ScreenPalette? = nil,
                                     printerFields: [Int: CanvasPrinterFields] = [:],
@@ -540,8 +548,13 @@ public enum ScreenRenderer {
         } else {
             let region = CGRect(x: c.minX + 8, y: regionTop,
                                 width: c.maxX - c.minX - 16, height: regionHeight)
+            let multipleBambuModules = modules.filter { $0.bambuSlotIndex != nil }.count > 1
             let bands = moduleBands(modules: modules, region: region, settings: settings,
                                     haEntityCount: ha.selectedEntities.count + ha.missingEntityIDs.count,
+                                    printerFields: printerFields,
+                                    formlabsItems: formlabsItems,
+                                    compactBambuSummary: multipleBambuModules,
+                                    bambuHeroLayout: bambuHeroLayout,
                                     zeroHeightImageModule: useImageBackground)
             // 灵犀画板强调色跟随封面：画板含「正在播放」模块且开启智能封面取色（有封面）时，
             // 所有模块的进度条/百分比条强调色统一用封面生成的强调色（coverProgressAccent），
@@ -556,13 +569,19 @@ public enum ScreenRenderer {
                                  customText: customText, settings: settings,
                                  codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
+                                 formlabsItems: formlabsItems,
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
                                  canvasCoverBgActive: coverArt != nil,
                                  accentOverride: accentOverride,
                                  printerFields: printerFields,
                                  // 灵犀画板与口袋先知/摘录统一采用新版打印机仪表排版：
                                  // 状态背景字、前景百分比、加粗进度条、双行任务名与数据更新时间。
-                                 bambuHeroLayout: bambuHeroLayout)
+                                 bambuHeroLayout: bambuHeroLayout,
+                                 compactBambuSummary: multipleBambuModules,
+                                 singleModuleCanvas: modules.count == 1,
+                                 // 键盘上的灵犀画板空间最窄：不再把“打印中/空闲/暂停”等
+                                 // 状态作为超大背景字；独立卡片和另外两种设备画板不受影响。
+                                 hideBambuLargeStatusText: true)
             }
         }
         return try encode(ctx, quality: settings.jpegQuality)
@@ -576,6 +595,33 @@ public enum ScreenRenderer {
         return 0.5 + 3.0 * extra / CGFloat(count + 3)
     }
 
+    /// 打印机画板模块按实际开启内容动态分配高度。隐藏字段不仅停止绘制，也会降低外层
+    /// 分带权重，把空间返还给同一画板中的其他模块。进度仪表会合并名称/状态，多打印机
+    /// 摘要还会合并温度，并把时间放到进度旁，因此这些组合不会重复计算整行高度。
+    public static func bambuCanvasHeightMultiplier(fields: CanvasPrinterFields,
+                                                    compactSummary: Bool,
+                                                    heroLayout: Bool = true) -> CGFloat {
+        var demand: CGFloat = 1.0 // 即使全部隐藏，仍保留打印机名称/空配置提示
+        if fields.showProgress {
+            demand += heroLayout ? 0.8 : 1.0
+        }
+        if fields.showTask { demand += 1.2 }
+        if fields.showNozzleTemp || fields.showBedTemp {
+            demand += compactSummary
+                ? 1.0
+                : CGFloat((fields.showNozzleTemp ? 1 : 0) + (fields.showBedTemp ? 1 : 0))
+        }
+        // 多打印机摘要的时间已经并入进度行；其他布局仍需要独立一行。
+        if fields.showRemaining && !(compactSummary && heroLayout && fields.showProgress) {
+            demand += 1.0
+        }
+        // 错误详情只在异常时出现，预留半行即可，避免正常状态长期浪费整行。
+        if fields.showError { demand += 0.5 }
+        // 摄像头/任务封面需要明显高于文字行的正方形/横向画面区域。
+        if fields.showImage { demand += 2.4 }
+        return min(max(0.28 + demand * 0.22, 0.5), 2.15)
+    }
+
     /// 模块加权分带：模块上下边距越大（紧凑度越高）权重越小、占用高度越少；
     /// Home Assistant 模块再根据本画板实际选择的实体数量动态增减权重。
     /// columns=2 时按双列流式排列：普通模块占一列，fullWidthModules 中的模块占满整行；
@@ -586,6 +632,10 @@ public enum ScreenRenderer {
                                     columns: Int = 1,
                                     fullWidthModules: Set<Int> = [],
                                     haEntityCount: Int = 0,
+                                    printerFields: [Int: CanvasPrinterFields] = [:],
+                                    formlabsItems: [FormlabsCanvasItem] = [],
+                                    compactBambuSummary: Bool = false,
+                                    bambuHeroLayout: Bool = true,
                                     zeroHeightImageModule: Bool = false) -> [CGRect] {
         let weights = modules.map { m -> CGFloat in
             if zeroHeightImageModule && m == .image { return 0 }
@@ -598,6 +648,22 @@ public enum ScreenRenderer {
             if m == .nowPlaying { return max(base * 1.4, 0.25) }
             if m == .homeAssistant {
                 return base * homeAssistantCanvasHeightMultiplier(entityCount: haEntityCount)
+            }
+            if m.bambuSlotIndex != nil {
+                let fields = printerFields[m.rawValue] ?? settings.canvasPrinterFields(for: m)
+                return base * bambuCanvasHeightMultiplier(
+                    fields: fields,
+                    compactSummary: compactBambuSummary,
+                    heroLayout: bambuHeroLayout)
+            }
+            if let slot = m.formlabsSlotIndex {
+                let connection = formlabsItems.indices.contains(slot)
+                    ? formlabsItems[slot].connection : FormlabsConnectionSettings()
+                var demand: CGFloat = 2.4 // 设备名、状态、进度与任务名
+                if connection.showThumbnail { demand += 2.2 }
+                if connection.showLayers { demand += 0.7 }
+                if connection.showMaterial { demand += 0.7 }
+                return base * min(max(0.35 + demand * 0.22, 0.7), 2.1)
             }
             return base
         }
@@ -691,6 +757,7 @@ public enum ScreenRenderer {
                                           qwenQuota: QwenWorkQuota = .unavailable,
                                           sspaiArticles: [SspaiArticle] = [],
                                           ha: HASnapshot = .empty,
+                                          formlabsItems: [FormlabsCanvasItem] = [],
                                           now: Date = Date(),
                                           width: Int, height: Int,
                                           palette: ScreenPalette,
@@ -731,13 +798,17 @@ public enum ScreenRenderer {
         } else {
             let bands = moduleBands(modules: modules, region: region, settings: settings,
                                     columns: columns, fullWidthModules: fullWidthModules,
-                                    haEntityCount: ha.selectedEntities.count + ha.missingEntityIDs.count)
+                                    haEntityCount: ha.selectedEntities.count + ha.missingEntityIDs.count,
+                                    printerFields: printerFields,
+                                    formlabsItems: formlabsItems,
+                                    bambuHeroLayout: bambuHeroLayout)
             for (index, module) in modules.enumerated() {
                 drawCanvasModule(ctx, module, band: bands[index], colors: einkPalette,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
                                  codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
+                                 formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
                                  nowPlayingSmartBg: false,
                                  fullWidth: fullWidthModules.contains(module.rawValue),
@@ -747,7 +818,8 @@ public enum ScreenRenderer {
                                  printerFields: printerFields,
                                  optimizeBambuForOracleEInk: optimizeBambuForOracleEInk,
                                  bambuHeroLayout: bambuHeroLayout,
-                                 showBambuCamera: showBambuCamera)
+                                 showBambuCamera: showBambuCamera,
+                                 singleModuleCanvas: modules.count == 1)
             }
         }
         var result = ctx.makeImage() ?? placeholderCanvas()
@@ -924,8 +996,9 @@ public enum ScreenRenderer {
         (label: 9, value: 12, body: 10)
     }
 
-    /// Bambu 画板模块字号。口袋先知与摘录都属于独立设备画板，使用更大的字号与
-    /// 更高的最小值，确保灰阶量化后设备名、温度和剩余时间仍能直接辨认。
+    /// Bambu 画板模块字号。键盘灵犀画板的旧下限只有 7–8pt，多台打印机均分画面后
+    /// 实机几乎无法辨认；这里提高最小字号，并让空间充足时突破通用模块的字号上限。
+    /// 口袋先知与摘录仍使用更大的墨水屏字号。
     public static func bambuCanvasTypography(sizeBase: CGFloat,
                                              optimizeForOracleEInk: Bool)
         -> (label: CGFloat, value: CGFloat, body: CGFloat) {
@@ -934,18 +1007,18 @@ public enum ScreenRenderer {
                     value: min(max(sizeBase * 0.78, 14), 21),
                     body: min(max(sizeBase * 0.72, 12.5), 17))
         }
-        let standard = canvasTypography()
-        return (label: min(max(sizeBase * 0.52, 7), standard.label),
-                value: min(max(sizeBase * 0.62, 8), standard.value),
-                body: min(max(sizeBase * 0.56, 7), standard.body))
+        return (label: min(max(sizeBase * 0.64, 9), 11),
+                value: min(max(sizeBase * 0.76, 11), 15),
+                body: min(max(sizeBase * 0.68, 9), 12))
     }
 
-    /// Bambu 画板进度条厚度。口袋先知使用 8–14 px，确保误差扩散后二值线条仍清晰。
+    /// Bambu 画板进度条厚度。整体较旧版减少约三分之一；墨水屏仍保留足够的
+    /// 二值化线宽，但不会在紧凑卡片中抢占过多纵向视觉重量。
     public static func bambuCanvasProgressBarHeight(rowHeight: CGFloat,
                                                     optimizeForOracleEInk: Bool) -> CGFloat {
         optimizeForOracleEInk
-            ? min(max(rowHeight * 0.36, 8), 14)
-            : min(max(rowHeight - 6, 3), 7)
+            ? min(max(rowHeight * 0.24, 5.5), 9.5)
+            : min(max((rowHeight - 6) * 0.67, 2), 4.5)
     }
 
     /// 绘制单个画板模块（band 为 Skia 语义的横带）；imageOverlayOnly=true 时图像模块强制按叠加绘制；
@@ -957,6 +1030,7 @@ public enum ScreenRenderer {
                                          customText: String, settings: AppSettings,
                                          codex: UsageSnapshot, qwenQuota: QwenWorkQuota,
                                          sspaiArticles: [SspaiArticle], ha: HASnapshot, now: Date,
+                                         formlabsItems: [FormlabsCanvasItem] = [],
                                          imageOverlayOnly: Bool = false,
                                          nowPlayingSmartBg: Bool = false,
                                          canvasCoverBgActive: Bool = false,
@@ -968,7 +1042,10 @@ public enum ScreenRenderer {
                                          printerFields: [Int: CanvasPrinterFields] = [:],
                                          optimizeBambuForOracleEInk: Bool = false,
                                          bambuHeroLayout: Bool = false,
-                                         showBambuCamera: Bool = true) {
+                                         showBambuCamera: Bool = true,
+                                         compactBambuSummary: Bool = false,
+                                         singleModuleCanvas: Bool = false,
+                                         hideBambuLargeStatusText: Bool = false) {
         let w = band.width
         let typography = canvasTypography()
         switch module {
@@ -1130,10 +1207,11 @@ public enum ScreenRenderer {
             let task = ha.entities.first { $0.entityId == bambu.taskEntityID }
             let nozzle = ha.entities.first { $0.entityId == bambu.nozzleTempEntityID }
             let bed = ha.entities.first { $0.entityId == bambu.bedTempEntityID }
-            let remain = ha.entities.first { $0.entityId == bambu.remainingEntityID }
+            let timeEntity = ha.entities.first { $0.entityId == bambu.selectedTimeEntityID }
             let error = ha.entities.first { $0.entityId == bambu.errorEntityID }
             let hasStatusBinding = !bambu.statusEntityID
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let rawStatus = status?.state ?? ""
             let statusText = status.map { BambuStatusText.map($0.state) } ?? "未配置"
             let errorStaleSeconds = TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60)
             let isError = status?.state.lowercased() == "error"
@@ -1152,7 +1230,8 @@ public enum ScreenRenderer {
             let alertText = optimizeBambuForOracleEInk ? pureBlack : colors.accentCG
             let progressInk = optimizeBambuForOracleEInk
                 ? pureBlack : (accentOverride ?? colors.accentCG)
-            // 轨道用稳定浅灰显示未完成部分；描边按画板底色反色（浅底黑、深底白）。
+            // 轨道用稳定浅灰显示未完成部分。墨水屏保留深浅反色描边；
+            // 灵犀画板则与 Formlabs 共用主题卡片描边，避免深色模式出现突兀白框。
             let progressTrack = optimizeBambuForOracleEInk
                 ? CGColor(gray: 0.82, alpha: 1) : colors.borderCG
             let adaptiveOutline = colors.cg(einkDeepColorRGB(against: colors.background))
@@ -1165,12 +1244,22 @@ public enum ScreenRenderer {
                 let verticalInset = min(4, max((band.height - 2) / 2, 0))
                 baseContentBand = band.insetBy(dx: horizontalInset, dy: verticalInset)
             } else {
-                baseContentBand = band
+                // 灵犀画板的 Bambu / Formlabs 使用同一组卡片指标：
+                // 主题内嵌底色、低对比边框、相同圆角和自适应内边距。
+                fillRound(ctx, rect(band), radius: 7, color: colors.insetCG)
+                strokeRound(ctx, rect(band), radius: 7, color: colors.borderCG, width: 1)
+                // 标头到左上角使用固定距离：卡片高度变化时不再上下漂移。
+                let horizontalInset: CGFloat = 5
+                let verticalInset: CGFloat = 4
+                baseContentBand = band.insetBy(dx: horizontalInset, dy: verticalInset)
             }
             let heroEnabled = bambuHeroLayout && fields.showProgress && progress != nil
             // 新仪表布局在模块底部保留一行清晰的数据更新时间；条带过矮时自动省略。
             let footerH: CGFloat = heroEnabled && baseContentBand.height >= 72
-                ? min(max(baseContentBand.height * 0.10, 15), 22) : 0
+                ? (compactBambuSummary
+                    ? min(max(baseContentBand.height * 0.08, 11), 14)
+                    : min(max(baseContentBand.height * 0.10, 15), 22))
+                : 0
             let contentBand = CGRect(x: baseContentBand.minX, y: baseContentBand.minY,
                                      width: baseContentBand.width,
                                      height: max(baseContentBand.height - footerH - (footerH > 0 ? 2 : 0), 2))
@@ -1181,31 +1270,54 @@ public enum ScreenRenderer {
                            && !bambu.selectedImageEntityID.isEmpty)
                 ? ha.picture(for: bambu.selectedImageEntityID) : nil
             let taskText = task?.displayState.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let taskNeedsTwoLines = !taskText.isEmpty
+            // 高卡允许任务标题两行；混排到单卡高度被压缩后强制单行，
+            // 把纵向空间还给进度和详情。不依赖卡片数量，因此与其他模块混排也正确。
+            let allowsTwoLineTask = optimizeBambuForOracleEInk || baseContentBand.height >= 150
+            let taskNeedsTwoLines = allowsTwoLineTask && !taskText.isEmpty
                 && measureTextWidth(taskText, size: 15, bold: optimizeBambuForOracleEInk)
                     > max(contentBand.width - 4, 10)
 
             // 已开启且有内容的行（错误行仅在真正报错时占位）
             var rows: [Int] = []
             if heroEnabled {
-                rows.append(8) // 状态背景字 + 前景百分比 + 下方粗进度条
+                // 名称、任务和进度由同一个主信息区按固定顺序排布，任务不会再落到
+                // 进度条下方。状态缩进名称行右侧，避免额外占用一整行。
+                rows.append(8)
             } else {
                 if fields.showStatus && hasStatusBinding { rows.append(0) }
                 if fields.showProgress, progress != nil { rows.append(1) }
             }
-            if fields.showTask, let t = task, !t.state.isEmpty { rows.append(2) }
-            if fields.showNozzleTemp, nozzle != nil { rows.append(3) }
-            if fields.showBedTemp, bed != nil { rows.append(4) }
-            if fields.showRemaining, let r = remain, !r.state.isEmpty,
-               r.state.lowercased() != "unknown" { rows.append(5) }
+            if !heroEnabled, fields.showTask, let t = task, !t.state.isEmpty { rows.append(2) }
+            // 灵犀画板里同时放多台打印机时，把喷嘴与热床合成一行，省下的高度返还给
+            // 设备名、状态和进度；单打印机及两个独立画板继续保留原来的分行结构。
+            if compactBambuSummary, fields.showNozzleTemp || fields.showBedTemp,
+               nozzle != nil || bed != nil {
+                rows.append(9)
+            } else {
+                if fields.showNozzleTemp, nozzle != nil { rows.append(3) }
+                if fields.showBedTemp, bed != nil { rows.append(4) }
+            }
+            if fields.showRemaining, let r = timeEntity, !r.state.isEmpty,
+               r.state.lowercased() != "unknown",
+               // 新仪表布局统一把时间放到进度条右侧，不再额外占一行。
+               !heroEnabled { rows.append(5) }
             if fields.showError, isError { rows.append(6) }
             if picture != nil { rows.append(7) }
             if rows.isEmpty { rows = [0] }
             // 行高按权重分配：画面行占更多空间，文字行保持原有字号基准
             let weights = rows.map { kind -> CGFloat in
                 if kind == 7 { return 2.4 }
-                if kind == 8 { return 2.0 }
+                // 多打印机摘要的头部只放一行名称/状态和一条细进度，不再为超大百分比
+                // 预留三行权重；释放的高度用于任务、温度与时间，避免全部开启时堆叠。
+                if kind == 8 {
+                    // 主信息区内嵌任务名；双行任务相应增加高度，但仍作为一个连续卡片头。
+                    if fields.showTask && !taskText.isEmpty {
+                        return taskNeedsTwoLines ? 3.25 : 2.75
+                    }
+                    return 2.0
+                }
                 if kind == 2 && taskNeedsTwoLines { return 1.55 }
+                if compactBambuSummary && (kind == 5 || kind == 9) { return 1.12 }
                 return 1.0
             }
             let totalWeight = max(weights.reduce(0, +), 0.001)
@@ -1232,56 +1344,145 @@ public enum ScreenRenderer {
                                      width: contentWidth, height: rowHeights[i])
                 switch kind {
                 case 8:
-                    // 口袋先知/摘录的大字仪表布局：状态退到灰色背景，进度数字与小号 %
-                    // 叠在前景；进度条与数字之间保留明显空隙，避免墨水屏量化后粘连。
                     let value = min(max(Double(progress?.state ?? "") ?? 0, 0), 100)
-                    let numberSize = min(max(rowRect.height * 0.36, 20), 54)
-                    let percentSize = max(numberSize / 2, 10)
-                    let nameSize = min(max(rowRect.height * 0.13, 11), 16)
+                    // 两类打印机统一为「设备名/状态 → 任务名 → 进度」的信息顺序。
+                    // 横向墨水屏使用更大的字号与轨道，灵犀画板维持紧凑但不再叠字。
+                    let preferredHeaderH: CGFloat = optimizeBambuForOracleEInk
+                        ? 21 : min(max(baseContentBand.height * 0.13, 15), 18)
+                    let headerH = min(preferredHeaderH, max(rowRect.height * 0.34, 8))
+                    let statusColor = isError ? alertText : primaryText
+                    let nameWidth = rowRect.width * 0.56
                     drawAdaptiveText(ctx, printerLabel.isEmpty ? "打印机" : printerLabel,
-                                     maxSize: nameSize, minSize: 9, bold: true,
-                                     color: secondaryText,
+                                     maxSize: optimizeBambuForOracleEInk ? 15 : 11,
+                                     minSize: 8.5, bold: true, color: primaryText,
                                      in: rect(rowRect.minX, rowRect.minY,
-                                              rowRect.width, max(nameSize + 5, 17)), align: .left)
+                                              nameWidth, headerH), align: .left)
                     if fields.showStatus && hasStatusBinding {
-                        // 旧值 0.28 在灰阶/误差扩散后笔画容易消失；提高到 0.50，
-                        // 同时保留前景纯黑进度数字的层级差。
-                        let backdrop = primaryText.copy(alpha: 0.50) ?? secondaryText
-                        drawAdaptiveText(ctx, statusText,
-                                         maxSize: min(max(rowRect.height * 0.34, 22), 58),
-                                         minSize: 15, bold: true, color: backdrop,
-                                         in: rect(rowRect.minX, rowRect.minY + rowRect.height * 0.08,
-                                                  rowRect.width, rowRect.height * 0.48),
-                                         align: .center)
+                        let statusX = rowRect.minX + nameWidth + 3
+                        let statusW = max(rowRect.maxX - statusX, 12)
+                        let statusNeedsIcon = statusText.count > 4
+                            || measureTextWidth(statusText,
+                                                size: optimizeBambuForOracleEInk ? 13 : 9.5,
+                                                bold: true) > statusW
+                        if statusNeedsIcon {
+                            let compact = bambuCompactStatusPresentation(rawState: rawStatus,
+                                                                          isError: isError)
+                            let iconSide: CGFloat = optimizeBambuForOracleEInk ? 12 : 10
+                            let statusLabelSize = adaptiveFontSize(
+                                compact.label,
+                                maxSize: optimizeBambuForOracleEInk ? 12.5 : 9.5,
+                                minSize: 7.5, bold: true,
+                                maxWidth: max(statusW - iconSide - 3, 8))
+                            let labelW = measureTextWidth(compact.label,
+                                                          size: statusLabelSize, bold: true)
+                            let groupW = min(iconSide + 3 + labelW, statusW)
+                            let groupX = rowRect.maxX - groupW
+                            drawEntityIcon(ctx, symbol: compact.symbol,
+                                           in: rect(groupX,
+                                                    rowRect.minY + (headerH - iconSide) / 2,
+                                                    iconSide, iconSide), color: statusColor)
+                            drawText(ctx, compact.label, size: statusLabelSize, bold: true,
+                                     color: statusColor,
+                                     in: rect(groupX + iconSide + 3, rowRect.minY,
+                                              max(groupW - iconSide - 3, 8), headerH),
+                                     align: .right)
+                        } else {
+                            drawAdaptiveText(ctx, statusText,
+                                             maxSize: optimizeBambuForOracleEInk ? 13 : 9.5,
+                                             minSize: 8, bold: true, color: statusColor,
+                                             in: rect(statusX, rowRect.minY, statusW, headerH),
+                                             align: .right)
+                        }
                     }
-                    let labelY = rowRect.minY + rowRect.height * 0.24
-                    let labelH = rowRect.height * 0.42
-                    drawBambuProgressLabel(ctx, number: String(format: "%.0f", value),
-                                           numberSize: numberSize, percentSize: percentSize,
-                                           numberColor: primaryText, percentColor: secondaryText,
-                                           in: rect(rowRect.minX, labelY, rowRect.width, labelH))
-                    let barH = min(max(rowRect.height * 0.095, 8), 14)
-                    let barY = rowRect.maxY - barH - 3
-                    let progressBounds = rect(rowRect.minX, barY, rowRect.width, barH)
+
+                    // 标头和下方任务/进度属于两个明确信息区。墨水屏使用最深反差色，
+                    // 键盘画板沿用主题边框色，避免二值化后分隔线消失。
+                    let dividerY = rowRect.minY + headerH + 1
+                    drawLine(ctx, x1: rowRect.minX, y1: dividerY,
+                             x2: rowRect.maxX, y2: dividerY,
+                             color: optimizeBambuForOracleEInk
+                                ? adaptiveOutline : colors.borderCG)
+
+                    let progressRowH: CGFloat = optimizeBambuForOracleEInk ? 23 : 16
+                    let headerGap: CGFloat = optimizeBambuForOracleEInk ? 4 : 5
+                    let availableTaskH = max(rowRect.height - headerH - headerGap - progressRowH - 4, 0)
+                    let wantedTaskH: CGFloat = taskNeedsTwoLines
+                        ? (optimizeBambuForOracleEInk ? 35 : 27)
+                        : (optimizeBambuForOracleEInk ? 20 : 16)
+                    let taskH = fields.showTask && !taskText.isEmpty
+                        ? min(wantedTaskH, availableTaskH) : 0
+                    if taskH > 7 {
+                        let taskRect = CGRect(x: rowRect.minX,
+                                              y: rowRect.minY + headerH + headerGap,
+                                              width: rowRect.width, height: taskH)
+                        if taskNeedsTwoLines {
+                            drawBambuCanvasTask(ctx, taskText, in: taskRect,
+                                                preferredSize: optimizeBambuForOracleEInk ? 14 : 10.5,
+                                                color: primaryText, bold: true)
+                        } else {
+                            drawAdaptiveText(ctx, taskText,
+                                             maxSize: optimizeBambuForOracleEInk ? 14 : 10.5,
+                                             minSize: 7.5, bold: true, color: primaryText,
+                                             in: rect(taskRect), align: .center)
+                        }
+                    }
+
+                    let progressTop = rowRect.minY + headerH + headerGap
+                        + taskH + (taskH > 0 ? 3 : 1)
+                    let progressArea = CGRect(x: rowRect.minX, y: progressTop,
+                                              width: rowRect.width,
+                                              height: max(rowRect.maxY - progressTop, 2))
+                    let pctText = String(format: "%.0f%%", value)
+                    let compactTime = fields.showRemaining
+                        ? timeEntity.flatMap { entity -> String? in
+                            let state = entity.state.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !state.isEmpty, state.lowercased() != "unknown" else { return nil }
+                            return bambuCompactCanvasTimeText(entity, mode: bambu.timeDisplayMode)
+                        } : nil
+                    let progressMeta = compactTime.map { "\(pctText) · \($0)" } ?? pctText
+                    let desiredMetaSize: CGFloat = optimizeBambuForOracleEInk ? 12.5 : 10
+                    let metaPreferredSize = min(desiredMetaSize,
+                                                max(progressArea.height * 0.62, 6))
+                    let metaWidth = min(max(measureTextWidth(progressMeta,
+                                                             size: metaPreferredSize,
+                                                             bold: true) + 3,
+                                                optimizeBambuForOracleEInk ? 42 : 29),
+                                        progressArea.width * 0.60)
+                    let desiredBarH: CGFloat = optimizeBambuForOracleEInk ? 6 : 3.5
+                    let barH = min(desiredBarH, max(progressArea.height - 2, 2))
+                    let progressWidth = max(progressArea.width - metaWidth - 7, 14)
+                    let progressBounds = rect(progressArea.minX,
+                                              progressArea.minY + max((progressArea.height - barH) / 2, 0),
+                                              progressWidth, barH)
                     drawProgress(ctx, progressBounds, progress: value / 100,
                                  accent: progressInk, background: progressTrack)
                     strokeRound(ctx, progressBounds, radius: barH / 2,
-                                color: adaptiveOutline,
-                                width: optimizeBambuForOracleEInk ? 2 : 1.5)
+                                color: optimizeBambuForOracleEInk ? adaptiveOutline : colors.borderCG,
+                                width: optimizeBambuForOracleEInk ? 1.5 : 0.8)
+                    drawAdaptiveText(ctx, progressMeta, maxSize: metaPreferredSize,
+                                     minSize: 7.5, bold: true, color: primaryText,
+                                     in: rect(progressArea.maxX - metaWidth,
+                                              progressArea.minY, metaWidth,
+                                              progressArea.height), align: .right)
                 case 0:
                     // 状态行：打印机名（左）+ 状态大字（右）。全部映射均为空时
                     // rows 的兜底仍会进入这里，但只显示设备名，不把“未配置”冒充状态。
-                    drawText(ctx, printerLabel.isEmpty ? "打印机" : printerLabel, size: labelSize,
-                             bold: optimizeBambuForOracleEInk, color: secondaryText,
-                             in: rect(rowRect.minX, rowRect.minY,
-                                      hasStatusBinding ? contentWidth * 0.5 : contentWidth,
-                                      rowRect.height),
-                             align: hasStatusBinding ? .left : .center)
+                    drawAdaptiveText(ctx, printerLabel.isEmpty ? "打印机" : printerLabel,
+                                     maxSize: labelSize, minSize: 8.5,
+                                     bold: true, color: secondaryText,
+                                     in: rect(rowRect.minX, rowRect.minY,
+                                              hasStatusBinding ? contentWidth * 0.42 : contentWidth,
+                                              rowRect.height),
+                                     align: hasStatusBinding ? .left : .center)
                     if hasStatusBinding {
-                        drawText(ctx, statusText, size: valueSize, bold: true,
-                                 color: isError ? alertText : primaryText,
-                                 in: rect(rowRect.minX, rowRect.minY,
-                                          contentWidth, rowRect.height), align: .right)
+                        drawBambuStatusText(ctx, statusText,
+                                            maxSize: valueSize, minSize: 8.5,
+                                            color: isError ? alertText : primaryText,
+                                            in: CGRect(x: rowRect.minX + contentWidth * 0.40,
+                                                       y: rowRect.minY,
+                                                       width: contentWidth * 0.60,
+                                                       height: rowRect.height),
+                                            align: .right)
                     }
                 case 1:
                     // 进度行：进度条 + 百分比
@@ -1308,7 +1509,7 @@ public enum ScreenRenderer {
                     drawBambuCanvasTask(ctx, taskText, in: rowRect,
                                         preferredSize: min(bodySize + 2, 20),
                                         color: primaryText,
-                                        bold: optimizeBambuForOracleEInk)
+                                        bold: optimizeBambuForOracleEInk || compactBambuSummary)
                 case 3:
                     drawCanvasModuleValueLine(ctx, "喷嘴 \(nozzle?.displayValue ?? "—")", rowRect,
                                               w: contentWidth, size: bodySize, color: secondaryText,
@@ -1317,10 +1518,21 @@ public enum ScreenRenderer {
                     drawCanvasModuleValueLine(ctx, "热床 \(bed?.displayValue ?? "—")", rowRect,
                                               w: contentWidth, size: bodySize, color: secondaryText,
                                               bold: optimizeBambuForOracleEInk)
+                case 9:
+                    let temperatureText = "喷嘴 \(nozzle?.displayValue ?? "—")  ·  热床 \(bed?.displayValue ?? "—")"
+                    drawCanvasModuleValueLine(ctx, temperatureText, rowRect,
+                                              w: contentWidth, size: bodySize,
+                                              color: secondaryText, bold: true)
                 case 5:
-                    drawCanvasModuleValueLine(ctx, "剩余 \(remain?.remainingDisplayText ?? "—")", rowRect,
+                    let timeText: String
+                    if bambu.timeDisplayMode == .endTime {
+                        timeText = "预计结束 \(timeEntity?.displayState ?? "—")"
+                    } else {
+                        timeText = "剩余 \(timeEntity?.remainingDisplayText ?? "—")"
+                    }
+                    drawCanvasModuleValueLine(ctx, timeText, rowRect,
                                               w: contentWidth, size: bodySize, color: secondaryText,
-                                              bold: optimizeBambuForOracleEInk)
+                                              bold: optimizeBambuForOracleEInk || compactBambuSummary)
                 case 7:
                     // 画面行：打印机摄像头快照 / 模型封面（圆角 + 描边）
                     let box = CGRect(x: rowRect.minX, y: rowRect.minY + 1,
@@ -1349,6 +1561,13 @@ public enum ScreenRenderer {
                          in: rect(baseContentBand.minX, lineY + 2,
                                   baseContentBand.width, footerH - 2), align: .center)
             }
+        case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
+            let slot = module.formlabsSlotIndex ?? 0
+            let item = formlabsItems.indices.contains(slot) ? formlabsItems[slot] : nil
+            drawFormlabsCanvasModule(ctx, band: band, colors: colors,
+                                     item: item, deviceCanvas: deviceCanvas,
+                                     accent: accentOverride ?? colors.accentCG,
+                                     emphasizeThumbnail: deviceCanvas && singleModuleCanvas)
         case .clock:
             let text = clockTimeText(now, format: settings.timeFormat)
             let preferredSize = min(band.height * 0.62, 32)
@@ -1683,6 +1902,212 @@ public enum ScreenRenderer {
         case .sspai:
             drawSspaiBand(ctx, articles: sspaiArticles, band: band, colors: colors,
                           deviceCanvas: deviceCanvas)
+        }
+    }
+
+    /// 三种画板共用的 Formlabs 紧凑模块。窄而高的灵犀画板使用纵向缩略图，
+    /// 口袋先知与摘录的宽画面改为“缩略图在左、任务详情在右”，空间不足时自动省略图片。
+    private static func drawFormlabsCanvasModule(_ ctx: CGContext, band: CGRect,
+                                                  colors: ScreenPalette,
+                                                  item: FormlabsCanvasItem?,
+                                                  deviceCanvas: Bool,
+                                                  accent: CGColor,
+                                                  emphasizeThumbnail: Bool = false) {
+        guard band.width > 8, band.height > 8 else { return }
+        // 与 Bambu 墨水屏模块统一：白色圆角卡片、最深黑字和黑色进度强调；
+        // 键盘画板继续沿用用户主题配色。
+        let primary = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.primaryTextCG
+        let secondary = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.secondaryTextCG
+        let cardFill = deviceCanvas ? CGColor(gray: 1, alpha: 1) : colors.insetCG
+        let cardBorder = deviceCanvas ? CGColor(gray: 0, alpha: 1) : colors.borderCG
+        let progressAccent = deviceCanvas ? CGColor(gray: 0, alpha: 1) : accent
+        let progressTrack = deviceCanvas ? CGColor(gray: 0.82, alpha: 1) : colors.borderCG
+        fillRound(ctx, rect(band), radius: 7, color: cardFill)
+        strokeRound(ctx, rect(band), radius: 7, color: cardBorder,
+                    width: deviceCanvas ? 1.5 : 1)
+        // 灵犀画板固定左上内边距，与 Bambu 标头完全对齐；
+        // 墨水屏仍按画面尺寸适配。
+        let insetX: CGFloat = deviceCanvas ? min(max(band.width * 0.045, 4), 7) : 5
+        let insetY: CGFloat = deviceCanvas ? min(max(band.height * 0.035, 3), 6) : 4
+        let content = band.insetBy(dx: insetX, dy: insetY)
+        let fallbackName = "Formlabs 打印机"
+        let name = item?.deviceName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let displayName = name.isEmpty ? fallbackName : name
+        let snapshot = item?.snapshot ?? .empty
+        let rawStatus = snapshot.print?.status.isEmpty == false
+            ? snapshot.print!.status : (snapshot.device?.status ?? "unknown")
+        let status = formlabsStatusText(rawStatus)
+        let isError = rawStatus.lowercased().contains("error")
+            || rawStatus.lowercased().contains("fail")
+
+        let headerH = min(max(content.height * 0.13, 15), deviceCanvas ? 22 : 18)
+        let statusPreferredSize: CGFloat = deviceCanvas ? 12.5 : 9.5
+        let statusW = min(max(measureTextWidth(status, size: statusPreferredSize, bold: true) + 4, 28),
+                          content.width * 0.43)
+        let nameW = max(content.width - statusW - 4, 20)
+        drawAdaptiveText(ctx, displayName,
+                         maxSize: deviceCanvas ? 15 : 11, minSize: 7.5, bold: true,
+                         color: primary,
+                         in: rect(content.minX, content.minY, nameW, headerH), align: .left)
+        drawAdaptiveText(ctx, status,
+                         maxSize: statusPreferredSize, minSize: 7, bold: true,
+                         color: isError ? progressAccent : secondary,
+                         in: rect(content.maxX - statusW, content.minY,
+                                  statusW, headerH), align: .right)
+
+        let headerGap: CGFloat = deviceCanvas ? 4 : 5
+        let dividerY = content.minY + headerH + 1
+        drawLine(ctx, x1: content.minX, y1: dividerY,
+                 x2: content.maxX, y2: dividerY, color: cardBorder)
+        var cursor = content.minY + headerH + headerGap
+        guard snapshot.hasData else {
+            drawText(ctx, "等待云端数据", size: deviceCanvas ? 11 : 9, bold: false,
+                     color: secondary,
+                     in: rect(content.minX, cursor, content.width,
+                              max(content.maxY - cursor, 10)), align: .center)
+            return
+        }
+
+        // 摘录画板中卡片独占整幅时，封面改为左侧 hero 区：它可以
+        // 占用标头以下的整段高度，不再受任务和进度条先占行的限制。
+        // 口袋先知保留上下结构，稍后单独提高封面宽度权重。
+        var flowContent = content
+        var thumbnailWasDrawn = false
+        if emphasizeThumbnail,
+           content.width >= 240,
+           item?.connection.showThumbnail == true,
+           let thumbnail = snapshot.thumbnail {
+            let availableHeight = max(content.maxY - cursor, 2)
+            let side = min(availableHeight, min(content.width * 0.38, 104))
+            let imageBox = CGRect(x: content.minX, y: cursor, width: side, height: side)
+            if side >= 40,
+               drawImageData(ctx, data: thumbnail, into: imageBox, cover: false, radius: 5) {
+                strokeRound(ctx, rect(imageBox), radius: 5, color: cardBorder, width: 1)
+                thumbnailWasDrawn = true
+                flowContent = CGRect(x: imageBox.maxX + 8, y: content.minY,
+                                     width: max(content.maxX - imageBox.maxX - 8, 8),
+                                     height: content.height)
+            }
+        }
+
+        // 与 Bambu 模块保持同一信息顺序：设备名/状态 → 任务名 → 进度。
+        // 横向墨水屏优先使用单行大字，竖向灵犀画板在空间允许时显示两行。
+        let task = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !task.isEmpty {
+            let preferred: CGFloat = deviceCanvas ? 13.5 : 10.5
+            // 口袋先知中 Formlabs 独占 200×200 画板时，项目文件名明确限制为最多两行；
+            // 摘录和多模块压缩条带保持单行，避免挤压下方缩略图和详情。
+            let isPocketOracleStandalone = deviceCanvas
+                && band.width >= 180 && band.width <= 220 && band.height >= 180
+            let maximumLines = isPocketOracleStandalone ? 2 : 1
+            let lines = fileNameLines(task, size: preferred,
+                                      maxW: flowContent.width, maxLines: maximumLines)
+            let lineH: CGFloat = deviceCanvas ? 18 : 14
+            for line in lines {
+                drawAdaptiveText(ctx, line, maxSize: preferred,
+                                 minSize: deviceCanvas ? 9 : 7.5, bold: true,
+                                 color: primary,
+                                 in: rect(flowContent.minX, cursor, flowContent.width, lineH),
+                                 align: flowContent.width >= 150 ? .left : .center)
+                cursor += lineH
+            }
+            cursor += 2
+        }
+
+        if let progress = snapshot.print?.progress {
+            let progressH = min(max(content.height * 0.12, deviceCanvas ? 20 : 16), 24)
+            let percent = "\(Int((progress * 100).rounded()))%"
+            let percentSize: CGFloat = deviceCanvas ? 12.5 : 10
+            let percentW = min(max(measureTextWidth(percent, size: percentSize, bold: true) + 3, 28),
+                               flowContent.width * 0.34)
+            let barW = max(flowContent.width - percentW - 5, 12)
+            let barH: CGFloat = deviceCanvas ? 6 : 3.5
+            let barY = cursor + max((progressH - barH) / 2, 0)
+            let progressBounds = rect(flowContent.minX, barY, barW, barH)
+            drawProgress(ctx, progressBounds, progress: progress,
+                         accent: progressAccent, background: progressTrack)
+            strokeRound(ctx, progressBounds, radius: barH / 2,
+                        color: cardBorder, width: deviceCanvas ? 1.5 : 0.8)
+            // 使用实际 glyph 边界居中，避免数字基线让百分比看起来比进度条低。
+            let fittedPercentSize = adaptiveFontSize(
+                percent, maxSize: percentSize, minSize: 7.5, bold: true,
+                maxWidth: max(percentW - 1, 1))
+            drawGlyphCenteredText(ctx, percent, size: fittedPercentSize,
+                                  bold: true, color: primary,
+                                  in: rect(flowContent.maxX - percentW, cursor,
+                                           percentW, progressH), align: .right)
+            cursor += progressH + 2
+        }
+
+        let remainingArea = CGRect(x: flowContent.minX, y: cursor, width: flowContent.width,
+                                   height: max(content.maxY - cursor, 2))
+        var detailArea = remainingArea
+        if !thumbnailWasDrawn,
+           item?.connection.showThumbnail == true,
+           let thumbnail = snapshot.thumbnail {
+            if remainingArea.width >= 150, remainingArea.height >= 40 {
+                // 口袋先知和摘录画板：缩略图固定靠左，右侧详情从上向下排列。
+                // 摘录较扁时允许缩略图随剩余高度收缩，不再把文字挤出边界。
+                let widthWeight: CGFloat = emphasizeThumbnail ? 0.44 : 0.33
+                let maximumSide: CGFloat = emphasizeThumbnail ? 92 : 78
+                let side = min(remainingArea.height,
+                               min(remainingArea.width * widthWeight, maximumSide))
+                let imageBox = CGRect(x: remainingArea.minX,
+                                      y: remainingArea.minY,
+                                      width: side, height: side)
+                if drawImageData(ctx, data: thumbnail, into: imageBox, cover: false, radius: 5) {
+                    strokeRound(ctx, rect(imageBox), radius: 5, color: cardBorder, width: 1)
+                    detailArea = CGRect(x: imageBox.maxX + 7, y: remainingArea.minY,
+                                        width: max(remainingArea.maxX - imageBox.maxX - 7, 8),
+                                        height: remainingArea.height)
+                }
+            } else if remainingArea.width < 150, remainingArea.height >= 112 {
+                // 灵犀画板：窄屏使用上下结构，缩略图居中，详情紧随其后。
+                let side = min(remainingArea.width - 8, min(remainingArea.height * 0.50, 82))
+                let imageBox = CGRect(x: remainingArea.midX - side / 2,
+                                      y: remainingArea.minY, width: side, height: side)
+                if drawImageData(ctx, data: thumbnail, into: imageBox, cover: false, radius: 5) {
+                    strokeRound(ctx, rect(imageBox), radius: 5, color: cardBorder, width: 1)
+                    detailArea = CGRect(x: remainingArea.minX, y: imageBox.maxY + 5,
+                                        width: remainingArea.width,
+                                        height: max(remainingArea.maxY - imageBox.maxY - 5, 2))
+                }
+            }
+        }
+
+        var rows: [(String, Bool)] = []
+        if item?.connection.showLayers == true,
+           let current = snapshot.print?.currentLayer,
+           let total = snapshot.print?.layerCount, total > 0 {
+            rows.append(("层数  \(current) / \(total)", false))
+        }
+        if item?.connection.showMaterial == true,
+           let material = snapshot.print?.materialName, !material.isEmpty {
+            rows.append(("耗材  \(material)", false))
+        }
+        let remaining = snapshot.print?.estimatedTimeRemainingMS
+            ?? snapshot.device?.estimatedPrintTimeRemainingMS
+        if let remaining, remaining > 0 {
+            rows.append(("剩余  \(formlabsDuration(remaining))", false))
+        }
+        guard !rows.isEmpty, detailArea.height > 4 else { return }
+        let totalLines = rows.count
+        let lineH = min(max(detailArea.height / CGFloat(max(totalLines, 1)), 8),
+                        deviceCanvas ? 17 : 13)
+        var textY = detailArea.minY
+        for (text, emphasized) in rows {
+            let preferred = emphasized ? (deviceCanvas ? 12.5 : 10.5)
+                                       : (deviceCanvas ? 12 : 9)
+            guard textY + lineH <= detailArea.maxY + 0.5 else { return }
+            // 详情行的内容本身很短，窄布局下应优先缩小字号完整显示，
+            // 不要先按大字号截断为省略号。
+            drawAdaptiveText(ctx, text, maxSize: preferred,
+                             minSize: emphasized ? 8 : 7, bold: emphasized,
+                             color: emphasized ? primary : secondary,
+                             in: rect(detailArea.minX, textY,
+                                      detailArea.width, lineH),
+                             align: emphasized && detailArea.width < 145 ? .center : .left)
+            textY += lineH
         }
     }
 
@@ -3241,6 +3666,160 @@ public enum ScreenRenderer {
         return (lines, size)
     }
 
+    /// 打印机状态排版：四字左右的常用状态优先保持大号单行；较长的详细阶段不再
+    /// 强行缩成含义模糊的四字词，而是最多分成两行，并在两行仍放不下时自适应字号。
+    public static func bambuStatusTextLayout(_ text: String,
+                                             maxWidth: CGFloat,
+                                             maxHeight: CGFloat,
+                                             preferredSize: CGFloat,
+                                             minSize: CGFloat = 8.5)
+        -> (lines: [String], size: CGFloat) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return ([], preferredSize) }
+        let width = max(maxWidth, 8)
+        let height = max(maxHeight, 8)
+        let minimum = min(minSize, preferredSize)
+        var size = min(preferredSize, max(height * 0.76, minimum))
+        if measureTextWidth(value, size: size, bold: true) <= width {
+            return ([value], size)
+        }
+
+        let maxLines = height >= minimum * 2.0 ? 2 : 1
+        if maxLines == 1 {
+            size = adaptiveFontSize(value, maxSize: size, minSize: minimum,
+                                    bold: true, maxWidth: width)
+            return ([value], size)
+        }
+
+        size = min(size, max((height - 1) / 2.18, minimum))
+        var lines = splitLines(value, size: size, bold: true,
+                               maxW: width, maxLines: maxLines)
+        while size > minimum, lines.last?.hasSuffix("…") == true {
+            size -= 0.5
+            lines = splitLines(value, size: size, bold: true,
+                               maxW: width, maxLines: maxLines)
+        }
+        return (lines, size)
+    }
+
+    /// 独立打印机卡片在状态描述过长时使用的紧凑语义。详细阶段仍保留在翻译词库中，
+    /// 这里只把它归纳成「图标 + 短标签」，避免开启任务、温度、时间和画面后状态占掉两行。
+    public static func bambuCompactStatusPresentation(rawState: String,
+                                                       isError: Bool = false)
+        -> (symbol: String, label: String) {
+        let raw = rawState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let translated = BambuStatusText.map(rawState)
+        let searchable = "\(raw) \(translated)"
+
+        if isError || searchable.contains("error") || searchable.contains("failed")
+            || searchable.contains("报错") || searchable.contains("失败") {
+            return ("exclamationmark.triangle.fill", "异常")
+        }
+        if searchable.contains("pause") || searchable.contains("暂停") {
+            return ("pause.circle.fill", "已暂停")
+        }
+        if searchable.contains("finish") || searchable.contains("completed")
+            || searchable.contains("完成") {
+            return ("checkmark.circle.fill", "已完成")
+        }
+        if raw == "off" || searchable.contains("offline") || searchable.contains("离线")
+            || searchable.contains("关机") {
+            return ("power", "离线")
+        }
+        if searchable.contains("calibrat") || searchable.contains("level")
+            || searchable.contains("measure") || searchable.contains("校准")
+            || searchable.contains("调平") || searchable.contains("测量") {
+            return ("scope", "校准中")
+        }
+        if searchable.contains("detect") || searchable.contains("inspect")
+            || searchable.contains("scan") || searchable.contains("check")
+            || searchable.contains("检测") || searchable.contains("检查")
+            || searchable.contains("扫描") || searchable.contains("识别") {
+            return ("viewfinder", "检测中")
+        }
+        if searchable.contains("filament") || searchable.contains("extrusion")
+            || searchable.contains("purge") || searchable.contains("ams")
+            || searchable.contains("进料") || searchable.contains("退料")
+            || searchable.contains("换料") || searchable.contains("耗材") {
+            return ("arrow.triangle.2.circlepath", "耗材处理中")
+        }
+        if searchable.contains("moving") || searchable.contains("homing")
+            || searchable.contains("移至") || searchable.contains("归位") {
+            return ("arrow.up.and.down.and.arrow.left.and.right", "移动中")
+        }
+        if searchable.contains("cool") || searchable.contains("冷却") {
+            return ("snowflake", "冷却中")
+        }
+        if searchable.contains("heat") || searchable.contains("temperature")
+            || searchable.contains("thermal") || searchable.contains("温度")
+            || searchable.contains("加热") || searchable.contains("预热") {
+            return ("thermometer.medium", "温控中")
+        }
+        if searchable.contains("printing") || searchable.contains("running")
+            || searchable.contains("打印中") {
+            return ("printer.fill", "打印中")
+        }
+        if searchable.contains("prepar") || searchable.contains("init")
+            || searchable.contains("准备") || searchable.contains("初始化") {
+            return ("gearshape.2.fill", "准备中")
+        }
+        if searchable.contains("idle") || searchable.contains("standby")
+            || searchable.contains("空闲") || searchable.contains("待机") {
+            return ("moon.zzz.fill", "待机")
+        }
+        return ("gearshape.fill", "处理中")
+    }
+
+    /// 在逻辑坐标中绘制紧凑状态胶囊。调用方传入未翻转的 bounds，由此处统一转换，
+    /// 防止状态辅助函数再次出现双重坐标转换。
+    private static func drawBambuCompactStatus(_ ctx: CGContext,
+                                                rawState: String,
+                                                isError: Bool,
+                                                color: CGColor,
+                                                background: CGColor,
+                                                border: CGColor,
+                                                in bounds: CGRect) {
+        let presentation = bambuCompactStatusPresentation(rawState: rawState,
+                                                           isError: isError)
+        let converted = rect(bounds)
+        fillRound(ctx, converted, radius: min(bounds.height / 2, 10), color: background)
+        strokeRound(ctx, converted, radius: min(bounds.height / 2, 10), color: border, width: 1)
+
+        let labelSize = min(max(bounds.height * 0.56, 10), 14)
+        let iconSide = min(max(bounds.height - 8, 12), 15)
+        let labelWidth = measureTextWidth(presentation.label, size: labelSize, bold: true)
+        let groupWidth = iconSide + 4 + labelWidth
+        let groupX = bounds.midX - groupWidth / 2
+        drawEntityIcon(ctx, symbol: presentation.symbol,
+                       in: rect(groupX, bounds.midY - iconSide / 2, iconSide, iconSide),
+                       color: color)
+        drawText(ctx, presentation.label, size: labelSize, bold: true, color: color,
+                 in: rect(groupX + iconSide + 4, bounds.minY,
+                          min(labelWidth + 2, bounds.maxX - groupX - iconSide - 4), bounds.height),
+                 align: .left)
+    }
+
+    private static func drawBambuStatusText(_ ctx: CGContext, _ text: String,
+                                             maxSize: CGFloat, minSize: CGFloat,
+                                             color: CGColor, in bounds: CGRect,
+                                             align: NSTextAlignment) {
+        let layout = bambuStatusTextLayout(text,
+                                           maxWidth: bounds.width,
+                                           maxHeight: bounds.height,
+                                           preferredSize: maxSize,
+                                           minSize: minSize)
+        guard !layout.lines.isEmpty else { return }
+        let lineH = min(layout.size * 1.09,
+                        bounds.height / CGFloat(layout.lines.count))
+        let blockH = lineH * CGFloat(layout.lines.count)
+        let startY = bounds.midY - blockH / 2
+        for (index, line) in layout.lines.enumerated() {
+            drawText(ctx, line, size: layout.size, bold: true, color: color,
+                     in: rect(bounds.minX, startY + CGFloat(index) * lineH,
+                              bounds.width, lineH), align: align)
+        }
+    }
+
     /// 绘制最多两行、字号自适应的打印任务名。
     private static func drawBambuCanvasTask(_ ctx: CGContext, _ text: String,
                                             in row: CGRect, preferredSize: CGFloat,
@@ -3346,13 +3925,56 @@ public enum ScreenRenderer {
 
     /// Bambu Lab 品牌绿（卡片主题色选项「Bambu Lab 强调色」使用；用户指定的品牌色 #629E4E）
     public static let bambuLabAccentColor = CGColor(red: 98.0 / 255.0, green: 158.0 / 255.0, blue: 78.0 / 255.0, alpha: 1)
+    /// Formlabs Dashboard 品牌蓝。用户可按设备切换为全局主题强调色。
+    public static let formlabsAccentColor = CGColor(red: 0.16, green: 0.52, blue: 0.88, alpha: 1)
     /// 大字布局的进度数字保持原来的 34pt；百分号缩小为数字的一半，降低视觉抢占。
     public static let bambuLargeProgressNumberSize: CGFloat = 34
     public static let bambuLargeProgressPercentSize: CGFloat = bambuLargeProgressNumberSize / 2
     /// 大字布局中状态作为进度数字背后的超大辅助信息，按宽度自适应缩小。
     public static let bambuLargeStatusBackdropSize: CGFloat = 35
+    /// 标准状态文字以及没有进度数值时的大字卡片状态统一使用 20pt。
+    /// Formlabs 独立卡片复用该值，确保两类打印机状态的视觉权重一致。
+    public static let bambuRegularStatusSize: CGFloat = 20
     /// 数据更新时间需要在实体屏幕上保持可读，不能沿用普通辅助文字的 7.5pt。
     public static let bambuDataFooterSize: CGFloat = 9.5
+
+    /// Bambu 图片区域的目标尺寸：摄像头固定为正方形；任务封面保持 16:9。
+    /// 空间不足时两个方向等比缩小，避免把画面拉伸或把正方形压扁。
+    public static func bambuPictureSize(source: BambuImageSource,
+                                        maxWidth: CGFloat,
+                                        maxHeight: CGFloat) -> CGSize {
+        let availableWidth = max(maxWidth, 0)
+        let availableHeight = max(maxHeight, 0)
+        guard availableWidth > 0, availableHeight > 0 else { return .zero }
+        switch source {
+        case .camera:
+            let side = min(availableWidth, availableHeight)
+            return CGSize(width: side, height: side)
+        case .taskCover:
+            let targetRatio: CGFloat = 16 / 9
+            let width = min(availableWidth, availableHeight * targetRatio)
+            return CGSize(width: width, height: width / targetRatio)
+        }
+    }
+
+    /// 灵犀画板多打印机摘要里的紧凑时间：与百分比共享进度行，因此去掉冗长单位；
+    /// 结束时间只保留时分，避免日期再次占用一整行。
+    public static func bambuCompactCanvasTimeText(_ entity: HAEntity,
+                                                   mode: BambuTimeDisplayMode) -> String {
+        switch mode {
+        case .remaining:
+            return entity.remainingDisplayText
+                .replacingOccurrences(of: "小时", with: "时")
+                .replacingOccurrences(of: "分钟", with: "分")
+                .replacingOccurrences(of: " ", with: "")
+        case .endTime:
+            let display = entity.displayState
+            if let last = display.split(separator: " ").last, last.contains(":") {
+                return String(last)
+            }
+            return display
+        }
+    }
 
     /// Bambu Lab 打印机状态卡：聚合显示工作状态/进度/任务名/喷嘴与热床温度/剩余时间；
     /// 字段由实体映射配置（未映射字段自动隐藏）；状态=error 或错误码实体非空时显示错误警示
@@ -3393,6 +4015,7 @@ public enum ScreenRenderer {
             } ?? false)
         let warn = CGColor(red: 1, green: 0.85, blue: 0.55, alpha: 1)
         // 状态大字（空闲/打印中/报错…，中文汉化），错误时用警示色。
+        let rawStatus = status?.state ?? ""
         let statusText = status.map { BambuStatusText.map($0.state) } ?? "未配置"
         _ = entities
         let statusColor = isError ? warn : (statusText == "打印中" ? accent : colors.primaryTextCG)
@@ -3405,16 +4028,16 @@ public enum ScreenRenderer {
         case .compact:
             statusSize = 16; topOffset = 44
             progressStep = 12; taskStep = 16; tempStep = 14; remainStep = 14
-            infoSize = 8; progressH = 6; taskBaseSize = 9
+            infoSize = 8; progressH = 4; taskBaseSize = 9
         case .large:
             // 大字布局只突出打印百分比；工作状态与标准布局保持同字号、横向排布。
-            statusSize = 20; topOffset = 43
+            statusSize = Self.bambuRegularStatusSize; topOffset = 43
             progressStep = 19; taskStep = 24; tempStep = 21; remainStep = 21
-            infoSize = 10; progressH = 9; taskBaseSize = 13
+            infoSize = 10; progressH = 6; taskBaseSize = 13
         case .standard:
-            statusSize = 20; topOffset = 49
+            statusSize = Self.bambuRegularStatusSize; topOffset = 49
             progressStep = 16; taskStep = 20; tempStep = 18; remainStep = 18
-            infoSize = 9; progressH = 7; taskBaseSize = 11
+            infoSize = 9; progressH = 4.5; taskBaseSize = 11
         }
         let top = c.minY + topOffset
         // 任务文件名行：单行放得下就一行；放不下折成两行（按 _ . - / 等分隔符断行），
@@ -3434,6 +4057,27 @@ public enum ScreenRenderer {
         let progressValue = progressEntity.flatMap { Double($0.state) }
         let prominentProgress = bambu.layout == .large && bambu.showProgress && progressValue != nil
         let contentBottom = c.maxY - (settings.nowPlayingFooterVisible ? 36 : 8)
+        let nozzle = entity(bambu.nozzleTempEntityID)
+        let bed = entity(bambu.bedTempEntityID)
+        let temperatureText = "喷嘴 \(nozzle?.displayValue ?? "—")   热床 \(bed?.displayValue ?? "—")"
+        let hasTemperature = bambu.showTemperature && (nozzle != nil || bed != nil)
+        let temperatureBlockH: CGFloat = hasTemperature
+            ? (measureTextWidth(temperatureText, size: infoSize, bold: false) > taskMaxW
+                ? tempStep * 1.5 : tempStep)
+            : 0
+        let timeEntity = entity(bambu.selectedTimeEntityID)
+        let hasTimeInfo = bambu.showRemaining
+            && !(timeEntity?.state.isEmpty ?? true)
+            && timeEntity?.state.lowercased() != "unknown"
+        let errorText = error?.state ?? status?.state ?? "未知错误"
+        let errorReason = BambuHMSCode.reason(for: errorText)
+            ?? "未知错误码，详见 Bambu Lab HMS 文档"
+        let errorLines = isError && bambu.showError
+            ? splitLines(errorReason, size: 11, bold: true, maxW: taskMaxW, maxLines: 3)
+            : []
+        let errorBlockH: CGFloat = isError && bambu.showError
+            ? 22 + CGFloat(errorLines.count) * 15 : 0
+        let configurationHintH: CGFloat = status == nil && bambu.statusEntityID.isEmpty ? 16 : 0
 
         // 正文严格限制在页脚上方。极端的双行任务名 + 温度 + 错误说明场景即使空间不足，
         // 也只会在正文边界内截断，不会覆盖“数据更新”页脚。
@@ -3453,10 +4097,25 @@ public enum ScreenRenderer {
             let innerW = c.maxX - c.minX - 20
             if bambu.showStatus && hasStatusBinding {
                 let backdropColor = colors.secondaryTextCG.copy(alpha: 0.38) ?? colors.tertiaryTextCG
-                drawAdaptiveText(ctx, statusText,
-                                 maxSize: Self.bambuLargeStatusBackdropSize,
-                                 minSize: 23, bold: true, color: backdropColor,
-                                 in: rect(innerX, top - 5, innerW, 48), align: .center)
+                // 大字字号本身会让三四个字的常用状态暂时超宽，不能因此误判为详细阶段。
+                // 以常规 20pt 可读字号和文本长度判断，确保“打印中/已暂停”等继续用大字。
+                let longStatus = statusText.count > 5
+                    || measureTextWidth(statusText, size: 20, bold: true) > innerW
+                if longStatus {
+                    let badgeWidth = min(innerW, 96)
+                    drawBambuCompactStatus(ctx, rawState: rawStatus, isError: isError,
+                                           color: statusColor,
+                                           background: colors.insetCG,
+                                           border: colors.borderCG,
+                                           in: CGRect(x: c.midX - badgeWidth / 2, y: top - 5,
+                                                      width: badgeWidth, height: 23))
+                } else {
+                    drawBambuStatusText(ctx, statusText,
+                                        maxSize: Self.bambuLargeStatusBackdropSize,
+                                        minSize: 14, color: backdropColor,
+                                        in: CGRect(x: innerX, y: top - 5,
+                                                   width: innerW, height: 48), align: .center)
+                }
             }
             drawBambuProgressLabel(ctx, number: numberText,
                                    numberSize: numberSize, percentSize: percentSize,
@@ -3465,37 +4124,41 @@ public enum ScreenRenderer {
                                    in: rect(innerX, top + 16, innerW, 46))
             // 给数字字形下沿留出明确呼吸空间，避免与轨道粘在一起。
             let barY = top + 72
-            let barBounds = rect(innerX, barY, innerW, 12)
+            let barBounds = rect(innerX, barY, innerW, 8)
             drawProgress(ctx, barBounds, progress: clampedPercent / 100,
                          accent: accent, background: colors.borderCG)
-            strokeRound(ctx, barBounds, radius: 6, color: colors.secondaryTextCG, width: 1)
+            strokeRound(ctx, barBounds, radius: 4, color: colors.secondaryTextCG, width: 1)
             y = barY + 20
         }
 
         // 标准/紧凑布局中的状态仍是独立横排；大字布局已将它叠入进度信息区。
         if bambu.showStatus, hasStatusBinding, !prominentProgress {
-            drawText(ctx, statusText, size: statusSize, bold: true, color: statusColor,
-                     in: rect(c.minX + 8, y, c.maxX - c.minX - 16, statusSize + 6), align: .center)
-            y += statusSize + 12
-        }
-        // 画面区块（状态下方）：image.* 实体画面（摄像头快照 / 模型封面）
-        // 先给后续文字行留出空间，再按 16:9 铺一张圆角图；空间不足 34pt 时整块跳过
-        if bambu.showImage, let picture = image {
-            let textReserve: CGFloat = (bambu.showProgress && !prominentProgress ? progressStep : 0)
-                + taskBlockH
-                + (bambu.showTemperature ? tempStep : 0)
-                + (bambu.showRemaining ? remainStep : 0)
-                + (isError && bambu.showError ? 46 : 0) + 10
-            let pictureW = c.maxX - c.minX - 20
-            let available = contentBottom - y - textReserve
-            let pictureH = min(pictureW * 9 / 16, available, 120)
-            if pictureH >= 34 {
-                let box = CGRect(x: c.minX + 10, y: y, width: pictureW, height: pictureH)
-                if drawImageData(ctx, data: picture, into: box, cover: true, radius: 6) {
-                    strokeRound(ctx, rect(box), radius: 6, color: colors.borderCG, width: 1)
-                    y += pictureH + 6
-                }
+            let statusWidth = c.maxX - c.minX - 16
+            let singleLineFits = measureTextWidth(statusText, size: statusSize, bold: true)
+                <= statusWidth
+            let statusBlockH: CGFloat
+            if singleLineFits {
+                statusBlockH = statusSize + 6
+                drawBambuStatusText(ctx, statusText,
+                                    maxSize: statusSize,
+                                    minSize: 10,
+                                    color: statusColor,
+                                    in: CGRect(x: c.minX + 8, y: y,
+                                               width: statusWidth, height: statusBlockH),
+                                    align: .center)
+            } else {
+                // 详细阶段常有 8～12 个字。独立卡片还要容纳画面、任务、温度和时间，
+                // 因此改用语义图标与短标签，不再让状态独占两行并推挤下面的详情。
+                statusBlockH = 24
+                let badgeWidth = min(statusWidth, 96)
+                drawBambuCompactStatus(ctx, rawState: rawStatus, isError: isError,
+                                       color: statusColor,
+                                       background: colors.insetCG,
+                                       border: colors.borderCG,
+                                       in: CGRect(x: c.midX - badgeWidth / 2, y: y,
+                                                  width: badgeWidth, height: statusBlockH))
             }
+            y += statusBlockH + 6
         }
         // 进度条（左）+ 百分比（右）：同一行两端排布，不与状态文本重叠
         if bambu.showProgress, !prominentProgress,
@@ -3507,6 +4170,72 @@ public enum ScreenRenderer {
             drawText(ctx, pctText, size: infoSize + 1, bold: true, color: colors.primaryTextCG,
                      in: rect(c.maxX - 44, y - 7, 36, 14), align: .right)
             y += progressStep
+        }
+
+        // 图片和其余设备信息作为一个底部信息组：顶部进度区与底部监控区之间
+        // 保留留白和分隔线，避免摄像头画面与进度条在视觉上粘连。
+        // 摄像头固定为正方形；任务封面保留 16:9。空间不足时仍保持各自比例缩小。
+        let textReserve = taskBlockH + temperatureBlockH
+            + (hasTimeInfo ? remainStep : 0) + errorBlockH + configurationHintH
+        let visibleDetailCount = (taskLines.isEmpty ? 0 : 1)
+            + (hasTemperature ? 1 : 0)
+            + (hasTimeInfo ? 1 : 0)
+            + (isError && bambu.showError ? 1 : 0)
+        let groupGap: CGFloat = visibleDetailCount >= 3 ? 12 : 18
+        let hasUpperSummary = (bambu.showStatus && hasStatusBinding)
+            || (bambu.showProgress && progressValue != nil)
+        var didDrawPicture = false
+        if bambu.showImage, let picture = image {
+            let pictureMaxW = c.maxX - c.minX - 20
+            let pictureMaxH = max(contentBottom - y - groupGap - textReserve - 6, 0)
+            let pictureSize = bambuPictureSize(source: bambu.imageSource,
+                                                maxWidth: pictureMaxW,
+                                                maxHeight: pictureMaxH)
+            if pictureSize.width >= 34, pictureSize.height >= 34 {
+                let groupHeight = pictureSize.height + 6 + textReserve
+                let earliestTop = y + groupGap
+                let latestTop = max(contentBottom - groupHeight, earliestTop)
+                // 过去始终取 latestTop，详情越多时上下区域反而越像被割裂。
+                // 把多余空间均分到上下两侧，使下半信息组视觉居中但仍保持整体关系。
+                let groupTop = earliestTop + (latestTop - earliestTop) * 0.5
+                let box = CGRect(x: c.midX - pictureSize.width / 2, y: groupTop,
+                                 width: pictureSize.width, height: pictureSize.height)
+                // 实况画面使用更收敛的圆角矩形光晕；浅色主题下对采样色主动压暗并
+                // 减小模糊半径，避免过去的大圆形柔光在白底上几乎看不出来。
+                if bambu.imageSource == .camera,
+                   let cameraFrame = decodeArtwork(picture) {
+                    let backgroundLuminance = 0.299 * colors.background.0
+                        + 0.587 * colors.background.1 + 0.114 * colors.background.2
+                    let lightBackground = backgroundLuminance >= 0.55
+                    drawCoverGlow(ctx,
+                                  color: cameraGlowColor(dominantColor(of: cameraFrame),
+                                                         lightBackground: lightBackground),
+                                  coverSkia: box,
+                                  extent: lightBackground ? 28 : 34,
+                                  blurSigma: lightBackground ? 10 : 14,
+                                  innerInset: -2,
+                                  cornerRadius: 9,
+                                  opacity: lightBackground ? 1 : 0.92)
+                }
+                if drawImageData(ctx, data: picture, into: box, cover: true, radius: 6) {
+                    drawLine(ctx, x1: c.minX + 18, y1: groupTop - 9,
+                             x2: c.maxX - 18, y2: groupTop - 9, color: colors.borderCG)
+                    strokeRound(ctx, rect(box), radius: 6, color: colors.borderCG, width: 1)
+                    y = groupTop + pictureSize.height + 6
+                    didDrawPicture = true
+                }
+            }
+        }
+        if !didDrawPicture, textReserve > 0 {
+            // 没有画面或画面尚未拉到时，详情文字也在下半区均衡排布；否则它们会全挤在
+            // 进度条下面、底部留下大面积空白。仍画分隔线，明确上下两类信息。
+            let earliestTop = y + groupGap
+            let latestTop = max(contentBottom - textReserve, earliestTop)
+            y = earliestTop + (latestTop - earliestTop) * 0.5
+            if hasUpperSummary {
+                drawLine(ctx, x1: c.minX + 18, y1: y - 9,
+                         x2: c.maxX - 18, y2: y - 9, color: colors.borderCG)
+            }
         }
         // 任务名（文件名）：单行或按分隔符折成的两行
         for line in taskLines {
@@ -3520,9 +4249,7 @@ public enum ScreenRenderer {
             y += taskLineH
         }
         // 温度行：喷嘴 / 热床（大字模式单行放不下时拆成两行，避免「热床」被截断）
-        let nozzle = entity(bambu.nozzleTempEntityID)
-        let bed = entity(bambu.bedTempEntityID)
-        if bambu.showTemperature, nozzle != nil || bed != nil {
+        if hasTemperature {
             let nozzleText = "喷嘴 \(nozzle?.displayValue ?? "—")"
             let bedText = "热床 \(bed?.displayValue ?? "—")"
             let combined = "\(nozzleText)   \(bedText)"
@@ -3540,27 +4267,23 @@ public enum ScreenRenderer {
                 y += tempStep
             }
         }
-        // 剩余时间（remaining_time 常为小时小数，转为可读的「X 小时 Y 分钟 / X 分钟」）
-        if bambu.showRemaining,
-           let remain = entity(bambu.remainingEntityID), !remain.state.isEmpty,
-           remain.state.lowercased() != "unknown" {
-            drawText(ctx, "剩余 \(remain.remainingDisplayText)", size: infoSize, bold: false, color: colors.secondaryTextCG,
+        // 时间信息：默认显示可读的剩余时长，也可读取结束时间实体并显示本地短时间。
+        if hasTimeInfo, let value = timeEntity {
+            let timeText = bambu.timeDisplayMode == .endTime
+                ? "预计结束 \(value.displayState)"
+                : "剩余 \(value.remainingDisplayText)"
+            drawText(ctx, timeText, size: infoSize, bold: false, color: colors.secondaryTextCG,
                      in: rect(c.minX + 10, y, c.maxX - c.minX - 20, 16), align: .center)
             y += remainStep
         }
         // 错误警示：错误码 + HMS 故障原因（内置映射，未收录显示通用提示）
         if isError, bambu.showError {
-            let errorText = error?.state ?? status?.state ?? "未知错误"
             drawText(ctx, "⚠ \(errorText)", size: 13, bold: true, color: warn,
                      in: rect(c.minX + 10, y, c.maxX - c.minX - 20, 22), align: .center)
             y += 22
-            let reason = BambuHMSCode.reason(for: errorText)
-                ?? "未知错误码，详见 Bambu Lab HMS 文档"
-            let maxW = c.maxX - c.minX - 20
-            let lines = splitLines(reason, size: 11, bold: true, maxW: maxW, maxLines: 3)
-            for line in lines {
+            for line in errorLines {
                 drawText(ctx, line, size: 11, bold: true, color: warn,
-                         in: rect(c.minX + 10, y, maxW, 15), align: .center)
+                         in: rect(c.minX + 10, y, taskMaxW, 15), align: .center)
                 y += 15
             }
         } else if status == nil && bambu.statusEntityID.isEmpty {
@@ -3573,6 +4296,243 @@ public enum ScreenRenderer {
                                 updatedAt: dataUpdatedAt ?? now)
         }
         return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    /// Formlabs Dashboard API 云端卡片：设备状态、任务、进度、层数、材料与缩略图。
+    public static func renderFormlabs(deviceName: String,
+                                      connection: FormlabsConnectionSettings,
+                                      snapshot: FormlabsSnapshot,
+                                      settings: AppSettings,
+                                      now: Date = Date()) throws -> RenderResult {
+        let colors = settings.resolvedPalette
+        let ctx = createContext()
+        let safe = clampSafeArea(settings.safeAreaHeight)
+        let c = drawCanvas(ctx, safeArea: safe, colors: colors)
+        let accent = connection.useBrandAccent ? Self.formlabsAccentColor : colors.accentCG
+        // 与 Bambu Lab 独立卡片共用「左侧色点 + 设备名/产品名双行标头」的设计语言。
+        // Dashboard 单独使用强调色，关闭品牌色后会同步跟随全局主题。
+        let trimmedDeviceName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        drawFormlabsHeader(ctx, card: c,
+                           deviceName: trimmedDeviceName.isEmpty ? "Formlabs 打印机" : trimmedDeviceName,
+                           accent: accent, colors: colors)
+        drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
+                 color: colors.borderCG)
+
+        guard snapshot.hasData else {
+            drawText(ctx, "等待连接", size: 22, bold: true, color: colors.primaryTextCG,
+                     in: rect(c.minX + 8, c.minY + 138, c.width - 16, 34), align: .center)
+            drawText(ctx, "请先填写 Dashboard API 凭证\n并选择云端打印机",
+                     size: 8, bold: false, color: colors.secondaryTextCG,
+                     in: rect(c.minX + 10, c.minY + 178, c.width - 20, 46), align: .center)
+            return try encode(ctx, quality: settings.jpegQuality)
+        }
+
+        let rawStatus = snapshot.print?.status.isEmpty == false
+            ? snapshot.print!.status : (snapshot.device?.status ?? "unknown")
+        let footerTop = c.maxY - 34
+        // 正文与 Bambu 独立卡片一样拥有明确的页脚安全区。安全区设到最大值、
+        // 同时显示缩略图和全部详情时，也不能让最后一项压到数据更新时间上。
+        ctx.saveGState()
+        ctx.clip(to: rect(c.minX, c.minY + 39,
+                          c.width, max(footerTop - c.minY - 39, 0)))
+        let status = formlabsStatusText(rawStatus)
+        let isError = rawStatus.lowercased().contains("error") || rawStatus.lowercased().contains("fail")
+        let statusColor = isError ? CGColor(red: 0.95, green: 0.35, blue: 0.25, alpha: 1) : accent
+
+        let taskName = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let taskSize: CGFloat = 13
+        let taskLines = taskName.isEmpty
+            ? [] : fileNameLines(taskName, size: taskSize, maxW: c.width - 20, maxLines: 2)
+        let infoRowCount = (connection.showLayers
+                            && snapshot.print?.currentLayer != nil
+                            && (snapshot.print?.layerCount ?? 0) > 0 ? 1 : 0)
+            + (connection.showMaterial
+               && !(snapshot.print?.materialName ?? "").isEmpty ? 1 : 0)
+            + ((snapshot.print?.estimatedTimeRemainingMS
+                ?? snapshot.device?.estimatedPrintTimeRemainingMS ?? 0) > 0 ? 1 : 0)
+        let reservedTailHeight = (taskLines.isEmpty ? 0 : CGFloat(taskLines.count) * 18 + 5)
+            + CGFloat(infoRowCount) * 16
+
+        // 截图同款大字进度区：状态作为浅色背景，百分比数字置于前景，百分号
+        // 使用数字一半字号；进度条独占下一行并铺满正文宽度。
+        let heroTop = c.minY + 43
+        var y: CGFloat
+        if let progress = snapshot.print?.progress {
+            let clamped = min(max(progress, 0), 1)
+            let number = String(format: "%.0f", clamped * 100)
+            let backdrop = colors.secondaryTextCG.copy(alpha: 0.34) ?? colors.tertiaryTextCG
+            drawBambuStatusText(ctx, status,
+                                maxSize: Self.bambuLargeStatusBackdropSize,
+                                minSize: 14, color: backdrop,
+                                in: CGRect(x: c.minX + 10, y: heroTop - 5,
+                                           width: c.width - 20, height: 48),
+                                align: .center)
+            drawBambuProgressLabel(ctx, number: number,
+                                   numberSize: Self.bambuLargeProgressNumberSize,
+                                   percentSize: Self.bambuLargeProgressPercentSize,
+                                   numberColor: colors.primaryTextCG,
+                                   percentColor: colors.secondaryTextCG,
+                                   in: rect(c.minX + 10, heroTop + 16, c.width - 20, 46))
+            let barY = heroTop + 72
+            let progressBounds = rect(c.minX + 10, barY, c.width - 20, 8)
+            drawProgress(ctx, progressBounds, progress: clamped,
+                         accent: isError ? statusColor : accent,
+                         background: colors.borderCG)
+            strokeRound(ctx, progressBounds, radius: 4,
+                        color: colors.secondaryTextCG, width: 1)
+            y = barY + 20
+        } else {
+            drawBambuStatusText(ctx, status,
+                                maxSize: Self.bambuRegularStatusSize,
+                                minSize: 10, color: statusColor,
+                                in: CGRect(x: c.minX + 10, y: heroTop + 3,
+                                           width: c.width - 20, height: 48),
+                                align: .center)
+            y = heroTop + 67
+        }
+
+        if connection.showThumbnail, let thumbnail = snapshot.thumbnail {
+            let groupTop = y + 15
+            // 缩略图优先保持大图；详情较多或顶部安全区较高时仅收紧图片高度，
+            // 不压缩任务名和层数/材料/剩余时间的可读字号。
+            let availableThumbnailHeight = footerTop - groupTop - 8 - reservedTailHeight
+            let thumbnailHeight = min(max(availableThumbnailHeight, 44), 100)
+            let box = CGRect(x: c.minX + 10, y: groupTop,
+                             width: c.width - 20, height: thumbnailHeight)
+            if let image = decodeArtwork(thumbnail) {
+                let sourceRatio = CGFloat(image.width) / max(CGFloat(image.height), 1)
+                let boxRatio = box.width / max(box.height, 1)
+                let visibleBox: CGRect
+                if sourceRatio > boxRatio {
+                    let fittedHeight = box.width / sourceRatio
+                    visibleBox = CGRect(x: box.minX,
+                                        y: box.midY - fittedHeight / 2,
+                                        width: box.width, height: fittedHeight)
+                } else {
+                    let fittedWidth = box.height * sourceRatio
+                    visibleBox = CGRect(x: box.midX - fittedWidth / 2,
+                                        y: box.minY,
+                                        width: fittedWidth, height: box.height)
+                }
+                let backgroundLuminance = 0.299 * colors.background.0
+                    + 0.587 * colors.background.1 + 0.114 * colors.background.2
+                let lightBackground = backgroundLuminance >= 0.55
+                let sampledGlow = cameraGlowColor(dominantColor(of: image),
+                                                   lightBackground: lightBackground)
+                // Formlabs 的任务封面只需要一层淡淡的环境色：先向白色混合成
+                // 低饱和柔光，再降低整体透明度，避免深色主色形成第二层外框。
+                let whiteMix: CGFloat = lightBackground ? 0.30 : 0.42
+                let softGlow = (sampledGlow.0 * (1 - whiteMix) + whiteMix,
+                                sampledGlow.1 * (1 - whiteMix) + whiteMix,
+                                sampledGlow.2 * (1 - whiteMix) + whiteMix)
+                drawCoverGlow(ctx,
+                              color: softGlow,
+                              coverSkia: visibleBox,
+                              extent: lightBackground ? 18 : 22,
+                              blurSigma: lightBackground ? 9 : 11,
+                              innerInset: -1,
+                              cornerRadius: 10,
+                              opacity: lightBackground ? 0.20 : 0.24)
+                if drawImageData(ctx, data: thumbnail, into: box, cover: false, radius: 8) {
+                    // contain 模式下边框跟随真实图片边界，避免宽容器形成一圈
+                    // 容易被误认为“深色光晕”的空心圆角框。
+                    strokeRound(ctx, rect(visibleBox), radius: 8,
+                                color: colors.borderCG, width: 1)
+                    y = groupTop + thumbnailHeight + 8
+                }
+            }
+        }
+
+        if !taskName.isEmpty {
+            for line in taskLines {
+                var size = taskSize
+                let measured = measureTextWidth(line, size: size, bold: true)
+                if measured > c.width - 20 { size = max(size * (c.width - 20) / measured, 9.5) }
+                drawText(ctx, line, size: size, bold: true, color: colors.primaryTextCG,
+                         in: rect(c.minX + 10, y, c.width - 20, 18), align: .center)
+                y += 18
+            }
+            y += 5
+        }
+
+        if connection.showLayers, let current = snapshot.print?.currentLayer,
+           let total = snapshot.print?.layerCount, total > 0 {
+            drawText(ctx, "层数  \(current) / \(total)", size: 9.5, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(c.minX + 10, y, c.width - 20, 15), align: .center)
+            y += 16
+        }
+        if connection.showMaterial, let material = snapshot.print?.materialName,
+           !material.isEmpty {
+            drawText(ctx, "耗材  \(material)", size: 9.5, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(c.minX + 10, y, c.width - 20, 15), align: .center)
+            y += 16
+        }
+        let remaining = snapshot.print?.estimatedTimeRemainingMS
+            ?? snapshot.device?.estimatedPrintTimeRemainingMS
+        if let remaining, remaining > 0 {
+            drawText(ctx, "剩余  \(formlabsDuration(remaining))", size: 9.5, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(c.minX + 10, y, c.width - 20, 15), align: .center)
+            y += 16
+        }
+        if let message = snapshot.print?.message, !message.isEmpty, y < c.maxY - 55 {
+            drawText(ctx, message, size: 8, bold: false, color: colors.secondaryTextCG,
+                     in: rect(c.minX + 10, y, c.width - 20, 28), align: .center)
+        }
+
+        ctx.restoreGState()
+
+        drawLine(ctx, x1: c.minX + 18, y1: c.maxY - 29,
+                 x2: c.maxX - 18, y2: c.maxY - 29, color: colors.borderCG)
+        let footer = snapshot.cloudError == nil
+            ? "数据更新  \(formatDate(snapshot.sampledAt ?? now, "HH:mm:ss"))"
+            : "缓存数据  \(formatDate(snapshot.sampledAt ?? now, "HH:mm:ss"))"
+        drawText(ctx, footer, size: 8.5, bold: true, color: colors.secondaryTextCG,
+                 in: rect(c.minX + 8, c.maxY - 25, c.width - 16, 17), align: .center)
+        return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    public static func formlabsStatusText(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: "-", with: "_")
+        let values: [String: String] = [
+            "idle": "空闲", "ready": "就绪", "printing": "打印中",
+            "paused": "已暂停", "finished": "已完成", "completed": "已完成",
+            "preparing": "准备中", "finishing": "收尾中", "warming": "预热中",
+            "error": "发生错误", "failed": "打印失败", "offline": "离线",
+            "cancelled": "已取消", "canceled": "已取消", "aborted": "已取消",
+            "disconnected": "未连接", "unknown": "状态未知"
+        ]
+        return values[normalized] ?? (raw.isEmpty ? "状态未知" : raw)
+    }
+
+    private static func formlabsDuration(_ milliseconds: Double) -> String {
+        let minutes = max(Int(milliseconds / 60_000), 0)
+        let hours = minutes / 60
+        let rest = minutes % 60
+        if hours > 0 { return rest > 0 ? "\(hours)小时\(rest)分" : "\(hours)小时" }
+        return "\(rest)分钟"
+    }
+
+    private static func drawFormlabsInfoRow(_ ctx: CGContext, title: String, value: String,
+                                             y: CGFloat, card: CGRect, colors: ScreenPalette) {
+        let box = CGRect(x: card.minX + 10, y: y, width: card.width - 20, height: 22)
+        drawBox(ctx, rect(box), colors: colors)
+        // 使用实际字形边界（而非字体 ascent/descent）对齐胶囊框中心；中文标签与数字/英文
+        // 的上下留白不同，固定偏移无法让两边同时居中。
+        drawGlyphCenteredText(ctx, title, size: 10, bold: true,
+                              color: colors.secondaryTextCG,
+                              in: rect(box.minX + 7, box.minY, 30, box.height), align: .left)
+        let valueWidth = box.width - 42
+        var valueSize: CGFloat = 11
+        let measured = measureTextWidth(value, size: valueSize, bold: true)
+        if measured > valueWidth { valueSize = max(valueSize * valueWidth / measured, 8) }
+        drawGlyphCenteredText(ctx, value, size: valueSize, bold: true,
+                              color: colors.primaryTextCG,
+                              in: rect(box.minX + 35, box.minY, valueWidth, box.height),
+                              align: .right)
     }
 
     public static func renderNowPlaying(_ info: NowPlayingInfo, settings: AppSettings,
@@ -3702,6 +4662,24 @@ public enum ScreenRenderer {
         return (min(rgb.0 * factor, 1), min(rgb.1 * factor, 1), min(rgb.2 * factor, 1))
     }
 
+    /// 摄像头光晕需要同时适配深浅底色：深色底沿用提亮策略；浅色底把过亮采样色
+    /// 压到中等亮度，暗色则略微抬起，既保留原画面色相又与白色卡片拉开反差。
+    private static func cameraGlowColor(_ rgb: (CGFloat, CGFloat, CGFloat),
+                                        lightBackground: Bool)
+        -> (CGFloat, CGFloat, CGFloat) {
+        guard lightBackground else { return boostedGlowColor(rgb) }
+        let luminance = 0.299 * rgb.0 + 0.587 * rgb.1 + 0.114 * rgb.2
+        if luminance > 0.50 {
+            let factor = 0.50 / max(luminance, 0.01)
+            return (rgb.0 * factor, rgb.1 * factor, rgb.2 * factor)
+        }
+        if luminance < 0.20, luminance > 0.01 {
+            let factor = min(0.26 / luminance, 3)
+            return (min(rgb.0 * factor, 1), min(rgb.1 * factor, 1), min(rgb.2 * factor, 1))
+        }
+        return rgb
+    }
+
     /// 从封面主色生成进度条强调色：深色封面提亮、浅色封面加深，
     /// 保证在封面底（=主色）上有足够对比；不跟随全局强调色。
     /// 对比度增强：深色提亮到更高亮度、浅色加深到更低亮度，进度条更清晰可见
@@ -3722,29 +4700,38 @@ public enum ScreenRenderer {
     /// 复用的 Core Image 上下文（创建开销大，进程内共享）
     private static let glowCIContext = CIContext(options: [.workingColorSpace: NSNull()])
 
-    /// 封面光晕：单次高斯模糊生成平滑径向光晕（无分层色带，JPEG 压缩后依然干净）。
-    /// 在离屏小画布画实心圆角矩形（略小于封面、全不透明），模糊后以封面为中心画回主画布。
+    /// 封面/实况光晕：在与内容宽高比一致的离屏画布绘制圆角矩形后做单次高斯模糊。
+    /// 参数默认值保留专辑封面风格；摄像头可使用更小的扩散与模糊来强化矩形轮廓。
     private static func drawCoverGlow(_ ctx: CGContext, color: (CGFloat, CGFloat, CGFloat),
-                                      coverSkia: CGRect) {
-        let extent: CGFloat = 70
-        let size = Int(coverSkia.width + extent * 2)
-        guard size > 0,
-              let glowSrc = CGContext(data: nil, width: size, height: size,
+                                      coverSkia: CGRect,
+                                      extent: CGFloat = 70,
+                                      blurSigma: CGFloat = 24,
+                                      innerInset: CGFloat = 5,
+                                      cornerRadius: CGFloat = 16,
+                                      opacity: CGFloat = 1) {
+        let pixelWidth = Int(ceil(coverSkia.width + extent * 2))
+        let pixelHeight = Int(ceil(coverSkia.height + extent * 2))
+        guard pixelWidth > 0, pixelHeight > 0,
+              let glowSrc = CGContext(data: nil, width: pixelWidth, height: pixelHeight,
                                       bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-        let inner = CGRect(x: extent + 5, y: extent + 5,
-                           width: coverSkia.width - 10, height: coverSkia.height - 10)
+        let inner = CGRect(x: extent + innerInset, y: extent + innerInset,
+                           width: max(coverSkia.width - innerInset * 2, 1),
+                           height: max(coverSkia.height - innerInset * 2, 1))
         glowSrc.setFillColor(CGColor(red: color.0, green: color.1, blue: color.2, alpha: 1))
-        glowSrc.addPath(CGPath(roundedRect: inner, cornerWidth: 16, cornerHeight: 16, transform: nil))
+        glowSrc.addPath(CGPath(roundedRect: inner,
+                               cornerWidth: cornerRadius, cornerHeight: cornerRadius,
+                               transform: nil))
         glowSrc.fillPath()
         guard let srcImage = glowSrc.makeImage() else { return }
-        // 高斯模糊：σ=24，覆盖 extent 范围外仍有柔和衰减
-        let blurred = CIImage(cgImage: srcImage).applyingGaussianBlur(sigma: 24)
-        let crop = CGRect(x: 0, y: 0, width: CGFloat(size), height: CGFloat(size))
+        let blurred = CIImage(cgImage: srcImage).applyingGaussianBlur(sigma: blurSigma)
+        let crop = CGRect(x: 0, y: 0,
+                          width: CGFloat(pixelWidth), height: CGFloat(pixelHeight))
         guard let outImage = glowCIContext.createCGImage(blurred, from: crop) else { return }
         let dest = rect(coverSkia.insetBy(dx: -extent, dy: -extent))
         ctx.saveGState()
+        ctx.setAlpha(opacity)
         ctx.interpolationQuality = .high
         ctx.draw(outImage, in: dest)
         ctx.restoreGState()
@@ -4832,6 +5819,27 @@ public enum ScreenRenderer {
                  in: rect(textX, card.minY + 22, textW, 10), align: .left)
     }
 
+    /// Formlabs 独立卡片标头：与 Bambu 使用相同几何，设备名与
+    /// Dashboard 拆成两行，第二行放大并单独着强调色。
+    private static func drawFormlabsHeader(_ ctx: CGContext, card: CGRect, deviceName: String,
+                                           accent: CGColor, colors: ScreenPalette) {
+        let center = CGPoint(x: card.minX + 13.5,
+                             y: CGFloat(height) - (card.minY + 18.5))
+        ctx.setFillColor(accent)
+        ctx.fillEllipse(in: CGRect(x: center.x - 3.5, y: center.y - 3.5,
+                                   width: 7, height: 7))
+        let textX = card.minX + 22
+        let textW = card.maxX - textX - 9
+        var nameSize: CGFloat = 11
+        while nameSize > 7 && measureTextWidth(deviceName, size: nameSize, bold: true) > textW {
+            nameSize -= 0.5
+        }
+        drawText(ctx, deviceName, size: nameSize, bold: true, color: colors.primaryTextCG,
+                 in: rect(textX, card.minY + 4, textW, 20), align: .left)
+        drawText(ctx, "Dashboard", size: 8, bold: true, color: accent,
+                 in: rect(textX, card.minY + 21, textW, 12), align: .left)
+    }
+
     /// 负载状态指示灯颜色：低负载绿 / 适中黄 / 高负载红（以 CPU 使用率为依据）
     private static func loadIndicatorColor(percent: Double) -> CGColor {
         if percent < 40 {
@@ -4878,6 +5886,44 @@ public enum ScreenRenderer {
         case .right: x = bounds.maxX - lineWidth
         default: x = bounds.midX - lineWidth / 2
         }
+        ctx.textPosition = CGPoint(x: x, y: baselineY)
+        CTLineDraw(line, ctx)
+    }
+
+    /// 按文字实际可见字形边界垂直居中。用于高度固定的胶囊/标签框；普通文本仍使用
+    /// drawText 的字体度量居中，以保持已有页面的整体基线节奏。
+    private static func drawGlyphCenteredText(_ ctx: CGContext, _ text: String,
+                                              size: CGFloat, bold: Bool,
+                                              color: CGColor, in bounds: CGRect,
+                                              align: NSTextAlignment) {
+        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
+        let font = CTFontCreateWithName(fontName as CFString, size, nil)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font, .foregroundColor: color
+        ]
+        var content = text
+        while content.count > 1,
+              measureTextWidth(content, size: size, bold: bold) > bounds.width {
+            content.removeLast()
+        }
+        if content != text {
+            while content.count > 1,
+                  measureTextWidth(content + "…", size: size, bold: bold) > bounds.width {
+                content.removeLast()
+            }
+            content += "…"
+        }
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: content, attributes: attributes))
+        let glyphBounds = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        let visibleWidth = max(glyphBounds.width, 0)
+        let x: CGFloat
+        switch align {
+        case .left: x = bounds.minX - glyphBounds.minX
+        case .right: x = bounds.maxX - visibleWidth - glyphBounds.minX
+        default: x = bounds.midX - visibleWidth / 2 - glyphBounds.minX
+        }
+        let baselineY = bounds.midY - glyphBounds.midY
         ctx.textPosition = CGPoint(x: x, y: baselineY)
         CTLineDraw(line, ctx)
     }

@@ -536,6 +536,193 @@ func exportPreviews(to directory: String) throws {
     _ = CGImageDestinationFinalize(bambuDest)
     print("已导出 \(bambuURL.path)")
 
+    let bambuLightSettings = AppSettings()
+    bambuLightSettings.cardTheme = .minimalLight
+    bambuLightSettings.backgroundTone = .light
+    bambuLightSettings.softwareIsDark = false
+    let bambuLightPreview = try ScreenRenderer.renderBambuLab(
+        bambuPreviewConfig, entities: bambuPreviewEntities, image: artData as Data,
+        settings: bambuLightSettings, dataUpdatedAt: Date())
+    let bambuLightCtx = CGContext(data: nil, width: Int(142 * scale), height: Int(428 * scale),
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    bambuLightCtx.interpolationQuality = .none
+    bambuLightCtx.draw(bambuLightPreview.image,
+                       in: CGRect(x: 0, y: 0, width: 142 * scale, height: 428 * scale))
+    let bambuLightURL = outURL.appendingPathComponent("Bambu-浅色实况光晕.png")
+    let bambuLightDest = CGImageDestinationCreateWithURL(
+        bambuLightURL as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(bambuLightDest, bambuLightCtx.makeImage()!, nil)
+    _ = CGImageDestinationFinalize(bambuLightDest)
+    print("已导出 \(bambuLightURL.path)")
+
+    // 独立打印机标准布局：开启画面、任务、温度、时间等完整详情，并给出超长阶段。
+    // 用于验证长状态会收成图标胶囊，下面的详情仍保持稳定间距。
+    var bambuDetailedConfig = bambuPreviewConfig
+    bambuDetailedConfig.layout = .standard
+    var bambuDetailedEntities = bambuPreviewEntities
+    bambuDetailedEntities[0].state = "moving_toolhead_to_center_of_heatbed"
+    let bambuDetailedPreview = try ScreenRenderer.renderBambuLab(
+        bambuDetailedConfig, entities: bambuDetailedEntities, image: artData as Data,
+        settings: bambuPreviewSettings, dataUpdatedAt: Date())
+    let bambuDetailedCtx = CGContext(data: nil, width: Int(142 * scale), height: Int(428 * scale),
+                                     bitsPerComponent: 8, bytesPerRow: 0,
+                                     space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    bambuDetailedCtx.interpolationQuality = .none
+    bambuDetailedCtx.draw(bambuDetailedPreview.image,
+                          in: CGRect(x: 0, y: 0, width: 142 * scale, height: 428 * scale))
+    let bambuDetailedURL = outURL.appendingPathComponent("Bambu-标准全详情长状态.png")
+    let bambuDetailedDest = CGImageDestinationCreateWithURL(
+        bambuDetailedURL as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(bambuDetailedDest, bambuDetailedCtx.makeImage()!, nil)
+    _ = CGImageDestinationFinalize(bambuDetailedDest)
+    print("已导出 \(bambuDetailedURL.path)")
+
+    // 灵犀画板三台打印机：验证真实 142×428 画面下的大字号摘要与长状态换行。
+    let multiSettings = AppSettings()
+    let multiConfigs = [
+        BambuLabCardSettings(name: "工作室 X2D", statusEntityID: "sensor.p1_status",
+                             progressEntityID: "sensor.p1_progress", taskEntityID: "sensor.p1_task",
+                             nozzleTempEntityID: "sensor.p1_nozzle", bedTempEntityID: "sensor.p1_bed",
+                             remainingEntityID: "sensor.p1_remaining"),
+        BambuLabCardSettings(name: "客厅 P1S", statusEntityID: "sensor.p2_status",
+                             progressEntityID: "sensor.p2_progress", taskEntityID: "sensor.p2_task",
+                             nozzleTempEntityID: "sensor.p2_nozzle", bedTempEntityID: "sensor.p2_bed",
+                             remainingEntityID: "sensor.p2_remaining"),
+        BambuLabCardSettings(name: "书房 A1", statusEntityID: "sensor.p3_status",
+                             progressEntityID: "sensor.p3_progress", taskEntityID: "sensor.p3_task",
+                             nozzleTempEntityID: "sensor.p3_nozzle", bedTempEntityID: "sensor.p3_bed",
+                             remainingEntityID: "sensor.p3_remaining")
+    ]
+    multiSettings.devices = multiConfigs.map { config in
+        var fields = DeviceSettings()
+        config.apply(to: &fields)
+        return ManagedDevice(type: .bambuLab, name: config.name, settings: fields)
+    }
+    let multiModules: [CanvasModule] = [.bambuLab, .bambuLab2, .bambuLab3]
+    let richFields = CanvasPrinterFields(showStatus: true, showProgress: true, showTask: true,
+                                         showNozzleTemp: true, showBedTemp: true,
+                                         showRemaining: true, showError: true)
+    let multiPrinterFields = Dictionary(uniqueKeysWithValues: multiModules.map {
+        ($0.rawValue, richFields)
+    })
+    let multiEntities: [HAEntity] = [
+        HAEntity(entityId: "sensor.p1_status", friendlyName: "状态", state: "moving_toolhead_to_center_of_heatbed", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1_progress", friendlyName: "进度", state: "18", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.p1_task", friendlyName: "任务", state: "Luna_头饰.3mf", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1_nozzle", friendlyName: "喷嘴", state: "220", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p1_bed", friendlyName: "热床", state: "55", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p1_remaining", friendlyName: "剩余", state: "0", unitOfMeasurement: "min"),
+        HAEntity(entityId: "sensor.p2_status", friendlyName: "状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p2_progress", friendlyName: "进度", state: "52", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.p2_task", friendlyName: "任务", state: "多色支架", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p2_nozzle", friendlyName: "喷嘴", state: "218", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p2_bed", friendlyName: "热床", state: "50", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p2_remaining", friendlyName: "剩余", state: "42", unitOfMeasurement: "min"),
+        HAEntity(entityId: "sensor.p3_status", friendlyName: "状态", state: "paused_chamber_temperature_control_error", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p3_progress", friendlyName: "进度", state: "76", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.p3_task", friendlyName: "任务", state: "齿轮箱外壳", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p3_nozzle", friendlyName: "喷嘴", state: "210", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p3_bed", friendlyName: "热床", state: "60", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p3_remaining", friendlyName: "剩余", state: "17", unitOfMeasurement: "min")
+    ]
+    let multiSystem = SystemSnapshot(
+        cpuPercent: 0, memoryPercent: 0, usedMemoryBytes: 0, totalMemoryBytes: 1,
+        downloadBytesPerSecond: 0, uploadBytesPerSecond: 0,
+        uptime: 0, sampledAt: Date())
+    let multiPomodoro = PomodoroSnapshot(
+        phase: .idle, effectivePhase: .idle, taskName: "",
+        remaining: 0, duration: 0, completedFocusSessions: 0)
+    let multiPreview = try ScreenRenderer.renderCanvas(
+        modules: multiModules, system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        ha: HASnapshot(entities: multiEntities), printerFields: multiPrinterFields)
+    let multiCtx = CGContext(data: nil, width: Int(142 * scale), height: Int(428 * scale),
+                             bitsPerComponent: 8, bytesPerRow: 0,
+                             space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    multiCtx.interpolationQuality = .none
+    multiCtx.draw(multiPreview.image, in: CGRect(x: 0, y: 0, width: 142 * scale, height: 428 * scale))
+    let multiURL = outURL.appendingPathComponent("灵犀画板-三台打印机.png")
+    let multiDest = CGImageDestinationCreateWithURL(multiURL as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(multiDest, multiCtx.makeImage()!, nil)
+    _ = CGImageDestinationFinalize(multiDest)
+    print("已导出 \(multiURL.path)")
+
+    // Formlabs 在三种真实画板尺寸下的响应式布局预览。
+    let formConnection = FormlabsConnectionSettings(
+        printerSerial: "FORM-4-PREVIEW", clientID: "preview", clientSecret: "preview",
+        showThumbnail: true, showLayers: true, showMaterial: true)
+    let formPrint = FormlabsPrintInfo(
+        name: "Dental Model 前壳（轻量化）", status: "printing",
+        currentLayer: 275, layerCount: 1711,
+        estimatedTimeRemainingMS: 9_180_000,
+        materialName: "Grey V5")
+    let formSnapshot = FormlabsSnapshot(
+        device: FormlabsDeviceInfo(id: "FORM-4-PREVIEW", productName: "Form 4",
+                                   status: "printing", isConnected: true),
+        print: formPrint, thumbnail: artData as Data, sampledAt: Date(), cloudError: nil)
+    let formItem = FormlabsCanvasItem(deviceName: "Formlabs 1",
+                                      connection: formConnection, snapshot: formSnapshot)
+    let formKeyboard = try ScreenRenderer.renderCanvas(
+        modules: [.formlabs], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        formlabsItems: [formItem])
+    func saveCanvasPreview(_ image: CGImage, name: String, previewScale: CGFloat = 3) {
+        let previewWidth = Int(CGFloat(image.width) * previewScale)
+        let previewHeight = Int(CGFloat(image.height) * previewScale)
+        let previewContext = CGContext(data: nil, width: previewWidth, height: previewHeight,
+                                       bitsPerComponent: 8, bytesPerRow: 0,
+                                       space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        previewContext.interpolationQuality = .none
+        previewContext.draw(image, in: CGRect(x: 0, y: 0,
+                                              width: previewWidth, height: previewHeight))
+        let previewURL = outURL.appendingPathComponent("\(name).png")
+        let destination = CGImageDestinationCreateWithURL(
+            previewURL as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, previewContext.makeImage()!, nil)
+        _ = CGImageDestinationFinalize(destination)
+        print("已导出 \(previewURL.path)")
+    }
+    saveCanvasPreview(formKeyboard.image, name: "Formlabs-灵犀画板")
+    let formStandalone = try ScreenRenderer.renderFormlabs(
+        deviceName: "Formlabs 1", connection: formConnection,
+        snapshot: formSnapshot, settings: multiSettings)
+    saveCanvasPreview(formStandalone.image, name: "Formlabs-独立卡片")
+    let formOracle = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        formlabsItems: [formItem], width: 200, height: 200,
+        palette: multiSettings.resolvedPalette)
+    saveCanvasPreview(formOracle, name: "Formlabs-口袋先知")
+    let formExcerpt = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        formlabsItems: [formItem], width: 296, height: 152,
+        palette: multiSettings.resolvedPalette)
+    saveCanvasPreview(formExcerpt, name: "Formlabs-摘录")
+    let bambuOracle = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        ha: HASnapshot(entities: multiEntities), width: 200, height: 200,
+        palette: multiSettings.resolvedPalette,
+        printerFields: [CanvasModule.bambuLab.rawValue: richFields],
+        optimizeBambuForOracleEInk: true, bambuHeroLayout: true,
+        showBambuCamera: false)
+    saveCanvasPreview(bambuOracle, name: "Bambu-口袋先知")
+    let bambuExcerpt = ScreenRenderer.renderDeviceCanvas(
+        modules: [.bambuLab], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        ha: HASnapshot(entities: multiEntities), width: 296, height: 152,
+        palette: multiSettings.resolvedPalette,
+        printerFields: [CanvasModule.bambuLab.rawValue: richFields],
+        optimizeBambuForOracleEInk: true, bambuHeroLayout: true,
+        showBambuCamera: false)
+    saveCanvasPreview(bambuExcerpt, name: "Bambu-摘录")
+
     // 系统监控动态排版：仅 CPU
     let sysSettings = AppSettings()
     sysSettings.showCpu = true
@@ -2033,6 +2220,39 @@ func testCanvasCustomization() throws {
     },
           "HA 模块高度无硬性封顶，实体减少时始终释放空间")
 
+    // Bambu 模块也必须按实际显示项回收外层分带，不能只隐藏文字却留下空行。
+    let hiddenPrinterFields = CanvasPrinterFields(
+        showStatus: false, showProgress: false, showTask: false,
+        showNozzleTemp: false, showBedTemp: false, showRemaining: false,
+        showError: false, showImage: false)
+    let summaryPrinterFields = CanvasPrinterFields.default
+    var detailedPrinterFields = summaryPrinterFields
+    detailedPrinterFields.showTask = true
+    detailedPrinterFields.showNozzleTemp = true
+    detailedPrinterFields.showBedTemp = true
+    detailedPrinterFields.showRemaining = true
+    var picturedPrinterFields = detailedPrinterFields
+    picturedPrinterFields.showImage = true
+    let hiddenPrinterWeight = ScreenRenderer.bambuCanvasHeightMultiplier(
+        fields: hiddenPrinterFields, compactSummary: true)
+    let summaryPrinterWeight = ScreenRenderer.bambuCanvasHeightMultiplier(
+        fields: summaryPrinterFields, compactSummary: true)
+    let detailedPrinterWeight = ScreenRenderer.bambuCanvasHeightMultiplier(
+        fields: detailedPrinterFields, compactSummary: true)
+    let picturedPrinterWeight = ScreenRenderer.bambuCanvasHeightMultiplier(
+        fields: picturedPrinterFields, compactSummary: true)
+    check(hiddenPrinterWeight < summaryPrinterWeight,
+          "打印机隐藏全部详情后应释放外层模块空间")
+    check(summaryPrinterWeight < detailedPrinterWeight,
+          "打印机开启任务/温度/时间后应增加模块占比")
+    check(detailedPrinterWeight < picturedPrinterWeight,
+          "打印机开启画面后应获得更高模块区域")
+    check(ScreenRenderer.bambuCanvasHeightMultiplier(
+        fields: detailedPrinterFields, compactSummary: true)
+        < ScreenRenderer.bambuCanvasHeightMultiplier(
+            fields: detailedPrinterFields, compactSummary: false),
+          "多打印机摘要合并温度和时间后应进一步释放空间")
+
     // 与其他模块混排时，1 个与 5 个实体应产生不同的分带与渲染结果；多实体不再固定截断前三个。
     let dynamicEntities = (1...5).map {
         HAEntity(entityId: "sensor.dynamic_\($0)", friendlyName: "实体 \($0)",
@@ -2650,6 +2870,8 @@ func testCanvasOracleExcerpt() async throws {
     rt.oracleBoardRotationMinutes = 12
     rt.excerptAutoPushEnabled = true
     rt.excerptAutoPushMinutes = 90
+    rt.excerptBoardRotationEnabled = true
+    rt.excerptBoardRotationMinutes = 18
     rt.excerptImageRotate180 = true
     rt.excerptBackgroundMode = .light
     let data = try JSONEncoder().encode(rt)
@@ -2665,6 +2887,8 @@ func testCanvasOracleExcerpt() async throws {
     checkEqual(decoded.oracleBoardRotationMinutes, 12, "先知画板轮换间隔往返")
     checkEqual(decoded.excerptAutoPushEnabled, true, "摘录定时推送开关往返")
     checkEqual(decoded.excerptAutoPushMinutes, 90, "摘录定时推送间隔往返")
+    checkEqual(decoded.excerptBoardRotationEnabled, true, "摘录画板轮换开关往返")
+    checkEqual(decoded.excerptBoardRotationMinutes, 18, "摘录画板轮换间隔往返")
     checkEqual(decoded.excerptImageRotate180, true, "摘录旋转 180° 往返")
     checkEqual(decoded.excerptBackgroundMode, .light, "摘录底色模式往返")
 
@@ -2673,10 +2897,12 @@ func testCanvasOracleExcerpt() async throws {
     autoPushClamp.oracleAutoPushMinutes = 0
     autoPushClamp.oracleBoardRotationMinutes = 99999
     autoPushClamp.excerptAutoPushMinutes = 99999
+    autoPushClamp.excerptBoardRotationMinutes = 0
     autoPushClamp.clamped()
     checkEqual(autoPushClamp.oracleAutoPushMinutes, 1, "先知推送间隔下界钳制")
     checkEqual(autoPushClamp.oracleBoardRotationMinutes, 1440, "先知画板轮换间隔上界钳制")
     checkEqual(autoPushClamp.excerptAutoPushMinutes, 1440, "摘录推送间隔上界钳制")
+    checkEqual(autoPushClamp.excerptBoardRotationMinutes, 1, "摘录画板轮换间隔下界钳制")
 
     // 口袋先知画板：200×200 黑白模块组合渲染
     let settings = AppSettings()
@@ -3729,7 +3955,7 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 5, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 6, "设备类型数量")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
@@ -3785,6 +4011,21 @@ func testDeviceManagement() throws {
     let boardA = OracleCanvasBoard.capture(from: source)
     checkEqual(boardA.modules, [12, 2], "画板捕获-模块")
     checkEqual(boardA.name, "画板 1", "画板捕获-默认名")
+    let blankOracleBoard = OracleCanvasBoard.blank(from: source)
+    checkEqual(blankOracleBoard.name, "未命名", "先知新画板初始为未命名")
+    check(blankOracleBoard.modules.isEmpty, "先知新画板不继承当前功能模块")
+    checkEqual(CanvasBoardNamingPolicy.nameAfterAddingFirstModule(
+        currentName: blankOracleBoard.name,
+        currentModules: blankOracleBoard.modules,
+        moduleTitle: CanvasModule.clock.title), "时钟", "首个模块成为画板默认名称")
+    checkEqual(CanvasBoardNamingPolicy.nameAfterAddingFirstModule(
+        currentName: "用户命名",
+        currentModules: [],
+        moduleTitle: CanvasModule.clock.title), "用户命名", "首个模块不覆盖用户名称")
+    checkEqual(CanvasBoardNamingPolicy.nameAfterAddingFirstModule(
+        currentName: "未命名",
+        currentModules: [CanvasModule.date.rawValue],
+        moduleTitle: CanvasModule.clock.title), "未命名", "已有模块时不再次自动命名")
     var boardB = boardA
     boardB.name = "我的画板"
     boardB.modules = [10, 5]
@@ -3793,6 +4034,33 @@ func testDeviceManagement() throws {
     boardB.apply(to: applied)
     checkEqual(applied.oracleCanvasModules, [10, 5], "画板套用-模块")
     checkEqual(applied.oracleDisplayMode, .gray4, "画板套用-显示模式")
+    // 自动保存：更新配置但保留画板 ID/名称，并覆盖扩展字段（图片、HA 实体、打印机选项）。
+    let oracleAutoSettings = AppSettings()
+    oracleAutoSettings.oracleCanvasModules = [CanvasModule.clock.rawValue]
+    var oracleAutoBoard = OracleCanvasBoard.capture(from: oracleAutoSettings)
+    oracleAutoBoard.name = "常驻状态"
+    oracleAutoBoard.sidebarVisible = false
+    oracleAutoBoard.rotationEnabled = false
+    let oracleAutoID = oracleAutoBoard.id
+    oracleAutoSettings.oracleCanvasModules = [CanvasModule.homeAssistant.rawValue]
+    oracleAutoSettings.oracleCanvasHAEntityIDs = ["sensor.oracle"]
+    oracleAutoSettings.oracleCanvasImagePath = "/oracle-auto.png"
+    oracleAutoSettings.oracleCanvasPrinterFields = [
+        CanvasModule.bambuLab.rawValue: CanvasPrinterFields(showTask: true)
+    ]
+    oracleAutoBoard = oracleAutoBoard.updatingConfiguration(from: oracleAutoSettings)
+    checkEqual(oracleAutoBoard.id, oracleAutoID, "先知画板自动保存保留 ID")
+    checkEqual(oracleAutoBoard.name, "常驻状态", "先知画板自动保存保留名称")
+    checkEqual(oracleAutoBoard.isSidebarVisible, false, "先知画板自动保存保留侧栏隐藏状态")
+    checkEqual(oracleAutoBoard.participatesInRotation, false, "先知画板自动保存保留轮播关闭状态")
+    checkEqual(oracleAutoBoard.modules, [CanvasModule.homeAssistant.rawValue],
+               "先知画板自动保存更新模块")
+    checkEqual(oracleAutoBoard.haEntityIDs, ["sensor.oracle"], "先知画板自动保存 HA 实体")
+    checkEqual(oracleAutoBoard.imagePath, "/oracle-auto.png", "先知画板自动保存图片")
+    let oracleAutoApplied = AppSettings()
+    oracleAutoBoard.apply(to: oracleAutoApplied)
+    checkEqual(oracleAutoApplied.oracleCanvasHAEntityIDs, ["sensor.oracle"],
+               "先知画板扩展字段可恢复")
     // 设备快照捕获/套用包含画板列表与下标
     source.oracleCanvasBoards = [boardA, boardB]
     source.oracleCanvasBoardIndex = 1
@@ -3826,6 +4094,37 @@ func testDeviceManagement() throws {
     checkEqual(boardDecoded.oracleCanvasBoards.count, 1, "画板编码往返")
     checkEqual(boardDecoded.oracleCanvasBoards[0].name, "我的画板", "画板编码往返-名称")
     checkEqual(boardDecoded.oracleCanvasBoardIndex, 0, "画板下标往返")
+    var hiddenBoard = boardB
+    hiddenBoard.sidebarVisible = false
+    hiddenBoard.rotationEnabled = false
+    let hiddenDecoded = try JSONDecoder().decode(
+        OracleCanvasBoard.self, from: JSONEncoder().encode(hiddenBoard))
+    checkEqual(hiddenDecoded.isSidebarVisible, false, "画板侧栏隐藏状态编码往返")
+    checkEqual(hiddenDecoded.participatesInRotation, false, "画板轮播关闭状态编码往返")
+    // 旧版本画板不含两个管理字段时默认仍显示并参与轮播，升级后不会让已有画板消失。
+    var legacyBoardObject = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(boardB)) as! [String: Any]
+    legacyBoardObject.removeValue(forKey: "sidebarVisible")
+    legacyBoardObject.removeValue(forKey: "rotationEnabled")
+    let legacyBoardData = try JSONSerialization.data(withJSONObject: legacyBoardObject)
+    let legacyBoardDecoded = try JSONDecoder().decode(OracleCanvasBoard.self, from: legacyBoardData)
+    checkEqual(legacyBoardDecoded.isSidebarVisible, true, "旧画板默认显示在侧栏")
+    checkEqual(legacyBoardDecoded.participatesInRotation, true, "旧画板默认参与轮播")
+    let oracleProfileA = AppSettings()
+    oracleProfileA.oracleCanvasBoards = [boardA]
+    let oracleProfileB = AppSettings()
+    oracleProfileB.oracleCanvasBoards = [hiddenBoard]
+    let oracleDeviceA = DeviceSettings.capture(from: oracleProfileA, type: .oracle)
+    let oracleDeviceB = DeviceSettings.capture(from: oracleProfileB, type: .oracle)
+    let oracleSwitchMirror = AppSettings()
+    oracleDeviceA.apply(to: oracleSwitchMirror, type: .oracle)
+    checkEqual(oracleSwitchMirror.oracleCanvasBoards[0].isSidebarVisible, true,
+               "口袋先知 A 保留自己的侧栏画板")
+    oracleDeviceB.apply(to: oracleSwitchMirror, type: .oracle)
+    checkEqual(oracleSwitchMirror.oracleCanvasBoards[0].isSidebarVisible, false,
+               "切换口袋先知 B 后使用自己的隐藏设置，不串用 A")
+    checkEqual(oracleSwitchMirror.oracleCanvasBoards[0].participatesInRotation, false,
+               "口袋先知 B 的轮播选择独立")
     // 钳制：越界下标回退，无效模块被清理
     let clamp = AppSettings()
     clamp.oracleCanvasBoards = [boardA]
@@ -3866,6 +4165,163 @@ func testDeviceManagement() throws {
     exCap.apply(to: exTarget, type: .excerpt)
     checkEqual(exTarget.excerptCanvasModules, [13, 0], "摘录套用-模块")
     checkEqual(exTarget.excerptPushRawImage, true, "摘录套用-原始推送")
+
+    // 摘录多画板：完整配置捕获/套用、持久化与多设备隔离。
+    let excerptBoardSource = AppSettings()
+    excerptBoardSource.excerptCanvasModules = [CanvasModule.excerptText.rawValue,
+                                               CanvasModule.homeAssistant.rawValue]
+    excerptBoardSource.excerptBackgroundMode = .dark
+    excerptBoardSource.excerptImageRotate180 = true
+    excerptBoardSource.excerptLayoutColumns = 2
+    excerptBoardSource.excerptFullWidthModules = [CanvasModule.excerptText.rawValue]
+    excerptBoardSource.excerptPushRawImage = true
+    excerptBoardSource.excerptServerDitherType = .diffusion
+    excerptBoardSource.excerptServerDitherKernel = .atkinson
+    excerptBoardSource.excerptDisplayMode = .bw
+    excerptBoardSource.excerptSspaiCount = 6
+    excerptBoardSource.excerptSspaiRandom = true
+    excerptBoardSource.excerptNowPlayingHorizontal = true
+    excerptBoardSource.excerptCanvasHAEntityIDs = ["sensor.room_a"]
+    excerptBoardSource.excerptCanvasImagePath = "/excerpt-a.png"
+    excerptBoardSource.excerptCanvasImageName = "设备 A 图片"
+    excerptBoardSource.excerptQuoteCategories = [ExcerptQuoteCategory.famousSayings.rawValue]
+    excerptBoardSource.showExcerptSource = true
+    excerptBoardSource.excerptCanvasPrinterFields = [
+        CanvasModule.bambuLab.rawValue: CanvasPrinterFields(showTask: true, showImage: true)
+    ]
+    var excerptBoardA = ExcerptCanvasBoard.capture(from: excerptBoardSource)
+    excerptBoardA.name = "设备 A · 状态板"
+    let blankExcerptBoard = ExcerptCanvasBoard.blank(from: excerptBoardSource)
+    checkEqual(blankExcerptBoard.name, "未命名", "摘录新画板初始为未命名")
+    check(blankExcerptBoard.modules.isEmpty, "摘录新画板不继承当前功能模块")
+    check(blankExcerptBoard.fullWidthModules.isEmpty, "摘录空画板不保留已移除模块的跨列布局")
+    check(blankExcerptBoard.isSidebarVisible, "摘录新画板默认显示在侧边栏")
+    check(blankExcerptBoard.participatesInRotation, "摘录新画板默认参加自动轮播")
+    checkEqual(excerptBoardA.layoutColumns, 2, "摘录画板捕获布局")
+    checkEqual(excerptBoardA.haEntityIDs, ["sensor.room_a"], "摘录画板捕获 HA 实体")
+    checkEqual(excerptBoardA.imagePath, "/excerpt-a.png", "摘录画板捕获独立图片")
+    checkEqual(excerptBoardA.printerFields[CanvasModule.bambuLab.rawValue]?.showImage, true,
+               "摘录画板捕获打印机显示项")
+    let excerptBoardApplied = AppSettings()
+    excerptBoardA.apply(to: excerptBoardApplied)
+    checkEqual(excerptBoardApplied.excerptCanvasModules, excerptBoardA.modules, "摘录画板套用模块")
+    checkEqual(excerptBoardApplied.excerptLayoutColumns, 2, "摘录画板套用布局")
+    checkEqual(excerptBoardApplied.excerptCanvasHAEntityIDs, ["sensor.room_a"], "摘录画板套用 HA 实体")
+    checkEqual(excerptBoardApplied.excerptCanvasImageName, "设备 A 图片", "摘录画板套用图片名")
+    checkEqual(excerptBoardApplied.showExcerptSource, true, "摘录画板套用语录出处")
+    let excerptAutoID = excerptBoardA.id
+    excerptBoardSource.excerptCanvasModules = [CanvasModule.date.rawValue]
+    let excerptAutoBoard = excerptBoardA.updatingConfiguration(from: excerptBoardSource)
+    checkEqual(excerptAutoBoard.id, excerptAutoID, "摘录画板自动保存保留 ID")
+    checkEqual(excerptAutoBoard.name, "设备 A · 状态板", "摘录画板自动保存保留名称")
+    checkEqual(excerptAutoBoard.modules, [CanvasModule.date.rawValue], "摘录画板自动保存更新模块")
+    check(excerptAutoBoard.isSidebarVisible, "摘录画板自动保存保留侧栏显示状态")
+    check(excerptAutoBoard.participatesInRotation, "摘录画板自动保存保留轮播状态")
+    var hiddenExcerptBoard = excerptBoardA
+    hiddenExcerptBoard.sidebarVisible = false
+    hiddenExcerptBoard.rotationEnabled = false
+    let hiddenExcerptUpdate = hiddenExcerptBoard.updatingConfiguration(from: excerptBoardSource)
+    checkEqual(hiddenExcerptUpdate.isSidebarVisible, false, "摘录画板自动保存保留侧栏隐藏状态")
+    checkEqual(hiddenExcerptUpdate.participatesInRotation, false, "摘录画板自动保存保留轮播关闭状态")
+    var legacyExcerptBoard = excerptBoardA
+    legacyExcerptBoard.sidebarVisible = nil
+    legacyExcerptBoard.rotationEnabled = nil
+    check(legacyExcerptBoard.isSidebarVisible, "旧摘录画板默认显示在侧边栏")
+    check(legacyExcerptBoard.participatesInRotation, "旧摘录画板默认参加自动轮播")
+
+    var excerptBoardB = excerptBoardA
+    excerptBoardB.id = UUID()
+    excerptBoardB.name = "设备 B · 极简板"
+    excerptBoardB.modules = [CanvasModule.clock.rawValue]
+    excerptBoardB.haEntityIDs = ["sensor.room_b"]
+    excerptBoardB.imagePath = "/excerpt-b.png"
+    excerptBoardB.imageName = "设备 B 图片"
+    excerptBoardB.layoutColumns = 1
+    excerptBoardB.showQuoteSource = false
+
+    let excerptDeviceASettings = AppSettings()
+    excerptBoardA.apply(to: excerptDeviceASettings)
+    excerptDeviceASettings.excerptCanvasBoards = [excerptBoardA]
+    excerptDeviceASettings.excerptCanvasBoardIndex = 0
+    excerptDeviceASettings.excerptBoardRotationEnabled = true
+    excerptDeviceASettings.excerptBoardRotationMinutes = 11
+    let excerptDeviceBSettings = AppSettings()
+    excerptBoardB.apply(to: excerptDeviceBSettings)
+    excerptDeviceBSettings.excerptCanvasBoards = [excerptBoardB]
+    excerptDeviceBSettings.excerptCanvasBoardIndex = 0
+    let excerptAID = UUID()
+    let excerptBID = UUID()
+    var excerptDeviceA = ManagedDevice(type: .excerpt, name: "摘录 A",
+                                       settings: DeviceSettings.capture(from: excerptDeviceASettings,
+                                                                        type: .excerpt))
+    excerptDeviceA.id = excerptAID
+    var excerptDeviceB = ManagedDevice(type: .excerpt, name: "摘录 B",
+                                       settings: DeviceSettings.capture(from: excerptDeviceBSettings,
+                                                                        type: .excerpt))
+    excerptDeviceB.id = excerptBID
+    let excerptScoped = AppSettings()
+    excerptScoped.devices = [excerptDeviceA, excerptDeviceB]
+    excerptScoped.activeExcerptDeviceID = excerptAID
+    excerptDeviceA.settings.apply(to: excerptScoped, type: .excerpt)
+    excerptScoped.captureActiveDeviceSnapshots()
+    checkEqual(excerptScoped.excerptCanvasBoards.first?.name, "设备 A · 状态板",
+               "摘录设备 A 初始画板")
+    check(excerptScoped.switchActiveDevice(of: .excerpt, to: excerptBID) != nil,
+          "摘录多画板切换到设备 B")
+    checkEqual(excerptScoped.excerptCanvasBoards.first?.name, "设备 B · 极简板",
+               "设备 B 只加载自己的画板")
+    checkEqual(excerptScoped.excerptCanvasModules, [CanvasModule.clock.rawValue],
+               "设备 B 当前画布随快照恢复")
+    checkEqual(excerptScoped.excerptCanvasHAEntityIDs, ["sensor.room_b"],
+               "设备 B 画板实体不继承设备 A")
+    check(excerptScoped.switchActiveDevice(of: .excerpt, to: excerptAID) != nil,
+          "摘录多画板切回设备 A")
+    checkEqual(excerptScoped.excerptCanvasBoards.first?.name, "设备 A · 状态板",
+               "A→B→A 后设备 A 画板未串扰")
+    checkEqual(excerptScoped.excerptCanvasHAEntityIDs, ["sensor.room_a"],
+               "A→B→A 后 HA 实体未串扰")
+
+    let excerptRoundTrip = try JSONDecoder().decode(AppSettings.self,
+                                                     from: JSONEncoder().encode(excerptScoped))
+    checkEqual(excerptRoundTrip.devices.first { $0.id == excerptAID }?
+        .settings.excerptCanvasBoards?.first?.name, "设备 A · 状态板",
+               "摘录设备 A 画板持久化")
+    checkEqual(excerptRoundTrip.devices.first { $0.id == excerptAID }?
+        .settings.excerptBoardRotationEnabled, true, "摘录设备 A 轮播开关持久化")
+    checkEqual(excerptRoundTrip.devices.first { $0.id == excerptAID }?
+        .settings.excerptBoardRotationMinutes, 11, "摘录设备 A 轮播间隔持久化")
+    checkEqual(excerptRoundTrip.devices.first { $0.id == excerptBID }?
+        .settings.excerptCanvasBoards?.first?.name, "设备 B · 极简板",
+               "摘录设备 B 画板持久化")
+    let legacyExcerptSnapshot = DeviceSettings()
+    let legacyExcerptTarget = AppSettings()
+    legacyExcerptTarget.excerptCanvasBoards = [excerptBoardA]
+    legacyExcerptTarget.excerptCanvasBoardIndex = 9
+    legacyExcerptSnapshot.apply(to: legacyExcerptTarget, type: .excerpt)
+    check(legacyExcerptTarget.excerptCanvasBoards.isEmpty,
+          "旧摘录设备快照不会沿用上一台设备的画板")
+    checkEqual(legacyExcerptTarget.excerptCanvasBoardIndex, 0, "旧摘录设备画板下标归零")
+    checkEqual(legacyExcerptTarget.excerptBoardRotationEnabled, false,
+               "旧摘录设备快照默认关闭画板轮播")
+    checkEqual(legacyExcerptTarget.excerptBoardRotationMinutes, 5,
+               "旧摘录设备快照使用默认轮播间隔")
+    let excerptClamp = AppSettings()
+    var invalidExcerptBoard = excerptBoardA
+    invalidExcerptBoard.modules = [CanvasModule.clock.rawValue, 999]
+    invalidExcerptBoard.fullWidthModules = [CanvasModule.clock.rawValue, 999]
+    invalidExcerptBoard.layoutColumns = 8
+    invalidExcerptBoard.haEntityIDs = ["sensor.a", "", "sensor.a"]
+    invalidExcerptBoard.quoteCategories = [ExcerptQuoteCategory.famousSayings.rawValue, 999,
+                                            ExcerptQuoteCategory.famousSayings.rawValue]
+    excerptClamp.excerptCanvasBoards = [invalidExcerptBoard]
+    excerptClamp.excerptCanvasBoardIndex = 8
+    excerptClamp.clamped()
+    checkEqual(excerptClamp.excerptCanvasBoards[0].modules, [CanvasModule.clock.rawValue],
+               "摘录画板清理无效模块")
+    checkEqual(excerptClamp.excerptCanvasBoards[0].layoutColumns, 2, "摘录画板列数钳制")
+    checkEqual(excerptClamp.excerptCanvasBoards[0].haEntityIDs, ["sensor.a"],
+               "摘录画板 HA 实体去空去重")
+    checkEqual(excerptClamp.excerptCanvasBoardIndex, 0, "摘录画板下标钳制")
 
     // ManagedDevice 编码往返
     let device = ManagedDevice(type: .excerpt, name: "书房摘录",
@@ -3952,14 +4408,21 @@ func testDeviceManagement() throws {
     try FileManager.default.createDirectory(at: resetStore.historyDirectory, withIntermediateDirectories: true)
     try Data([1, 2, 3]).write(to: resetStore.historyDirectory.appendingPathComponent("hist.png"))
     try Data([4, 5]).write(to: resetStore.customImageURL)
+    resetStore.saveFormlabsTaskCache([
+        UUID(): FormlabsSnapshot(print: FormlabsPrintInfo(name: "发布前缓存清理测试"))
+    ])
     check(FileManager.default.fileExists(atPath: resetStore.settingsURL.path), "重置前设置文件存在")
     check(FileManager.default.fileExists(atPath: resetStore.customImageURL.path), "重置前自定义图片存在")
     check(FileManager.default.fileExists(atPath: resetStore.historyDirectory.path), "重置前图片缓存存在")
+    check(FileManager.default.fileExists(atPath: resetStore.formlabsTaskCacheURL.path),
+          "重置前 Formlabs 最近任务缓存存在")
     let resetTrash = resetBase.appendingPathComponent("trash")
     resetStore.resetAllData(trashRoot: resetTrash)
     check(!FileManager.default.fileExists(atPath: resetStore.settingsURL.path), "重置后设置文件已清除")
     check(!FileManager.default.fileExists(atPath: resetStore.customImageURL.path), "重置后自定义图片已清除")
     check(!FileManager.default.fileExists(atPath: resetStore.historyDirectory.path), "重置后图片缓存目录已清除")
+    check(!FileManager.default.fileExists(atPath: resetStore.formlabsTaskCacheURL.path),
+          "重置后 Formlabs 最近任务缓存已清除")
     let resetReloaded = resetStore.load()
     check(resetReloaded.devices.isEmpty, "重置后重新加载为全新默认（无设备）")
     check(resetReloaded.customImagePath == nil, "重置后自定义图片路径已清空")
@@ -4091,6 +4554,7 @@ Task {
         try testPomodoroCentering()
         try testGlobalShortcuts()
         try testHomeAssistant()
+        try testFormlabs()
         await testUsageDataAggregator()
         try testNowPlaying()
         await testNowPlayingLiveFetch()
@@ -4109,6 +4573,246 @@ Task {
         }
         exit(1)
     }
+}
+
+// MARK: - Formlabs 云端模式
+
+func testFormlabs() throws {
+    checkEqual(CanvasModule.formlabs.rawValue, 22, "Formlabs 画板第 1 槽枚举值稳定")
+    checkEqual(CanvasModule.formlabs2.rawValue, 23, "Formlabs 画板第 2 槽枚举值稳定")
+    checkEqual(CanvasModule.formlabs3.rawValue, 24, "Formlabs 画板第 3 槽枚举值稳定")
+    checkEqual(CanvasModule.formlabs4.rawValue, 25, "Formlabs 画板第 4 槽枚举值稳定")
+    checkEqual(CanvasModule.formlabs5.rawValue, 26, "Formlabs 画板第 5 槽枚举值稳定")
+    checkEqual(CanvasModule.formlabs.formlabsSlotIndex, 0, "Formlabs 画板第 1 槽映射")
+    checkEqual(CanvasModule.formlabs5.formlabsSlotIndex, 4, "Formlabs 画板第 5 槽映射")
+    check(CanvasModule.keyboardModules.contains(.formlabs), "灵犀画板包含 Formlabs 模块")
+    check(CanvasModule.oraclePanelModules.contains(.formlabs), "口袋先知画板包含 Formlabs 模块")
+    check(CanvasModule.excerptPanelModules.contains(.formlabs), "摘录画板包含 Formlabs 模块")
+
+    let byLayer = FormlabsPrintInfo(name: "Dental Model", status: "printing",
+                                    currentLayer: 25, layerCount: 100,
+                                    elapsedDurationMS: 90_000, estimatedDurationMS: 180_000,
+                                    estimatedTimeRemainingMS: 90_000,
+                                    materialName: "Grey V5", layerThicknessMM: 0.05)
+    checkEqual(byLayer.progress, 0.25, "Formlabs 进度优先按当前层/总层数计算")
+    let byTime = FormlabsPrintInfo(elapsedDurationMS: 120_000, estimatedDurationMS: 240_000)
+    checkEqual(byTime.progress, 0.5, "Formlabs 无层数时按时长回退计算")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "Grey V5", material: "material-id",
+        printSettingsName: "Grey V5 50 µm"), "Grey V5",
+        "Formlabs 优先显示打印任务提供的耗材名称")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "", material: "Clear V5", printSettingsName: "Clear 100 µm"),
+        "Clear 100 µm", "Formlabs 缺少材料名时优先显示人类可读的打印配置")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "unknown", material: nil, printSettingsName: "Tough 1500 100 µm"),
+        "Tough 1500 100 µm", "Formlabs 可从打印配置名回退识别耗材种类")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "未分配", material: "Grey V5", printSettingsName: "Grey V5 50 µm"),
+        "Grey V5 50 µm", "Formlabs 中文未分配占位值不应阻断打印配置回退")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "未分配", material: "RDGPCL06", printSettingsName: "Clear V5 50 µm"),
+        "Clear V5 50 µm", "Formlabs 打印配置名称应优先于内部材料代码")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "未分配", material: "RDGPCL06", printSettingsName: "Default",
+        printerMaterial: "TYPE_UNSPECIFIED"),
+        "RDGPCL06", "Formlabs 应跳过未指定的料盒类型并回退到稳定材料代码")
+    checkEqual(FormlabsPrintInfo.configuredMaterialName(
+        materialName: "UNASSIGNED", material: nil, printSettingsName: "Clear V5 100 µm",
+        printerMaterial: "未设置"),
+        "Clear V5 100 µm", "Formlabs 英文占位值应回退到打印配置材料")
+    checkEqual(ScreenRenderer.formlabsStatusText("printing"), "打印中", "Formlabs 状态汉化")
+    checkEqual(ScreenRenderer.formlabsStatusText("cancelled"), "已取消", "Formlabs 取消状态汉化")
+    checkEqual(ScreenRenderer.formlabsStatusText("custom_state"), "custom_state", "未知状态保留原文")
+
+    let retainedCompleted = FormlabsTaskCachePolicy.retainedPrint(previous: byLayer, latest: nil)
+    checkEqual(retainedCompleted?.name, "Dental Model", "Formlabs 空闲后保留最近任务名")
+    checkEqual(retainedCompleted?.status, "finished", "Formlabs 当前任务消失后固化为已完成")
+    checkEqual(retainedCompleted?.currentLayer, 100, "Formlabs 已完成缓存补齐最终层数")
+    checkEqual(retainedCompleted?.estimatedTimeRemainingMS, 0,
+               "Formlabs 已完成缓存清零剩余时间")
+    let nextTask = FormlabsPrintInfo(name: "Next Model", status: "printing",
+                                     currentLayer: 1, layerCount: 50)
+    checkEqual(FormlabsTaskCachePolicy.retainedPrint(previous: byLayer, latest: nextTask),
+               nextTask, "Formlabs 新任务出现时替换最近任务缓存")
+    var sameTaskMissingMaterial = byLayer
+    sameTaskMissingMaterial.currentLayer = 26
+    sameTaskMissingMaterial.materialName = ""
+    checkEqual(FormlabsTaskCachePolicy.retainedPrint(previous: byLayer,
+                                                     latest: sameTaskMissingMaterial)?.materialName,
+               "Grey V5", "Formlabs 同一任务短暂缺少耗材时保留最近有效材料")
+    var sameTaskPlaceholderMaterial = byLayer
+    sameTaskPlaceholderMaterial.currentLayer = 27
+    sameTaskPlaceholderMaterial.materialName = "未分配"
+    checkEqual(FormlabsTaskCachePolicy.retainedPrint(previous: byLayer,
+                                                     latest: sameTaskPlaceholderMaterial)?.materialName,
+               "Grey V5", "Formlabs 同一任务占位耗材不应覆盖有效缓存")
+    var signedA = byLayer
+    signedA.thumbnailURL = "https://cdn.example/model.png?signature=old"
+    var signedB = byLayer
+    signedB.thumbnailURL = "https://cdn.example/model.png?signature=new"
+    check(FormlabsTaskCachePolicy.isSameTask(signedA, signedB),
+          "Formlabs 缩略图签名变化不应误判为新任务")
+
+    let cacheBase = FileManager.default.temporaryDirectory
+        .appendingPathComponent("linx-formlabs-cache-test-\(UUID().uuidString)")
+    let cacheStore = SettingsStore(dataDirectory: cacheBase)
+    let cacheID = UUID()
+    let cachedSnapshot = FormlabsSnapshot(
+        device: FormlabsDeviceInfo(id: "CACHE-PRINTER"),
+        print: retainedCompleted, thumbnail: Data([1, 2, 3, 4]), sampledAt: Date(),
+        cloudError: "不应持久化")
+    cacheStore.saveFormlabsTaskCache([cacheID: cachedSnapshot])
+    let restoredCache = cacheStore.loadFormlabsTaskCache()[cacheID]
+    checkEqual(restoredCache?.print?.name, "Dental Model", "Formlabs 最近任务缓存可跨启动恢复")
+    checkEqual(restoredCache?.thumbnail, Data([1, 2, 3, 4]), "Formlabs 最近任务封面可跨启动恢复")
+    checkEqual(restoredCache?.cloudError, nil, "Formlabs 缓存不保留临时云端错误")
+
+    var deviceSettings = DeviceSettings()
+    deviceSettings.formlabsConnection = FormlabsConnectionSettings(
+        printerSerial: "SERIAL-TEST", clientID: "client", clientSecret: "secret",
+        showThumbnail: false, showLayers: true, showMaterial: false)
+    let roundTrip = try JSONDecoder().decode(DeviceSettings.self,
+                                              from: JSONEncoder().encode(deviceSettings))
+    checkEqual(roundTrip.formlabsConnection, deviceSettings.formlabsConnection,
+               "Formlabs 连接设置 Codable 往返")
+    let legacyConnection = try JSONDecoder().decode(
+        FormlabsConnectionSettings.self,
+        from: Data("{\"printerSerial\":\"LEGACY\",\"clientID\":\"id\",\"clientSecret\":\"secret\",\"showThumbnail\":true,\"showLayers\":true,\"showMaterial\":true}".utf8))
+    checkEqual(legacyConnection.useBrandAccent, true,
+               "Formlabs 旧配置缺少强调色开关时保留品牌蓝")
+
+    let orchestration = AppSettings()
+    for index in 0..<5 {
+        var snapshot = DeviceSettings()
+        snapshot.formlabsConnection = FormlabsConnectionSettings(printerSerial: "F\(index)")
+        orchestration.devices.append(ManagedDevice(type: .formlabs,
+                                                    name: "Formlabs \(index + 1)", settings: snapshot))
+    }
+    check(!orchestration.canAddDevice(of: .formlabs), "Formlabs 最多五台")
+    check(orchestration.deviceLimitNotice(for: .formlabs) != nil, "Formlabs 达到上限显示说明")
+    let keyboard = ManagedDevice(type: .keyboard, name: "Keyboard", settings: DeviceSettings())
+    orchestration.devices.append(keyboard)
+    let filtered = orchestration.keyboardCardPanelRawValues(
+        for: keyboard.id,
+        fallback: ["formlabs", "formlabs5", "bambuLab"])
+    check(filtered.contains("formlabs") && filtered.contains("formlabs5"),
+          "已存在 Formlabs 卡片位应保留")
+    check(!filtered.contains("bambuLab"), "没有 Bambu 设备时不显示其空卡片")
+
+    let snapshot = FormlabsSnapshot(
+        device: FormlabsDeviceInfo(id: "FORM-4-TEST", productName: "Form 4",
+                                   status: "printing", isConnected: true,
+                                   ipAddress: "192.0.2.10", estimatedPrintTimeRemainingMS: 90_000),
+        print: byLayer, sampledAt: Date(), cloudError: nil)
+    let rendered = try ScreenRenderer.renderFormlabs(
+        deviceName: "工作室 Form 4", connection: deviceSettings.formlabsConnection!,
+        snapshot: snapshot, settings: AppSettings())
+    checkEqual(rendered.image.width, ScreenRenderer.width, "Formlabs 卡片宽度")
+    checkEqual(rendered.image.height, ScreenRenderer.height, "Formlabs 卡片高度")
+    check(rendered.data.count > 1_000, "Formlabs 卡片 JPEG 有有效内容")
+    let renamedRendered = try ScreenRenderer.renderFormlabs(
+        deviceName: "另一台 Form 4", connection: deviceSettings.formlabsConnection!,
+        snapshot: snapshot, settings: AppSettings())
+    check(rendered.data != renamedRendered.data,
+          "Formlabs 独立卡片标头应显示用户设定的设备名称")
+    var themedConnection = deviceSettings.formlabsConnection!
+    themedConnection.useBrandAccent = false
+    let themedRendered = try ScreenRenderer.renderFormlabs(
+        deviceName: "工作室 Form 4", connection: themedConnection,
+        snapshot: snapshot, settings: AppSettings())
+    check(rendered.data != themedRendered.data,
+          "Formlabs 品牌强调色与跟随全局主题应渲染不同")
+
+    // 三种画板尺寸均可渲染 Formlabs；缩略图开关及设备槽位必须反映到最终画面。
+    let thumbnailContext = CGContext(data: nil, width: 48, height: 48,
+                                     bitsPerComponent: 8, bytesPerRow: 48 * 4,
+                                     space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    thumbnailContext.setFillColor(CGColor(red: 0.12, green: 0.55, blue: 0.88, alpha: 1))
+    thumbnailContext.fill(CGRect(x: 0, y: 0, width: 48, height: 48))
+    thumbnailContext.setFillColor(CGColor(red: 0.95, green: 0.95, blue: 0.98, alpha: 1))
+    thumbnailContext.fill(CGRect(x: 12, y: 8, width: 24, height: 32))
+    let thumbnailData = NSMutableData()
+    let thumbnailDestination = CGImageDestinationCreateWithData(
+        thumbnailData, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(thumbnailDestination, thumbnailContext.makeImage()!, nil)
+    check(CGImageDestinationFinalize(thumbnailDestination), "Formlabs 画板测试缩略图生成")
+
+    var imageConnection = deviceSettings.formlabsConnection!
+    imageConnection.showThumbnail = true
+    imageConnection.showLayers = true
+    imageConnection.showMaterial = true
+    let imageSnapshot = FormlabsSnapshot(device: snapshot.device, print: snapshot.print,
+                                          thumbnail: thumbnailData as Data,
+                                          sampledAt: snapshot.sampledAt, cloudError: nil)
+    let imageItem = FormlabsCanvasItem(deviceName: "工作室 Form 4",
+                                       connection: imageConnection, snapshot: imageSnapshot)
+    var plainConnection = imageConnection
+    plainConnection.showThumbnail = false
+    let plainItem = FormlabsCanvasItem(deviceName: "工作室 Form 4",
+                                       connection: plainConnection, snapshot: imageSnapshot)
+    let otherPrint = FormlabsPrintInfo(name: "Build Platform 2", status: "paused",
+                                       currentLayer: 8, layerCount: 80,
+                                       estimatedTimeRemainingMS: 300_000,
+                                       materialName: "Clear V5")
+    let otherItem = FormlabsCanvasItem(
+        deviceName: "Form 4B", connection: imageConnection,
+        snapshot: FormlabsSnapshot(device: snapshot.device, print: otherPrint,
+                                    thumbnail: thumbnailData as Data,
+                                    sampledAt: snapshot.sampledAt, cloudError: nil))
+    let canvasSettings = AppSettings()
+    let canvasSystem = SystemSnapshot(cpuPercent: 12, memoryPercent: 34,
+                                      usedMemoryBytes: 4_000_000_000,
+                                      totalMemoryBytes: 16_000_000_000,
+                                      downloadBytesPerSecond: 0,
+                                      uploadBytesPerSecond: 0,
+                                      uptime: 3_600, sampledAt: Date())
+    let canvasPomodoro = PomodoroSnapshot(phase: .idle, effectivePhase: .idle,
+                                          taskName: "", remaining: 0, duration: 1,
+                                          completedFocusSessions: 0)
+    let keyboardCanvas = try ScreenRenderer.renderCanvas(
+        modules: [.formlabs], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [imageItem])
+    checkEqual(keyboardCanvas.image.width, 142, "灵犀画板 Formlabs 宽度")
+    checkEqual(keyboardCanvas.image.height, 428, "灵犀画板 Formlabs 高度")
+    check(keyboardCanvas.data.count <= ScreenRenderer.maximumFileSize,
+          "灵犀画板 Formlabs 输出大小")
+    let keyboardWithoutThumbnail = try ScreenRenderer.renderCanvas(
+        modules: [.formlabs], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [plainItem])
+    check(keyboardCanvas.data != keyboardWithoutThumbnail.data,
+          "Formlabs 画板缩略图开关应改变渲染结果")
+
+    let oracleCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [imageItem], width: 200, height: 200,
+        palette: canvasSettings.resolvedPalette)
+    checkEqual(oracleCanvas.width, 200, "口袋先知画板 Formlabs 宽度")
+    checkEqual(oracleCanvas.height, 200, "口袋先知画板 Formlabs 高度")
+    let excerptCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [imageItem], width: 296, height: 152,
+        palette: canvasSettings.resolvedPalette)
+    checkEqual(excerptCanvas.width, 296, "摘录画板 Formlabs 宽度")
+    checkEqual(excerptCanvas.height, 152, "摘录画板 Formlabs 高度")
+    let slotOne = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [imageItem, otherItem], width: 200, height: 200,
+        palette: canvasSettings.resolvedPalette)
+    let slotTwo = ScreenRenderer.renderDeviceCanvas(
+        modules: [.formlabs2], system: canvasSystem, nowPlaying: .sample,
+        pomodoro: canvasPomodoro, customText: "", settings: canvasSettings,
+        formlabsItems: [imageItem, otherItem], width: 200, height: 200,
+        palette: canvasSettings.resolvedPalette)
+    check(slotOne.dataProvider?.data as Data? != slotTwo.dataProvider?.data as Data?,
+          "Formlabs 第 1/第 2 台设备画板应渲染不同内容")
+    print("  Formlabs 云端模式通过")
 }
 
 // MARK: - 全局快捷键
@@ -4255,6 +4959,27 @@ func testHomeAssistant() throws {
 
     // 运行时刷新策略：静态 HA/Bambu 画板不再每秒重绘；真正动态内容仍保持实时。
     let staticCanvas: [CanvasModule] = [.nowPlaying, .homeAssistant, .bambuLab]
+    checkEqual(PomodoroRefreshPolicy.defaultIntervalSeconds, 5, "键盘番茄钟默认 5 秒刷新")
+    checkEqual(PomodoroRefreshPolicy.alignedRemainingSeconds(
+        1500, duration: 1500, intervalSeconds: 5), 1500,
+               "番茄钟整刻保持不变")
+    checkEqual(PomodoroRefreshPolicy.alignedRemainingSeconds(
+        1499.2, duration: 1500, intervalSeconds: 5), 1500,
+               "番茄钟未跨过下一个 5 秒刻度时不提前刷新")
+    checkEqual(PomodoroRefreshPolicy.alignedRemainingSeconds(
+        1494.8, duration: 1500, intervalSeconds: 5), 1495,
+               "番茄钟跨过刻度后对齐到 24:55")
+    checkEqual(PomodoroRefreshPolicy.alignedRemainingSeconds(
+        0, duration: 1500, intervalSeconds: 5), 0,
+               "番茄钟结束刻度对齐到零")
+    checkEqual(PomodoroRefreshPolicy.alignedRemainingSeconds(
+        1492.8, duration: 1500, intervalSeconds: 7), 1493,
+               "非整除间隔也以番茄钟起点对齐")
+    checkEqual(RuntimePerformancePolicy.previewInterval(
+        mode: .pomodoro, canvasModules: [], timeFormat: "HH:mm",
+        nowPlaying: false, pomodoroRunning: true, dynamicUploadSeconds: 60,
+        pomodoroUploadSeconds: 7),
+        7, "键盘番茄钟预览与自定义推送间隔对齐，不受全局周期影响")
     checkEqual(RuntimePerformancePolicy.previewInterval(
         mode: .canvas, canvasModules: staticCanvas, timeFormat: "HH:mm",
         nowPlaying: false, pomodoroRunning: false, dynamicUploadSeconds: 5),
@@ -4275,14 +5000,37 @@ func testHomeAssistant() throws {
           "无系统指标模块时不采集系统状态")
     check(RuntimePerformancePolicy.needsSystemSample(modules: [.cpu, .homeAssistant]),
           "存在 CPU 模块时仍采集系统状态")
+    let inkFingerprintA = Data([1, 2, 3])
+    let inkFingerprintB = Data([1, 2, 4])
+    check(RuntimePerformancePolicy.shouldPushInkDisplay(
+        previousFingerprint: nil, currentFingerprint: inkFingerprintA),
+        "墨水屏没有成功推送基线时必须发送首帧")
+    check(!RuntimePerformancePolicy.shouldPushInkDisplay(
+        previousFingerprint: inkFingerprintA, currentFingerprint: inkFingerprintA),
+        "墨水屏最终内容无变化时跳过自动推送")
+    check(RuntimePerformancePolicy.shouldPushInkDisplay(
+        previousFingerprint: inkFingerprintA, currentFingerprint: inkFingerprintB),
+        "墨水屏最终内容变化后才执行自动推送")
+    check(!RuntimePerformancePolicy.shouldPushInkDisplay(
+        previousFingerprint: inkFingerprintA, currentFingerprint: nil),
+        "墨水屏渲染失败时不得发起空内容推送")
 
     // 设置往返（token 为敏感字段：仅验证值往返，不打印明文）
     let rt = AppSettings()
+    rt.pomodoroUploadSeconds = 7
     rt.haServerURL = "http://192.168.1.100:8123"
     rt.haToken = "secret-token-do-not-log"
     rt.haRefreshMinutes = 3
     rt.haEntityID = "sensor.living_temp"
     let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(rt))
+    checkEqual(decoded.pomodoroUploadSeconds, 7, "番茄钟推送间隔往返")
+    let pomodoroKeyboardSnapshot = DeviceSettings.capture(from: rt, type: .keyboard)
+    checkEqual(pomodoroKeyboardSnapshot.pomodoroUploadSeconds, 7,
+               "番茄钟推送间隔随键盘设置快照保存")
+    let restoredPomodoroKeyboard = AppSettings()
+    pomodoroKeyboardSnapshot.apply(to: restoredPomodoroKeyboard, type: .keyboard)
+    checkEqual(restoredPomodoroKeyboard.pomodoroUploadSeconds, 7,
+               "切换键盘时恢复各自的番茄钟推送间隔")
     checkEqual(decoded.haServerURL, "http://192.168.1.100:8123", "HA 服务器地址往返")
     checkEqual(decoded.haToken, "secret-token-do-not-log", "HA 令牌往返")
     checkEqual(decoded.haRefreshMinutes, 3, "HA 刷新间隔往返")
@@ -4488,8 +5236,61 @@ func testHomeAssistant() throws {
     checkEqual(ScreenRenderer.bambuLargeProgressPercentSize,
                ScreenRenderer.bambuLargeProgressNumberSize / 2,
                "大字布局百分号字号应为数字的一半")
+    let cameraPictureSize = ScreenRenderer.bambuPictureSize(
+        source: .camera, maxWidth: 114, maxHeight: 160)
+    checkEqual(cameraPictureSize.width, 114, "Bambu 摄像头画面使用完整可用宽度")
+    checkEqual(cameraPictureSize.height, 114, "Bambu 摄像头画面固定为正方形")
+    let constrainedCameraSize = ScreenRenderer.bambuPictureSize(
+        source: .camera, maxWidth: 114, maxHeight: 72)
+    checkEqual(constrainedCameraSize.width, 72, "Bambu 摄像头空间不足时等比缩小宽度")
+    checkEqual(constrainedCameraSize.height, 72, "Bambu 摄像头空间不足时保持正方形")
+    let taskCoverSize = ScreenRenderer.bambuPictureSize(
+        source: .taskCover, maxWidth: 114, maxHeight: 160)
+    check(abs(taskCoverSize.width / taskCoverSize.height - 16.0 / 9.0) < 0.001,
+          "Bambu 任务封面继续保持 16:9")
+    let smallCenterObject = CGRect(x: 0.46, y: 0.44, width: 0.08, height: 0.11)
+    let earlyZoom = BambuCameraAutoZoom.plannedState(
+        candidate: smallCenterObject, confidence: 0.8, progress: 5,
+        previous: BambuCameraZoomState())
+    check(earlyZoom.crop.width <= 0.46, "激进自动聚焦在早期小模型时应达到约 2.5 倍放大")
+    check(abs(earlyZoom.crop.width - earlyZoom.crop.height) < 0.001,
+          "自动聚焦裁切区域必须保持正方形")
+    let laterZoom = BambuCameraAutoZoom.plannedState(
+        candidate: smallCenterObject, confidence: 0.8, progress: 80,
+        previous: earlyZoom)
+    check(laterZoom.crop.width > earlyZoom.crop.width,
+          "打印进度增加时自动聚焦必须主动扩大取景范围")
+    check(laterZoom.crop.width >= 0.80,
+          "打印进入后期时必须恢复足够宽的画面，避免大模型被裁掉")
+    let largerObject = CGRect(x: 0.30, y: 0.28, width: 0.42, height: 0.36)
+    let grownModelZoom = BambuCameraAutoZoom.plannedState(
+        candidate: largerObject, confidence: 0.85, progress: 82,
+        previous: laterZoom)
+    check(grownModelZoom.crop.width >= laterZoom.crop.width,
+          "识别到模型体积增大时取景范围不能反向缩小")
+    let firstMiss = BambuCameraAutoZoom.plannedState(
+        candidate: nil, confidence: 0, progress: 83, previous: grownModelZoom)
+    check(firstMiss.crop.width >= grownModelZoom.crop.width,
+          "单帧识别失败时先放宽取景而不是继续放大")
+    let secondMiss = BambuCameraAutoZoom.plannedState(
+        candidate: nil, confidence: 0, progress: 84, previous: firstMiss)
+    checkEqual(secondMiss.crop, CGRect(x: 0, y: 0, width: 1, height: 1),
+               "连续两帧识别失败时恢复完整画面")
+    let restartedZoom = BambuCameraAutoZoom.plannedState(
+        candidate: smallCenterObject, confidence: 0.8, progress: 3,
+        previous: laterZoom)
+    check(restartedZoom.crop.width < laterZoom.crop.width,
+          "新任务进度回退后应重置上一任务的取景范围")
+    let invalidZoomImage = Data([0x00, 0x01, 0x02])
+    let invalidZoomOutput = BambuCameraAutoZoom.process(
+        imageData: invalidZoomImage, progress: 20, previous: BambuCameraZoomState())
+    checkEqual(invalidZoomOutput.imageData, invalidZoomImage,
+               "自动聚焦无法解码时原样返回输入，不能阻断推送")
+    check(!invalidZoomOutput.usedZoom, "无效图片不得标记为已裁切")
     check(ScreenRenderer.bambuLargeStatusBackdropSize > ScreenRenderer.bambuLargeProgressNumberSize,
           "大字布局状态背景字应比进度数字更大")
+    checkEqual(ScreenRenderer.bambuRegularStatusSize, 20,
+               "Bambu 与 Formlabs 的常规打印状态字号统一")
     check(ScreenRenderer.bambuDataFooterSize >= 9,
           "Bambu 数据更新时间字号应在实体屏幕上清晰可读")
     // 主题色：Bambu Lab 强调色选项在 apply/from/Codable 往返保留，且渲染不同于跟随全局
@@ -4504,6 +5305,11 @@ func testHomeAssistant() throws {
     let accentRoundtrip = try JSONDecoder().decode(BambuLabCardSettings.self,
                                                    from: JSONEncoder().encode(accentBambu))
     checkEqual(accentRoundtrip.themeAccent, .bambuLab, "主题色 Codable 往返")
+    var autoZoomBambu = displayBambu
+    autoZoomBambu.autoCameraZoom = true
+    let autoZoomRoundtrip = try JSONDecoder().decode(
+        BambuLabCardSettings.self, from: JSONEncoder().encode(autoZoomBambu))
+    checkEqual(autoZoomRoundtrip.autoCameraZoom, true, "自动放大小模型设置 Codable 往返")
     // 旧档案兼容：缺失显示选项字段的老 JSON 可正常解码（回退默认值）
     let legacyJSON = #"{"name":"打印机","enableAlert":true,"statusEntityID":"sensor.a"}"#
     let legacyDecoded = try JSONDecoder().decode(BambuLabCardSettings.self, from: Data(legacyJSON.utf8))
@@ -4606,14 +5412,23 @@ func testHomeAssistant() throws {
     prS.bambuEnableAlert = false
     prS.bambuStatusEntityID = "sensor.a1_status"
     prS.bambuProgressEntityID = "sensor.a1_progress"
+    prS.bambuEndTimeEntityID = "sensor.a1_finish_time"
+    prS.bambuTimeDisplayMode = .endTime
+    prS.bambuAutoCameraZoom = true
     let prSnap = DeviceSettings.capture(from: prS, type: .bambuLab)
     checkEqual(prSnap.bambuPrinterName, "客厅 A1", "Bambu 设备快照捕获-名称")
     checkEqual(prSnap.bambuStatusEntityID, "sensor.a1_status", "Bambu 设备快照捕获-状态实体")
     checkEqual(prSnap.bambuEnableAlert, false, "Bambu 设备快照捕获-告警开关")
+    checkEqual(prSnap.bambuAutoCameraZoom, true, "Bambu 设备快照捕获-自动放大小模型")
+    checkEqual(prSnap.bambuEndTimeEntityID, "sensor.a1_finish_time", "Bambu 设备快照捕获-结束时间实体")
+    checkEqual(prSnap.bambuTimeDisplayMode, .endTime, "Bambu 设备快照捕获-时间显示模式")
     var prS2 = AppSettings()
     prSnap.apply(to: prS2, type: .bambuLab)
     checkEqual(prS2.bambuPrinterName, "客厅 A1", "Bambu 设备快照套用-名称")
     checkEqual(prS2.bambuProgressEntityID, "sensor.a1_progress", "Bambu 设备快照套用-进度实体")
+    checkEqual(prS2.bambuAutoCameraZoom, true, "Bambu 设备快照套用-自动放大小模型")
+    checkEqual(prS2.bambuEndTimeEntityID, "sensor.a1_finish_time", "Bambu 设备快照套用-结束时间实体")
+    checkEqual(prS2.bambuTimeDisplayMode, .endTime, "Bambu 设备快照套用-时间显示模式")
     // activeBambuLabSettings：多台打印机设备时按活动 ID 取对应设备
     var archS = AppSettings()
     var dev1 = DeviceSettings()
@@ -4660,6 +5475,7 @@ func testHomeAssistant() throws {
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_bed_temp", friendlyName: "热床温度", state: "55", unitOfMeasurement: "°C"),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_current_task", friendlyName: "当前任务", state: "Benchy", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_remaining_time", friendlyName: "剩余时间", state: "30", unitOfMeasurement: "分钟"),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_estimated_end_time", friendlyName: "预计结束时间", state: "2026-09-05T18:30:00+08:00", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_hms_error", friendlyName: "错误码", state: "0", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_current_stage", friendlyName: "当前阶段", state: "printing", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.living_temp", friendlyName: "客厅温度", state: "23", unitOfMeasurement: "°C"),
@@ -4672,6 +5488,7 @@ func testHomeAssistant() throws {
     checkEqual(matched.bedTempEntityID, "sensor.bambu_01h08c0a0001_bed_temp", "自动匹配热床实体")
     checkEqual(matched.taskEntityID, "sensor.bambu_01h08c0a0001_current_task", "自动匹配任务实体")
     checkEqual(matched.remainingEntityID, "sensor.bambu_01h08c0a0001_remaining_time", "自动匹配剩余实体")
+    checkEqual(matched.endTimeEntityID, "sensor.bambu_01h08c0a0001_estimated_end_time", "自动匹配结束时间实体")
     checkEqual(matched.errorEntityID, "sensor.bambu_01h08c0a0001_hms_error", "自动匹配错误码实体")
     // 前缀提取
     checkEqual(BambuEntityMatcher.prefix(of: "sensor.bambu_01h08c0a0001_status"), "sensor.bambu_01h08c0a0001", "实体前缀提取")
@@ -4824,6 +5641,7 @@ func testHomeAssistant() throws {
         HAEntity(entityId: "sensor.bambu_nozzle_temp", friendlyName: "喷嘴温度", state: "210", unitOfMeasurement: "°C"),
         HAEntity(entityId: "sensor.bambu_bed_temp", friendlyName: "热床温度", state: "60", unitOfMeasurement: "°C"),
         HAEntity(entityId: "sensor.bambu_remaining_time", friendlyName: "剩余时间", state: "01:25:00", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_finish_time", friendlyName: "预计完成时间", state: "2026-09-05T18:30:00+08:00", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_error_code", friendlyName: "错误码", state: "none", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.other_temp", friendlyName: "无关实体", state: "1", unitOfMeasurement: nil)
     ]
@@ -4834,6 +5652,7 @@ func testHomeAssistant() throws {
     checkEqual(detected.nozzleTempEntityID, "sensor.bambu_nozzle_temp", "Bambu 自动识别-喷嘴温度")
     checkEqual(detected.bedTempEntityID, "sensor.bambu_bed_temp", "Bambu 自动识别-热床温度")
     checkEqual(detected.remainingEntityID, "sensor.bambu_remaining_time", "Bambu 自动识别-剩余时间")
+    checkEqual(detected.endTimeEntityID, "sensor.bambu_finish_time", "Bambu 自动识别-结束时间")
     checkEqual(detected.errorEntityID, "sensor.bambu_error_code", "Bambu 自动识别-错误码")
     checkEqual(BambuLabCardSettings.autoDetect(entities: [HAEntity(entityId: "sensor.other", friendlyName: "x", state: "1", unitOfMeasurement: nil)]).statusEntityID,
                "", "Bambu 无打印机实体时字段为空")
@@ -4917,6 +5736,25 @@ func testHomeAssistant() throws {
     checkEqual(remainMin.remainingDisplayText, "90 分钟", "剩余时间-分钟")
     let remainRaw = HAEntity(entityId: "sensor.x2d_remaining_time", friendlyName: "剩余时间", state: "01:25:00", unitOfMeasurement: nil)
     checkEqual(remainRaw.remainingDisplayText, "01:25:00", "剩余时间-非数值原样")
+    let finishTimestamp = HAEntity(entityId: "sensor.x2d_finish_time", friendlyName: "预计结束时间",
+                                   state: "2026-09-05T18:30:00+08:00", unitOfMeasurement: nil)
+    checkEqual(finishTimestamp.displayState, "09-05 18:30", "结束时间-ISO 时间戳转本地短时间")
+    checkEqual(ScreenRenderer.bambuCompactCanvasTimeText(remainHours, mode: .remaining),
+               "2时30分", "灵犀多打印机摘要压缩剩余时间单位")
+    checkEqual(ScreenRenderer.bambuCompactCanvasTimeText(finishTimestamp, mode: .endTime),
+               "18:30", "灵犀多打印机摘要的结束时间只保留时分")
+    var timeModeConfig = BambuLabCardSettings(
+        name: "X2D", remainingEntityID: remainHours.entityId,
+        endTimeEntityID: finishTimestamp.entityId, timeDisplayMode: .remaining)
+    let remainingTimeCard = try ScreenRenderer.renderBambuLab(
+        timeModeConfig, entities: [remainHours, finishTimestamp], settings: haSettings)
+    timeModeConfig.timeDisplayMode = .endTime
+    let finishTimeCard = try ScreenRenderer.renderBambuLab(
+        timeModeConfig, entities: [remainHours, finishTimestamp], settings: haSettings)
+    check(remainingTimeCard.data != finishTimeCard.data,
+          "打印机卡片切换剩余时间/结束时间后应立即呈现不同内容")
+    checkEqual(timeModeConfig.selectedTimeEntityID, finishTimestamp.entityId,
+               "结束时间模式只读取已绑定的结束时间实体")
 
     // 画板模块含 BambuLab
     var bCanvas = AppSettings()
@@ -4939,7 +5777,7 @@ func testHomeAssistant() throws {
     checkEqual(bModule.image.width, 142, "Bambu 画板模块宽度")
     check(bModule.data.count <= ScreenRenderer.maximumFileSize, "Bambu 画板模块大小")
     check(bModule.data != bModuleLegacyLayout.data,
-          "灵犀画板默认同步状态背景字、前景百分比和数据更新时间的新仪表布局")
+          "灵犀画板默认使用小号状态、细进度条和数据更新时间的新仪表布局")
     // 多打印机画板：bambuLab→第 1 台、bambuLab2→第 2 台（与卡片管理槽位一致）
     var multiCanvas = AppSettings()
     var p1Dev = DeviceSettings()
@@ -4996,6 +5834,17 @@ func testHomeAssistant() throws {
                "设置后按模块读回显示选项")
     checkEqual(multiCanvas.canvasPrinterFields(for: .bambuLab).enabledRowCount, 3,
                "各打印机模块显示选项互不影响")
+    multiCanvas.setCanvasPrinterFields(fullFields, for: .bambuLab)
+    let densePrinterCanvas = try ScreenRenderer.renderCanvas(
+        modules: [.bambuLab, .bambuLab2], system: system,
+        nowPlaying: .sample, pomodoro: pomo, customText: "",
+        settings: multiCanvas, ha: multiHA)
+    checkEqual(densePrinterCanvas.image.width, 142,
+               "灵犀画板多打印机全详情摘要保持画布宽度")
+    checkEqual(densePrinterCanvas.image.height, 428,
+               "灵犀画板多打印机全详情摘要保持画布高度")
+    check(densePrinterCanvas.data.count <= ScreenRenderer.maximumFileSize,
+          "灵犀画板多打印机全详情摘要不撑爆输出")
     // 多把键盘卡片内容隔离：画板打印机显示选项与系统监控图表样式写入/恢复各自设备快照
     var kbA = DeviceSettings()
     kbA.canvasModules = [CanvasModule.bambuLab.rawValue]
@@ -5386,6 +6235,31 @@ func testHomeAssistant() throws {
     for raw in allX2DStages {
         check(BambuStatusText.map(raw) != raw, "X2D current_stage 已翻译 \(raw)")
     }
+    let shortStatusLayout = ScreenRenderer.bambuStatusTextLayout(
+        "打印中", maxWidth: 92, maxHeight: 30, preferredSize: 20)
+    checkEqual(shortStatusLayout.lines, ["打印中"], "短打印状态保持大字单行")
+    let detailedStatusText = BambuStatusText.map("moving_toolhead_to_center_of_heatbed")
+    let detailedStatusLayout = ScreenRenderer.bambuStatusTextLayout(
+        detailedStatusText, maxWidth: 70, maxHeight: 42, preferredSize: 20)
+    checkEqual(detailedStatusLayout.lines.count, 2, "详细打印阶段自动换成两行")
+    checkEqual(detailedStatusLayout.lines.joined(), detailedStatusText,
+               "详细打印阶段换行后保留完整语义")
+    check(detailedStatusLayout.size >= 8.5 && detailedStatusLayout.size <= 20,
+          "详细打印阶段按区域自适应字号")
+    let movingStatusBadge = ScreenRenderer.bambuCompactStatusPresentation(
+        rawState: "moving_toolhead_to_center_of_heatbed")
+    checkEqual(movingStatusBadge.symbol, "arrow.up.and.down.and.arrow.left.and.right",
+               "独立打印机长移动状态改用移动图标")
+    checkEqual(movingStatusBadge.label, "移动中",
+               "独立打印机长移动状态使用短标签")
+    let detectionStatusBadge = ScreenRenderer.bambuCompactStatusPresentation(
+        rawState: "heatbed_surface_foreign_object_detection")
+    checkEqual(detectionStatusBadge.label, "检测中",
+               "热床检测状态优先归类为检测而非温控")
+    let pausedStatusBadge = ScreenRenderer.bambuCompactStatusPresentation(
+        rawState: "paused_chamber_temperature_control_error")
+    checkEqual(pausedStatusBadge.symbol, "exclamationmark.triangle.fill",
+               "包含异常原因的暂停状态使用醒目的异常图标")
     // 完成庆祝卡：带任务名与不带渲染不同；超长任务名不撑爆
     let doneNoTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D", settings: bCanvas)
     let doneWithTask = try ScreenRenderer.renderPrintSuccess(printerName: "X2D",
@@ -5420,6 +6294,12 @@ func testHomeAssistant() throws {
           && oracleBambuType.value > standardBambuType.value
           && oracleBambuType.body > standardBambuType.body,
           "先知/摘录画板 Bambu 模块应放大全部文字层级")
+    let compactKeyboardBambuType = ScreenRenderer.bambuCanvasTypography(
+        sizeBase: 10, optimizeForOracleEInk: false)
+    check(compactKeyboardBambuType.label >= 9
+          && compactKeyboardBambuType.value >= 11
+          && compactKeyboardBambuType.body >= 9,
+          "灵犀画板多打印机均分空间后仍保持可读字号下限")
     let shortTaskLayout = ScreenRenderer.bambuCanvasTaskLayout(
         "校准立方体", maxWidth: 150, maxHeight: 42, preferredSize: 18)
     checkEqual(shortTaskLayout.lines, ["校准立方体"], "短任务名保持清晰单行")
@@ -6073,6 +6953,9 @@ func testHomeAssistant() throws {
     pictureMirror.bambuImageEntityID = "image.bambu_lab_a1_camera"
     pictureMirror.bambuTaskImageEntityID = "image.bambu_lab_a1_cover_image"
     pictureMirror.bambuImageSource = .taskCover
+    pictureMirror.bambuEndTimeEntityID = "sensor.bambu_lab_a1_finish_time"
+    pictureMirror.bambuTimeDisplayMode = .endTime
+    pictureMirror.bambuAutoCameraZoom = true
     pictureMirror.bambuShowImage = false
     let pictureMirrorRoundTrip = try JSONDecoder().decode(
         AppSettings.self, from: JSONEncoder().encode(pictureMirror))
@@ -6080,11 +6963,21 @@ func testHomeAssistant() throws {
                "image.bambu_lab_a1_cover_image", "全局镜像持久化任务封面实体")
     checkEqual(pictureMirrorRoundTrip.bambuImageSource, .taskCover,
                "全局镜像持久化画面来源")
+    checkEqual(pictureMirrorRoundTrip.bambuAutoCameraZoom, true,
+               "全局镜像持久化自动放大小模型")
+    checkEqual(pictureMirrorRoundTrip.bambuEndTimeEntityID,
+               "sensor.bambu_lab_a1_finish_time", "全局镜像持久化结束时间实体")
+    checkEqual(pictureMirrorRoundTrip.bambuTimeDisplayMode, .endTime,
+               "全局镜像持久化时间显示模式")
     let pictureSnap = DeviceSettings.capture(from: pictureMirror, type: .bambuLab)
     checkEqual(pictureSnap.bambuImageEntityID, "image.bambu_lab_a1_camera", "打印机快照捕获画面映射")
     checkEqual(pictureSnap.bambuTaskImageEntityID, "image.bambu_lab_a1_cover_image",
                "打印机快照捕获任务封面映射")
     checkEqual(pictureSnap.bambuImageSource, .taskCover, "打印机快照捕获画面来源")
+    checkEqual(pictureSnap.bambuAutoCameraZoom, true, "打印机快照捕获自动放大小模型")
+    checkEqual(pictureSnap.bambuEndTimeEntityID, "sensor.bambu_lab_a1_finish_time",
+               "打印机快照捕获结束时间实体")
+    checkEqual(pictureSnap.bambuTimeDisplayMode, .endTime, "打印机快照捕获时间显示模式")
     checkEqual(pictureSnap.bambuShowImage, false, "打印机快照捕获画面开关")
     var pictureRestored = AppSettings()
     pictureSnap.apply(to: pictureRestored, type: .bambuLab)
@@ -6092,7 +6985,23 @@ func testHomeAssistant() throws {
     checkEqual(pictureRestored.bambuTaskImageEntityID, "image.bambu_lab_a1_cover_image",
                "切回该打印机恢复任务封面映射")
     checkEqual(pictureRestored.bambuImageSource, .taskCover, "切回该打印机恢复画面来源")
+    checkEqual(pictureRestored.bambuAutoCameraZoom, true, "切回该打印机恢复自动放大小模型")
+    checkEqual(pictureRestored.bambuEndTimeEntityID, "sensor.bambu_lab_a1_finish_time",
+               "切回该打印机恢复结束时间实体")
+    checkEqual(pictureRestored.bambuTimeDisplayMode, .endTime, "切回该打印机恢复时间显示模式")
     checkEqual(pictureRestored.bambuShowImage, false, "切回该打印机恢复画面开关")
+    let legacyAutoZoomSettings = try JSONDecoder().decode(AppSettings.self,
+                                                          from: Data("{}".utf8))
+    checkEqual(legacyAutoZoomSettings.bambuAutoCameraZoom, false,
+               "旧全局配置缺自动放大字段时默认关闭")
+    let legacyAutoZoomDevice = try JSONDecoder().decode(DeviceSettings.self,
+                                                        from: Data("{}".utf8))
+    checkEqual(legacyAutoZoomDevice.bambuAutoCameraZoom, nil,
+               "旧打印机快照缺自动放大字段时由界面回退关闭")
+    checkEqual(legacyAutoZoomSettings.bambuTimeDisplayMode, .remaining,
+               "旧全局配置缺时间显示模式时默认剩余时间")
+    checkEqual(BambuLabCardSettings.from(legacyAutoZoomDevice).timeDisplayMode, .remaining,
+               "旧打印机快照缺时间显示模式时默认剩余时间")
     var sourceSelection = bound
     checkEqual(sourceSelection.selectedImageEntityID, "image.bambu_lab_a1_camera",
                "摄像头来源选择摄像头实体")
@@ -6125,6 +7034,14 @@ func testHomeAssistant() throws {
                                                                image: pictureData,
                                                                settings: pictureCardSettings)
     check(printerNoPicture.data != printerWithPicture.data, "打印机卡片画面区块生效")
+    var glowTaskCoverPrinter = mappedPrinter
+    glowTaskCoverPrinter.imageSource = .taskCover
+    let printerTaskCover = try ScreenRenderer.renderBambuLab(glowTaskCoverPrinter,
+                                                             entities: printerEntitiesForCard,
+                                                             image: pictureData,
+                                                             settings: pictureCardSettings)
+    check(printerWithPicture.data != printerTaskCover.data,
+          "摄像头实况画面应用主色光晕，任务封面不应用")
     let printerPictureHidden = try ScreenRenderer.renderBambuLab(
         BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
                              imageEntityID: "image.bambu_lab_a1_camera", showImage: false),

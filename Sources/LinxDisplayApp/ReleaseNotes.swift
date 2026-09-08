@@ -10,6 +10,17 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.5.3", date: "2026-09-08", notes: [
+            "新增 Formlabs Dashboard 云端 API：最多管理 5 台打印机，显示设备状态、任务名称、打印进度、层数、配置耗材、剩余时间与任务缩略图；已完成任务会缓存保留，直到新任务开始。",
+            "统一 Bambu Lab 与 Formlabs 打印机卡片设计：灵犀68、灵犀画板、口袋先知和摘录画板共享高对比布局，支持双行任务名、细进度条、品牌或主题强调色，以及任务封面光晕。",
+            "Bambu Lab 摄像头新增小模型自动聚焦：每次推送前重新分析静态帧并动态调整裁切，模型随打印进度变大时会自动缩小放大倍率；切换开关或画面来源后立即使用缓存画面重绘并推送。",
+            "Bambu Lab 时间信息可在“剩余时间”和“结束时间”之间切换，并支持手动绑定结束时间实体；摄像头实况与任务封面可分别关联和选择。",
+            "口袋先知与摘录新增独立画板管理：按设备隔离创建、自动保存、重命名、删除与拖拽排序，可分别控制侧边栏显示和自动轮播参与；新画板从“未命名”空白状态开始，首个模块决定默认名称。",
+            "整理侧边栏和系统菜单层级：三类画板均以管理入口承载推送、显示、排序与轮播设置，独立画板页面只保留内容编辑；菜单只列出用户选择显示的画板。",
+            "墨水屏推送增加内容指纹判断：最终画面没有变化时不重复发送，同时保证首次连接、切换设备与启用功能后的第一帧正常到达。",
+            "番茄钟卡片的刷新与推送间隔改为用户可调，并与电脑端显示刻度对齐，避免网络耗时造成倒计时漂移。",
+            "优化 Home Assistant 已选实体刷新、设备管理加载与画面缓存复用，减少大型实体列表和静态画面更新造成的卡顿。",
+        ]),
         ReleaseNote(id: "1.5.2", date: "2026-09-05", notes: [
             "修复口袋先知 WebSocket 会话在设置同步、显示模式切换或画板轮换时可能叠加重连线程与未完成连接的问题，显著降低长时间运行后的 CPU、内存和系统资源占用。",
             "修复系统监控在睡眠唤醒、VPN/热点切换或网络接口重建后，网络累计计数回退可能引发整数下溢并导致软件崩溃的问题。",
@@ -98,14 +109,14 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.2"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.3"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
 
-    /// 当前短版本号（如 1.5.2，不含构建号），用于与 GitHub 最新版本比较
+    /// 当前短版本号（如 1.5.3，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.5.2"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.5.3"
     }
 }
