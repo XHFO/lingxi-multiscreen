@@ -560,7 +560,7 @@ struct SettingsView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("刷写会覆盖所选 ESP8266 小屏幕中的现有固件，并写入 Wi-Fi“\(aiMacProvisionSSID)”。请确认串口与网络名称正确，完成前不要拔掉 USB 数据线。")
+                Text("刷写会覆盖所选 ESP8266 小屏幕中的现有固件，并写入 Wi-Fi“\(aiMacProvisionSSID)”。ESP8266 仅支持 2.4 GHz，请确认该网络已开启 2.4 GHz；完成前不要拔掉 USB 数据线。")
             }
             .alert(aiMacFlashResultSucceeded ? "刷写流程完成" : "刷写失败",
                    isPresented: $showAIMacFlashResult) {
@@ -1149,7 +1149,7 @@ struct SettingsView: View {
                                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                                           fieldWidth: 320,
-                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.0 固件支持 Wi-Fi 预配置与 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.1 固件支持 Wi-Fi 预配置、热点配网修复与 RGB565 无损帧，旧固件自动回退 JPEG。")
                                     HStack {
                                         Button("连接测试") {
                                             Task { await model.testAIMacScreenConnection(deviceID: device.id) }
@@ -1256,11 +1256,31 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("仅支持 2.4 GHz Wi-Fi")
+                            .fontWeight(.semibold)
+                        Text("请勿选择仅有 5 GHz 或 6 GHz 的网络；双频同名 Wi-Fi 也必须开启 2.4 GHz。")
+                            .font(.caption)
+                    }
+                } icon: {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.title3)
+                }
+                .foregroundStyle(.orange)
+                .padding(10)
+                .frame(maxWidth: 360, alignment: .leading)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.orange.opacity(0.45), lineWidth: 1)
+                }
+
                 HStack(spacing: 6) {
                     TextField("Wi-Fi 名称（SSID）", text: $aiMacProvisionSSID)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 360)
-                    HelpIcon(text: "请输入小屏幕将要连接的 2.4 GHz Wi-Fi。SSID 区分大小写；ESP8266 不支持仅有 5 GHz/6 GHz 的网络。")
+                    HelpIcon(text: "SSID 区分大小写。若路由器把 2.4 GHz 与 5 GHz 合并为同一个名称，请确认 2.4 GHz 频段没有被关闭。")
                 }
                 SecureField("Wi-Fi 密码（开放网络可留空）", text: $aiMacProvisionPassword)
                     .textFieldStyle(.roundedBorder)
@@ -1801,7 +1821,7 @@ struct SettingsView: View {
                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                           fieldWidth: 320,
-                                          helpText: "填写设备局域网 IP。0.8.0 固件支持自动发现与 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
+                                          helpText: "填写设备局域网 IP。0.8.1 固件支持自动发现与 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
                     Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
                     if config.autoPush {
                         Stepper("推送间隔 \(config.pushIntervalSeconds) 秒",

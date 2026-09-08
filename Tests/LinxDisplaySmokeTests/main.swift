@@ -4588,7 +4588,7 @@ func testAIMacScreen() throws {
     checkEqual(AIMacScreenDeviceSettings().mode, .canvas,
                "新 AI Mac 小屏幕默认进入彩色画板模式")
 
-    checkEqual(EmbeddedAIMacFirmware.version, "0.8.0-wifi-provisioning",
+    checkEqual(EmbeddedAIMacFirmware.version, "0.8.1-wifi-portal-fix",
                "内置小屏幕固件版本稳定")
     checkEqual(EmbeddedAIMacFirmware.flashAddress, "0x0",
                "ESP8266 固件写入地址稳定")
