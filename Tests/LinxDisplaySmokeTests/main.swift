@@ -4692,6 +4692,8 @@ func testAIMacScreen() throws {
                "AI Mac 小屏幕 1", "AI Mac 小屏幕默认名称")
     checkEqual(AIMacScreenDeviceSettings().mode, .canvas,
                "新 AI Mac 小屏幕默认进入彩色画板模式")
+    check(AIMacScreenDeviceSettings().followSystemSleep,
+          "新 AI Mac 小屏幕默认跟随系统锁屏与睡眠")
 
     checkEqual(EmbeddedAIMacFirmware.version, "0.8.1-wifi-portal-fix",
                "内置小屏幕固件版本稳定")
@@ -4770,6 +4772,7 @@ func testAIMacScreen() throws {
 
     let rgbInfo = """
     {"device":"esp8266-ai-screen","screen":{"width":240,"height":240},
+     "brightness":73,
      "rgb565_api":{"path":"/frame/rgb565","content_type":"application/x-rgb565",
      "byte_order":"big-endian","bytes":115200}}
     """.data(using: .utf8)!
@@ -4778,6 +4781,13 @@ func testAIMacScreen() throws {
     check(rgbCapabilities.supportsLosslessRGB565, "能力接口识别 RGB565 无损模式")
     checkEqual(rgbCapabilities.rgb565UploadURL?.path, "/frame/rgb565",
                "能力接口使用固件声明的 RGB565 路径")
+    check(rgbCapabilities.supportsBrightnessControl, "0.8.1 能力接口识别背光控制")
+    checkEqual(rgbCapabilities.brightnessLevel, 73, "读取小屏幕当前亮度")
+    let sleepRequest = rgbCapabilities.brightnessURL.flatMap {
+        AIMacScreenSupport.brightnessRequest(url: $0, level: 0)
+    }
+    checkEqual(sleepRequest?.httpMethod, "POST", "熄屏使用 POST 请求")
+    checkEqual(sleepRequest?.url?.query, "level=0", "熄屏亮度请求使用固件查询参数")
 
     let jpegInfo = """
     {"device":"esp8266-ai-screen","screen":{"width":240,"height":240}}
@@ -4785,11 +4795,13 @@ func testAIMacScreen() throws {
     let jpegCapabilities = try AIMacScreenSupport.parseCapabilities(
         data: jpegInfo, host: "screen.local")
     check(!jpegCapabilities.supportsLosslessRGB565, "旧固件能力信息回退 JPEG")
+    check(!jpegCapabilities.supportsBrightnessControl, "旧固件不误报背光控制能力")
     checkEqual(jpegCapabilities.jpegUploadURL.path, "/image/upload",
                "JPEG 兼容上传路径稳定")
 
     var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .clock,
-                                           autoPush: false, pushIntervalSeconds: 9,
+                                           autoPush: false, followSystemSleep: false,
+                                           pushIntervalSeconds: 9,
                                            jpegQuality: 71)
     var fields = DeviceSettings()
     fields.aiMacScreen = stored

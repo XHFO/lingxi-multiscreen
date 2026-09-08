@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var oracleCanvasSubmenu: NSMenu?
     private var excerptCanvasSubmenu: NSMenu?
     private var aiMacCanvasSubmenu: NSMenu?
+    private var workspaceDisplayObservers: [NSObjectProtocol] = []
+    private var distributedDisplayObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
@@ -25,6 +27,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupMenuBar()
         setupEditMenu() // 菜单栏应用没有默认编辑菜单，Cmd+C/V/X 等快捷键依赖它
         installHotkeys()
+        installAIMacSystemDisplayObservers()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let model = self?.model else { return }
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let locked = session?["CGSSessionScreenIsLocked"] as? Bool ?? false
+            await model.reconcileAIMacPowerAfterLaunch(systemLocked: locked)
+        }
         openMainWindow()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -49,6 +59,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false // 关闭窗口后继续在菜单栏运行
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceDisplayObservers.forEach(workspaceCenter.removeObserver)
+        let distributedCenter = DistributedNotificationCenter.default()
+        distributedDisplayObservers.forEach(distributedCenter.removeObserver)
+    }
+
+    /// AI Mac 彩屏跟随系统：锁屏/睡眠熄灭背光，解锁/唤醒恢复并补推当前画面。
+    /// Workspace 与分布式锁屏通知会有重叠，AppModel 会对相同状态自动去重。
+    private func installAIMacSystemDisplayObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let sleepNames: [Notification.Name] = [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.sessionDidResignActiveNotification,
+        ]
+        let wakeNames: [Notification.Name] = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+        ]
+        for name in sleepNames {
+            workspaceDisplayObservers.append(workspaceCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.setAIMacSystemSleeping(true)
+            })
+        }
+        for name in wakeNames {
+            workspaceDisplayObservers.append(workspaceCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.setAIMacSystemSleeping(false)
+            })
+        }
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        let locked = Notification.Name("com.apple.screenIsLocked")
+        let unlocked = Notification.Name("com.apple.screenIsUnlocked")
+        distributedDisplayObservers.append(distributedCenter.addObserver(
+            forName: locked, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.setAIMacSystemSleeping(true)
+        })
+        distributedDisplayObservers.append(distributedCenter.addObserver(
+            forName: unlocked, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.setAIMacSystemSleeping(false)
+        })
+    }
+
+    private func setAIMacSystemSleeping(_ sleeping: Bool) {
+        guard let model else { return }
+        Task { @MainActor in
+            await model.handleAIMacSystemSleepChange(sleeping: sleeping)
+        }
     }
 
     /// 用户从「系统设置 → 输入监控」返回时，刷新授权状态并在需要时自动重连旋钮。

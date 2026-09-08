@@ -1509,6 +1509,15 @@ struct SettingsView: View {
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                                           fieldWidth: 320,
                                                           helpText: "支持 240×240 AI Mac 小屏幕；0.8.1 固件支持 Wi-Fi 预配置、热点配网修复与 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                    HStack(spacing: 6) {
+                                        Toggle("跟随 Mac 锁屏与睡眠",
+                                               isOn: model.aiMacScreenFollowSystemSleepBinding(
+                                                for: device.id))
+                                            .toggleStyle(.switch)
+                                            .controlSize(.small)
+                                        HelpIcon(text: "开启后，Mac 锁屏或进入睡眠时会熄灭小屏幕背光；解锁或唤醒后恢复之前的亮度，并立即刷新当前画面。需要小屏幕使用 0.8.1 或更新固件。")
+                                        Spacer()
+                                    }
                                     HStack {
                                         Button("连接测试") {
                                             Task { await model.testAIMacScreenConnection(deviceID: device.id) }

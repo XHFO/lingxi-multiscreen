@@ -94,6 +94,10 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var host: String
     public var mode: AIMacScreenContentMode
     public var autoPush: Bool
+    /// Mac 锁屏或休眠时熄灭背光，解锁/唤醒后恢复原亮度与画面。
+    public var followSystemSleep: Bool
+    /// 最近一次熄屏前的亮度，用于应用意外退出后仍能在下次启动恢复。
+    public var awakeBrightness: Int?
     public var pushIntervalSeconds: Int
     public var jpegQuality: Int
     public var customImagePath: String?
@@ -110,7 +114,9 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var cardRotationMinutes: Int
 
     public init(host: String = "", mode: AIMacScreenContentMode = .canvas,
-                autoPush: Bool = true, pushIntervalSeconds: Int = 2,
+                autoPush: Bool = true, followSystemSleep: Bool = true,
+                awakeBrightness: Int? = nil,
+                pushIntervalSeconds: Int = 2,
                 jpegQuality: Int = 82, customImagePath: String? = nil,
                 canvasBoards: [AIMacCanvasBoard] = [], canvasBoardIndex: Int = 0,
                 boardRotationEnabled: Bool = false, boardRotationMinutes: Int = 5,
@@ -120,6 +126,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.host = host
         self.mode = mode
         self.autoPush = autoPush
+        self.followSystemSleep = followSystemSleep
+        self.awakeBrightness = awakeBrightness
         self.pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         self.jpegQuality = min(max(jpegQuality, 50), 90)
         self.customImagePath = customImagePath
@@ -152,6 +160,9 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
             ? 0 : min(max(canvasBoardIndex, 0), canvasBoards.count - 1)
         boardRotationMinutes = min(max(boardRotationMinutes, 1), 1_440)
         cardRotationMinutes = min(max(cardRotationMinutes, 1), 60)
+        if let awakeBrightness {
+            self.awakeBrightness = min(max(awakeBrightness, 1), 100)
+        }
         if let values = cardPanels {
             var seen = Set<Int>()
             cardPanels = values.filter { DisplayMode(rawValue: $0) != nil && seen.insert($0).inserted }
@@ -164,7 +175,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case host, mode, autoPush, pushIntervalSeconds, jpegQuality, customImagePath
+        case host, mode, autoPush, followSystemSleep, awakeBrightness
+        case pushIntervalSeconds, jpegQuality, customImagePath
         case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
         case cardModeRawValue, cardPanels, cardRotationModes, cardRotationEnabled, cardRotationMinutes
     }
@@ -174,6 +186,9 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? ""
         mode = try container.decodeIfPresent(AIMacScreenContentMode.self, forKey: .mode) ?? .dashboard
         autoPush = try container.decodeIfPresent(Bool.self, forKey: .autoPush) ?? true
+        followSystemSleep = try container.decodeIfPresent(Bool.self,
+                                                          forKey: .followSystemSleep) ?? true
+        awakeBrightness = try container.decodeIfPresent(Int.self, forKey: .awakeBrightness)
         pushIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .pushIntervalSeconds) ?? 2
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? 82
         customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
@@ -212,14 +227,20 @@ public struct AIMacScreenCapabilities: Equatable {
     public let host: String
     public let jpegUploadURL: URL
     public let rgb565UploadURL: URL?
+    public let brightnessURL: URL?
+    public let brightnessLevel: Int?
 
-    public init(host: String, jpegUploadURL: URL, rgb565UploadURL: URL?) {
+    public init(host: String, jpegUploadURL: URL, rgb565UploadURL: URL?,
+                brightnessURL: URL? = nil, brightnessLevel: Int? = nil) {
         self.host = host
         self.jpegUploadURL = jpegUploadURL
         self.rgb565UploadURL = rgb565UploadURL
+        self.brightnessURL = brightnessURL
+        self.brightnessLevel = brightnessLevel
     }
 
     public var supportsLosslessRGB565: Bool { rgb565UploadURL != nil }
+    public var supportsBrightnessControl: Bool { brightnessURL != nil }
 }
 
 public enum AIMacScreenSupportError: Error, LocalizedError {
@@ -288,8 +309,28 @@ public enum AIMacScreenSupport {
            let path = raw["path"] as? String, path.hasPrefix("/") {
             rgb565URL = URL(string: "http://\(host)\(path)")
         }
+        let brightnessLevel = (json["brightness"] as? Int).map { min(max($0, 0), 100) }
+        let brightnessURL = brightnessLevel == nil
+            ? nil : URL(string: "http://\(host)/api/brightness")
         return AIMacScreenCapabilities(host: host, jpegUploadURL: jpegURL,
-                                       rgb565UploadURL: rgb565URL)
+                                       rgb565UploadURL: rgb565URL,
+                                       brightnessURL: brightnessURL,
+                                       brightnessLevel: brightnessLevel)
+    }
+
+    /// 0.8.1+ 固件使用 POST 查询参数调整背光；0 表示彻底熄屏。
+    public static func brightnessRequest(url: URL, level: Int) -> URLRequest? {
+        let bounded = min(max(level, 0), 100)
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.queryItems = [URLQueryItem(name: "level", value: String(bounded))]
+        guard let target = components.url else { return nil }
+        var request = URLRequest(url: target)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 4
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return request
     }
 
     public static func render(settings: AIMacScreenDeviceSettings,

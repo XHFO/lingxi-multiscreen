@@ -81,6 +81,12 @@ public final class AppModel: ObservableObject {
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
     private var aiMacScreenLastBoardRotation: [UUID: Date] = [:]
     private var aiMacScreenLastCardRotation: [UUID: Date] = [:]
+    /// 系统锁屏/睡眠期间暂停画面推送，并按设备记住熄屏前亮度。
+    private var aiMacScreensSystemSleeping = false
+    private var aiMacScreenSavedBrightness: [UUID: Int] = [:]
+    /// 同一台设备的背光请求严格按事件顺序执行，避免快速锁屏/解锁时旧请求后到覆盖新状态。
+    private var aiMacScreenPowerTasks: [UUID: Task<Bool, Never>] = [:]
+    private var aiMacScreenPowerGenerations: [UUID: UInt] = [:]
     private var aiMacSspaiRandomSelection: [String: [SspaiArticle]] = [:]
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
@@ -431,6 +437,14 @@ public final class AppModel: ObservableObject {
         lastPushAttempt = nil
         lastPomodoroPushAlignedSeconds = nil
         lastUploadedHash = nil
+        aiMacScreenCapabilities = [:]
+        aiMacScreenLastHashes = [:]
+        aiMacScreenLastPushAt = [:]
+        aiMacScreenSavedBrightness = [:]
+        aiMacScreenPowerTasks.values.forEach { $0.cancel() }
+        aiMacScreenPowerTasks = [:]
+        aiMacScreenPowerGenerations = [:]
+        aiMacScreensSystemSleeping = false
         lastOraclePushedHash = nil
         lastExcerptPushedHash = nil
         rand0SessionNeedsPrime = true
@@ -895,6 +909,10 @@ public final class AppModel: ObservableObject {
             aiMacScreenLastPushAt[id] = nil
             aiMacScreenLastBoardRotation[id] = nil
             aiMacScreenLastCardRotation[id] = nil
+            aiMacScreenPowerTasks[id]?.cancel()
+            aiMacScreenPowerTasks[id] = nil
+            aiMacScreenPowerGenerations[id] = nil
+            aiMacScreenSavedBrightness[id] = nil
             aiMacSspaiRandomSelection = aiMacSspaiRandomSelection.filter {
                 !$0.key.hasPrefix(id.uuidString + "|")
             }
@@ -1690,6 +1708,21 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    public func aiMacScreenFollowSystemSleepBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: { self.aiMacScreenSettings(for: id).followSystemSleep }, set: { value in
+            self.mutateAIMacScreenSettings(id, schedulePush: false) {
+                $0.followSystemSleep = value
+            }
+            // 极少数情况下用户通过远程桌面在锁屏态修改开关：开启立即熄屏，
+            // 关闭则立即恢复背光，不把设备留在黑屏状态。
+            if self.aiMacScreensSystemSleeping {
+                Task { @MainActor [weak self] in
+                    await self?.setAIMacScreenPower(deviceID: id, sleeping: value)
+                }
+            }
+        })
+    }
+
     public func aiMacScreenIntervalBinding(for id: UUID) -> Binding<Int> {
         Binding(get: { self.aiMacScreenSettings(for: id).pushIntervalSeconds }, set: { value in
             self.mutateAIMacScreenSettings(id) { $0.pushIntervalSeconds = value }
@@ -2164,7 +2197,9 @@ public final class AppModel: ObservableObject {
 
     private func fetchAIMacScreenCapabilities(
         deviceID: UUID,
-        force: Bool = false
+        force: Bool = false,
+        timeout: TimeInterval = 4,
+        allowJPEGFallback: Bool = true
     ) async throws -> AIMacScreenCapabilities {
         let config = aiMacScreenSettings(for: deviceID)
         let host = AIMacScreenSupport.normalizedHost(config.host)
@@ -2176,7 +2211,7 @@ public final class AppModel: ObservableObject {
             throw AIMacScreenSupportError.invalidHost
         }
         var request = URLRequest(url: infoURL)
-        request.timeoutInterval = 4
+        request.timeoutInterval = timeout
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,
@@ -2185,8 +2220,12 @@ public final class AppModel: ObservableObject {
             }
             let capabilities = try AIMacScreenSupport.parseCapabilities(data: data, host: host)
             aiMacScreenCapabilities[deviceID] = capabilities
+            if let brightness = capabilities.brightnessLevel, brightness > 0 {
+                aiMacScreenSavedBrightness[deviceID] = brightness
+            }
             return capabilities
         } catch {
+            if !allowJPEGFallback { throw error }
             // 0.6.x 等旧版固件没有能力接口，但仍支持 /image/upload。
             let fallback = try AIMacScreenSupport.jpegOnlyCapabilities(host: host)
             aiMacScreenCapabilities[deviceID] = fallback
@@ -2213,6 +2252,125 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// 系统锁屏/睡眠状态入口。相同状态的多条系统通知会被合并，避免重复请求。
+    public func handleAIMacSystemSleepChange(sleeping: Bool) async {
+        guard aiMacScreensSystemSleeping != sleeping else { return }
+        aiMacScreensSystemSleeping = sleeping
+        let targets = enabledDevices(for: .aiMacScreen).filter {
+            ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).followSystemSleep
+                && !AIMacScreenSupport.normalizedHost(
+                    ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).host).isEmpty
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for device in targets {
+                group.addTask { [weak self] in
+                    await self?.setAIMacScreenPower(deviceID: device.id, sleeping: sleeping)
+                }
+            }
+        }
+    }
+
+    /// 启动时修复“应用在锁屏期间被退出”留下的熄屏状态；若系统仍锁定则保持熄屏。
+    public func reconcileAIMacPowerAfterLaunch(systemLocked: Bool) async {
+        if systemLocked {
+            await handleAIMacSystemSleepChange(sleeping: true)
+            return
+        }
+        aiMacScreensSystemSleeping = false
+        let targets = enabledDevices(for: .aiMacScreen).filter {
+            ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).followSystemSleep
+        }
+        for device in targets {
+            guard let capabilities = try? await fetchAIMacScreenCapabilities(
+                deviceID: device.id, force: true, timeout: 1.5),
+                  capabilities.brightnessLevel == 0 else { continue }
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            aiMacScreenSavedBrightness[device.id] = config.awakeBrightness ?? 100
+            await setAIMacScreenPower(deviceID: device.id, sleeping: false)
+        }
+    }
+
+    /// 使用固件背光接口真正熄屏；同一设备的请求按事件顺序串行，最后一次状态一定胜出。
+    private func setAIMacScreenPower(deviceID: UUID, sleeping: Bool) async {
+        let previousTask = aiMacScreenPowerTasks[deviceID]
+        let generation = (aiMacScreenPowerGenerations[deviceID] ?? 0) &+ 1
+        aiMacScreenPowerGenerations[deviceID] = generation
+        let operation = Task { @MainActor [weak self] () -> Bool in
+            _ = await previousTask?.value
+            guard !Task.isCancelled, let self else { return false }
+            return await self.applyAIMacScreenPower(deviceID: deviceID, sleeping: sleeping)
+        }
+        aiMacScreenPowerTasks[deviceID] = operation
+        let succeeded = await operation.value
+        guard aiMacScreenPowerGenerations[deviceID] == generation else { return }
+        aiMacScreenPowerTasks[deviceID] = nil
+        guard succeeded, !sleeping, !aiMacScreenShouldSleep(deviceID: deviceID) else { return }
+
+        // 如果唤醒正好撞上旧推送收尾，短暂等待后重试，确保一定补上一帧。
+        for _ in 0..<5 {
+            if !aiMacScreenBusyIDs.contains(deviceID) {
+                aiMacScreenLastHashes[deviceID] = nil
+                await pushAIMacScreen(deviceID: deviceID, force: true)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+    }
+
+    private func applyAIMacScreenPower(deviceID: UUID, sleeping: Bool) async -> Bool {
+        // 唤醒时网络接口可能比系统唤醒通知晚一点恢复，做少量有限重试；
+        // 睡眠前则只尝试一次，避免阻塞系统进入睡眠。
+        let attempts = sleeping ? 1 : 3
+        var resolvedCapabilities: AIMacScreenCapabilities?
+        for attempt in 0..<attempts {
+            do {
+                resolvedCapabilities = try await fetchAIMacScreenCapabilities(
+                    deviceID: deviceID, force: true, timeout: 1.5,
+                    allowJPEGFallback: false)
+                break
+            } catch {
+                guard attempt + 1 < attempts else { break }
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+        }
+        guard let capabilities = resolvedCapabilities else { return false }
+        guard let brightnessURL = capabilities.brightnessURL else {
+            // 旧版固件没有亮度接口；不推黑图，避免覆盖用户正在显示的画面。
+            return false
+        }
+        if sleeping, let brightness = capabilities.brightnessLevel, brightness > 0 {
+            aiMacScreenSavedBrightness[deviceID] = brightness
+            if aiMacScreenSettings(for: deviceID).awakeBrightness != brightness {
+                mutateAIMacScreenSettings(deviceID, schedulePush: false) {
+                    $0.awakeBrightness = brightness
+                }
+            }
+        }
+        let savedLevel = aiMacScreenSavedBrightness[deviceID]
+            ?? aiMacScreenSettings(for: deviceID).awakeBrightness ?? 100
+        let targetLevel = sleeping ? 0 : max(1, savedLevel)
+        guard let request = AIMacScreenSupport.brightnessRequest(
+            url: brightnessURL, level: targetLevel) else { return false }
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return false }
+            if sleeping {
+                aiMacScreenStatuses[deviceID] = "已随 Mac 锁屏熄屏"
+            } else {
+                aiMacScreenStatuses[deviceID] = "已随 Mac 唤醒"
+            }
+            return true
+        } catch {
+            // 锁屏/睡眠时网络可能先于通知断开；保持静默，唤醒通知会再次尝试恢复。
+            return false
+        }
+    }
+
+    private func aiMacScreenShouldSleep(deviceID: UUID) -> Bool {
+        aiMacScreensSystemSleeping && aiMacScreenSettings(for: deviceID).followSystemSleep
+    }
+
     public func pushAIMacScreen(deviceID: UUID, force: Bool = true) async {
         await pushAIMacScreen(deviceID: deviceID, force: force, sampleDashboard: true)
     }
@@ -2224,6 +2382,7 @@ public final class AppModel: ObservableObject {
                   $0.id == deviceID && $0.type == .aiMacScreen && $0.isEnabled
               }) else { return }
         let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        guard !(aiMacScreensSystemSleeping && config.followSystemSleep) else { return }
         guard !AIMacScreenSupport.normalizedHost(config.host).isEmpty else {
             aiMacScreenStatuses[deviceID] = AIMacScreenSupportError.invalidHost.localizedDescription
             return
@@ -2290,6 +2449,7 @@ public final class AppModel: ObservableObject {
         let dueDevices = enabledDevices(for: .aiMacScreen).filter { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard config.autoPush,
+                  !(aiMacScreensSystemSleeping && config.followSystemSleep),
                   !AIMacScreenSupport.normalizedHost(config.host).isEmpty,
                   !aiMacScreenBusyIDs.contains(device.id) else { return false }
             let interval = TimeInterval(max(1, config.pushIntervalSeconds))
