@@ -3906,14 +3906,25 @@ public func setClockTimeFormat(_ format: String) {
         return result
     }
 
-    /// 将当前歌词行推送到所有已关联且当前停留在“正在播放”卡片的键盘。
+    /// 将当前歌词行推送到所有已关联的键盘。建立关联时目标键盘已自动关闭
+    /// 卡片轮播并切到“正在播放”，该页面使用纯歌词布局。
     /// 非活动键盘直接使用自己的端点和显示快照，不切换软件当前操作设备。
     private func pushLinkedLyricsKeyboardsIfNeeded(force: Bool) async {
-        guard let lyrics = nowPlayingLyrics else { return }
-        let lines = lyrics.displayLines(at: nowPlaying.elapsedTime)
-        guard !lines.isEmpty else { return }
-        let lineIndex = lyrics.currentLineIndex(at: nowPlaying.elapsedTime) ?? -1
-        let lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(lines.joined(separator: "|"))"
+        let window: LyricsDisplayWindow
+        let lineKey: String
+        if let lyrics = nowPlayingLyrics {
+            window = lyrics.displayWindow(at: nowPlaying.elapsedTime)
+            guard !window.lines.isEmpty else { return }
+            let lineIndex = lyrics.currentLineIndex(at: nowPlaying.elapsedTime) ?? -1
+            lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(window.lines.joined(separator: "|"))"
+        } else {
+            // 用户刚建立关联时即使尚未播放或未找到歌词，也要把目标键盘切换并
+            // 推送纯歌词占位页；平时的每秒 tick 不重复发送该占位画面。
+            guard force else { return }
+            let message = nowPlayingSongKey(nowPlaying) == nil ? "暂无播放内容" : "暂未找到歌词"
+            window = LyricsDisplayWindow(lines: [message], currentIndex: 0)
+            lineKey = "placeholder|\(message)"
+        }
         let activeID = activeDeviceID(for: .keyboard)
         for keyboardID in linkedLyricsKeyboardIDs {
             guard force || linkedLyricsLastLineKeys[keyboardID] != lineKey,
@@ -3939,7 +3950,8 @@ public func setClockTimeFormat(_ format: String) {
                 let artwork = cachedArtworkImage(for: nowPlaying.artwork)
                 let result = try ScreenRenderer.renderNowPlaying(
                     nowPlaying, settings: renderSettings, artworkImage: artwork,
-                    lyrics: lyrics.displayWindow(at: nowPlaying.elapsedTime))
+                    lyrics: window,
+                    lyricsOnly: true)
                 _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
                                               endpoint: endpoint)
                 linkedLyricsLastLineKeys[keyboardID] = lineKey
@@ -5189,12 +5201,33 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard, .excerpt:
             return
         }
+        if let keyboardID {
+            prepareKeyboardForLyricsLink(keyboardID)
+        }
         linkedLyricsLastLineKeys = [:]
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshLyricsIfNeeded(force: true)
             await self.pushLinkedLyricsKeyboardsIfNeeded(force: true)
         }
+    }
+
+    /// 歌词联动是目标键盘的独占显示模式：停止轮播并固定到正在播放页。
+    /// 取消关联时不自动恢复旧状态，避免覆盖用户关联后的手动调整。
+    private func prepareKeyboardForLyricsLink(_ keyboardID: UUID) {
+        guard let index = settings.devices.firstIndex(where: {
+            $0.id == keyboardID && $0.type == .keyboard && $0.isEnabled
+        }) else { return }
+        settings.devices[index].settings.cardRotationEnabled = false
+        settings.devices[index].settings.displayMode = .nowPlaying
+        if activeDeviceID(for: .keyboard) == keyboardID {
+            settings.cardRotationEnabled = false
+            settings.displayMode = .nowPlaying
+            lastCardRotation = nil
+            cardRotationIndex = 0
+            renderPreview()
+        }
+        persistSettings()
     }
 
     func lyricsKeyboardBinding(for owner: CanvasOwner) -> Binding<UUID?> {
@@ -7291,10 +7324,13 @@ public func setClockTimeFormat(_ format: String) {
             return try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: Date())
         case .nowPlaying:
             let artwork = cachedArtworkImage(for: nowPlaying.artwork)
-            let lyrics = lyricsForKeyboard(activeDeviceID(for: .keyboard))?
+            let keyboardID = activeDeviceID(for: .keyboard)
+            let linked = keyboardID.map { linkedLyricsKeyboardIDs.contains($0) } ?? false
+            let lyrics = lyricsForKeyboard(keyboardID)?
                 .displayWindow(at: nowPlaying.elapsedTime)
             return try ScreenRenderer.renderNowPlaying(nowPlaying, settings: settings,
-                                                       artworkImage: artwork, lyrics: lyrics)
+                                                       artworkImage: artwork, lyrics: lyrics,
+                                                       lyricsOnly: linked)
         case .codex:
             return try ScreenRenderer.renderUsage(usage, settings: settings)
         case .canvas:

@@ -1658,6 +1658,15 @@ public enum ScreenRenderer {
                      color: colors.secondaryTextCG,
                      in: rect(band.minX + 6, band.minY + rowH, w - 12, rowH), align: .left)
         case .nowPlaying:
+            if deviceCanvas, !monochromeDeviceCanvas,
+               band.width >= 180, band.height >= 180 {
+                drawSquareNowPlaying(ctx, band: band, info: nowPlaying,
+                                     accent: accentOverride ?? colors.accentCG,
+                                     colors: colors,
+                                     showCover: nowPlayingShowCover
+                                        ?? settings.canvasNowPlayingCover)
+                break
+            }
             let title = nowPlaying.title.isEmpty || nowPlaying.title == "未在播放" ? "未在播放" : nowPlaying.title
             let artist = nowPlaying.artist.isEmpty ? "" : nowPlaying.artist
             let art = nowPlaying.artwork.flatMap({ decodeArtwork($0) })
@@ -2946,6 +2955,99 @@ public enum ScreenRenderer {
                  in: rect(right.minX + 7, right.minY + 6, right.width - 14, 14), align: .left)
         drawText(ctx, formatDate(quota.sampledAt, "HH:mm"), size: 13, bold: true, color: accent,
                  in: rect(right.minX + 7, right.minY + 22, right.width - 14, 22), align: .left)
+    }
+
+    /// 240×240 彩色小屏幕的正在播放专用布局：封面、歌曲信息、完整进度条，
+    /// 以及已播放/剩余时间均拥有固定区域，不再被方屏通用模块裁掉。
+    private static func drawSquareNowPlaying(_ ctx: CGContext, band: CGRect,
+                                             info: NowPlayingInfo, accent: CGColor,
+                                             colors: ScreenPalette,
+                                             showCover: Bool) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+
+        drawText(ctx, "正在播放", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 7, 96, 24), align: .left)
+        let stateText = info.isPlaying ? "播放中" : "已暂停"
+        let stateBox = CGRect(x: inner.maxX - 69, y: inner.minY + 7,
+                              width: 58, height: 23)
+        fillRound(ctx, rect(stateBox), radius: 10,
+                  color: accent.copy(alpha: 0.15) ?? accent)
+        drawText(ctx, stateText, size: 10, bold: true, color: accent,
+                 in: rect(stateBox), align: .center)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+
+        let coverBox = CGRect(x: inner.minX + 10, y: inner.minY + 45,
+                              width: 88, height: 88)
+        if showCover, let artwork = info.artwork.flatMap({ decodeArtwork($0) }) {
+            drawCoverGlow(ctx, color: boostedGlowColor(dominantColor(of: artwork)),
+                          coverSkia: coverBox, extent: 14, blurSigma: 7,
+                          innerInset: 2, cornerRadius: 10, opacity: 0.62)
+            ctx.saveGState()
+            ctx.addPath(CGPath(roundedRect: rect(coverBox), cornerWidth: 10,
+                               cornerHeight: 10, transform: nil))
+            ctx.clip()
+            ctx.interpolationQuality = .high
+            ctx.draw(artwork, in: rect(coverBox))
+            ctx.restoreGState()
+            strokeRound(ctx, rect(coverBox), radius: 10, color: colors.borderCG, width: 1)
+        } else {
+            fillRound(ctx, rect(coverBox), radius: 10, color: colors.backgroundCG)
+            strokeRound(ctx, rect(coverBox), radius: 10, color: colors.borderCG, width: 1)
+            drawText(ctx, "♪", size: 42, bold: true, color: accent,
+                     in: rect(coverBox), align: .center)
+        }
+
+        let textX = coverBox.maxX + 12
+        let textW = max(inner.maxX - textX - 10, 30)
+        let title = info.title.isEmpty ? "未在播放" : info.title
+        var titleSize: CGFloat = 15
+        var titleLines = wrapText(title, maxWidth: textW, size: titleSize)
+        while (titleLines.count > 2 || CGFloat(titleLines.count) * titleSize * 1.2 > 42),
+              titleSize > 9 {
+            titleSize -= 0.5
+            titleLines = wrapText(title, maxWidth: textW, size: titleSize)
+        }
+        titleLines = Array(titleLines.prefix(2))
+        for (index, line) in titleLines.enumerated() {
+            drawText(ctx, line, size: titleSize, bold: true, color: colors.primaryTextCG,
+                     in: rect(textX, inner.minY + 49 + CGFloat(index) * titleSize * 1.18,
+                              textW, titleSize * 1.22), align: .left)
+        }
+        let artist = info.artist.isEmpty ? "未知歌手" : info.artist
+        drawAdaptiveText(ctx, artist, maxSize: 11.5, minSize: 8, bold: true,
+                         color: colors.secondaryTextCG,
+                         in: rect(textX, inner.minY + 94, textW, 17), align: .left)
+        let source = info.album.isEmpty ? (info.appName ?? "本机媒体") : info.album
+        drawAdaptiveText(ctx, source, maxSize: 9.5, minSize: 7, bold: false,
+                         color: colors.tertiaryTextCG,
+                         in: rect(textX, inner.minY + 114, textW, 15), align: .left)
+
+        let progressY = inner.minY + 145
+        drawProgress(ctx, rect(inner.minX + 11, progressY, inner.width - 22, 7),
+                     progress: info.progress, accent: accent, background: colors.borderCG)
+        let elapsed = info.duration > 0 ? formatClock(info.elapsedTime) : "--:--"
+        let remainingSeconds = max(info.duration - info.elapsedTime, 0)
+        let remaining = info.duration > 0 ? formatClock(remainingSeconds) : "--:--"
+        drawText(ctx, "已播放  \(elapsed)", size: 10, bold: true,
+                 color: colors.secondaryTextCG,
+                 in: rect(inner.minX + 11, progressY + 13,
+                          (inner.width - 22) / 2, 18), align: .left)
+        drawText(ctx, "剩余  \(remaining)", size: 10, bold: true,
+                 color: colors.secondaryTextCG,
+                 in: rect(inner.midX, progressY + 13,
+                          inner.width / 2 - 11, 18), align: .right)
+
+        let total = info.duration > 0 ? formatClock(info.duration) : "--:--"
+        let footerBox = CGRect(x: inner.minX + 10, y: progressY + 38,
+                               width: inner.width - 20,
+                               height: max(inner.maxY - progressY - 48, 20))
+        fillRound(ctx, rect(footerBox), radius: 8, color: colors.backgroundCG)
+        drawText(ctx, "总时长  \(total)", size: 10, bold: true, color: accent,
+                 in: rect(footerBox.minX + 8, footerBox.minY,
+                          footerBox.width - 16, footerBox.height), align: .center)
     }
 
     /// 千问办公额度数值拆分为整数与小数两部分（精确到两位小数；小数部分渲染时字号减半）
@@ -4740,6 +4842,7 @@ public enum ScreenRenderer {
     public static func renderNowPlaying(_ info: NowPlayingInfo, settings: AppSettings,
                                         artworkImage: CGImage? = nil,
                                         lyrics: LyricsDisplayWindow? = nil,
+                                        lyricsOnly: Bool = false,
                                         now: Date = Date()) throws -> RenderResult {
         let artImage = artworkImage ?? (info.artwork.flatMap { decodeArtwork($0) })
         // 有封面时从封面取主色作为卡片背景；无封面回退主题配色
@@ -4756,6 +4859,10 @@ public enum ScreenRenderer {
         let c = drawCanvas(ctx, safeArea: safe, colors: colors)
 
         let accent = colors.accentCG
+        if lyricsOnly {
+            drawLyricsOnly(ctx, card: c, lyrics: lyrics, colors: colors, accent: accent)
+            return try encode(ctx, quality: settings.jpegQuality)
+        }
         // 封面几何：页脚可见时贴顶；隐藏页脚时在「头部下方 ～ 信息区上方」的可用空间内垂直居中
         // （考虑文字与进度条占用空间，而不是整卡中心）
         let top = c.minY + 49
@@ -4889,6 +4996,58 @@ public enum ScreenRenderer {
         }
 
         return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    /// 灵犀 68 歌词联动专用画面。联动后不再保留封面、歌曲信息、进度与页脚，
+    /// 把纵向空间完整交给当前歌词及相邻上下文。
+    private static func drawLyricsOnly(_ ctx: CGContext, card: CGRect,
+                                       lyrics: LyricsDisplayWindow?,
+                                       colors: ScreenPalette, accent: CGColor) {
+        let fallback = LyricsDisplayWindow(lines: ["暂未找到歌词"], currentIndex: 0)
+        let window = (lyrics?.lines.isEmpty == false) ? lyrics! : fallback
+        let lines = window.lines
+        let region = card.insetBy(dx: 8, dy: 16)
+        let current = min(max(window.currentIndex, 0), max(lines.count - 1, 0))
+        let currentWeight: CGFloat = lines.count == 1 ? 1 : 0.54
+        let secondaryCount = max(lines.count - 1, 1)
+        let secondaryWeight = (1 - currentWeight) / CGFloat(secondaryCount)
+        var cursor = region.minY
+
+        func drawLine(_ text: String, in bounds: CGRect, isCurrent: Bool) {
+            if isCurrent {
+                fillRound(ctx, rect(bounds.insetBy(dx: 1, dy: 3)), radius: 10,
+                          color: accent.copy(alpha: 0.14) ?? accent)
+            }
+            var size: CGFloat = isCurrent ? 18 : 10.5
+            let minimum: CGFloat = isCurrent ? 9 : 7
+            var wrapped = wrapText(text, maxWidth: bounds.width - 12,
+                                   size: size, bold: isCurrent)
+            while CGFloat(max(wrapped.count, 1)) * size * 1.3 > bounds.height - 8,
+                  size > minimum {
+                size -= 0.5
+                wrapped = wrapText(text, maxWidth: bounds.width - 12,
+                                   size: size, bold: isCurrent)
+            }
+            let maxLines = max(1, Int((bounds.height - 8) / max(size * 1.3, 1)))
+            wrapped = Array(wrapped.prefix(maxLines))
+            let lineHeight = size * 1.3
+            let blockHeight = CGFloat(wrapped.count) * lineHeight
+            let top = bounds.minY + max((bounds.height - blockHeight) / 2, 0)
+            for (index, value) in wrapped.enumerated() {
+                drawText(ctx, value, size: size, bold: isCurrent,
+                         color: isCurrent ? colors.primaryTextCG : colors.tertiaryTextCG,
+                         in: rect(bounds.minX + 6, top + CGFloat(index) * lineHeight,
+                                  bounds.width - 12, lineHeight), align: .center)
+            }
+        }
+
+        for (index, line) in lines.enumerated() {
+            let weight = index == current ? currentWeight : secondaryWeight
+            let height = index == lines.count - 1 ? region.maxY - cursor : region.height * weight
+            let row = CGRect(x: region.minX, y: cursor, width: region.width, height: height)
+            drawLine(line, in: row, isCurrent: index == current)
+            cursor += height
+        }
     }
 
     /// 封面光晕主色：暗色封面按 0.4/luminance 比例提亮（保色相、不超白），保证深色封面的光晕可见

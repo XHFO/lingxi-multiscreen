@@ -1182,6 +1182,9 @@ func testNowPlaying() throws {
     let lyricResult = try ScreenRenderer.renderNowPlaying(
         withArt, settings: settings, lyrics: lyricWindow)
     check(lyricResult.data != artResult.data, "关联歌词后键盘正在播放卡片应变化")
+    let lyricsOnlyResult = try ScreenRenderer.renderNowPlaying(
+        withArt, settings: settings, lyrics: lyricWindow, lyricsOnly: true)
+    check(lyricsOnlyResult.data != lyricResult.data, "歌词联动使用独立纯歌词画面")
 
     // 页脚顺序：上=时钟(强调色)，下=日期(强调色)——正在播放页脚跟随封面/全局强调色
     let footImg = noArt.image
@@ -4986,6 +4989,24 @@ func testAIMacScreen() throws {
     checkEqual(squareCodexCard.height, 240, "Codex 方屏高密度卡片高度")
     check(!bitmapEqual(squareCodexCard, squareQwenCard),
           "Codex 与千问方屏卡片按各自额度内容渲染")
+    let squareSongStart = NowPlayingInfo(title: "Midnight City", artist: "M83",
+                                         album: "Hurry Up, We're Dreaming",
+                                         duration: 244, elapsedTime: 31,
+                                         playbackRate: 1)
+    var squareSongLater = squareSongStart
+    squareSongLater.elapsedTime = 118
+    let squareNowPlayingStart = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying], system: snapshot, nowPlaying: squareSongStart,
+        pomodoro: idlePomodoro, customText: "", settings: squareSettings,
+        width: 240, height: 240, palette: squareSettings.resolvedPalette,
+        optimizeForEInk: false)
+    let squareNowPlayingLater = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying], system: snapshot, nowPlaying: squareSongLater,
+        pomodoro: idlePomodoro, customText: "", settings: squareSettings,
+        width: 240, height: 240, palette: squareSettings.resolvedPalette,
+        optimizeForEInk: false)
+    check(!bitmapEqual(squareNowPlayingStart, squareNowPlayingLater),
+          "AI Mac 正在播放方屏卡显示进度与剩余时间变化")
 
     let coverContext = CGContext(data: nil, width: 64, height: 64,
                                  bitsPerComponent: 8, bytesPerRow: 64 * 4,
