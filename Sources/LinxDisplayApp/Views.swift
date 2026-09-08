@@ -5425,7 +5425,9 @@ struct Sidebar: View {
                 if panel == .aiMacCardManagement, switchType == .aiMacScreen, let deviceID {
                     ForEach(aiMacCardModes) { mode in
                         aiMacCardSidebarRow(mode, deviceID: deviceID)
-                            .padding(.leading, Self.submenuIndent + 14)
+                            // 功能卡片与「卡片管理」同属设备下的第二级，排列层级和
+                            // 灵犀键盘一致；不再额外缩进成难以辨认的第三级。
+                            .padding(.leading, Self.submenuIndent)
                     }
                 }
             }
@@ -5730,6 +5732,7 @@ struct Sidebar: View {
     private func aiMacCardSidebarRow(_ mode: DisplayMode, deviceID: UUID) -> some View {
         let current = model.activeDeviceID(for: .aiMacScreen) == deviceID
             && model.isCurrentAIMacCard(deviceID: deviceID, mode: mode)
+        let selected = current && selection == .aiMacCard
         return Button {
             if model.activeDeviceID(for: .aiMacScreen) != deviceID {
                 model.switchDevice(type: .aiMacScreen, to: deviceID)
@@ -5737,23 +5740,22 @@ struct Sidebar: View {
             model.activateAIMacCard(mode, deviceID: deviceID)
             selection = .aiMacCard
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Image(systemName: mode.icon)
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 14)
+                    .frame(width: 18, height: 18)
                 Text(mode.title).lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 11))
-            .padding(.vertical, 5)
+            // 与灵犀键盘 sidebarRow 使用同一字号、图标框和行高标准。
+            .font(.system(size: 12))
+            .padding(.vertical, 6)
             .padding(.horizontal, 8)
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(current && selection == .aiMacCard
-                      ? Color.accentColor.opacity(0.18) : Color.clear))
+                .fill(selected ? Color.accentColor.opacity(0.25) : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(current ? Color.accentColor : Color.secondary)
+        .foregroundStyle(selected ? Color.accentColor : Color.primary)
         .help("在这台 AI Mac 小屏幕显示“\(mode.title)”")
     }
 
