@@ -233,12 +233,23 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacDiscoveredDevices: [AIMacDiscoveredDevice] = []
     @Published public var aiMacNetworkScanBusy = false
     @Published public var aiMacNetworkScanStatus = ""
+    @Published public var homeAssistantDiscoveredServices: [HomeAssistantDiscoveredService] = []
+    @Published public var homeAssistantDiscoveryBusy = false
+    @Published public var homeAssistantDiscoveryStatus = ""
+    @Published public var rand0DiscoveredDevices: [Rand0DiscoveredDevice] = []
+    @Published public var rand0DiscoveryBusy = false
+    @Published public var rand0DiscoveryStatus = ""
+    @Published public var bambuAutoDiscoveryBusy = false
+    @Published public var bambuAutoDiscoveryStatus = ""
     @Published public var aiMacFlashPorts: [ESPSerialPort] = []
     @Published public var selectedAIMacFlashPort = ""
     @Published public var aiMacFlashProgress = 0.0
     @Published public var aiMacFlashStatus = "连接小屏幕 USB 数据线后刷新串口列表"
     @Published public var aiMacFlashLog = ""
     @Published public var aiMacFlashBusy = false
+    /// 设备管理页自动发现每类只主动运行一次；用户仍可点“重新扫描”。
+    private var didAutoScanHomeAssistant = false
+    private var didAutoScanRand0 = false
     /// Bambu 实体选择候选缓存；依靠 haSnapshot 的发布通知驱动界面读取，无需单独发布。
     var bambuEntityCatalog = BambuEntityCatalog()
     /// HA 异常监控告警：异常标题（如打印机名）与详情（错误码等）；非空即处于告警状态
@@ -1123,12 +1134,192 @@ public final class AppModel: ObservableObject {
         }
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
-            return "连接成功：读到 \(entities.count) 个实体"
+            applyHASnapshot(entities: entities, errorText: nil)
+            lastHARefresh = Date()
+            let result = reconcileBambuPrinters(entities: entities)
+            bambuAutoDiscoveryStatus = result
+            return "连接成功：读到 \(entities.count) 个实体；\(result)"
         } catch let error as HAError {
             return error.errorDescription ?? "连接失败"
         } catch {
             return "连接失败"
         }
+    }
+
+    // MARK: - Home Assistant / Bambu Lab 自动发现
+
+    /// 设备管理页首次进入时自动扫描一次；后续只有用户主动点“重新扫描”才再次运行。
+    public func scanHomeAssistantServers(force: Bool = false) async {
+        guard !homeAssistantDiscoveryBusy else { return }
+        if !force, didAutoScanHomeAssistant { return }
+        didAutoScanHomeAssistant = true
+        homeAssistantDiscoveryBusy = true
+        homeAssistantDiscoveryStatus = "正在查找局域网中的 Home Assistant…"
+        defer { homeAssistantDiscoveryBusy = false }
+        let services = await HomeAssistantDiscovery.scan(timeout: 3)
+        homeAssistantDiscoveredServices = services
+        homeAssistantDiscoveryStatus = services.isEmpty
+            ? "没有自动发现服务器，可继续使用手动添加"
+            : "发现 \(services.count) 个 Home Assistant 服务器"
+    }
+
+    public func isHomeAssistantAdded(_ discovered: HomeAssistantDiscoveredService) -> Bool {
+        let target = normalizedServerURL(discovered.serverURL)
+        return devices(for: .homeAssistant).contains {
+            normalizedServerURL($0.settings.haServerURL ?? "") == target
+        }
+    }
+
+    /// Home Assistant 仅允许一个档案。选择另一台服务器时复用该档案并清空旧令牌，
+    /// 防止凭证被意外发给不同主机。
+    @discardableResult
+    public func addDiscoveredHomeAssistant(_ discovered: HomeAssistantDiscoveredService) -> UUID {
+        let id = devices(for: .homeAssistant).first?.id ?? addDevice(type: .homeAssistant)
+        let target = normalizedServerURL(discovered.serverURL)
+        guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return id }
+        let previous = normalizedServerURL(settings.devices[index].settings.haServerURL ?? "")
+        let changedServer = !previous.isEmpty && previous != target
+        settings.deviceSyncInFlight = true
+        settings.devices[index].settings.haServerURL = discovered.serverURL
+        if changedServer { settings.devices[index].settings.haToken = "" }
+        settings.devices[index].name = discovered.name
+        settings.devices[index].isEnabled = true
+        setActiveDeviceID(.homeAssistant, id)
+        settings.haServerURL = discovered.serverURL
+        if changedServer { settings.haToken = "" }
+        settings.deviceSyncInFlight = false
+        lastHARefresh = nil
+        if changedServer {
+            applyHASnapshot(entities: [], errorText: nil)
+            bambuAutoDiscoveryStatus = "服务器已更换，请填写长期访问令牌后连接"
+        }
+        homeAssistantDiscoveryStatus = "已选择 \(discovered.name)，请填写长期访问令牌"
+        persistSettings()
+        return id
+    }
+
+    /// 使用当前 Home Assistant 凭证扫描打印状态实体并创建/补全打印机档案。
+    public func discoverAndAddBambuPrinters(homeAssistantDeviceID id: UUID) async {
+        guard !bambuAutoDiscoveryBusy else { return }
+        guard let device = settings.devices.first(where: { $0.id == id }) else {
+            bambuAutoDiscoveryStatus = "请先添加 Home Assistant 服务器"
+            return
+        }
+        let server = device.settings.haServerURL ?? ""
+        let token = device.settings.haToken ?? ""
+        if let problem = HomeAssistantClient.validate(serverURL: server, token: token) {
+            bambuAutoDiscoveryStatus = problem
+            return
+        }
+        bambuAutoDiscoveryBusy = true
+        bambuAutoDiscoveryStatus = "正在查找 Bambu Lab 打印机…"
+        defer { bambuAutoDiscoveryBusy = false }
+        do {
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
+            applyHASnapshot(entities: entities, errorText: nil)
+            lastHARefresh = Date()
+            bambuAutoDiscoveryStatus = reconcileBambuPrinters(entities: entities)
+        } catch let error as HAError {
+            bambuAutoDiscoveryStatus = error.errorDescription ?? "无法读取 Home Assistant 设备"
+        } catch {
+            bambuAutoDiscoveryStatus = "无法读取 Home Assistant 设备"
+        }
+    }
+
+    private func reconcileBambuPrinters(entities: [HAEntity]) -> String {
+        let candidates = BambuEntityMatcher.printStatusCandidates(entities, useDefaultFilter: true)
+        var seenPrefixes = Set<String>()
+        let unique = candidates.filter {
+            seenPrefixes.insert(BambuEntityMatcher.prefix(of: $0.entityId)).inserted
+        }
+        guard !unique.isEmpty else { return "没有发现 Bambu Lab 打印机" }
+
+        var added = 0
+        var updated = 0
+        var skipped = 0
+        var claimedExistingIDs = Set<UUID>()
+        for seed in unique {
+            let prefix = BambuEntityMatcher.prefix(of: seed.entityId)
+            let printers = devices(for: .bambuLab)
+            let directlyMatched = printers.first(where: { device in
+                guard !claimedExistingIDs.contains(device.id),
+                      let statusID = device.settings.bambuStatusEntityID, !statusID.isEmpty else {
+                    return false
+                }
+                return statusID == seed.entityId || BambuEntityMatcher.prefix(of: statusID) == prefix
+            })
+            // entity_id 被用户重命名后前缀可能完全变化：型号能唯一对应时仍复用旧档案，
+            // 不新建重复打印机。型号同时从旧 entity_id 与用户设备名中识别。
+            let modelMatched: ManagedDevice? = {
+                guard directlyMatched == nil,
+                      let candidateModel = BambuModelDetector.model(of: seed) else { return nil }
+                let matches = printers.filter { device in
+                    guard !claimedExistingIDs.contains(device.id) else { return false }
+                    let oldStatus = device.settings.bambuStatusEntityID ?? ""
+                    let probe = HAEntity(entityId: oldStatus, friendlyName: device.name,
+                                         state: "", unitOfMeasurement: nil)
+                    return BambuModelDetector.model(of: probe) == candidateModel
+                }
+                return matches.count == 1 ? matches[0] : nil
+            }()
+            let blankMatched = printers.first(where: { device in
+                !claimedExistingIDs.contains(device.id)
+                    && (device.settings.bambuStatusEntityID ?? "").isEmpty
+            })
+            if let existing = directlyMatched ?? modelMatched ?? blankMatched {
+                claimedExistingIDs.insert(existing.id)
+                setDeviceEnabled(id: existing.id, enabled: true)
+                if (existing.settings.bambuStatusEntityID ?? "").isEmpty,
+                   existing.name.hasPrefix("Bambu Lab 打印机"),
+                   let index = settings.devices.firstIndex(where: { $0.id == existing.id }) {
+                    let name = discoveredBambuName(from: seed)
+                    settings.devices[index].name = name
+                    settings.devices[index].settings.bambuPrinterName = name
+                    if activeDeviceID(for: .bambuLab) == existing.id {
+                        settings.bambuPrinterName = name
+                    }
+                }
+                applyBambuAutoDetect(from: seed, deviceID: existing.id, entities: entities)
+                updated += 1
+                continue
+            }
+            guard settings.canAddDevice(of: .bambuLab) else {
+                skipped += 1
+                continue
+            }
+            let id = addDevice(type: .bambuLab)
+            let name = discoveredBambuName(from: seed)
+            if let index = settings.devices.firstIndex(where: { $0.id == id }) {
+                settings.devices[index].name = name
+                settings.devices[index].settings.bambuPrinterName = name
+            }
+            settings.bambuPrinterName = name
+            applyBambuAutoDetect(from: seed, deviceID: id, entities: entities)
+            added += 1
+        }
+        persistSettings()
+        renderPreview()
+        var parts = ["发现 \(unique.count) 台打印机", "新增 \(added) 台", "更新 \(updated) 台"]
+        if skipped > 0 { parts.append("另有 \(skipped) 台超过上限") }
+        return parts.joined(separator: "，")
+    }
+
+    private func discoveredBambuName(from entity: HAEntity) -> String {
+        if let model = BambuModelDetector.modelName(of: entity) { return model }
+        var name = entity.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffixes = ["Print Status", "Printer Status", "打印状态", "打印机状态", "Status"]
+        for suffix in suffixes where name.lowercased().hasSuffix(suffix.lowercased()) {
+            name.removeLast(suffix.count)
+            name = name.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines
+                .union(CharacterSet(charactersIn: "-_·")))
+            break
+        }
+        return name.isEmpty ? "Bambu Lab 打印机" : name
+    }
+
+    private func normalizedServerURL(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+            .lowercased()
     }
 
     public func formlabsSettings(for id: UUID) -> FormlabsConnectionSettings {
@@ -1193,6 +1384,61 @@ public final class AppModel: ObservableObject {
         formlabsConnectionStatus[id] = "正在测试 Formlabs 云端连接…"
         formlabsConnectionStatus[id] = await formlabsCloudTestText(config)
         await refreshFormlabs(deviceID: id, force: true, pushIfVisible: true)
+    }
+
+    // MARK: - 口袋先知局域网发现
+
+    /// 低并发扫描当前 /24 网段。已添加设备不再握手，避免打断它正在使用的显示连接。
+    public func scanRand0Devices(force: Bool = false) async {
+        guard !rand0DiscoveryBusy else { return }
+        if !force, didAutoScanRand0 { return }
+        didAutoScanRand0 = true
+        rand0DiscoveryBusy = true
+        rand0DiscoveryStatus = "正在查找局域网中的口袋先知…"
+        defer { rand0DiscoveryBusy = false }
+        let excluded = Set(devices(for: .oracle).compactMap { device -> String? in
+            let host = EndpointBuilder.host(from: device.settings.rand0IP ?? "")
+            return host.isEmpty ? nil : host
+        })
+        let found = await Rand0Discovery.scanLocalNetwork(excluding: excluded)
+        rand0DiscoveredDevices = found
+        rand0DiscoveryStatus = found.isEmpty
+            ? "没有发现新的口袋先知，可继续使用手动添加"
+            : "发现 \(found.count) 台尚未添加的口袋先知"
+    }
+
+    public func isRand0DeviceAdded(_ discovered: Rand0DiscoveredDevice) -> Bool {
+        let host = EndpointBuilder.host(from: discovered.ip)
+        return devices(for: .oracle).contains {
+            EndpointBuilder.host(from: $0.settings.rand0IP ?? "") == host
+        }
+    }
+
+    /// 扫描结果按 IP 去重；每台口袋先知保留独立档案与画板设置。
+    @discardableResult
+    public func addDiscoveredRand0Device(_ discovered: Rand0DiscoveredDevice) -> UUID {
+        let host = EndpointBuilder.host(from: discovered.ip)
+        if let existing = devices(for: .oracle).first(where: {
+            EndpointBuilder.host(from: $0.settings.rand0IP ?? "") == host
+        }) {
+            setDeviceEnabled(id: existing.id, enabled: true)
+            switchDevice(type: .oracle, to: existing.id)
+            rand0DiscoveryStatus = "该设备已在列表中 · \(host)"
+            persistSettings()
+            return existing.id
+        }
+        let id = addDevice(type: .oracle)
+        guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return id }
+        settings.deviceSyncInFlight = true
+        settings.devices[index].settings.rand0IP = host
+        settings.devices[index].name = discovered.displayName
+        settings.rand0IP = host
+        settings.deviceSyncInFlight = false
+        rand0DiscoveredDevices.removeAll { $0.id == discovered.id }
+        rand0DiscoveryStatus = "已添加 \(discovered.displayName) · \(host)"
+        persistSettings()
+        ensureRand0Session()
+        return id
     }
 
     // MARK: - AI Mac 240×240 小屏幕

@@ -205,8 +205,9 @@ public enum WSFraming {
 // MARK: - 底层 POSIX socket 辅助
 
 private enum RawSocket {
-    /// 建立 TCP 连接（非阻塞 connect + select 超时），返回阻塞 fd 并设 1s 接收超时。
-    static func connect(host: String, port: UInt16, timeout: TimeInterval) throws -> Int32 {
+    /// 建立 TCP 连接（非阻塞 connect + poll 超时），返回阻塞 fd。
+    static func connect(host: String, port: UInt16, timeout: TimeInterval,
+                        receiveTimeout: TimeInterval = 1) throws -> Int32 {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = SOCK_STREAM
@@ -253,7 +254,10 @@ private enum RawSocket {
 
         let flags = fcntl(sock, F_GETFL, 0)
         _ = fcntl(sock, F_SETFL, flags & ~O_NONBLOCK)
-        var rcv = timeval(tv_sec: 1, tv_usec: 0)
+        let boundedReceiveTimeout = max(receiveTimeout, 0.1)
+        var rcv = timeval(tv_sec: Int(boundedReceiveTimeout),
+                          tv_usec: Int32((boundedReceiveTimeout
+                              - floor(boundedReceiveTimeout)) * 1_000_000))
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &rcv, socklen_t(MemoryLayout<timeval>.size))
         return sock
     }
@@ -303,6 +307,26 @@ public final class Rand0DisplaySession: @unchecked Sendable {
     private var path = "/display/bw"
 
     public init() {}
+
+    /// 只完成专属显示端点的 WebSocket 握手并立即关闭，不发送任何图像。
+    /// 用于设备管理的局域网发现，不会改变墨水屏当前内容。
+    public static func probe(ip: String, timeout: TimeInterval = 0.65) async -> Bool {
+        let clean = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return false }
+        return await Task.detached(priority: .utility) {
+            let (host, port) = splitHostPort(EndpointBuilder.host(from: clean))
+            do {
+                let (fd, _) = try openConnection(host: host, port: port, path: "/display/bw",
+                                                 connectTimeout: timeout,
+                                                 handshakeTimeout: timeout)
+                Darwin.shutdown(fd, SHUT_RDWR)
+                Darwin.close(fd)
+                return true
+            } catch {
+                return false
+            }
+        }.value
+    }
 
     /// 当前是否已连接
     public var isConnected: Bool {
@@ -589,10 +613,14 @@ public final class Rand0DisplaySession: @unchecked Sendable {
     // MARK: - 握手
 
     /// 建连并完成 WebSocket 握手；返回 (fd, 握手后多余字节)。
-    private static func openConnection(host: String, port: UInt16, path: String) throws -> (Int32, Data) {
-        let fd = try RawSocket.connect(host: host, port: port, timeout: 4)
+    private static func openConnection(host: String, port: UInt16, path: String,
+                                       connectTimeout: TimeInterval = 4,
+                                       handshakeTimeout: TimeInterval = 5) throws -> (Int32, Data) {
+        let fd = try RawSocket.connect(host: host, port: port, timeout: connectTimeout,
+                                       receiveTimeout: handshakeTimeout)
         do {
-            let leftover = try handshake(fd: fd, host: host, port: port, path: path)
+            let leftover = try handshake(fd: fd, host: host, port: port, path: path,
+                                         timeout: handshakeTimeout)
             return (fd, leftover)
         } catch {
             Darwin.close(fd)
@@ -600,7 +628,8 @@ public final class Rand0DisplaySession: @unchecked Sendable {
         }
     }
 
-    private static func handshake(fd: Int32, host: String, port: UInt16, path: String) throws -> Data {
+    private static func handshake(fd: Int32, host: String, port: UInt16, path: String,
+                                  timeout: TimeInterval = 5) throws -> Data {
         let key = Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
         let hostHeader = port == 80 ? host : "\(host):\(port)"
         var req = "GET \(path) HTTP/1.1\r\n"
@@ -613,7 +642,7 @@ public final class Rand0DisplaySession: @unchecked Sendable {
 
         // 读到 \r\n\r\n（5 秒上限）
         var head = Data()
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(max(timeout, 0.1))
         var tmp = [UInt8](repeating: 0, count: 2048)
         while head.range(of: Data([13, 10, 13, 10])) == nil {
             if Date() > deadline { throw Rand0Client.Rand0Error.connectionFailed }

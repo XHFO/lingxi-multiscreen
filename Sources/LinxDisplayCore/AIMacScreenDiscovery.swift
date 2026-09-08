@@ -136,7 +136,8 @@ public enum AIMacScreenDiscovery {
         } && value != "0.0.0.0"
     }
 
-    private static func localIPv4Addresses() -> [String] {
+    /// 当前可用于局域网设备发现的活动 IPv4 地址。
+    public static func localIPv4Addresses() -> [String] {
         var pointer: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&pointer) == 0, let first = pointer else { return [] }
         defer { freeifaddrs(pointer) }

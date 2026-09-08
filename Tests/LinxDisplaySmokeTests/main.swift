@@ -5325,6 +5325,22 @@ func testGlobalShortcuts() throws {
 // MARK: - Home Assistant
 
 func testHomeAssistant() throws {
+    let advertisedHA = HomeAssistantDiscovery.makeService(
+        name: "Home Assistant", host: "homeassistant.local.", port: 8123,
+        txt: ["internal_url": "http://192.168.50.8:8123/", "location_name": "家里"])
+    checkEqual(advertisedHA?.serverURL, "http://192.168.50.8:8123",
+               "HA 自动发现优先使用广播的内网地址并去掉尾斜杠")
+    checkEqual(advertisedHA?.name, "家里", "HA 自动发现使用位置名称")
+    let fallbackHA = HomeAssistantDiscovery.makeService(
+        name: "Home Assistant", host: "homeassistant.local.", port: 8123)
+    checkEqual(fallbackHA?.serverURL, "http://homeassistant.local:8123",
+               "HA 自动发现无内网地址时回退解析主机与端口")
+    check(HomeAssistantDiscovery.makeService(name: "HA", host: "", port: 8123) == nil,
+          "HA 自动发现拒绝空主机")
+    check(HomeAssistantDiscovery.makeService(name: "HA", host: "ha.local", port: 70_000) == nil,
+          "HA 自动发现拒绝非法端口")
+    checkEqual(Rand0DiscoveredDevice(ip: "192.168.50.23").displayName, "口袋先知 23",
+               "口袋先知扫描结果使用地址尾号生成易辨识名称")
     checkEqual(ScreenRenderer.haStandalonePageLimit, 4, "HA 独立卡片单页最多四个实体")
     checkEqual(HAEntityPicker.pictureEntityIDs(in: [
         "sensor.room_temperature", " camera.front_door ", "image.weather_map",

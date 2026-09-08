@@ -104,6 +104,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>用于发现并连接灵犀键盘、口袋先知、摘录和 AI Mac 小屏幕等局域网设备。</string>
 	<key>NSBonjourServices</key>
 	<array>
+		<string>_home-assistant._tcp</string>
 		<string>_lingxi-aimac._tcp</string>
 		<string>_http._tcp</string>
 	</array>

@@ -1401,6 +1401,14 @@ struct SettingsView: View {
         Group {
             ForEach(DeviceType.allCases) { type in
                 Section {
+                    if type == .homeAssistant {
+                        homeAssistantDiscoveryInline
+                        Divider()
+                    }
+                    if type == .oracle {
+                        rand0DiscoveryInline
+                        Divider()
+                    }
                     if type == .aiMacScreen {
                         aiMacAddExistingDeviceInline
                         Divider()
@@ -1470,6 +1478,28 @@ struct SettingsView: View {
                                                 .foregroundStyle(haTestResult.hasPrefix("连接成功") ? Color.secondary : Color.red)
                                         }
                                     }
+                                    HStack(spacing: 8) {
+                                        Button {
+                                            Task {
+                                                await model.discoverAndAddBambuPrinters(
+                                                    homeAssistantDeviceID: device.id)
+                                            }
+                                        } label: {
+                                            Label(model.bambuAutoDiscoveryBusy
+                                                  ? "正在匹配打印机…" : "扫描并匹配 Bambu Lab 打印机",
+                                                  systemImage: "printer.filled.and.paper")
+                                        }
+                                        .disabled(model.bambuAutoDiscoveryBusy || haTesting)
+                                        if model.bambuAutoDiscoveryBusy {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                    }
+                                    if !model.bambuAutoDiscoveryStatus.isEmpty {
+                                        Text(model.bambuAutoDiscoveryStatus)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
                                 } else if type == .bambuLab {
                                     bambuDeviceConfigInline(device.id)
                                 } else if type == .formlabs {
@@ -1527,7 +1557,7 @@ struct SettingsView: View {
                         Text(notice)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else if type != .aiMacScreen {
+                    } else if type != .aiMacScreen && type != .homeAssistant && type != .oracle {
                         Button("添加 \(type.title) 设备") {
                             model.addDevice(type: type)
                         }
@@ -1559,6 +1589,146 @@ struct SettingsView: View {
         .task {
             await model.ensureBambuEntityCatalog()
         }
+        .task {
+            await model.scanHomeAssistantServers()
+        }
+        .task {
+            await model.scanRand0Devices()
+        }
+    }
+
+    /// Home Assistant 通过官方 Zeroconf 广播自动发现；只填入地址，令牌仍由用户本人提供。
+    private var homeAssistantDiscoveryInline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("自动发现服务器", systemImage: "homekit")
+                    .font(.headline)
+                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的 Home Assistant。选择服务器后填写长期访问令牌，连接成功时会自动发现并匹配 Bambu Lab 打印机。")
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Button {
+                    model.addDevice(type: .homeAssistant)
+                } label: {
+                    Label("手动添加", systemImage: "plus")
+                }
+                .disabled(!model.settings.canAddDevice(of: .homeAssistant))
+                Button {
+                    Task { await model.scanHomeAssistantServers(force: true) }
+                } label: {
+                    Label(model.homeAssistantDiscoveryBusy ? "正在查找…" : "重新扫描",
+                          systemImage: "arrow.clockwise")
+                }
+                .disabled(model.homeAssistantDiscoveryBusy)
+                if model.homeAssistantDiscoveryBusy {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if !model.homeAssistantDiscoveryStatus.isEmpty {
+                Text(model.homeAssistantDiscoveryStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !model.homeAssistantDiscoveredServices.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(model.homeAssistantDiscoveredServices) { service in
+                        HStack(spacing: 10) {
+                            Image(systemName: "house.and.flag.fill")
+                                .frame(width: 22)
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(service.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(service.serverURL)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            let added = model.isHomeAssistantAdded(service)
+                            Button(added ? "已选择" : "使用") {
+                                _ = model.addDiscoveredHomeAssistant(service)
+                            }
+                            .disabled(added)
+                        }
+                        .padding(.vertical, 8)
+                        if service.id != model.homeAssistantDiscoveredServices.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .background(.quaternary.opacity(0.35),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    /// 已经联网的口袋先知可以直接扫描添加；手动输入 IP 始终作为备用入口。
+    private var rand0DiscoveryInline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("添加已联网设备", systemImage: "wifi")
+                    .font(.headline)
+                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的口袋先知。扫描只确认设备身份，不会覆盖或改变屏幕内容。")
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Button {
+                    model.addDevice(type: .oracle)
+                } label: {
+                    Label("手动添加", systemImage: "plus")
+                }
+                Button {
+                    Task { await model.scanRand0Devices(force: true) }
+                } label: {
+                    Label(model.rand0DiscoveryBusy ? "正在扫描…" : "重新扫描",
+                          systemImage: "dot.radiowaves.left.and.right")
+                }
+                .disabled(model.rand0DiscoveryBusy)
+                if model.rand0DiscoveryBusy {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if !model.rand0DiscoveryStatus.isEmpty {
+                Text(model.rand0DiscoveryStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !model.rand0DiscoveredDevices.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(model.rand0DiscoveredDevices) { discovered in
+                        HStack(spacing: 10) {
+                            Image(systemName: "rectangle.on.rectangle.angled")
+                                .frame(width: 22)
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(discovered.displayName)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(discovered.ip)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            let added = model.isRand0DeviceAdded(discovered)
+                            Button(added ? "已添加" : "添加") {
+                                _ = model.addDiscoveredRand0Device(discovered)
+                            }
+                            .disabled(added)
+                        }
+                        .padding(.vertical, 8)
+                        if discovered.id != model.rand0DiscoveredDevices.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .background(.quaternary.opacity(0.35),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(.vertical, 8)
     }
 
     /// 已经刷写并联网的小屏幕可直接手动添加或从当前局域网扫描，不依赖刷机流程。
