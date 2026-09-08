@@ -52,6 +52,7 @@ public final class AppModel: ObservableObject {
     private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
     private let nowPlayingClient = NowPlayingClient()
+    private let lyricsClient = LyricsClient()
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
     private let esp8266Flasher = ESP8266FirmwareFlasher()
@@ -70,6 +71,10 @@ public final class AppModel: ObservableObject {
     private var lastPomodoroPushAlignedSeconds: Int?
     private var lastUploadedHash: String?
     private var lastNowPlayingFetch: Date?
+    /// 歌词只在换歌时查询；逐行进度在本机计算，并按目标键盘去重推送。
+    private var lyricsRequestedSongKey: String?
+    private var linkedLyricsLastLineKeys: [UUID: String] = [:]
+    private var linkedLyricsBusyIDs: Set<UUID> = []
     private var lastTickDate: Date?
     private var lastPreviewRender: Date?
     private var lastImageRotation: Date?
@@ -270,6 +275,7 @@ public final class AppModel: ObservableObject {
     /// 少数派推荐文章缓存（供「少数派推荐」卡片显示）
     @Published public var sspaiArticles: [SspaiArticle] = []
     @Published public var nowPlaying: NowPlayingInfo = .placeholder
+    @Published public var nowPlayingLyrics: LyricsTrack?
     @Published public var system: SystemSnapshot = .empty
     @Published public var previewImage: NSImage?
     /// 侧栏常驻显示的正在播放封面（无封面时为占位）
@@ -449,6 +455,10 @@ public final class AppModel: ObservableObject {
         lastExcerptPushedHash = nil
         rand0SessionNeedsPrime = true
         lastNowPlayingFetch = nil
+        lyricsRequestedSongKey = nil
+        linkedLyricsLastLineKeys = [:]
+        linkedLyricsBusyIDs = []
+        nowPlayingLyrics = nil
         lastTickDate = nil
         lastImageRotation = nil
         lastOracleBoardRotation = nil
@@ -921,6 +931,22 @@ public final class AppModel: ObservableObject {
             aiMacScreenLastPushText[id] = nil
             aiMacScreenLosslessIDs.remove(id)
             aiMacScreenBusyIDs.remove(id)
+        }
+        if type == .keyboard {
+            linkedLyricsLastLineKeys[id] = nil
+            linkedLyricsBusyIDs.remove(id)
+            // 删除目标键盘时同时解除所有来源设备的关联，避免留下不可见的失效 ID。
+            for index in settings.devices.indices {
+                if settings.devices[index].type == .oracle,
+                   settings.devices[index].settings.oracleLyricsKeyboardDeviceID == id {
+                    settings.devices[index].settings.oracleLyricsKeyboardDeviceID = nil
+                } else if settings.devices[index].type == .aiMacScreen,
+                          var config = settings.devices[index].settings.aiMacScreen,
+                          config.lyricsKeyboardDeviceID == id {
+                    config.lyricsKeyboardDeviceID = nil
+                    settings.devices[index].settings.aiMacScreen = config
+                }
+            }
         }
         persistSettings()
         renderPreview()
@@ -3135,7 +3161,7 @@ public final class AppModel: ObservableObject {
         updateSoftwareDarkState()
         // 设备画板含「正在播放」模块且开启自动推送时：按 6 秒节流刷新播放状态，
         // 实时捕获专辑封面变化（否则要等 30 秒的侧栏低频刷新）
-        if deviceCanvasNeedsLiveNowPlaying {
+        if deviceCanvasNeedsLiveNowPlaying || !linkedLyricsKeyboardIDs.isEmpty {
             await refreshNowPlaying(now: now)
         }
         // Home Assistant 定时刷新（按设置间隔节流；未配置服务器地址时自动跳过）
@@ -3290,6 +3316,8 @@ public final class AppModel: ObservableObject {
         await maybeAutoPushDeviceCanvases(now: now)
         // 240×240 小屏幕共用本应用每秒时钟；每台设备仍按自己的最短间隔与内容指纹推送。
         await maybeAutoPushAIMacScreens(now: now)
+        // 歌词时间轴在本机推进；只有切换到新歌词行时才联动目标键盘。
+        await pushLinkedLyricsKeyboardsIfNeeded(force: false)
         // 侧栏常驻封面：非「正在播放」模式下也低频刷新一次播放状态
         if settings.displayMode != .nowPlaying {
             await refreshSidebarNowPlaying(now: now)
@@ -3327,6 +3355,7 @@ public final class AppModel: ObservableObject {
             }
         }
         updateSidebarArtwork()
+        await refreshLyricsIfNeeded()
     }
 
     /// 最近图片定时轮换：到点后按顺序/随机切换到下一张历史图片并推送
@@ -3741,6 +3770,7 @@ public func setClockTimeFormat(_ format: String) {
                 nowPlaying.sampledAt = now
             }
             lastTickDate = now
+            await refreshLyricsIfNeeded()
             return
         }
         lastNowPlayingFetch = now
@@ -3758,6 +3788,95 @@ public func setClockTimeFormat(_ format: String) {
             }
         }
         updateSidebarArtwork()
+        await refreshLyricsIfNeeded()
+    }
+
+    private func nowPlayingSongKey(_ info: NowPlayingInfo) -> String? {
+        let title = info.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != "未在播放" else { return nil }
+        return "\(title.lowercased())|\(info.artist.lowercased())|\(Int(info.duration.rounded()))"
+    }
+
+    /// 关联存在时每首歌只查询一次 LRCLIB；失败也缓存到换歌为止，避免网络重试形成负担。
+    private func refreshLyricsIfNeeded(force: Bool = false) async {
+        guard !linkedLyricsKeyboardIDs.isEmpty,
+              let songKey = nowPlayingSongKey(nowPlaying) else {
+            lyricsRequestedSongKey = nil
+            nowPlayingLyrics = nil
+            return
+        }
+        guard force || lyricsRequestedSongKey != songKey else { return }
+        lyricsRequestedSongKey = songKey
+        let requestedInfo = nowPlaying
+        do {
+            let fetched = try await lyricsClient.fetch(for: requestedInfo)
+            guard lyricsRequestedSongKey == songKey,
+                  nowPlayingSongKey(nowPlaying) == songKey else { return }
+            nowPlayingLyrics = fetched
+        } catch {
+            guard lyricsRequestedSongKey == songKey,
+                  nowPlayingSongKey(nowPlaying) == songKey else { return }
+            nowPlayingLyrics = nil
+        }
+        linkedLyricsLastLineKeys = [:]
+        renderPreview()
+    }
+
+    private func linkedLyricsRenderSettings(for device: ManagedDevice) -> AppSettings {
+        let result = AppSettings()
+        // 外观与时间格式是全局设置；其余正在播放布局由目标键盘自己的快照恢复。
+        result.softwareIsDark = settings.softwareIsDark
+        result.backgroundTone = settings.backgroundTone
+        result.customBackgroundHex = settings.customBackgroundHex
+        result.accentTone = settings.accentTone
+        result.customAccentHex = settings.customAccentHex
+        result.timeFormat = settings.timeFormat
+        result.dateFormat = settings.dateFormat
+        device.settings.apply(to: result, type: .keyboard)
+        return result
+    }
+
+    /// 将当前歌词行推送到所有已关联且当前停留在“正在播放”卡片的键盘。
+    /// 非活动键盘直接使用自己的端点和显示快照，不切换软件当前操作设备。
+    private func pushLinkedLyricsKeyboardsIfNeeded(force: Bool) async {
+        guard let lyrics = nowPlayingLyrics else { return }
+        let lines = lyrics.displayLines(at: nowPlaying.elapsedTime)
+        guard !lines.isEmpty else { return }
+        let lineIndex = lyrics.currentLineIndex(at: nowPlaying.elapsedTime) ?? -1
+        let lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(lines.joined(separator: "|"))"
+        let activeID = activeDeviceID(for: .keyboard)
+        for keyboardID in linkedLyricsKeyboardIDs {
+            guard force || linkedLyricsLastLineKeys[keyboardID] != lineKey,
+                  !linkedLyricsBusyIDs.contains(keyboardID),
+                  let device = enabledDevices(for: .keyboard).first(where: { $0.id == keyboardID }) else {
+                continue
+            }
+            let mode = keyboardID == activeID
+                ? settings.displayMode : (device.settings.displayMode ?? .codex)
+            guard mode == .nowPlaying else { continue }
+
+            if keyboardID == activeID {
+                await pushWhenAvailable(force: force, silentIfUnchanged: true)
+                linkedLyricsLastLineKeys[keyboardID] = lineKey
+                continue
+            }
+            let endpoint = device.settings.endpoint ?? ""
+            guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            linkedLyricsBusyIDs.insert(keyboardID)
+            defer { linkedLyricsBusyIDs.remove(keyboardID) }
+            do {
+                let renderSettings = linkedLyricsRenderSettings(for: device)
+                let artwork = cachedArtworkImage(for: nowPlaying.artwork)
+                let result = try ScreenRenderer.renderNowPlaying(
+                    nowPlaying, settings: renderSettings, artworkImage: artwork,
+                    lyrics: lyrics.displayWindow(at: nowPlaying.elapsedTime))
+                _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
+                                              endpoint: endpoint)
+                linkedLyricsLastLineKeys[keyboardID] = lineKey
+            } catch {
+                // 后台联动不覆盖用户正在操作页面的状态；下一条歌词到来时会再尝试。
+            }
+        }
     }
 
     /// 上次侧栏封面数据（用于检测封面变化，实时刷新设备画板预览）
@@ -4966,6 +5085,69 @@ public func setClockTimeFormat(_ format: String) {
     /// 画板模块编辑目标：键盘画板与三类独立设备画板各自持有模块列表
     public enum CanvasOwner {
         case keyboard, oracle, excerpt, aiMac
+    }
+
+    /// 口袋先知与 AI Mac 小屏幕分别保存自己的歌词联动目标；默认不关联。
+    func lyricsKeyboardDeviceID(for owner: CanvasOwner) -> UUID? {
+        switch owner {
+        case .oracle:
+            guard let id = activeDeviceID(for: .oracle) else { return nil }
+            return settings.devices.first(where: { $0.id == id })?
+                .settings.oracleLyricsKeyboardDeviceID
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            return aiMacScreenSettings(for: id).lyricsKeyboardDeviceID
+        case .keyboard, .excerpt:
+            return nil
+        }
+    }
+
+    func setLyricsKeyboardDeviceID(_ keyboardID: UUID?, for owner: CanvasOwner) {
+        switch owner {
+        case .oracle:
+            guard let id = activeDeviceID(for: .oracle),
+                  let index = settings.devices.firstIndex(where: {
+                      $0.id == id && $0.type == .oracle
+                  }) else { return }
+            settings.devices[index].settings.oracleLyricsKeyboardDeviceID = keyboardID
+            persistSettings()
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+            mutateAIMacScreenSettings(id, schedulePush: false) {
+                $0.lyricsKeyboardDeviceID = keyboardID
+            }
+        case .keyboard, .excerpt:
+            return
+        }
+        linkedLyricsLastLineKeys = [:]
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refreshLyricsIfNeeded(force: true)
+            await self.pushLinkedLyricsKeyboardsIfNeeded(force: true)
+        }
+    }
+
+    func lyricsKeyboardBinding(for owner: CanvasOwner) -> Binding<UUID?> {
+        Binding(get: { self.lyricsKeyboardDeviceID(for: owner) },
+                set: { self.setLyricsKeyboardDeviceID($0, for: owner) })
+    }
+
+    private var linkedLyricsKeyboardIDs: Set<UUID> {
+        var ids = Set<UUID>()
+        for device in enabledDevices(for: .oracle) {
+            if let id = device.settings.oracleLyricsKeyboardDeviceID { ids.insert(id) }
+        }
+        for device in enabledDevices(for: .aiMacScreen) {
+            if let id = (device.settings.aiMacScreen ?? AIMacScreenDeviceSettings())
+                .lyricsKeyboardDeviceID { ids.insert(id) }
+        }
+        let enabledKeyboardIDs = Set(enabledDevices(for: .keyboard).map(\.id))
+        return ids.intersection(enabledKeyboardIDs)
+    }
+
+    private func lyricsForKeyboard(_ keyboardID: UUID?) -> LyricsTrack? {
+        guard let keyboardID, linkedLyricsKeyboardIDs.contains(keyboardID) else { return nil }
+        return nowPlayingLyrics
     }
 
     private func canvasModulesRaw(for owner: CanvasOwner) -> [Int] {
@@ -7039,7 +7221,10 @@ public func setClockTimeFormat(_ format: String) {
             return try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: Date())
         case .nowPlaying:
             let artwork = cachedArtworkImage(for: nowPlaying.artwork)
-            return try ScreenRenderer.renderNowPlaying(nowPlaying, settings: settings, artworkImage: artwork)
+            let lyrics = lyricsForKeyboard(activeDeviceID(for: .keyboard))?
+                .displayWindow(at: nowPlaying.elapsedTime)
+            return try ScreenRenderer.renderNowPlaying(nowPlaying, settings: settings,
+                                                       artworkImage: artwork, lyrics: lyrics)
         case .codex:
             return try ScreenRenderer.renderUsage(usage, settings: settings)
         case .canvas:

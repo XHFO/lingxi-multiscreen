@@ -1168,6 +1168,21 @@ func testNowPlaying() throws {
     check(artResult.data.count <= ScreenRenderer.maximumFileSize, "带封面 JPEG 大小")
     checkEqual(decodeJPEG(artResult.data).width, 142, "带封面宽度")
 
+    // 同步歌词：LRC 多时间戳解析、当前行窗口与键盘卡片渲染。
+    let lrc = "[00:10.00]第一句\n[00:15.50][00:45.50]第二句\n[00:22.00]第三句"
+    let lyricLines = LyricsClient.parseLRC(lrc)
+    checkEqual(lyricLines.count, 4, "同步歌词支持同一行多个时间戳")
+    checkEqual(lyricLines[1].time, 15.5, "同步歌词解析百分秒")
+    let lyricTrack = LyricsTrack(title: "测试歌曲", artist: "测试歌手",
+                                 timedLines: lyricLines)
+    let lyricWindow = lyricTrack.displayWindow(at: 16)
+    checkEqual(lyricWindow.lines, ["第一句", "第二句", "第三句"],
+               "歌词窗口显示当前行前后文")
+    checkEqual(lyricWindow.currentIndex, 1, "歌词窗口标记当前行")
+    let lyricResult = try ScreenRenderer.renderNowPlaying(
+        withArt, settings: settings, lyrics: lyricWindow)
+    check(lyricResult.data != artResult.data, "关联歌词后键盘正在播放卡片应变化")
+
     // 页脚顺序：上=时钟(强调色)，下=日期(强调色)——正在播放页脚跟随封面/全局强调色
     let footImg = noArt.image
     let fp = footImg.dataProvider!.data! as Data
@@ -4799,8 +4814,10 @@ func testAIMacScreen() throws {
     checkEqual(jpegCapabilities.jpegUploadURL.path, "/image/upload",
                "JPEG 兼容上传路径稳定")
 
+    let linkedKeyboardID = UUID()
     var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .clock,
                                            autoPush: false, followSystemSleep: false,
+                                           lyricsKeyboardDeviceID: linkedKeyboardID,
                                            pushIntervalSeconds: 9,
                                            jpegQuality: 71)
     var fields = DeviceSettings()
@@ -4809,6 +4826,15 @@ func testAIMacScreen() throws {
     let encodedDevice = try JSONEncoder().encode(managed)
     let decodedDevice = try JSONDecoder().decode(ManagedDevice.self, from: encodedDevice)
     checkEqual(decodedDevice.settings.aiMacScreen, stored, "小屏幕设备设置 JSON 往返")
+    checkEqual(decodedDevice.settings.aiMacScreen?.lyricsKeyboardDeviceID, linkedKeyboardID,
+               "小屏幕歌词联动目标按设备持久化")
+
+    var oracleLink = DeviceSettings()
+    oracleLink.oracleLyricsKeyboardDeviceID = linkedKeyboardID
+    let decodedOracleLink = try JSONDecoder().decode(
+        DeviceSettings.self, from: JSONEncoder().encode(oracleLink))
+    checkEqual(decodedOracleLink.oracleLyricsKeyboardDeviceID, linkedKeyboardID,
+               "口袋先知歌词联动目标按设备持久化")
 
     stored.host = "10.0.0.9"
     var fields2 = DeviceSettings()

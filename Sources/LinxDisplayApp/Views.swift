@@ -1186,7 +1186,11 @@ struct SettingsView: View {
         case .codex: codexForm
         case .pomodoro: pomodoroForm
         case .systemMonitor: systemForm
-        case .nowPlaying: nowPlayingForm
+        case .nowPlaying:
+            VStack(alignment: .leading, spacing: 10) {
+                nowPlayingForm
+                linkedLyricsKeyboardPicker(owner: .aiMac)
+            }
         case .excerptQuote: excerptQuoteForm
         case .sspai: sspaiForm
         case .emojiWallpaper: emojiWallpaperForm
@@ -3811,6 +3815,31 @@ struct SettingsView: View {
                 set: { model.setNowPlayingCover($0, for: owner) })
     }
 
+    @ViewBuilder
+    private func linkedLyricsKeyboardPicker(owner: AppModel.CanvasOwner) -> some View {
+        let keyboards = model.enabledDevices(for: .keyboard)
+        if keyboards.isEmpty {
+            HStack(spacing: 4) {
+                Text("歌词联动：请先添加灵犀 68 键盘")
+                    .foregroundStyle(.secondary)
+                HelpIcon(text: "添加键盘后，可把这台设备的正在播放页面与指定键盘关联。")
+            }
+        } else {
+            Picker(selection: model.lyricsKeyboardBinding(for: owner)) {
+                Text("不关联").tag(nil as UUID?)
+                ForEach(keyboards) { keyboard in
+                    Text(keyboard.name).tag(Optional(keyboard.id))
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("歌词联动到灵犀 68")
+                    HelpIcon(text: "关联后，目标键盘停留在“正在播放”卡片时会显示当前及相邻歌词。歌曲名、歌手、专辑和时长仅在换歌时发送给 LRCLIB 查询歌词；歌词会在本机缓存并按播放进度切换。")
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
     /// 模块行内展开的设置内容
     @ViewBuilder
     private func canvasModuleSettings(_ module: CanvasModule, owner: AppModel.CanvasOwner) -> some View {
@@ -3846,6 +3875,9 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             case .nowPlaying:
                 Toggle("大尺寸专辑封面", isOn: nowPlayingCoverBinding(for: owner))
+                if owner == .oracle || owner == .aiMac {
+                    linkedLyricsKeyboardPicker(owner: owner)
+                }
                 // 键盘和 AI Mac 彩色画板可使用整板封面取色；墨水屏保持手动底色。
                 if owner == .keyboard || owner == .aiMac {
                     Toggle(isOn: nowPlayingSmartBackgroundBinding(for: owner)) {

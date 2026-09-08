@@ -1578,6 +1578,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var oracleSspaiCount: Int?
     public var oracleSspaiRandom: Bool?
     public var oracleNowPlayingHorizontal: Bool?
+    /// 口袋先知“正在播放”可把同步歌词联动到指定灵犀 68 键盘。
+    public var oracleLyricsKeyboardDeviceID: UUID?
     /// 多画板：保存的画板列表 + 当前画板下标（切换画板时把该画板配置套用到当前画布字段）
     public var oracleCanvasBoards: [OracleCanvasBoard]?
     public var oracleCanvasBoardIndex: Int?

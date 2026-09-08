@@ -4739,6 +4739,7 @@ public enum ScreenRenderer {
 
     public static func renderNowPlaying(_ info: NowPlayingInfo, settings: AppSettings,
                                         artworkImage: CGImage? = nil,
+                                        lyrics: LyricsDisplayWindow? = nil,
                                         now: Date = Date()) throws -> RenderResult {
         let artImage = artworkImage ?? (info.artwork.flatMap { decodeArtwork($0) })
         // 有封面时从封面取主色作为卡片背景；无封面回退主题配色
@@ -4842,6 +4843,40 @@ public enum ScreenRenderer {
         let timeText = "\(formatClock(info.elapsedTime)) / \(formatClock(info.duration))"
         drawText(ctx, timeText, size: 8, bold: false, color: colors.secondaryTextCG,
                  in: rect(c.minX + 10, subtitleY + 32, c.maxX - c.minX - 20, 14), align: .center)
+
+        // 关联口袋先知/AI Mac 后，灵犀 68 的纵向留白用于同步歌词：当前行加粗并
+        // 使用轻量强调底，其余相邻行弱化。没有歌词时完全保持旧版布局。
+        if let lyrics, !lyrics.lines.isEmpty {
+            let lyricTop = subtitleY + 50
+            let lyricBottom = footerVisible ? c.maxY - 92 : c.maxY - 14
+            let availableHeight = lyricBottom - lyricTop
+            if availableHeight >= 24 {
+                drawLine(ctx, x1: c.minX + 18, y1: lyricTop,
+                         x2: c.maxX - 18, y2: lyricTop, color: colors.borderCG)
+                let visibleCount = min(lyrics.lines.count,
+                                       max(1, min(3, Int((availableHeight - 5) / 17))))
+                let start = max(0, min(lyrics.currentIndex - visibleCount / 2,
+                                       lyrics.lines.count - visibleCount))
+                let visibleLines = Array(lyrics.lines[start..<(start + visibleCount)])
+                let currentVisibleIndex = lyrics.currentIndex - start
+                let rowHeight = min(CGFloat(18), (availableHeight - 5) / CGFloat(visibleCount))
+                for (index, line) in visibleLines.enumerated() {
+                    let y = lyricTop + 5 + CGFloat(index) * rowHeight
+                    let row = CGRect(x: c.minX + 8, y: y,
+                                     width: c.width - 16, height: rowHeight - 1)
+                    let isCurrent = index == currentVisibleIndex
+                    if isCurrent {
+                        fillRound(ctx, rect(row), radius: 5,
+                                  color: accent.copy(alpha: 0.14) ?? accent)
+                    }
+                    drawAdaptiveText(ctx, line, maxSize: isCurrent ? 10 : 8.5,
+                                     minSize: 5.5, bold: isCurrent,
+                                     color: isCurrent ? colors.primaryTextCG : colors.tertiaryTextCG,
+                                     in: rect(row.minX + 4, row.minY,
+                                              row.width - 8, row.height), align: .center)
+                }
+            }
+        }
 
         // 页脚：当前时间（上：时钟，下：日期）；格式与字号可自定义，也可整体隐藏。
         // 各带高度随字号自适应，字号调小后行距同步收紧释放空间。

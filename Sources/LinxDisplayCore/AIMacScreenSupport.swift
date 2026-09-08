@@ -98,6 +98,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var followSystemSleep: Bool
     /// 最近一次熄屏前的亮度，用于应用意外退出后仍能在下次启动恢复。
     public var awakeBrightness: Int?
+    /// 可选的灵犀 68 歌词联动目标；nil 表示保持各设备原有显示，互不关联。
+    public var lyricsKeyboardDeviceID: UUID?
     public var pushIntervalSeconds: Int
     public var jpegQuality: Int
     public var customImagePath: String?
@@ -116,6 +118,7 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public init(host: String = "", mode: AIMacScreenContentMode = .canvas,
                 autoPush: Bool = true, followSystemSleep: Bool = true,
                 awakeBrightness: Int? = nil,
+                lyricsKeyboardDeviceID: UUID? = nil,
                 pushIntervalSeconds: Int = 2,
                 jpegQuality: Int = 82, customImagePath: String? = nil,
                 canvasBoards: [AIMacCanvasBoard] = [], canvasBoardIndex: Int = 0,
@@ -128,6 +131,7 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.autoPush = autoPush
         self.followSystemSleep = followSystemSleep
         self.awakeBrightness = awakeBrightness
+        self.lyricsKeyboardDeviceID = lyricsKeyboardDeviceID
         self.pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         self.jpegQuality = min(max(jpegQuality, 50), 90)
         self.customImagePath = customImagePath
@@ -175,7 +179,7 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case host, mode, autoPush, followSystemSleep, awakeBrightness
+        case host, mode, autoPush, followSystemSleep, awakeBrightness, lyricsKeyboardDeviceID
         case pushIntervalSeconds, jpegQuality, customImagePath
         case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
         case cardModeRawValue, cardPanels, cardRotationModes, cardRotationEnabled, cardRotationMinutes
@@ -189,6 +193,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         followSystemSleep = try container.decodeIfPresent(Bool.self,
                                                           forKey: .followSystemSleep) ?? true
         awakeBrightness = try container.decodeIfPresent(Int.self, forKey: .awakeBrightness)
+        lyricsKeyboardDeviceID = try container.decodeIfPresent(UUID.self,
+                                                               forKey: .lyricsKeyboardDeviceID)
         pushIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .pushIntervalSeconds) ?? 2
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? 82
         customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
