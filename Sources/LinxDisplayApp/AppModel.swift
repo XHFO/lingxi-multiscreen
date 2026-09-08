@@ -64,6 +64,8 @@ public final class AppModel: ObservableObject {
     private var lingxi68KnobController: Lingxi68KnobController?
 
     private var timer: Timer?
+    /// 歌词行切换不再排在全局每秒任务之后，避免被 HA/打印机等网络刷新拖慢。
+    private var lyricsTimer: Timer?
     /// 用量数据（Codex 用量 + 千问办公额度）统一刷新时间：各功能共用同一刷新周期
     private var lastQuotaRefresh: Date?
     private var lastPushAttempt: Date?
@@ -75,6 +77,11 @@ public final class AppModel: ObservableObject {
     private var lyricsRequestedSongKey: String?
     private var linkedLyricsLastLineKeys: [UUID: String] = [:]
     private var linkedLyricsBusyIDs: Set<UUID> = []
+    /// 歌词属于强时效画面：整条推送链只保留最新歌词帧，旧任务会被取消并淘汰。
+    private var linkedLyricsScheduledLineKey: String?
+    private var linkedLyricsPushTask: Task<Void, Never>?
+    private var linkedLyricsRetryLineKey: String?
+    private var linkedLyricsRetryNotBefore: Date?
     private var lastTickDate: Date?
     private var lastPreviewRender: Date?
     private var lastImageRotation: Date?
@@ -388,6 +395,7 @@ public final class AppModel: ObservableObject {
         lastCustomImageRevision = currentCustomImageRevision()
         refreshAIMacFlashPorts()
         startTimer()
+        startLyricsTimer()
         renderPreview()
         Task { await activateMode() }
         // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
@@ -458,6 +466,11 @@ public final class AppModel: ObservableObject {
         lyricsRequestedSongKey = nil
         linkedLyricsLastLineKeys = [:]
         linkedLyricsBusyIDs = []
+        linkedLyricsScheduledLineKey = nil
+        linkedLyricsPushTask?.cancel()
+        linkedLyricsPushTask = nil
+        linkedLyricsRetryLineKey = nil
+        linkedLyricsRetryNotBefore = nil
         nowPlayingLyrics = nil
         lastTickDate = nil
         lastImageRotation = nil
@@ -3213,6 +3226,8 @@ public final class AppModel: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        lyricsTimer?.invalidate()
+        linkedLyricsPushTask?.cancel()
         rand0Session?.disconnect()
     }
 
@@ -3223,6 +3238,21 @@ public final class AppModel: ObservableObject {
             Task { @MainActor in await self?.tick() }
         }
         RunLoop.main.add(timer!, forMode: .common)
+    }
+
+    /// 独立的歌词时间轴只做行号比较；歌词没有变化时不会渲染或访问网络。
+    private func startLyricsTimer() {
+        lyricsTimer = Timer.scheduledTimer(
+            withTimeInterval: LyricsTimelinePolicy.checkInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.linkedLyricsKeyboardIDs.isEmpty,
+                      self.nowPlayingLyrics != nil else { return }
+                self.scheduleLinkedLyricsPush(force: false, now: Date())
+            }
+        }
+        RunLoop.main.add(lyricsTimer!, forMode: .common)
     }
 
     private func tick() async {
@@ -3386,8 +3416,8 @@ public final class AppModel: ObservableObject {
         await maybeAutoPushDeviceCanvases(now: now)
         // 240×240 小屏幕共用本应用每秒时钟；每台设备仍按自己的最短间隔与内容指纹推送。
         await maybeAutoPushAIMacScreens(now: now)
-        // 歌词时间轴在本机推进；只有切换到新歌词行时才联动目标键盘。
-        await pushLinkedLyricsKeyboardsIfNeeded(force: false)
+        // 歌词时间轴有独立调度器；这里仅补一次检查，不阻塞全局设备刷新。
+        scheduleLinkedLyricsPush(force: false, now: now)
         // 侧栏常驻封面：非「正在播放」模式下也低频刷新一次播放状态
         if settings.displayMode != .nowPlaying {
             await refreshSidebarNowPlaying(now: now)
@@ -3906,28 +3936,78 @@ public func setClockTimeFormat(_ format: String) {
         return result
     }
 
-    /// 将当前歌词行推送到所有已关联的键盘。建立关联时目标键盘已自动关闭
-    /// 卡片轮播并切到“正在播放”，该页面使用纯歌词布局。
-    /// 非活动键盘直接使用自己的端点和显示快照，不切换软件当前操作设备。
-    private func pushLinkedLyricsKeyboardsIfNeeded(force: Bool) async {
+    private func linkedLyricsPayload(force: Bool, now: Date) ->
+        (window: LyricsDisplayWindow, lineKey: String)? {
         let window: LyricsDisplayWindow
         let lineKey: String
         if let lyrics = nowPlayingLyrics {
-            window = lyrics.displayWindow(at: nowPlaying.elapsedTime)
-            guard !window.lines.isEmpty else { return }
-            let lineIndex = lyrics.currentLineIndex(at: nowPlaying.elapsedTime) ?? -1
+            let displayElapsed = LyricsTimelinePolicy.displayElapsed(for: nowPlaying, at: now)
+            window = lyrics.displayWindow(at: displayElapsed)
+            guard !window.lines.isEmpty else { return nil }
+            let lineIndex = lyrics.currentLineIndex(at: displayElapsed) ?? -1
             lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(window.lines.joined(separator: "|"))"
         } else {
             // 用户刚建立关联时即使尚未播放或未找到歌词，也要把目标键盘切换并
             // 推送纯歌词占位页；平时的每秒 tick 不重复发送该占位画面。
-            guard force else { return }
+            guard force else { return nil }
             let message = nowPlayingSongKey(nowPlaying) == nil ? "暂无播放内容" : "暂未找到歌词"
             window = LyricsDisplayWindow(lines: [message], currentIndex: 0)
             lineKey = "placeholder|\(message)"
         }
+        return (window, lineKey)
+    }
+
+    /// 高频歌词推送使用 latest-only 队列：新歌词出现时取消尚在等待或上传的旧帧，
+    /// 并等待旧任务真正退出后再发送最新帧，避免键盘唤醒后补发过期画面。
+    private func scheduleLinkedLyricsPush(force: Bool, now: Date = Date()) {
+        guard !linkedLyricsKeyboardIDs.isEmpty else {
+            linkedLyricsScheduledLineKey = nil
+            linkedLyricsPushTask?.cancel()
+            linkedLyricsPushTask = nil
+            return
+        }
+        guard let payload = linkedLyricsPayload(force: force, now: now) else { return }
+        if !force, linkedLyricsRetryLineKey == payload.lineKey,
+           let retryAt = linkedLyricsRetryNotBefore, now < retryAt { return }
+        guard force || linkedLyricsScheduledLineKey != payload.lineKey else { return }
+        if linkedLyricsRetryLineKey != payload.lineKey {
+            linkedLyricsRetryLineKey = nil
+            linkedLyricsRetryNotBefore = nil
+        }
+        linkedLyricsScheduledLineKey = payload.lineKey
+        let previousTask = linkedLyricsPushTask
+        previousTask?.cancel()
+        linkedLyricsPushTask = Task { @MainActor [weak self] in
+            _ = await previousTask?.result
+            guard let self, !Task.isCancelled,
+                  self.linkedLyricsScheduledLineKey == payload.lineKey else { return }
+            let succeeded = await self.performLinkedLyricsPush(window: payload.window,
+                                                                lineKey: payload.lineKey)
+            guard !Task.isCancelled,
+                  self.linkedLyricsScheduledLineKey == payload.lineKey else { return }
+            if succeeded {
+                self.linkedLyricsRetryLineKey = nil
+                self.linkedLyricsRetryNotBefore = nil
+            } else {
+                // 设备休眠/离线时不累积旧帧；只让当前歌词在短暂退避后重试。
+                self.linkedLyricsScheduledLineKey = nil
+                self.linkedLyricsRetryLineKey = payload.lineKey
+                self.linkedLyricsRetryNotBefore = Date().addingTimeInterval(2)
+            }
+        }
+    }
+
+    /// 将当前歌词行推送到所有已关联的键盘。建立关联时目标键盘已自动关闭
+    /// 卡片轮播并切到“正在播放”，该页面使用纯歌词布局。
+    /// 非活动键盘直接使用自己的端点和显示快照，不切换软件当前操作设备。
+    private func performLinkedLyricsPush(window: LyricsDisplayWindow,
+                                         lineKey: String) async -> Bool {
         let activeID = activeDeviceID(for: .keyboard)
+        var allSucceeded = true
         for keyboardID in linkedLyricsKeyboardIDs {
-            guard force || linkedLyricsLastLineKeys[keyboardID] != lineKey,
+            guard linkedLyricsLastLineKeys[keyboardID] != lineKey,
+                  linkedLyricsScheduledLineKey == lineKey,
+                  !Task.isCancelled,
                   !linkedLyricsBusyIDs.contains(keyboardID),
                   let device = enabledDevices(for: .keyboard).first(where: { $0.id == keyboardID }) else {
                 continue
@@ -3935,30 +4015,52 @@ public func setClockTimeFormat(_ format: String) {
             let mode = keyboardID == activeID
                 ? settings.displayMode : (device.settings.displayMode ?? .codex)
             guard mode == .nowPlaying else { continue }
-
-            if keyboardID == activeID {
-                await pushWhenAvailable(force: force, silentIfUnchanged: true)
-                linkedLyricsLastLineKeys[keyboardID] = lineKey
-                continue
-            }
-            let endpoint = device.settings.endpoint ?? ""
-            guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             linkedLyricsBusyIDs.insert(keyboardID)
             defer { linkedLyricsBusyIDs.remove(keyboardID) }
+
+            let endpoint = keyboardID == activeID
+                ? settings.endpoint : (device.settings.endpoint ?? "")
+            guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                allSucceeded = false
+                continue
+            }
+            var ownsGlobalPushSlot = false
             do {
-                let renderSettings = linkedLyricsRenderSettings(for: device)
+                if keyboardID == activeID {
+                    while busy {
+                        try await Task.sleep(nanoseconds: 50_000_000)
+                        guard linkedLyricsScheduledLineKey == lineKey else {
+                            throw CancellationError()
+                        }
+                    }
+                    busy = true
+                    ownsGlobalPushSlot = true
+                }
+                defer {
+                    if ownsGlobalPushSlot { busy = false }
+                }
+                let renderSettings = keyboardID == activeID
+                    ? settings : linkedLyricsRenderSettings(for: device)
                 let artwork = cachedArtworkImage(for: nowPlaying.artwork)
                 let result = try ScreenRenderer.renderNowPlaying(
                     nowPlaying, settings: renderSettings, artworkImage: artwork,
                     lyrics: window,
                     lyricsOnly: true)
+                guard !Task.isCancelled, linkedLyricsScheduledLineKey == lineKey else { continue }
                 _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
                                               endpoint: endpoint)
+                guard !Task.isCancelled, linkedLyricsScheduledLineKey == lineKey else { continue }
                 linkedLyricsLastLineKeys[keyboardID] = lineKey
+                if keyboardID == activeID {
+                    lastUploadedHash = Self.sha256(result.data)
+                    lastPushAttempt = Date()
+                    lastPush = "最后推送：\(Self.formatNow())"
+                }
             } catch {
-                // 后台联动不覆盖用户正在操作页面的状态；下一条歌词到来时会再尝试。
+                if !Task.isCancelled { allSucceeded = false }
             }
         }
+        return allSucceeded
     }
 
     /// 上次侧栏封面数据（用于检测封面变化，实时刷新设备画板预览）
@@ -5205,10 +5307,14 @@ public func setClockTimeFormat(_ format: String) {
             prepareKeyboardForLyricsLink(keyboardID)
         }
         linkedLyricsLastLineKeys = [:]
+        linkedLyricsScheduledLineKey = nil
+        linkedLyricsPushTask?.cancel()
+        linkedLyricsRetryLineKey = nil
+        linkedLyricsRetryNotBefore = nil
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshLyricsIfNeeded(force: true)
-            await self.pushLinkedLyricsKeyboardsIfNeeded(force: true)
+            self.scheduleLinkedLyricsPush(force: true)
         }
     }
 

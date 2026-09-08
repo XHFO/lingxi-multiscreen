@@ -73,6 +73,28 @@ public struct LyricsDisplayWindow: Equatable {
     }
 }
 
+/// 歌词联动的本地时间轴策略。独立于设备和网络刷新周期，仅在即将跨入
+/// 新歌词行时触发实际渲染与上传。
+public enum LyricsTimelinePolicy {
+    /// 轻量行号检查频率；未换行时不会重绘或上传。
+    public static let checkInterval: TimeInterval = 0.25
+    /// 抵消 JPEG 渲染、网络上传和键盘换帧造成的可见延迟。
+    public static let presentationLead: TimeInterval = 0.30
+
+    public static func displayElapsed(for info: NowPlayingInfo,
+                                      at now: Date = Date()) -> TimeInterval {
+        var elapsed = max(info.elapsedTime, 0)
+        if info.isPlaying {
+            elapsed += max(now.timeIntervalSince(info.sampledAt), 0)
+            elapsed += presentationLead
+        }
+        if info.duration > 0 {
+            elapsed = min(elapsed, info.duration)
+        }
+        return elapsed
+    }
+}
+
 /// 无需 API Key 的 LRCLIB 歌词查询。只在用户建立歌词联动后按换歌请求，
 /// 不轮询歌词服务；播放进度与逐行切换均在本机完成。
 public final class LyricsClient {

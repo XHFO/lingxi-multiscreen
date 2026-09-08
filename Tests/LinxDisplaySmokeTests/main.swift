@@ -1185,6 +1185,22 @@ func testNowPlaying() throws {
     let lyricsOnlyResult = try ScreenRenderer.renderNowPlaying(
         withArt, settings: settings, lyrics: lyricWindow, lyricsOnly: true)
     check(lyricsOnlyResult.data != lyricResult.data, "歌词联动使用独立纯歌词画面")
+    let timelineNow = Date(timeIntervalSince1970: 1_725_000_000)
+    let timelineSample = NowPlayingInfo(title: "时间轴测试", duration: 120,
+                                        elapsedTime: 10, playbackRate: 1,
+                                        sampledAt: timelineNow.addingTimeInterval(-0.2))
+    let projectedLyricsTime = LyricsTimelinePolicy.displayElapsed(
+        for: timelineSample, at: timelineNow)
+    check(abs(projectedLyricsTime - 10.5) < 0.001,
+          "歌词时间轴独立推进并补偿显示传输延迟")
+    var pausedTimelineSample = timelineSample
+    pausedTimelineSample.playbackRate = 0
+    checkEqual(LyricsTimelinePolicy.displayElapsed(for: pausedTimelineSample, at: timelineNow),
+               10, "暂停时歌词时间轴不提前推进")
+    var endingTimelineSample = timelineSample
+    endingTimelineSample.elapsedTime = 119.9
+    checkEqual(LyricsTimelinePolicy.displayElapsed(for: endingTimelineSample, at: timelineNow),
+               120, "歌词时间轴不超过歌曲总时长")
 
     // 页脚顺序：上=时钟(强调色)，下=日期(强调色)——正在播放页脚跟随封面/全局强调色
     let footImg = noArt.image
