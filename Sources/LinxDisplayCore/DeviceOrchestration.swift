@@ -18,7 +18,9 @@ public enum DeviceOnboardingPolicy {
 extension AppSettings {
     /// 各设备类型的数量上限（未列出的类型不限）：
     /// Home Assistant 只允许一个实例；Bambu Lab 打印机最多 5 台（对应 5 张独立卡片位）
-    public static let deviceLimits: [DeviceType: Int] = [.homeAssistant: 1, .bambuLab: 5, .formlabs: 5]
+    public static let deviceLimits: [DeviceType: Int] = [
+        .homeAssistant: 1, .bambuLab: 5, .formlabs: 5, .aiMacScreen: 5
+    ]
 
     /// 是否还能再添加该类型设备
     public func canAddDevice(of type: DeviceType) -> Bool {
@@ -36,6 +38,8 @@ extension AppSettings {
             return "最多支持 5 台 Bambu Lab 打印机（对应 5 张独立卡片位）。"
         case .formlabs:
             return "最多支持 5 台 Formlabs 打印机（对应 5 张独立卡片位）。"
+        case .aiMacScreen:
+            return "最多支持 5 台 AI Mac 小屏幕。"
         default:
             return nil
         }
@@ -60,6 +64,7 @@ extension AppSettings {
         case .homeAssistant: return activeHomeAssistantDeviceID
         case .bambuLab: return activeBambuLabDeviceID
         case .formlabs: return activeFormlabsDeviceID
+        case .aiMacScreen: return activeAIMacScreenDeviceID
         }
     }
 
@@ -72,6 +77,7 @@ extension AppSettings {
         case .homeAssistant: activeHomeAssistantDeviceID = id
         case .bambuLab: activeBambuLabDeviceID = id
         case .formlabs: activeFormlabsDeviceID = id
+        case .aiMacScreen: activeAIMacScreenDeviceID = id
         }
     }
 
@@ -90,7 +96,7 @@ extension AppSettings {
             guard let device = activeDevice(for: type),
                   let index = devices.firstIndex(where: { $0.id == device.id }) else { continue }
             // Formlabs 没有全局镜像：连接配置在设备快照里直接编辑，不能用空 capture 覆盖。
-            if type == .formlabs { continue }
+            if type == .formlabs || type == .aiMacScreen { continue }
             devices[index].settings = DeviceSettings.capture(from: self, type: type)
         }
     }

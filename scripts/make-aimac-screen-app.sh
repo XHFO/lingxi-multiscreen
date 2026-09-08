@@ -18,10 +18,10 @@ BIN="$ROOT/.build/release/AIMacScreenApp"
 APP_NAME="灵犀小屏实验版"
 EXEC_NAME="LingxiAIMacScreen"
 FINAL_APP="$ROOT/dist/$APP_NAME.app"
-FINAL_ZIP="$ROOT/dist/$APP_NAME-0.1.0.zip"
+FINAL_ZIP="$ROOT/dist/$APP_NAME-0.2.0.zip"
 STAGE_ROOT="$(mktemp -d /private/tmp/lingxi-aimac-screen.XXXXXX)"
 APP="$STAGE_ROOT/$APP_NAME.app"
-STAGE_ZIP="$STAGE_ROOT/$APP_NAME-0.1.0.zip"
+STAGE_ZIP="$STAGE_ROOT/$APP_NAME-0.2.0.zip"
 
 if [ -d "$FINAL_APP" ]; then
     mkdir -p "$ROOT/dist/previous-builds"

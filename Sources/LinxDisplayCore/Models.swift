@@ -1141,6 +1141,7 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
     case homeAssistant = 3
     case bambuLab = 4
     case formlabs = 5
+    case aiMacScreen = 6
 
     public var id: Int { rawValue }
 
@@ -1152,6 +1153,7 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
         case .homeAssistant: return "Home Assistant"
         case .bambuLab: return "Bambu Lab 打印机"
         case .formlabs: return "Formlabs 打印机"
+        case .aiMacScreen: return "AI Mac 小屏幕"
         }
     }
 }
@@ -1626,6 +1628,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var bambuPrinters: [BambuLabCardSettings]?
     // Formlabs Dashboard API 连接配置直接保存在打印机设备快照中，不经过全局镜像。
     public var formlabsConnection: FormlabsConnectionSettings?
+    /// ESP8266 AI Mac 240×240 小屏幕：每台设备独立保存，不经过全局镜像。
+    public var aiMacScreen: AIMacScreenDeviceSettings?
     /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
     public var canvasImagePath: String?
     public var canvasImageName: String?
@@ -1790,6 +1794,9 @@ public struct DeviceSettings: Codable, Equatable {
         case .formlabs:
             // Formlabs 连接信息由 ManagedDevice.settings 直接持有；此处不从全局镜像覆盖。
             break
+        case .aiMacScreen:
+            // 小屏幕设置直接保存在 ManagedDevice.settings 中。
+            break
         }
         return d
     }
@@ -1952,6 +1959,8 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = bambuShowError { s.bambuShowError = v }
         case .formlabs:
             break
+        case .aiMacScreen:
+            break
         }
     }
 }
@@ -1991,6 +2000,7 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
         switch type {
         case .bambuLab: return "打印机 \(index + 1)"
         case .formlabs: return "Formlabs \(index + 1)"
+        case .aiMacScreen: return "AI Mac 小屏幕 \(index + 1)"
         default: return "\(type.title) \(index + 1)"
         }
     }

@@ -412,7 +412,8 @@ func exportPreviews(to directory: String) throws {
         for (name, result) in results {
             let ctx = CGContext(data: nil, width: Int(142 * scale), height: Int(428 * scale),
                                 bitsPerComponent: 8, bytesPerRow: 0,
-                                space: CGColorSpaceCreateDeviceRGB(),
+                                space: CGColorSpace(name: CGColorSpace.sRGB)
+                                    ?? CGColorSpaceCreateDeviceRGB(),
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             ctx.interpolationQuality = .high
             ctx.draw(result.image, in: CGRect(x: 0, y: 0, width: 142 * scale, height: 428 * scale))
@@ -3955,12 +3956,13 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 6, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 7, "设备类型数量")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
     checkEqual(DeviceType.homeAssistant.title, "Home Assistant", "设备类型标题-HA")
     checkEqual(DeviceType.bambuLab.title, "Bambu Lab 打印机", "设备类型标题-Bambu")
+    checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "设备类型标题-AI Mac")
 
     // 设置快照 捕获→套用 往返
     let source = AppSettings()
@@ -4555,6 +4557,7 @@ Task {
         try testGlobalShortcuts()
         try testHomeAssistant()
         try testFormlabs()
+        try testAIMacScreen()
         await testUsageDataAggregator()
         try testNowPlaying()
         await testNowPlayingLiveFetch()
@@ -4573,6 +4576,106 @@ Task {
         }
         exit(1)
     }
+}
+
+// MARK: - AI Mac 240×240 小屏幕
+
+func testAIMacScreen() throws {
+    check(DeviceType.allCases.contains(.aiMacScreen), "AI Mac 小屏幕设备类型存在")
+    checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "AI Mac 小屏幕设备标题")
+    checkEqual(ManagedDevice.defaultName(for: .aiMacScreen, index: 0),
+               "AI Mac 小屏幕 1", "AI Mac 小屏幕默认名称")
+
+    checkEqual(AIMacScreenSupport.normalizedHost(" http://192.168.1.66/path "),
+               "192.168.1.66", "小屏幕地址去协议与路径")
+    checkEqual(AIMacScreenSupport.normalizedHost("https://screen.local/"),
+               "screen.local", "小屏幕域名地址标准化")
+
+    let rgbInfo = """
+    {"device":"esp8266-ai-screen","screen":{"width":240,"height":240},
+     "rgb565_api":{"path":"/frame/rgb565","content_type":"application/x-rgb565",
+     "byte_order":"big-endian","bytes":115200}}
+    """.data(using: .utf8)!
+    let rgbCapabilities = try AIMacScreenSupport.parseCapabilities(
+        data: rgbInfo, host: "192.168.1.66")
+    check(rgbCapabilities.supportsLosslessRGB565, "能力接口识别 RGB565 无损模式")
+    checkEqual(rgbCapabilities.rgb565UploadURL?.path, "/frame/rgb565",
+               "能力接口使用固件声明的 RGB565 路径")
+
+    let jpegInfo = """
+    {"device":"esp8266-ai-screen","screen":{"width":240,"height":240}}
+    """.data(using: .utf8)!
+    let jpegCapabilities = try AIMacScreenSupport.parseCapabilities(
+        data: jpegInfo, host: "screen.local")
+    check(!jpegCapabilities.supportsLosslessRGB565, "旧固件能力信息回退 JPEG")
+    checkEqual(jpegCapabilities.jpegUploadURL.path, "/image/upload",
+               "JPEG 兼容上传路径稳定")
+
+    var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .clock,
+                                           autoPush: false, pushIntervalSeconds: 9,
+                                           jpegQuality: 71)
+    var fields = DeviceSettings()
+    fields.aiMacScreen = stored
+    var managed = ManagedDevice(type: .aiMacScreen, name: "桌面圆屏", settings: fields)
+    let encodedDevice = try JSONEncoder().encode(managed)
+    let decodedDevice = try JSONDecoder().decode(ManagedDevice.self, from: encodedDevice)
+    checkEqual(decodedDevice.settings.aiMacScreen, stored, "小屏幕设备设置 JSON 往返")
+
+    stored.host = "10.0.0.9"
+    var fields2 = DeviceSettings()
+    fields2.aiMacScreen = stored
+    let managed2 = ManagedDevice(type: .aiMacScreen, name: "副屏", settings: fields2)
+    checkEqual(managed.settings.aiMacScreen?.host, "10.0.0.8", "第一台小屏幕连接设置独立")
+    checkEqual(managed2.settings.aiMacScreen?.host, "10.0.0.9", "第二台小屏幕连接设置独立")
+    managed.settings.aiMacScreen = AIMacScreenDeviceSettings()
+    checkEqual(managed.settings.aiMacScreen?.host, "", "新小屏幕默认不继承测试地址")
+
+    let legacyJSON = """
+    {"id":"\(UUID().uuidString)","type":6,"name":"旧小屏幕","isEnabled":true,"settings":{}}
+    """.data(using: .utf8)!
+    let legacy = try JSONDecoder().decode(ManagedDevice.self, from: legacyJSON)
+    checkEqual(legacy.settings.aiMacScreen, nil, "旧设置缺少小屏幕字段仍可解码")
+
+    let snapshot = SystemSnapshot(cpuPercent: 42, memoryPercent: 68,
+                                  usedMemoryBytes: 8_000_000_000,
+                                  totalMemoryBytes: 16_000_000_000,
+                                  downloadBytesPerSecond: 1_024_000,
+                                  uploadBytesPerSecond: 512_000,
+                                  uptime: 3600, sampledAt: Date())
+    let dashboard = try AIMacScreenSupport.render(
+        settings: AIMacScreenDeviceSettings(mode: .dashboard), system: snapshot)
+    let clock = try AIMacScreenSupport.render(
+        settings: AIMacScreenDeviceSettings(mode: .clock), system: snapshot)
+    checkEqual(dashboard.width, 240, "小屏幕仪表盘宽度")
+    checkEqual(dashboard.height, 240, "小屏幕仪表盘高度")
+    checkEqual(clock.width, 240, "小屏幕时钟宽度")
+    checkEqual(clock.height, 240, "小屏幕时钟高度")
+    let jpeg = try AIMacScreenSupport.encodeJPEG(dashboard, preferredQuality: 82)
+    check(jpeg.count <= AIMacScreenSupport.maximumJPEGBytes, "JPEG 兼容帧不超过 24KB")
+
+    func solidImage(red: CGFloat, green: CGFloat, blue: CGFloat) -> CGImage {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+            ?? CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(data: nil, width: 240, height: 240,
+                                bitsPerComponent: 8, bytesPerRow: 240 * 4,
+                                space: colorSpace,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(colorSpace: colorSpace,
+                                     components: [red, green, blue, 1])!)
+        context.fill(CGRect(x: 0, y: 0, width: 240, height: 240))
+        return context.makeImage()!
+    }
+    let red = try AIMacScreenSupport.encodeRGB565(
+        solidImage(red: 1, green: 0, blue: 0))
+    let green = try AIMacScreenSupport.encodeRGB565(
+        solidImage(red: 0, green: 1, blue: 0))
+    let blue = try AIMacScreenSupport.encodeRGB565(
+        solidImage(red: 0, green: 0, blue: 1))
+    checkEqual(red.count, 115_200, "RGB565 帧严格为 115200 字节")
+    checkEqual(Array(red.prefix(2)), [0xF8, 0x00], "RGB565 纯红大端字节序")
+    checkEqual(Array(green.prefix(2)), [0x07, 0xE0], "RGB565 纯绿大端字节序")
+    checkEqual(Array(blue.prefix(2)), [0x00, 0x1F], "RGB565 纯蓝大端字节序")
+    print("  AI Mac 240×240 小屏幕通过")
 }
 
 // MARK: - Formlabs 云端模式

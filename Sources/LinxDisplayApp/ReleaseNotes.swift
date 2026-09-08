@@ -10,6 +10,11 @@ struct ReleaseNote: Identifiable {
 /// 版本更新日志数据：每次发版在最前面加一条，并同步 make-app.sh 里的版本号
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
+        ReleaseNote(id: "1.5.4", date: "2026-09-08", notes: [
+            "新增 AI Mac 240×240 小屏幕设备：支持系统仪表盘、桌面时钟与自定义图片，最多可添加 5 台并分别保存连接和显示设置。",
+            "适配 ESP8266 AI Mac 小屏幕固件：0.7.0 使用 115,200 字节大端 RGB565 无损帧；旧固件自动回退到 24KB 内 JPEG 兼容推送。",
+            "AI Mac 小屏幕提供独立实时预览、连接检测、手动推送和 1–60 秒自动推送间隔；最终画面未变化时自动跳过重复发送。",
+        ]),
         ReleaseNote(id: "1.5.3", date: "2026-09-08", notes: [
             "新增 Formlabs Dashboard 云端 API：最多管理 5 台打印机，显示设备状态、任务名称、打印进度、层数、配置耗材、剩余时间与任务缩略图；已完成任务会缓存保留，直到新任务开始。",
             "统一 Bambu Lab 与 Formlabs 打印机卡片设计：灵犀68、灵犀画板、口袋先知和摘录画板共享高对比布局，支持双行任务名、细进度条、品牌或主题强调色，以及任务封面光晕。",
@@ -109,7 +114,7 @@ enum ReleaseNotes {
     /// 当前版本号：读取 App Bundle 的 CFBundleShortVersionString 与 CFBundleVersion
     static var currentVersion: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.3"
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.5.4"
         let build = info?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? short : "\(short) (\(build))"
     }
@@ -117,6 +122,6 @@ enum ReleaseNotes {
     /// 当前短版本号（如 1.5.3，不含构建号），用于与 GitHub 最新版本比较
     static var currentShortVersion: String {
         let info = Bundle.main.infoDictionary
-        return info?["CFBundleShortVersionString"] as? String ?? "1.5.3"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.5.4"
     }
 }

@@ -72,6 +72,10 @@ public final class AppModel: ObservableObject {
     private var lastImageRotation: Date?
     /// 当前自定义图片的文件修订指纹。即使路径不变，只要内容被替换也会重新取色。
     private var lastCustomImageRevision: String?
+    /// AI Mac 小屏幕按设备保存能力、内容指纹与推送节流状态，不与键盘上传状态混用。
+    private var aiMacScreenCapabilities: [UUID: AIMacScreenCapabilities] = [:]
+    private var aiMacScreenLastHashes: [UUID: String] = [:]
+    private var aiMacScreenLastPushAt: [UUID: Date] = [:]
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
     /// 设置连续变化时合并为一次键盘推送，避免滑块/文本编辑逐帧上传。
@@ -210,6 +214,11 @@ public final class AppModel: ObservableObject {
     @Published public var formlabsSnapshots: [UUID: FormlabsSnapshot] = [:]
     @Published public var formlabsDiscoveredDevices: [UUID: [FormlabsDeviceInfo]] = [:]
     @Published public var formlabsConnectionStatus: [UUID: String] = [:]
+    @Published public var aiMacScreenPreviews: [UUID: NSImage] = [:]
+    @Published public var aiMacScreenStatuses: [UUID: String] = [:]
+    @Published public var aiMacScreenLastPushText: [UUID: String] = [:]
+    @Published public var aiMacScreenLosslessIDs: Set<UUID> = []
+    @Published public var aiMacScreenBusyIDs: Set<UUID> = []
     /// Bambu 实体选择候选缓存；依靠 haSnapshot 的发布通知驱动界面读取，无需单独发布。
     var bambuEntityCatalog = BambuEntityCatalog()
     /// HA 异常监控告警：异常标题（如打印机名）与详情（错误码等）；非空即处于告警状态
@@ -322,6 +331,7 @@ public final class AppModel: ObservableObject {
             case .homeAssistant: activeID = loaded.activeHomeAssistantDeviceID
             case .bambuLab: activeID = loaded.activeBambuLabDeviceID
             case .formlabs: activeID = loaded.activeFormlabsDeviceID
+            case .aiMacScreen: activeID = loaded.activeAIMacScreenDeviceID
             }
             if let device = list.first(where: { $0.id == activeID }) ?? list.first {
                 device.settings.apply(to: loaded, type: type)
@@ -598,6 +608,9 @@ public final class AppModel: ObservableObject {
         if type == .formlabs {
             syncFormlabsPreviewSlot(for: newDevice.id)
         }
+        if type == .aiMacScreen {
+            refreshAIMacScreenPreview(deviceID: newDevice.id)
+        }
         persistSettings()
         renderPreview()
         refreshOracleCanvasPreview()
@@ -759,6 +772,8 @@ public final class AppModel: ObservableObject {
         case .formlabs:
             let fresh = FormlabsConnectionSettings()
             settings.devices[index].settings.formlabsConnection = fresh
+        case .aiMacScreen:
+            settings.devices[index].settings.aiMacScreen = AIMacScreenDeviceSettings()
         }
         setActiveDeviceID(type, device.id)
         if type == .oracle {
@@ -776,6 +791,10 @@ public final class AppModel: ObservableObject {
         }
         if type == .formlabs {
             addFormlabsPrinterCard()
+        }
+        if type == .aiMacScreen {
+            aiMacScreenStatuses[device.id] = "等待连接小屏幕"
+            refreshAIMacScreenPreview(deviceID: device.id)
         }
         if type == .keyboard {
             reconcileBambuCards()
@@ -817,6 +836,16 @@ public final class AppModel: ObservableObject {
             lastFormlabsRefresh[id] = nil
             store.saveFormlabsTaskCache(formlabsSnapshots)
             removeFormlabsPrinterCard()
+        }
+        if type == .aiMacScreen {
+            aiMacScreenCapabilities[id] = nil
+            aiMacScreenLastHashes[id] = nil
+            aiMacScreenLastPushAt[id] = nil
+            aiMacScreenPreviews[id] = nil
+            aiMacScreenStatuses[id] = nil
+            aiMacScreenLastPushText[id] = nil
+            aiMacScreenLosslessIDs.remove(id)
+            aiMacScreenBusyIDs.remove(id)
         }
         persistSettings()
         renderPreview()
@@ -1118,6 +1147,241 @@ public final class AppModel: ObservableObject {
         formlabsConnectionStatus[id] = "正在测试 Formlabs 云端连接…"
         formlabsConnectionStatus[id] = await formlabsCloudTestText(config)
         await refreshFormlabs(deviceID: id, force: true, pushIfVisible: true)
+    }
+
+    // MARK: - AI Mac 240×240 小屏幕
+
+    public func aiMacScreenSettings(for id: UUID) -> AIMacScreenDeviceSettings {
+        settings.devices.first(where: { $0.id == id && $0.type == .aiMacScreen })?
+            .settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+    }
+
+    private func mutateAIMacScreenSettings(
+        _ id: UUID,
+        pushImmediately: Bool = false,
+        _ body: (inout AIMacScreenDeviceSettings) -> Void
+    ) {
+        guard let index = settings.devices.firstIndex(where: {
+            $0.id == id && $0.type == .aiMacScreen
+        }) else { return }
+        var value = settings.devices[index].settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        let previousHost = AIMacScreenSupport.normalizedHost(value.host)
+        body(&value)
+        value.clamp()
+        settings.devices[index].settings.aiMacScreen = value
+        if AIMacScreenSupport.normalizedHost(value.host) != previousHost {
+            aiMacScreenCapabilities[id] = nil
+            aiMacScreenLastHashes[id] = nil
+            aiMacScreenLastPushAt[id] = nil
+            aiMacScreenLosslessIDs.remove(id)
+        }
+        persistSettings()
+        refreshAIMacScreenPreview(deviceID: id)
+        if pushImmediately || value.autoPush {
+            Task { @MainActor [weak self] in
+                await self?.pushAIMacScreen(deviceID: id, force: pushImmediately)
+            }
+        }
+    }
+
+    public func aiMacScreenHostBinding(for id: UUID) -> Binding<String> {
+        Binding(get: { self.aiMacScreenSettings(for: id).host }, set: { value in
+            self.mutateAIMacScreenSettings(id) { $0.host = value }
+        })
+    }
+
+    public func aiMacScreenModeBinding(for id: UUID) -> Binding<AIMacScreenContentMode> {
+        Binding(get: { self.aiMacScreenSettings(for: id).mode }, set: { value in
+            self.mutateAIMacScreenSettings(id, pushImmediately: true) { $0.mode = value }
+        })
+    }
+
+    public func aiMacScreenAutoPushBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: { self.aiMacScreenSettings(for: id).autoPush }, set: { value in
+            self.mutateAIMacScreenSettings(id, pushImmediately: value) { $0.autoPush = value }
+        })
+    }
+
+    public func aiMacScreenIntervalBinding(for id: UUID) -> Binding<Int> {
+        Binding(get: { self.aiMacScreenSettings(for: id).pushIntervalSeconds }, set: { value in
+            self.mutateAIMacScreenSettings(id) { $0.pushIntervalSeconds = value }
+        })
+    }
+
+    public func aiMacScreenJPEGQualityBinding(for id: UUID) -> Binding<Int> {
+        Binding(get: { self.aiMacScreenSettings(for: id).jpegQuality }, set: { value in
+            self.mutateAIMacScreenSettings(id, pushImmediately: true) { $0.jpegQuality = value }
+        })
+    }
+
+    public func chooseAIMacScreenImage(deviceID: UUID) {
+        let panel = NSOpenPanel()
+        panel.title = "选择 AI Mac 小屏幕图片"
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .heic]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let stored = try store.saveHistoryImage(from: url)
+            mutateAIMacScreenSettings(deviceID, pushImmediately: true) {
+                $0.customImagePath = stored.path
+                $0.mode = .customImage
+            }
+        } catch {
+            aiMacScreenStatuses[deviceID] = "图片保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    public func refreshAIMacScreenPreview(deviceID: UUID) {
+        let config = aiMacScreenSettings(for: deviceID)
+        do {
+            let image = try AIMacScreenSupport.render(settings: config, system: system)
+            aiMacScreenPreviews[deviceID] = NSImage(
+                cgImage: image, size: NSSize(width: 240, height: 240))
+        } catch {
+            aiMacScreenPreviews[deviceID] = nil
+            aiMacScreenStatuses[deviceID] = error.localizedDescription
+        }
+    }
+
+    private func fetchAIMacScreenCapabilities(
+        deviceID: UUID,
+        force: Bool = false
+    ) async throws -> AIMacScreenCapabilities {
+        let config = aiMacScreenSettings(for: deviceID)
+        let host = AIMacScreenSupport.normalizedHost(config.host)
+        guard !host.isEmpty else { throw AIMacScreenSupportError.invalidHost }
+        if !force, let cached = aiMacScreenCapabilities[deviceID], cached.host == host {
+            return cached
+        }
+        guard let infoURL = AIMacScreenSupport.infoURL(host: host) else {
+            throw AIMacScreenSupportError.invalidHost
+        }
+        var request = URLRequest(url: infoURL)
+        request.timeoutInterval = 4
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw AIMacScreenSupportError.invalidDevice
+            }
+            let capabilities = try AIMacScreenSupport.parseCapabilities(data: data, host: host)
+            aiMacScreenCapabilities[deviceID] = capabilities
+            return capabilities
+        } catch {
+            // 0.6.x 等旧版固件没有能力接口，但仍支持 /image/upload。
+            let fallback = try AIMacScreenSupport.jpegOnlyCapabilities(host: host)
+            aiMacScreenCapabilities[deviceID] = fallback
+            return fallback
+        }
+    }
+
+    public func testAIMacScreenConnection(deviceID: UUID) async {
+        guard !aiMacScreenBusyIDs.contains(deviceID) else { return }
+        aiMacScreenBusyIDs.insert(deviceID)
+        aiMacScreenStatuses[deviceID] = "正在检测小屏幕…"
+        defer { aiMacScreenBusyIDs.remove(deviceID) }
+        do {
+            let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID, force: true)
+            if capabilities.supportsLosslessRGB565 {
+                aiMacScreenLosslessIDs.insert(deviceID)
+                aiMacScreenStatuses[deviceID] = "连接成功 · RGB565 无损模式"
+            } else {
+                aiMacScreenLosslessIDs.remove(deviceID)
+                aiMacScreenStatuses[deviceID] = "地址可用 · JPEG 兼容模式"
+            }
+        } catch {
+            aiMacScreenStatuses[deviceID] = "连接失败：\(error.localizedDescription)"
+        }
+    }
+
+    public func pushAIMacScreen(deviceID: UUID, force: Bool = true) async {
+        await pushAIMacScreen(deviceID: deviceID, force: force, sampleDashboard: true)
+    }
+
+    private func pushAIMacScreen(deviceID: UUID, force: Bool,
+                                 sampleDashboard: Bool) async {
+        guard !aiMacScreenBusyIDs.contains(deviceID),
+              let device = settings.devices.first(where: {
+                  $0.id == deviceID && $0.type == .aiMacScreen && $0.isEnabled
+              }) else { return }
+        let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        guard !AIMacScreenSupport.normalizedHost(config.host).isEmpty else {
+            aiMacScreenStatuses[deviceID] = AIMacScreenSupportError.invalidHost.localizedDescription
+            return
+        }
+        aiMacScreenBusyIDs.insert(deviceID)
+        aiMacScreenLastPushAt[deviceID] = Date()
+        aiMacScreenStatuses[deviceID] = "正在生成并推送画面…"
+        defer { aiMacScreenBusyIDs.remove(deviceID) }
+        do {
+            if sampleDashboard && config.mode == .dashboard {
+                system = monitor.sample(now: Date())
+            }
+            let image = try AIMacScreenSupport.render(settings: config, system: system)
+            aiMacScreenPreviews[deviceID] = NSImage(
+                cgImage: image, size: NSSize(width: 240, height: 240))
+            let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
+            let bytes: Data
+            let endpoint: URL
+            let modeText: String
+            if let rgb565URL = capabilities.rgb565UploadURL {
+                bytes = try AIMacScreenSupport.encodeRGB565(image)
+                endpoint = rgb565URL
+                modeText = "RGB565 无损"
+                aiMacScreenLosslessIDs.insert(deviceID)
+            } else {
+                bytes = try AIMacScreenSupport.encodeJPEG(
+                    image, preferredQuality: config.jpegQuality)
+                endpoint = capabilities.jpegUploadURL
+                modeText = "JPEG 兼容"
+                aiMacScreenLosslessIDs.remove(deviceID)
+            }
+            let frameHash = SHA256.hash(data: bytes).map {
+                String(format: "%02x", $0)
+            }.joined()
+            if !force, aiMacScreenLastHashes[deviceID] == frameHash {
+                aiMacScreenStatuses[deviceID] = "画面未变化，已跳过推送"
+                return
+            }
+            if capabilities.supportsLosslessRGB565 {
+                _ = try await imageApi.upload(
+                    rgb565: bytes, endpoint: endpoint.absoluteString, timeout: 12)
+            } else {
+                _ = try await imageApi.upload(
+                    jpeg: bytes, endpoint: endpoint.absoluteString, timeout: 12)
+            }
+            aiMacScreenLastHashes[deviceID] = frameHash
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            aiMacScreenLastPushText[deviceID] = formatter.string(from: Date())
+            aiMacScreenStatuses[deviceID] = "推送成功 · \(modeText)"
+        } catch {
+            aiMacScreenStatuses[deviceID] = "推送失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func maybeAutoPushAIMacScreens(now: Date) async {
+        let dueDevices = enabledDevices(for: .aiMacScreen).filter { device in
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            guard config.autoPush,
+                  !AIMacScreenSupport.normalizedHost(config.host).isEmpty,
+                  !aiMacScreenBusyIDs.contains(device.id) else { return false }
+            let interval = TimeInterval(max(1, config.pushIntervalSeconds))
+            if let last = aiMacScreenLastPushAt[device.id], now.timeIntervalSince(last) < interval {
+                return false
+            }
+            return true
+        }
+        // 同一秒有多台仪表盘需要推送时只采样一次系统状态，避免设备数增加后
+        // CPU/内存/网络统计调用按台数重复放大。
+        if dueDevices.contains(where: {
+            ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).mode == .dashboard
+        }) {
+            system = monitor.sample(now: now)
+        }
+        for device in dueDevices {
+            await pushAIMacScreen(deviceID: device.id, force: false, sampleDashboard: false)
+        }
     }
 
     private func formlabsCloudTestText(_ config: FormlabsConnectionSettings) async -> String {
@@ -1892,6 +2156,8 @@ public final class AppModel: ObservableObject {
         }
         // 独立画板定时推送：按各自间隔自动推送口袋先知 / 摘录画布到设备
         await maybeAutoPushDeviceCanvases(now: now)
+        // 240×240 小屏幕共用本应用每秒时钟；每台设备仍按自己的最短间隔与内容指纹推送。
+        await maybeAutoPushAIMacScreens(now: now)
         // 侧栏常驻封面：非「正在播放」模式下也低频刷新一次播放状态
         if settings.displayMode != .nowPlaying {
             await refreshSidebarNowPlaying(now: now)

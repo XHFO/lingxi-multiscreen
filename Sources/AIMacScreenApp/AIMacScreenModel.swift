@@ -81,7 +81,7 @@ enum AIMacScreenError: Error, LocalizedError {
         case .invalidHost: return "请先填写小屏幕的 IP 地址。"
         case .invalidDevice(let message): return message
         case .imageTooLarge(let size): return "图片压缩后仍有 \(size) 字节，超过固件 24KB 上限。"
-        case .encodeFailed: return "无法生成 240×240 JPEG。"
+        case .encodeFailed: return "无法生成 240×240 画面。"
         case .noCustomImage: return "请先选择一张图片。"
         }
     }
@@ -102,6 +102,7 @@ final class AIMacScreenModel: ObservableObject {
     @Published private(set) var status = "等待连接小屏幕"
     @Published private(set) var lastPush = "尚未推送"
     @Published private(set) var busy = false
+    @Published private(set) var usesLossless = false
 
     private let store: AIMacScreenSettingsStore
     private let imageAPI = ImageApiClient()
@@ -110,6 +111,8 @@ final class AIMacScreenModel: ObservableObject {
     private var timer: Timer?
     private var lastUploadedHash: String?
     private var lastPushAt: Date?
+    private var capabilityHost: String?
+    private var losslessUploadURL: URL?
 
     init(store: AIMacScreenSettingsStore = AIMacScreenSettingsStore()) {
         self.store = store
@@ -171,26 +174,17 @@ final class AIMacScreenModel: ObservableObject {
 
     func testConnection() {
         Task {
-            guard let url = infoURL else {
+            guard infoURL != nil else {
                 status = AIMacScreenError.invalidHost.localizedDescription
                 return
             }
             busy = true
             defer { busy = false }
             do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 4
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse,
-                      (200..<300).contains(http.statusCode),
-                      let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      json["device"] as? String == "esp8266-ai-screen",
-                      let screen = json["screen"] as? [String: Any],
-                      screen["width"] as? Int == Self.frameSize,
-                      screen["height"] as? Int == Self.frameSize else {
-                    throw AIMacScreenError.invalidDevice("已连接，但目标不是兼容的 AI Mac 240×240 固件。")
-                }
-                status = "连接成功 · 240×240 图片 API 可用"
+                let lossless = try await discoverCapabilities()
+                status = lossless
+                    ? "连接成功 · 无损 RGB565 推送可用"
+                    : "连接成功 · JPEG 兼容模式"
             } catch {
                 status = Self.friendly(error)
             }
@@ -199,28 +193,50 @@ final class AIMacScreenModel: ObservableObject {
 
     private func push(force: Bool) async {
         guard !busy else { return }
-        guard let endpoint = uploadURL?.absoluteString else {
+        guard !normalizedHost.isEmpty else {
             status = AIMacScreenError.invalidHost.localizedDescription
             return
         }
         busy = true
         defer { busy = false }
         do {
+            if capabilityHost != normalizedHost {
+                _ = try await discoverCapabilities()
+            }
             let result = try renderFrame()
-            let jpeg = try Self.encodeJPEG(result, preferredQuality: settings.jpegQuality)
-            let hash = SHA256.hash(data: jpeg).map { String(format: "%02x", $0) }.joined()
+            let bytes: Data
+            let endpoint: String
+            let transport: String
+            if let losslessUploadURL {
+                bytes = try Self.encodeRGB565(result)
+                endpoint = losslessUploadURL.absoluteString
+                transport = "无损 RGB565"
+            } else {
+                guard let jpegEndpoint = uploadURL?.absoluteString else {
+                    throw AIMacScreenError.invalidHost
+                }
+                bytes = try Self.encodeJPEG(result, preferredQuality: settings.jpegQuality)
+                endpoint = jpegEndpoint
+                transport = "JPEG"
+            }
+            let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
             if !force, hash == lastUploadedHash {
                 lastPushAt = Date()
                 return
             }
-            status = "正在推送 240×240 画面…"
-            let code = try await imageAPI.upload(jpeg: jpeg, endpoint: endpoint, timeout: 8)
+            status = "正在推送 \(transport) 画面…"
+            let code: Int
+            if usesLossless {
+                code = try await imageAPI.upload(rgb565: bytes, endpoint: endpoint, timeout: 8)
+            } else {
+                code = try await imageAPI.upload(jpeg: bytes, endpoint: endpoint, timeout: 8)
+            }
             lastUploadedHash = hash
             lastPushAt = Date()
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
-            lastPush = "最后推送 \(formatter.string(from: Date())) · \(jpeg.count) B"
-            status = "推送成功（HTTP \(code)）"
+            lastPush = "最后推送 \(formatter.string(from: Date())) · \(transport) · \(bytes.count) B"
+            status = "推送成功 · \(transport)（HTTP \(code)）"
         } catch {
             lastPushAt = Date()
             status = Self.friendly(error)
@@ -243,6 +259,37 @@ final class AIMacScreenModel: ObservableObject {
     private var infoURL: URL? {
         guard !normalizedHost.isEmpty else { return nil }
         return URL(string: "http://\(normalizedHost)/api/info")
+    }
+
+    @discardableResult
+    private func discoverCapabilities() async throws -> Bool {
+        guard let url = infoURL else { throw AIMacScreenError.invalidHost }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 4
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["device"] as? String == "esp8266-ai-screen",
+              let screen = json["screen"] as? [String: Any],
+              screen["width"] as? Int == Self.frameSize,
+              screen["height"] as? Int == Self.frameSize else {
+            throw AIMacScreenError.invalidDevice("已连接，但目标不是兼容的 AI Mac 240×240 固件。")
+        }
+
+        let host = normalizedHost
+        if capabilityHost != host { lastUploadedHash = nil }
+        capabilityHost = host
+        losslessUploadURL = nil
+        if let raw = json["rgb565_api"] as? [String: Any],
+           raw["content_type"] as? String == "application/x-rgb565",
+           raw["byte_order"] as? String == "big-endian",
+           raw["bytes"] as? Int == Self.frameSize * Self.frameSize * 2,
+           let path = raw["path"] as? String, path.hasPrefix("/") {
+            losslessUploadURL = URL(string: "http://\(host)\(path)")
+        }
+        usesLossless = losslessUploadURL != nil
+        return usesLossless
     }
 
     private func renderPreview() {
@@ -395,6 +442,41 @@ final class AIMacScreenModel: ObservableObject {
             if data.length <= maximumJPEGBytes { return data as Data }
         }
         throw AIMacScreenError.imageTooLarge(lastSize)
+    }
+
+    /// Encodes a deterministic, lossless, row-major RGB565 frame. The two
+    /// bytes of every pixel are sent most-significant first as advertised by
+    /// the firmware capability response.
+    static func encodeRGB565(_ image: CGImage) throws -> Data {
+        guard image.width == frameSize, image.height == frameSize,
+              let context = CGContext(
+                data: nil, width: frameSize, height: frameSize,
+                bitsPerComponent: 8, bytesPerRow: frameSize * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue |
+                    CGImageAlphaInfo.premultipliedLast.rawValue),
+              let source = context.data?.assumingMemoryBound(to: UInt8.self) else {
+            throw AIMacScreenError.encodeFailed
+        }
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: frameSize, height: frameSize))
+
+        var output = Data(count: frameSize * frameSize * 2)
+        output.withUnsafeMutableBytes { storage in
+            let destination = storage.bindMemory(to: UInt8.self)
+            for pixel in 0..<(frameSize * frameSize) {
+                let sourceOffset = pixel * 4
+                let red = UInt16(source[sourceOffset])
+                let green = UInt16(source[sourceOffset + 1])
+                let blue = UInt16(source[sourceOffset + 2])
+                let rgb565 = ((red & 0xF8) << 8) |
+                             ((green & 0xFC) << 3) |
+                             (blue >> 3)
+                destination[pixel * 2] = UInt8(rgb565 >> 8)
+                destination[pixel * 2 + 1] = UInt8(rgb565 & 0xFF)
+            }
+        }
+        return output
     }
 
     private static func friendly(_ error: Error) -> String {

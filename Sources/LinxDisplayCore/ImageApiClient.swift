@@ -38,12 +38,19 @@ public struct ImageApiClient {
         try await upload(bytes: jpeg, contentType: "image/jpeg", endpoint: endpoint, timeout: timeout)
     }
 
+    /// 240x240 RGB565 无损帧，每个像素为大端字节序。
+    public func upload(rgb565: Data, endpoint: String,
+                       timeout: TimeInterval = 20) async throws -> Int {
+        try await upload(bytes: rgb565, contentType: "application/x-rgb565",
+                         endpoint: endpoint, timeout: timeout)
+    }
+
     /// 无损 PNG 推送（无压缩痕迹；需键盘设备支持 PNG 解码）
     public func upload(png: Data, endpoint: String, timeout: TimeInterval = 20) async throws -> Int {
         try await upload(bytes: png, contentType: "image/png", endpoint: endpoint, timeout: timeout)
     }
 
-    /// 通用推送：按 contentType 指定 image/jpeg 或 image/png
+    /// 通用推送：按 contentType 指定图像编码。
     public func upload(_ bytes: Data, contentType: String, endpoint: String,
                        timeout: TimeInterval = 20) async throws -> Int {
         try await upload(bytes: bytes, contentType: contentType, endpoint: endpoint, timeout: timeout)

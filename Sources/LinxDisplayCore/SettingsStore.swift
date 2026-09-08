@@ -571,6 +571,10 @@ public final class AppSettings: ObservableObject {
     @Published public var activeFormlabsDeviceID: UUID? {
         didSet { onChange() }
     }
+    /// 当前活动 AI Mac 240×240 小屏幕设备 ID。
+    @Published public var activeAIMacScreenDeviceID: UUID? {
+        didSet { onChange() }
+    }
 
     /// 画板模块列表（过滤无效 rawValue）
     public var canvasModuleList: [CanvasModule] {
@@ -1158,7 +1162,7 @@ public final class AppSettings: ObservableObject {
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -1321,6 +1325,7 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeHomeAssistantDeviceID, forKey: .activeHomeAssistantDeviceID)
         try container.encodeIfPresent(activeBambuLabDeviceID, forKey: .activeBambuLabDeviceID)
         try container.encodeIfPresent(activeFormlabsDeviceID, forKey: .activeFormlabsDeviceID)
+        try container.encodeIfPresent(activeAIMacScreenDeviceID, forKey: .activeAIMacScreenDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
         try container.encode(excerptCanvasModules, forKey: .excerptCanvasModules)
         try container.encode(oracleImageRotate180, forKey: .oracleImageRotate180)
@@ -1554,6 +1559,7 @@ extension AppSettings: Codable {
         activeHomeAssistantDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeHomeAssistantDeviceID) ?? activeHomeAssistantDeviceID
         activeBambuLabDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeBambuLabDeviceID) ?? activeBambuLabDeviceID
         activeFormlabsDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeFormlabsDeviceID) ?? activeFormlabsDeviceID
+        activeAIMacScreenDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAIMacScreenDeviceID) ?? activeAIMacScreenDeviceID
         oracleCanvasModules = try container.decodeIfPresent([Int].self, forKey: .oracleCanvasModules) ?? oracleCanvasModules
         excerptCanvasModules = try container.decodeIfPresent([Int].self, forKey: .excerptCanvasModules) ?? excerptCanvasModules
         oracleImageRotate180 = try container.decodeIfPresent(Bool.self, forKey: .oracleImageRotate180) ?? oracleImageRotate180

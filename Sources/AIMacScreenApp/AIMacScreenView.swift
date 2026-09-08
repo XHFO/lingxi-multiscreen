@@ -48,17 +48,24 @@ struct AIMacScreenView: View {
                 Toggle("自动推送变化画面", isOn: model.autoPushBinding)
                 Stepper("最短间隔：\(model.settings.pushIntervalSeconds) 秒",
                         value: model.intervalBinding, in: 1...60)
-                HStack {
-                    Text("JPEG 质量")
-                    Slider(value: Binding(
-                        get: { Double(model.settings.jpegQuality) },
-                        set: { model.settings.jpegQuality = Int($0.rounded()) }),
-                           in: 50...90, step: 1)
-                    Text("\(model.settings.jpegQuality)")
-                        .monospacedDigit()
-                        .frame(width: 28)
+                if model.usesLossless {
+                    Text("无损 RGB565 · 无 JPEG 色块")
+                        .foregroundStyle(.green)
+                } else {
+                    HStack {
+                        Text("JPEG 质量")
+                        Slider(value: Binding(
+                            get: { Double(model.settings.jpegQuality) },
+                            set: { model.settings.jpegQuality = Int($0.rounded()) }),
+                               in: 50...90, step: 1)
+                        Text("\(model.settings.jpegQuality)")
+                            .monospacedDigit()
+                            .frame(width: 28)
+                    }
                 }
-                Text("固件只接收严格的 240×240 JPEG；实验版会自动降低质量，确保每帧不超过 24KB。")
+                Text(model.usesLossless
+                    ? "画面以 240×240 RGB565 原始像素推送，不经过有损压缩。"
+                    : "旧固件兼容模式：自动压缩为 24KB 以内 JPEG。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("立即推送", action: model.pushNow)

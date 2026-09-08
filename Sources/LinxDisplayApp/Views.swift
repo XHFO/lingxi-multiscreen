@@ -30,7 +30,7 @@ extension Panel {
     var isBeta: Bool {
         self == .homeAssistant || self == .bambuLab || self == .bambuLab2
             || self == .bambuLab3 || self == .bambuLab4 || self == .bambuLab5
-            || isFormlabsCard
+            || isFormlabsCard || self == .aiMacScreen
     }
 
     /// 是否为 Bambu Lab 打印机卡片位（第 1/2/3/4/5 台；显示在键盘设备分组内，
@@ -113,6 +113,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case formlabs3
     case formlabs4
     case formlabs5
+    case aiMacScreen
     case devices
     case buttonControl
     case cardRotation
@@ -222,6 +223,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .formlabs3: return "Formlabs 打印机 3"
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
+        case .aiMacScreen: return "AI Mac 小屏幕"
         case .devices: return "设备管理"
         case .buttonControl: return "按键控制"
         case .cardRotation: return "卡片管理"
@@ -250,6 +252,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .homeAssistant: return "house"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
+        case .aiMacScreen: return "display"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
         case .cardRotation: return "tray.full"
@@ -264,7 +267,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     var displayMode: DisplayMode? {
         switch self {
         case .welcome, .general, .appearance: return nil
-        case .oracleCanvas, .excerptCanvas, .devices, .buttonControl,
+        case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .cardRotation, .oracleBoardManagement, .excerptBoardManagement: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
@@ -532,7 +535,7 @@ struct SettingsView: View {
     private var hidesPreviewPanel: Bool {
         if model.settings.devices.isEmpty { return true }
         switch selected {
-        case .oracleCanvas, .excerptCanvas, .oracleBoardManagement,
+        case .oracleCanvas, .excerptCanvas, .oracleBoardManagement, .aiMacScreen,
              .excerptBoardManagement, .devices, .general:
             return true
         case .buttonControl:
@@ -782,6 +785,7 @@ struct SettingsView: View {
         case .homeAssistant: homeAssistantForm
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
+        case .aiMacScreen: aiMacScreenForm
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
         case .cardRotation: cardRotationForm
@@ -806,6 +810,102 @@ struct SettingsView: View {
                 HelpIcon(text: helpText, linkURL: helpURL)
             } else if let helpText {
                 HelpIcon(text: helpText)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var aiMacScreenForm: some View {
+        if let device = model.activeDevice(for: .aiMacScreen) {
+            let config = model.aiMacScreenSettings(for: device.id)
+            Section("240 × 240 实时预览") {
+                HStack {
+                    Spacer()
+                    Group {
+                        if let preview = model.aiMacScreenPreviews[device.id] {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .interpolation(.none)
+                        } else {
+                            ZStack {
+                                Color.black.opacity(0.9)
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .frame(width: 240, height: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+            }
+
+            Section("显示内容") {
+                Picker("内容模式", selection: model.aiMacScreenModeBinding(for: device.id)) {
+                    ForEach(AIMacScreenContentMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if config.mode == .customImage {
+                    HStack {
+                        Button("选择图片…") { model.chooseAIMacScreenImage(deviceID: device.id) }
+                        Spacer()
+                        Text(config.customImagePath.map { URL(fileURLWithPath: $0).lastPathComponent }
+                             ?? "尚未选择")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Section("连接与推送") {
+                deviceConnectionField(device.id, label: "小屏幕 IP 地址",
+                                      binding: model.aiMacScreenHostBinding(for: device.id),
+                                      fieldWidth: 320,
+                                      helpText: "填写设备局域网 IP。0.7.0 固件使用 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
+                Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
+                if config.autoPush {
+                    Stepper("推送间隔 \(config.pushIntervalSeconds) 秒",
+                            value: model.aiMacScreenIntervalBinding(for: device.id), in: 1...60)
+                }
+                if !model.aiMacScreenLosslessIDs.contains(device.id) {
+                    Stepper("JPEG 质量 \(config.jpegQuality)%",
+                            value: model.aiMacScreenJPEGQualityBinding(for: device.id), in: 50...90)
+                }
+                HStack {
+                    Button("连接测试") {
+                        Task { await model.testAIMacScreenConnection(deviceID: device.id) }
+                    }
+                    Button("立即推送") {
+                        Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
+                    }
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    Spacer()
+                    if model.aiMacScreenBusyIDs.contains(device.id) {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                LabeledContent("传输模式",
+                               value: model.aiMacScreenLosslessIDs.contains(device.id)
+                               ? "RGB565 无损" : "JPEG 兼容")
+                if let time = model.aiMacScreenLastPushText[device.id] {
+                    LabeledContent("最后推送", value: time)
+                }
+                Text(model.aiMacScreenStatuses[device.id] ?? "等待连接小屏幕")
+                    .font(.caption)
+                    .foregroundStyle((model.aiMacScreenStatuses[device.id] ?? "").contains("失败")
+                                     ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+            }
+        } else {
+            Section {
+                Text("请先在“设备管理”中添加并启用 AI Mac 小屏幕。")
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -962,6 +1062,23 @@ struct SettingsView: View {
                                     bambuDeviceConfigInline(device.id)
                                 } else if type == .formlabs {
                                     formlabsDeviceConfigInline(device.id)
+                                } else if type == .aiMacScreen {
+                                    deviceConnectionField(device.id, label: "小屏幕 IP 地址",
+                                                          binding: model.aiMacScreenHostBinding(for: device.id),
+                                                          fieldWidth: 320,
+                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.7.0 固件使用 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                    HStack {
+                                        Button("连接测试") {
+                                            Task { await model.testAIMacScreenConnection(deviceID: device.id) }
+                                        }
+                                        if model.aiMacScreenBusyIDs.contains(device.id) {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                        Spacer()
+                                        Text(model.aiMacScreenStatuses[device.id] ?? "尚未测试")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
                                                           binding: model.deviceDotApiKeyBinding(for: device.id),
@@ -4319,6 +4436,11 @@ struct Sidebar: View {
             return AnyView(EmptyView())
         case .formlabs:
             return AnyView(EmptyView())
+        case .aiMacScreen:
+            return AnyView(deviceInstanceGroup(icon: "display", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id),
+                                               panels: [.aiMacScreen],
+                                               switchType: .aiMacScreen, deviceID: device.id))
         }
     }
 
@@ -4748,6 +4870,9 @@ struct MiniSidebar: View {
             }
             if !model.enabledDevices(for: .excerpt).isEmpty {
                 deviceIconButton(icon: "quote.opening", title: "摘录", panel: .excerptBoardManagement)
+            }
+            if !model.enabledDevices(for: .aiMacScreen).isEmpty {
+                deviceIconButton(icon: "display", title: "AI Mac 小屏幕", panel: .aiMacScreen)
             }
             Spacer(minLength: 0)
             // 正在播放：专辑封面（点击跳转到正在播放页）
