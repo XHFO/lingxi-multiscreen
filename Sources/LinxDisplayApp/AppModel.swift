@@ -1749,6 +1749,51 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    public func aiMacScreenBrightnessLevel(for id: UUID) -> Int {
+        aiMacScreenSavedBrightness[id]
+            ?? aiMacScreenSettings(for: id).awakeBrightness
+            ?? aiMacScreenCapabilities[id]?.brightnessLevel
+            ?? 100
+    }
+
+    /// 滑动过程中只更新内存值；松开或点击“应用亮度”时才持久化并请求设备，
+    /// 避免连续写设置和向低功耗小屏发送大量背光请求。
+    public func aiMacScreenBrightnessBinding(for id: UUID) -> Binding<Double> {
+        Binding(get: { Double(self.aiMacScreenBrightnessLevel(for: id)) }, set: { value in
+            self.aiMacScreenSavedBrightness[id] = min(max(Int(value.rounded()), 1), 100)
+            self.objectWillChange.send()
+        })
+    }
+
+    public func applyAIMacScreenBrightness(deviceID: UUID) async {
+        let level = aiMacScreenBrightnessLevel(for: deviceID)
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) {
+            $0.awakeBrightness = level
+        }
+        guard !aiMacScreenShouldSleep(deviceID: deviceID) else {
+            aiMacScreenStatuses[deviceID] = "已保存亮度 \(level)% · 唤醒后生效"
+            return
+        }
+
+        // 与锁屏/唤醒共用同一条设备任务队列，保证临界时刻最后发生的状态胜出。
+        let previousTask = aiMacScreenPowerTasks[deviceID]
+        let generation = (aiMacScreenPowerGenerations[deviceID] ?? 0) &+ 1
+        aiMacScreenPowerGenerations[deviceID] = generation
+        let operation = Task { @MainActor [weak self] () -> Bool in
+            _ = await previousTask?.value
+            guard !Task.isCancelled, let self,
+                  !self.aiMacScreenShouldSleep(deviceID: deviceID) else { return false }
+            return await self.sendAIMacScreenBrightness(deviceID: deviceID, level: level)
+        }
+        aiMacScreenPowerTasks[deviceID] = operation
+        let succeeded = await operation.value
+        guard aiMacScreenPowerGenerations[deviceID] == generation else { return }
+        aiMacScreenPowerTasks[deviceID] = nil
+        if succeeded {
+            aiMacScreenStatuses[deviceID] = "亮度已调整为 \(level)%"
+        }
+    }
+
     public func aiMacScreenIntervalBinding(for id: UUID) -> Binding<Int> {
         Binding(get: { self.aiMacScreenSettings(for: id).pushIntervalSeconds }, set: { value in
             self.mutateAIMacScreenSettings(id) { $0.pushIntervalSeconds = value }
@@ -2389,6 +2434,31 @@ public final class AppModel: ObservableObject {
             return true
         } catch {
             // 锁屏/睡眠时网络可能先于通知断开；保持静默，唤醒通知会再次尝试恢复。
+            return false
+        }
+    }
+
+    private func sendAIMacScreenBrightness(deviceID: UUID, level: Int) async -> Bool {
+        do {
+            let capabilities = try await fetchAIMacScreenCapabilities(
+                deviceID: deviceID, force: true, timeout: 2.5,
+                allowJPEGFallback: false)
+            guard let brightnessURL = capabilities.brightnessURL else {
+                aiMacScreenStatuses[deviceID] = "当前固件不支持亮度调节，请升级至 0.8.1 或更新版本"
+                return false
+            }
+            guard let request = AIMacScreenSupport.brightnessRequest(
+                url: brightnessURL, level: level) else { return false }
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                aiMacScreenStatuses[deviceID] = "亮度调节失败：设备未接受请求"
+                return false
+            }
+            aiMacScreenSavedBrightness[deviceID] = level
+            return true
+        } catch {
+            aiMacScreenStatuses[deviceID] = "亮度调节失败：\(error.localizedDescription)"
             return false
         }
     }

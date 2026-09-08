@@ -4803,6 +4803,10 @@ func testAIMacScreen() throws {
     }
     checkEqual(sleepRequest?.httpMethod, "POST", "熄屏使用 POST 请求")
     checkEqual(sleepRequest?.url?.query, "level=0", "熄屏亮度请求使用固件查询参数")
+    let brightnessRequest = rgbCapabilities.brightnessURL.flatMap {
+        AIMacScreenSupport.brightnessRequest(url: $0, level: 58)
+    }
+    checkEqual(brightnessRequest?.url?.query, "level=58", "亮度滑杆生成指定背光请求")
 
     let jpegInfo = """
     {"device":"esp8266-ai-screen","screen":{"width":240,"height":240}}
@@ -4817,6 +4821,7 @@ func testAIMacScreen() throws {
     let linkedKeyboardID = UUID()
     var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .clock,
                                            autoPush: false, followSystemSleep: false,
+                                           awakeBrightness: 58,
                                            lyricsKeyboardDeviceID: linkedKeyboardID,
                                            pushIntervalSeconds: 9,
                                            jpegQuality: 71)
