@@ -782,14 +782,26 @@ public struct UsageSnapshot: Equatable {
     public var windowMinutes: Int?
     public var availableResetCount: Int
     public var planType: String?
+    /// 实际额度来源名称。官方来源显示“Codex 官方”；CC Switch 会包含当前供应商名称。
+    public var sourceName: String?
+    /// 第三方来源可提供的额度原值与单位，供正方形屏幕提高信息密度。
+    public var remainingValue: Double?
+    public var usageUnit: String?
+    public var sampledAt: Date?
 
     public init(remainingPercent: Int, resetDate: Date?, windowMinutes: Int?,
-                availableResetCount: Int, planType: String?) {
+                availableResetCount: Int, planType: String?,
+                sourceName: String? = nil, remainingValue: Double? = nil,
+                usageUnit: String? = nil, sampledAt: Date? = nil) {
         self.remainingPercent = remainingPercent
         self.resetDate = resetDate
         self.windowMinutes = windowMinutes
         self.availableResetCount = availableResetCount
         self.planType = planType
+        self.sourceName = sourceName
+        self.remainingValue = remainingValue
+        self.usageUnit = usageUnit
+        self.sampledAt = sampledAt
     }
 
     public var windowTitle: String {
@@ -822,7 +834,11 @@ public struct UsageSnapshot: Equatable {
         resetDate: nil,
         windowMinutes: nil,
         availableResetCount: 0,
-        planType: nil
+        planType: nil,
+        sourceName: nil,
+        remainingValue: nil,
+        usageUnit: nil,
+        sampledAt: nil
     )
 
 }

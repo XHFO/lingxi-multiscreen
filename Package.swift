@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .target(
             name: "LinxDisplayCore",
-            path: "Sources/LinxDisplayCore"
+            path: "Sources/LinxDisplayCore",
+            linkerSettings: [
+                .linkedFramework("JavaScriptCore")
+            ]
         ),
         .executableTarget(
             name: "LinxDisplayApp",

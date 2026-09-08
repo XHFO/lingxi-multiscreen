@@ -11,6 +11,10 @@ public final class AppSettings: ObservableObject {
     @Published public var codexRefreshSeconds = 300 {
         didSet { onChange() }
     }
+    /// Codex 额度数据源：官方 Codex CLI 或只读跟随 CC Switch 当前供应商。
+    @Published public var codexUsageSource: CodexUsageSource = .codexCLI {
+        didSet { onChange() }
+    }
     /// 少数派推荐卡片刷新周期（分钟）
     @Published public var sspaiRefreshMinutes = 30 {
         didSet { onChange() }
@@ -1118,7 +1122,7 @@ public final class AppSettings: ObservableObject {
     // MARK: - Codable（手动实现，与 @Published 兼容）
 
     private enum CodingKeys: String, CodingKey {
-        case endpoint, codexRefreshSeconds, sspaiRefreshMinutes, sspaiRandomPush,
+        case endpoint, codexRefreshSeconds, codexUsageSource, sspaiRefreshMinutes, sspaiRandomPush,
              dynamicUploadSeconds, pomodoroUploadSeconds, safeAreaHeight,
              jpegQuality, qwenQuotaBaseline, qwenQuotaBaselineDay, displayMode, cardTheme, customImagePath, customImageName,
              oracleCanvasImagePath, oracleCanvasImageName, excerptCanvasImagePath, excerptCanvasImageName,
@@ -1178,6 +1182,7 @@ public final class AppSettings: ObservableObject {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(endpoint, forKey: .endpoint)
         try container.encode(codexRefreshSeconds, forKey: .codexRefreshSeconds)
+        try container.encode(codexUsageSource.rawValue, forKey: .codexUsageSource)
         try container.encode(sspaiRefreshMinutes, forKey: .sspaiRefreshMinutes)
         try container.encode(sspaiRandomPush, forKey: .sspaiRandomPush)
         try container.encode(dynamicUploadSeconds, forKey: .dynamicUploadSeconds)
@@ -1355,6 +1360,10 @@ extension AppSettings: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? endpoint
         codexRefreshSeconds = try container.decodeIfPresent(Int.self, forKey: .codexRefreshSeconds) ?? codexRefreshSeconds
+        if let raw = try container.decodeIfPresent(String.self, forKey: .codexUsageSource),
+           let source = CodexUsageSource(rawValue: raw) {
+            codexUsageSource = source
+        }
         sspaiRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .sspaiRefreshMinutes) ?? sspaiRefreshMinutes
         sspaiRandomPush = try container.decodeIfPresent(Bool.self, forKey: .sspaiRandomPush) ?? sspaiRandomPush
         dynamicUploadSeconds = try container.decodeIfPresent(Int.self, forKey: .dynamicUploadSeconds) ?? dynamicUploadSeconds

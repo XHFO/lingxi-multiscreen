@@ -49,6 +49,7 @@ private struct BambuCameraZoomRuntime {
 public final class AppModel: ObservableObject {
     private let store = SettingsStore()
     private let codex = CodexRateLimitClient()
+    private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
     private let nowPlayingClient = NowPlayingClient()
     private let imageApi = ImageApiClient()
@@ -202,7 +203,12 @@ public final class AppModel: ObservableObject {
     private lazy var usageAggregator: UsageDataAggregator = UsageDataAggregator(
         fetchCodex: { [weak self] path in
             guard let self else { throw CodexError.notFound }
-            return try await self.codex.fetch(executable: path ?? self.settings.codexCliPath)
+            switch self.settings.codexUsageSource {
+            case .codexCLI:
+                return try await self.codex.fetch(executable: path ?? self.settings.codexCliPath)
+            case .ccSwitch:
+                return try await self.ccSwitchQuota.fetch()
+            }
         },
         fetchQuota: { [weak self] in
             guard let self else { throw QuotaError.unreachable }
@@ -3543,8 +3549,12 @@ public func setClockTimeFormat(_ format: String) {
         quotaRefreshing = true
         defer { quotaRefreshing = false }
         lastQuotaRefresh = Date()
+        let requestedCodexSource = settings.codexUsageSource
         let outcome = await usageAggregator.fetch(codexCliPath: settings.codexCliPath)
-        if let usage = outcome.usage { self.usage = usage }
+        // 来源切换发生在网络请求途中时，丢弃旧来源刚返回的结果。
+        if let usage = outcome.usage, settings.codexUsageSource == requestedCodexSource {
+            self.usage = usage
+        }
         if let quota = outcome.quota {
             // 千问额度百分比：以基线为 100%，按 当前/基线 算剩余百分比。
             // 基线每日自动采样（跨天后重新采样），同一日内额度回升超过基线（如每日赠送积分入账）
@@ -3556,6 +3566,34 @@ public func setClockTimeFormat(_ format: String) {
             qwenQuota = updated
         }
         return outcome.failures
+    }
+
+    /// 切换 Codex 额度来源后立即丢弃旧来源快照并重新读取，避免界面在一个刷新周期内
+    /// 继续显示上一来源的数据。刷新完成后按内容指纹推送当前可见卡片。
+    public func setCodexUsageSource(_ source: CodexUsageSource) {
+        guard settings.codexUsageSource != source else { return }
+        settings.codexUsageSource = source
+        usage = .empty
+        lastQuotaRefresh = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // 若上一轮定时刷新恰好仍在进行，等其收尾后立即拉取新来源；旧结果会被
+            // refreshUsageAndQuota 内的来源校验丢弃，不会闪回到卡片上。
+            while self.quotaRefreshing, self.settings.codexUsageSource == source {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard self.settings.codexUsageSource == source else { return }
+            let failures = await self.refreshUsageAndQuota()
+            self.renderPreview()
+            self.status = failures.isEmpty ? "Codex 额度来源已切换" : failures.joined(separator: "；")
+            await self.pushWhenAvailable(force: false, silentIfUnchanged: true)
+            for device in self.enabledDevices(for: .aiMacScreen) {
+                let config = self.aiMacScreenSettings(for: device.id)
+                if config.autoPush {
+                    await self.pushAIMacScreen(deviceID: device.id, force: false)
+                }
+            }
+        }
     }
 
     // MARK: - Formlabs

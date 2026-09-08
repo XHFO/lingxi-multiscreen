@@ -9,6 +9,10 @@ import ImageIO
 import UniformTypeIdentifiers
 import LinxDisplayCore
 
+if CCSwitchQuotaClient.runScriptWorkerIfRequested() {
+    exit(0)
+}
+
 // 仅测试和视觉预览使用的样本数据。放在测试目标中，确保正式 App 二进制不携带示例账号数据。
 extension UsageSnapshot {
     static var sample: UsageSnapshot {
@@ -277,6 +281,59 @@ func testCodexParse() throws {
     print("  Codex 用量解析通过")
 }
 
+func testCCSwitchQuotaSource() throws {
+    let toml = """
+    model_provider = "router"
+    base_url = "https://fallback.example.com/v1"
+    [model_providers.old]
+    base_url = "https://old.example.com/v1"
+    [model_providers.router]
+    base_url = "https://router.example.com/v1/"
+    """
+    checkEqual(CCSwitchQuotaClient.activeCodexBaseURL(in: toml),
+               "https://router.example.com/v1/",
+               "CC Switch 只读取当前 Codex 供应商地址")
+    let replaced = CCSwitchQuotaClient.substituteVariables(
+        in: "{{baseUrl}}/quota?user={{userId}}", apiKey: "key",
+        baseURL: "https://router.example.com", accessToken: "token", userID: "42")
+    checkEqual(replaced, "https://router.example.com/quota?user=42",
+               "CC Switch 用量脚本变量替换")
+
+    let weekly = CCSwitchQuotaClient.UsageItem(
+        planName: "Weekly limit", extra: "2026-09-15T12:00:00Z",
+        isValid: true, total: 100, used: 28, remaining: 72, unit: "%")
+    let fiveHour = CCSwitchQuotaClient.UsageItem(
+        planName: "5-hour limit", isValid: true,
+        total: 100, used: 10, remaining: 90, unit: "%")
+    let snapshot = try CCSwitchQuotaClient.makeSnapshot(
+        items: [fiveHour, weekly], providerName: "Router")
+    checkEqual(snapshot.remainingPercent, 72, "CC Switch 多周期优先显示最长周期")
+    checkEqual(snapshot.windowMinutes, 10_080, "CC Switch 周额度识别")
+    checkEqual(snapshot.sourceName, "CC Switch · Router", "CC Switch 来源包含当前供应商")
+    check(snapshot.resetDate != nil, "CC Switch 重置时间解析")
+
+    let credits = try CCSwitchQuotaClient.makeSnapshot(
+        items: [.init(planName: "套餐", isValid: true,
+                      total: 40, used: 10, remaining: 30, unit: "USD")],
+        providerName: "New API")
+    checkEqual(credits.remainingPercent, 75, "CC Switch 数值额度换算剩余百分比")
+    checkEqual(credits.remainingValue, 30, "CC Switch 保留额度原值供方屏显示")
+    checkEqual(credits.usageUnit, "USD", "CC Switch 保留额度单位")
+
+    try CCSwitchQuotaClient.validateUsageScript(
+        "({ request: { url: 'https://example.com/usage', method: 'GET' } })",
+        timeout: 1)
+    let timeoutStart = Date()
+    do {
+        try CCSwitchQuotaClient.validateUsageScript("while (true) {}", timeout: 0.2)
+        check(false, "CC Switch 无限循环规则必须被超时终止")
+    } catch {
+        check(Date().timeIntervalSince(timeoutStart) < 1.5,
+              "CC Switch 规则超时不会拖住主程序")
+    }
+    print("  CC Switch Codex 额度来源通过")
+}
+
 // MARK: - 同步规划
 
 func testSyncPlanner() {
@@ -350,6 +407,7 @@ func testSettingsAndUtilities() {
     settings.customBackgroundHex = "#112233"
     settings.accentTone = .orange
     settings.customAccentHex = "#FF4500"
+    settings.codexUsageSource = .ccSwitch
     let data = try! JSONEncoder().encode(settings)
     let decoded = try! JSONDecoder().decode(AppSettings.self, from: data)
     checkEqual(decoded.endpoint, "http://10.0.0.5/image/upload", "设置往返 endpoint")
@@ -361,6 +419,7 @@ func testSettingsAndUtilities() {
     checkEqual(decoded.customBackgroundHex, "#112233", "设置往返自定义背景")
     checkEqual(decoded.accentTone, .orange, "设置往返强调色")
     checkEqual(decoded.customAccentHex, "#FF4500", "设置往返自定义强调色")
+    checkEqual(decoded.codexUsageSource, .ccSwitch, "Codex 额度来源设置往返")
 
     let state = PomodoroState()
     state.phase = .focus
@@ -688,6 +747,28 @@ func exportPreviews(to directory: String) throws {
         _ = CGImageDestinationFinalize(destination)
         print("已导出 \(previewURL.path)")
     }
+    var ccSwitchPreview = UsageSnapshot.sample
+    ccSwitchPreview.remainingPercent = 72
+    ccSwitchPreview.sourceName = "CC Switch · Router"
+    ccSwitchPreview.remainingValue = 31.8
+    ccSwitchPreview.usageUnit = "USD"
+    ccSwitchPreview.sampledAt = Date()
+    var qwenSquarePreview = QwenWorkQuota.sample
+    qwenSquarePreview.trackedProgress = 0.76
+    let squareCodex = ScreenRenderer.renderDeviceCanvas(
+        modules: [.codex], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        codex: ccSwitchPreview, qwenQuota: qwenSquarePreview,
+        width: 240, height: 240, palette: multiSettings.resolvedPalette,
+        optimizeForEInk: false)
+    saveCanvasPreview(squareCodex, name: "AI-Mac-方屏-Codex-CC-Switch")
+    let squareQwen = ScreenRenderer.renderDeviceCanvas(
+        modules: [.qwenQuota], system: multiSystem, nowPlaying: .sample,
+        pomodoro: multiPomodoro, customText: "", settings: multiSettings,
+        codex: ccSwitchPreview, qwenQuota: qwenSquarePreview,
+        width: 240, height: 240, palette: multiSettings.resolvedPalette,
+        optimizeForEInk: false)
+    saveCanvasPreview(squareQwen, name: "AI-Mac-方屏-千问额度")
     saveCanvasPreview(formKeyboard.image, name: "Formlabs-灵犀画板")
     let formStandalone = try ScreenRenderer.renderFormlabs(
         deviceName: "Formlabs 1", connection: formConnection,
@@ -4515,6 +4596,20 @@ if CommandLine.arguments.contains("--previews") {
     }
 }
 
+if CommandLine.arguments.contains("--cc-switch-live") {
+    Task {
+        do {
+            let value = try await CCSwitchQuotaClient().fetch()
+            print("CC Switch 实际读取成功：来源=\(value.sourceName ?? "CC Switch")，剩余=\(value.remainingPercent)%")
+            exit(0)
+        } catch {
+            print("CC Switch 实际读取失败：\(error.localizedDescription)")
+            exit(2)
+        }
+    }
+    dispatchMain()
+}
+
 Task {
     do {
         testThemes()
@@ -4522,6 +4617,7 @@ Task {
         try testRenderCustomImage()
         testPomodoro()
         try testCodexParse()
+        try testCCSwitchQuotaSource()
         testSyncPlanner()
         testSystemMonitor()
         await testRand0SessionLifecycle()
@@ -4825,6 +4921,28 @@ func testAIMacScreen() throws {
     let squareEmoji = try AIMacScreenSupport.renderEmojiWallpaper(settings: AppSettings())
     checkEqual(squareEmoji.width, 240, "Emoji 壁纸按方形彩屏原生宽度渲染")
     checkEqual(squareEmoji.height, 240, "Emoji 壁纸按方形彩屏原生高度渲染")
+    let idlePomodoro = PomodoroSnapshot(phase: .idle, effectivePhase: .idle,
+                                        taskName: "", remaining: 0, duration: 0,
+                                        completedFocusSessions: 0)
+    var squareUsage = UsageSnapshot.sample
+    squareUsage.sourceName = "CC Switch · Router"
+    squareUsage.remainingValue = 31.8
+    squareUsage.usageUnit = "USD"
+    let squareSettings = AppSettings()
+    let squareCodexCard = ScreenRenderer.renderDeviceCanvas(
+        modules: [.codex], system: snapshot, nowPlaying: .sample,
+        pomodoro: idlePomodoro, customText: "", settings: squareSettings,
+        codex: squareUsage, width: 240, height: 240,
+        palette: squareSettings.resolvedPalette, optimizeForEInk: false)
+    let squareQwenCard = ScreenRenderer.renderDeviceCanvas(
+        modules: [.qwenQuota], system: snapshot, nowPlaying: .sample,
+        pomodoro: idlePomodoro, customText: "", settings: squareSettings,
+        qwenQuota: .sample, width: 240, height: 240,
+        palette: squareSettings.resolvedPalette, optimizeForEInk: false)
+    checkEqual(squareCodexCard.width, 240, "Codex 方屏高密度卡片宽度")
+    checkEqual(squareCodexCard.height, 240, "Codex 方屏高密度卡片高度")
+    check(!bitmapEqual(squareCodexCard, squareQwenCard),
+          "Codex 与千问方屏卡片按各自额度内容渲染")
 
     let coverContext = CGContext(data: nil, width: 64, height: 64,
                                  bitsPerComponent: 8, bytesPerRow: 64 * 4,

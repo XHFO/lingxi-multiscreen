@@ -1620,10 +1620,25 @@ public enum ScreenRenderer {
                          accent: accentOverride ?? colors.secondaryAccentCG,
                          percent: system.diskPercent, used: system.usedDiskBytes, total: system.totalDiskBytes)
         case .codex:
+            if deviceCanvas, !monochromeDeviceCanvas,
+               band.width >= 180, band.height >= 180 {
+                drawSquareCodexQuota(ctx, band: band, snapshot: codex,
+                                     accent: accentOverride ?? colors.accentCG,
+                                     colors: colors, now: now)
+                break
+            }
             let pct = codex.remainingPercent
             drawQuotaBand(ctx, band: band, label: "Codex", value: "\(pct)%",
                           progress: Double(pct) / 100, accent: accentOverride ?? colors.accentCG, colors: colors)
         case .qwenQuota:
+            if deviceCanvas, !monochromeDeviceCanvas,
+               band.width >= 180, band.height >= 180 {
+                drawSquareQwenQuota(ctx, band: band, quota: qwenQuota,
+                                    showPercent: settings.qwenQuotaShowPercent,
+                                    accent: accentOverride ?? colors.secondaryAccentCG,
+                                    colors: colors)
+                break
+            }
             // 额度精确到两位小数；整数大字 + 小数（含小数点）半字号
             let parts = quotaNumberParts(qwenQuota.remainingCredits)
             let unit = qwenQuota.unit.isEmpty ? "credits" : qwenQuota.unit
@@ -2794,6 +2809,143 @@ public enum ScreenRenderer {
         let barH = min(max(band.height - labelH - 4, 3), 6)
         drawProgress(ctx, rect(band.minX + 4, band.minY + labelH, band.width - 8, barH),
                      progress: p, accent: accent, background: colors.borderCG)
+    }
+
+    /// 240×240 彩色屏的 Codex 专用信息架构。纵向键盘的“标签 + 一条进度”在方屏上
+    /// 会浪费大面积空间，因此改为大指标、完整进度条和双信息格。
+    private static func drawSquareCodexQuota(_ ctx: CGContext, band: CGRect,
+                                             snapshot: UsageSnapshot, accent: CGColor,
+                                             colors: ScreenPalette, now: Date) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+
+        drawText(ctx, "CODEX", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, 72, 23), align: .left)
+        let source = snapshot.sourceName ?? "Codex 官方"
+        let sourceSize = adaptiveFontSize(source, maxSize: 9.5, minSize: 7.5,
+                                          bold: true, maxWidth: inner.width - 96)
+        drawText(ctx, source, size: sourceSize, bold: true, color: accent,
+                 in: rect(inner.minX + 86, inner.minY + 9, inner.width - 97, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+
+        if !snapshot.isAvailable {
+            drawText(ctx, "—", size: 62, bold: true, color: colors.primaryTextCG,
+                     in: rect(inner.minX + 10, inner.minY + 58, inner.width - 20, 72), align: .center)
+            drawText(ctx, "尚未读取额度", size: 14, bold: true, color: colors.secondaryTextCG,
+                     in: rect(inner.minX + 10, inner.minY + 134, inner.width - 20, 24), align: .center)
+            return
+        }
+
+        drawText(ctx, snapshot.windowTitle, size: 13, bold: true, color: colors.secondaryTextCG,
+                 in: rect(inner.minX + 10, inner.minY + 41, inner.width - 20, 20), align: .center)
+        drawText(ctx, "\(snapshot.remainingPercent)%", size: 49, bold: true,
+                 color: colors.primaryTextCG,
+                 in: rect(inner.minX + 8, inner.minY + 57, inner.width - 16, 62), align: .center)
+        drawProgress(ctx, rect(inner.minX + 13, inner.minY + 131, inner.width - 26, 8),
+                     progress: Double(snapshot.remainingPercent) / 100,
+                     accent: accent, background: colors.borderCG)
+
+        let infoTop = inner.minY + 146
+        let gap: CGFloat = 7
+        let boxWidth = (inner.width - 20 - gap) / 2
+        let left = CGRect(x: inner.minX + 10, y: infoTop, width: boxWidth, height: 53)
+        let right = CGRect(x: left.maxX + gap, y: infoTop, width: boxWidth, height: 53)
+        for box in [left, right] {
+            fillRound(ctx, rect(box), radius: 8, color: colors.backgroundCG)
+            strokeRound(ctx, rect(box), radius: 8, color: colors.borderCG, width: 1)
+        }
+        drawText(ctx, "周期", size: 9, bold: false, color: colors.tertiaryTextCG,
+                 in: rect(left.minX + 7, left.minY + 6, left.width - 14, 14), align: .left)
+        let cycle = snapshot.windowDescription
+        drawText(ctx, cycle, size: adaptiveFontSize(cycle, maxSize: 13, minSize: 9,
+                                                    bold: true, maxWidth: left.width - 14),
+                 bold: true, color: colors.primaryTextCG,
+                 in: rect(left.minX + 7, left.minY + 22, left.width - 14, 22), align: .left)
+
+        let rightLabel: String
+        let rightValue: String
+        if let value = snapshot.remainingValue, let unit = snapshot.usageUnit, unit != "%" {
+            rightLabel = "剩余额度"
+            rightValue = value >= 100 ? String(format: "%.0f %@", value, unit)
+                : String(format: "%.1f %@", value, unit)
+        } else if let reset = snapshot.resetDate {
+            rightLabel = "下次重置"
+            rightValue = formatDate(reset, "M/d HH:mm")
+        } else {
+            rightLabel = "数据更新"
+            rightValue = formatDate(snapshot.sampledAt ?? now, "HH:mm")
+        }
+        drawText(ctx, rightLabel, size: 9, bold: false, color: colors.tertiaryTextCG,
+                 in: rect(right.minX + 7, right.minY + 6, right.width - 14, 14), align: .left)
+        drawText(ctx, rightValue,
+                 size: adaptiveFontSize(rightValue, maxSize: 13, minSize: 8.5,
+                                        bold: true, maxWidth: right.width - 14),
+                 bold: true, color: accent,
+                 in: rect(right.minX + 7, right.minY + 22, right.width - 14, 22), align: .left)
+    }
+
+    /// 240×240 彩色屏的千问额度专用布局，与 Codex 方屏卡片保持同一视觉骨架。
+    private static func drawSquareQwenQuota(_ ctx: CGContext, band: CGRect,
+                                            quota: QwenWorkQuota, showPercent: Bool,
+                                            accent: CGColor, colors: ScreenPalette) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+        drawText(ctx, "千问额度", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, 88, 23), align: .left)
+        drawText(ctx, quota.plan ?? "千问办公", size: 9.5, bold: true, color: accent,
+                 in: rect(inner.minX + 102, inner.minY + 9, inner.width - 113, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+
+        guard quota.available else {
+            drawText(ctx, "—", size: 62, bold: true, color: colors.primaryTextCG,
+                     in: rect(inner.minX + 10, inner.minY + 58, inner.width - 20, 72), align: .center)
+            drawText(ctx, "尚未读取额度", size: 14, bold: true, color: colors.secondaryTextCG,
+                     in: rect(inner.minX + 10, inner.minY + 134, inner.width - 20, 24), align: .center)
+            return
+        }
+
+        drawText(ctx, showPercent ? "当前剩余" : "可用额度", size: 13, bold: true,
+                 color: colors.secondaryTextCG,
+                 in: rect(inner.minX + 10, inner.minY + 41, inner.width - 20, 20), align: .center)
+        if showPercent {
+            let percent = quota.trackedProgress.map { Int(($0 * 100).rounded()) }
+            drawText(ctx, percent.map { "\($0)%" } ?? "—%", size: 49, bold: true,
+                     color: colors.primaryTextCG,
+                     in: rect(inner.minX + 8, inner.minY + 57, inner.width - 16, 62), align: .center)
+        } else {
+            let parts = quotaNumberParts(quota.remainingCredits)
+            drawQuotaNumber(ctx, whole: parts.whole, fraction: parts.fraction,
+                            suffix: "", size: 48, color: colors.primaryTextCG,
+                            in: rect(inner.minX + 12, inner.minY + 59, inner.width - 24, 64),
+                            align: .center)
+        }
+        drawProgress(ctx, rect(inner.minX + 13, inner.minY + 131, inner.width - 26, 8),
+                     progress: quota.progress, accent: accent, background: colors.borderCG)
+
+        let infoTop = inner.minY + 146
+        let gap: CGFloat = 7
+        let boxWidth = (inner.width - 20 - gap) / 2
+        let left = CGRect(x: inner.minX + 10, y: infoTop, width: boxWidth, height: 53)
+        let right = CGRect(x: left.maxX + gap, y: infoTop, width: boxWidth, height: 53)
+        for box in [left, right] {
+            fillRound(ctx, rect(box), radius: 8, color: colors.backgroundCG)
+            strokeRound(ctx, rect(box), radius: 8, color: colors.borderCG, width: 1)
+        }
+        drawText(ctx, "额度数值", size: 9, bold: false, color: colors.tertiaryTextCG,
+                 in: rect(left.minX + 7, left.minY + 6, left.width - 14, 14), align: .left)
+        let amount = String(format: "%.2f", quota.remainingCredits)
+        drawText(ctx, amount, size: adaptiveFontSize(amount, maxSize: 13, minSize: 9,
+                                                     bold: true, maxWidth: left.width - 14),
+                 bold: true, color: colors.primaryTextCG,
+                 in: rect(left.minX + 7, left.minY + 22, left.width - 14, 22), align: .left)
+        drawText(ctx, "数据更新", size: 9, bold: false, color: colors.tertiaryTextCG,
+                 in: rect(right.minX + 7, right.minY + 6, right.width - 14, 14), align: .left)
+        drawText(ctx, formatDate(quota.sampledAt, "HH:mm"), size: 13, bold: true, color: accent,
+                 in: rect(right.minX + 7, right.minY + 22, right.width - 14, 22), align: .left)
     }
 
     /// 千问办公额度数值拆分为整数与小数两部分（精确到两位小数；小数部分渲染时字号减半）

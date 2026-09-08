@@ -317,7 +317,9 @@ public final class CodexRateLimitClient {
             resetDate: resetDate,
             windowMinutes: minutes == 0 ? nil : minutes,
             availableResetCount: resetCount,
-            planType: planType
+            planType: planType,
+            sourceName: "Codex 官方",
+            sampledAt: Date()
         )
     }
 

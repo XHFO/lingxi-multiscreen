@@ -4723,8 +4723,24 @@ struct SettingsView: View {
     @ViewBuilder
     private var codexForm: some View {
         Section {
-            TextField("Codex CLI 路径（可选）", text: model.codexCliPathBinding)
-                .textFieldStyle(.roundedBorder)
+            Picker("额度来源", selection: model.codexUsageSourceBinding) {
+                ForEach(CodexUsageSource.allCases) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.segmented)
+            if model.settings.codexUsageSource == .codexCLI {
+                TextField("Codex CLI 路径（可选）", text: model.codexCliPathBinding)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                HStack(spacing: 4) {
+                    Text("当前来源")
+                    HelpIcon(text: "只读跟随 CC Switch 当前选中的 Codex 供应商。请先在 CC Switch 的供应商卡片中启用用量查询；多屏灵犀不会复制或保存其中的 API 密钥。")
+                    Spacer()
+                    Text(model.usage.sourceName ?? "等待读取 CC Switch")
+                        .foregroundStyle(.secondary)
+                }
+            }
             Picker("刷新间隔", selection: model.refreshIntervalBinding) {
                 ForEach([60, 300, 600, 1800], id: \.self) { seconds in
                     Text(Self.intervalTitle(seconds)).tag(seconds)
@@ -4736,7 +4752,9 @@ struct SettingsView: View {
                 }
                 Spacer()
                 Text(model.usage.isAvailable
-                     ? "剩余 \(model.usage.remainingPercent)% · 可用重置 \(model.usage.availableResetCount) 次"
+                     ? "剩余 \(model.usage.remainingPercent)%"
+                        + (model.usage.availableResetCount > 0
+                           ? " · 可用重置 \(model.usage.availableResetCount) 次" : "")
                      : "尚未读取 Codex 用量")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -6859,6 +6877,10 @@ extension AppModel {
                     let normalized = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                     self.settings.codexCliPath = normalized.isEmpty ? nil : normalized
                 })
+    }
+    var codexUsageSourceBinding: Binding<CodexUsageSource> {
+        Binding(get: { self.settings.codexUsageSource },
+                set: { self.setCodexUsageSource($0) })
     }
     var taskNameBinding: Binding<String> {
         Binding(get: { self.pomodoroState.taskName }, set: { self.setTaskName($0) })
