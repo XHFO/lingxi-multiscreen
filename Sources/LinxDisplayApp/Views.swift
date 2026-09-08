@@ -32,6 +32,7 @@ extension Panel {
             || self == .bambuLab3 || self == .bambuLab4 || self == .bambuLab5
             || isFormlabsCard || self == .aiMacScreen || self == .aiMacDashboard
             || self == .aiMacClock || self == .aiMacCustomImage || self == .aiMacControl
+            || self == .aiMacCard || self == .aiMacCardManagement
     }
 
     /// 是否为 Bambu Lab 打印机卡片位（第 1/2/3/4/5 台；显示在键盘设备分组内，
@@ -118,6 +119,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case aiMacDashboard
     case aiMacClock
     case aiMacCustomImage
+    case aiMacCard
+    case aiMacCardManagement
     case aiMacControl
     case devices
     case buttonControl
@@ -233,6 +236,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .aiMacDashboard: return "系统仪表盘"
         case .aiMacClock: return "桌面时钟"
         case .aiMacCustomImage: return "自定义图片"
+        case .aiMacCard: return "功能卡片"
+        case .aiMacCardManagement: return "卡片管理"
         case .aiMacControl: return "屏幕控制"
         case .devices: return "设备管理"
         case .buttonControl: return "按键控制"
@@ -267,6 +272,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .aiMacDashboard: return "gauge.with.dots.needle.50percent"
         case .aiMacClock: return "clock"
         case .aiMacCustomImage: return "photo"
+        case .aiMacCard: return "square.grid.2x2"
+        case .aiMacCardManagement: return "tray.full"
         case .aiMacControl: return "slider.horizontal.3"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
@@ -285,7 +292,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .welcome, .general, .appearance: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
-             .aiMacControl,
+             .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .cardRotation, .oracleBoardManagement, .excerptBoardManagement,
              .aiMacBoardManagement: return nil
         case .qwenWork: return .qwenWork
@@ -481,6 +488,8 @@ struct SettingsView: View {
     @State private var dragExcerptBoards: [ExcerptCanvasBoard]?
     @State private var draggedAIMacBoard: AIMacCanvasBoard?
     @State private var dragAIMacBoards: [AIMacCanvasBoard]?
+    @State private var draggedAIMacCard: DisplayMode?
+    @State private var dragAIMacCards: [DisplayMode]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
@@ -589,7 +598,7 @@ struct SettingsView: View {
     private var isDeviceCanvasPanel: Bool {
         selected == .oracleCanvas || selected == .excerptCanvas || selected == .aiMacScreen
             || selected == .aiMacDashboard || selected == .aiMacClock
-            || selected == .aiMacCustomImage
+            || selected == .aiMacCustomImage || selected == .aiMacCard
     }
 
     /// 不显示右侧键盘小屏实时预览的面板：两个独立画板（自带设备预览）、设备管理、设置、开始使用；
@@ -599,7 +608,8 @@ struct SettingsView: View {
         switch selected {
         case .oracleCanvas, .excerptCanvas, .oracleBoardManagement, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
-             .aiMacControl, .excerptBoardManagement, .aiMacBoardManagement,
+             .aiMacCard, .aiMacCardManagement, .aiMacControl,
+             .excerptBoardManagement, .aiMacBoardManagement,
              .devices, .general:
             return true
         case .buttonControl:
@@ -696,6 +706,8 @@ struct SettingsView: View {
                 draggedAIMacBoard = nil
                 dragModules = nil
                 draggedModule = nil
+                dragAIMacCards = nil
+                draggedAIMacCard = nil
             }
         }
     }
@@ -757,6 +769,10 @@ struct SettingsView: View {
                         aiMacStandaloneModeForm(.clock)
                     } else if selected == .aiMacCustomImage {
                         aiMacStandaloneModeForm(.customImage)
+                    } else if selected == .aiMacCard {
+                        aiMacCardForm
+                    } else if selected == .aiMacCardManagement {
+                        aiMacCardManagementForm
                     } else if selected == .oracleBoardManagement {
                         oracleBoardManagementForm
                     } else if selected == .excerptBoardManagement {
@@ -828,6 +844,8 @@ struct SettingsView: View {
                      : selected == .oracleCanvas ? model.oracleCanvasBoardName
                      : selected == .excerptCanvas ? model.excerptCanvasBoardName
                      : selected == .aiMacScreen ? model.aiMacCanvasBoardName
+                     : selected == .aiMacCard ? model.activeDeviceID(for: .aiMacScreen)
+                        .map { model.aiMacScreenSettings(for: $0).cardMode.title } ?? selected.title
                      : selected.title)
                     .font(.headline)
                 if selected.isBeta {
@@ -872,6 +890,8 @@ struct SettingsView: View {
         case .aiMacDashboard: aiMacStandaloneModeForm(.dashboard)
         case .aiMacClock: aiMacStandaloneModeForm(.clock)
         case .aiMacCustomImage: aiMacStandaloneModeForm(.customImage)
+        case .aiMacCard: aiMacCardForm
+        case .aiMacCardManagement: aiMacCardManagementForm
         case .aiMacControl: aiMacControlForm
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
@@ -1088,6 +1108,189 @@ struct SettingsView: View {
             if let id = model.activeDeviceID(for: .aiMacScreen) {
                 model.activateAIMacScreenMode(mode, deviceID: id)
             }
+        }
+    }
+
+    /// 统一卡片页面：左侧直接复用同一张功能卡片的设置组件，右侧使用目标设备原生
+    /// 240×240 预览。修改设置不会切换灵犀 68 当前页面。
+    private var aiMacCardForm: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Form {
+                if let device = model.activeDevice(for: .aiMacScreen) {
+                    let config = model.aiMacScreenSettings(for: device.id)
+                    Section {
+                        LabeledContent("设备", value: device.name)
+                        LabeledContent("功能卡片", value: config.cardMode.title)
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text(config.cardMode.title)
+                            HelpIcon(text: "卡片设置由所有兼容设备共用；这台小屏幕的当前卡片、侧栏顺序和轮播列表则单独保存。")
+                        }
+                    }
+
+                    aiMacCardSettings(for: config.cardMode, deviceID: device.id)
+
+                    Section {
+                        Button("立即推送到这台设备") {
+                            Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
+                        }
+                        .keyboardShortcut(.return, modifiers: [.command])
+                        if model.aiMacScreenBusyIDs.contains(device.id) {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(model.aiMacScreenStatuses[device.id] ?? "等待连接小屏幕")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section { Text("请先在设备管理中添加并启用 AI Mac 小屏幕。") }
+                }
+            }
+            .formStyle(.grouped)
+            .frame(maxWidth: .infinity, alignment: .top)
+
+            Divider().padding(.vertical, 4)
+
+            Form {
+                Section {
+                    HStack { Spacer(); aiMacPreview; Spacer() }
+                        .padding(.vertical, 8)
+                } header: { Text("240 × 240 彩色预览") }
+            }
+            .formStyle(.grouped)
+            .frame(width: 300)
+        }
+        .padding(.bottom, 12)
+        .onAppear {
+            if let id = model.activeDeviceID(for: .aiMacScreen) {
+                let mode = model.aiMacScreenSettings(for: id).cardMode
+                model.activateAIMacCard(mode, deviceID: id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func aiMacCardSettings(for mode: DisplayMode, deviceID: UUID) -> some View {
+        switch mode {
+        case .customImage:
+            Section("图片") {
+                Button("选择图片…") { model.chooseAIMacScreenImage(deviceID: deviceID) }
+                Text(model.aiMacScreenSettings(for: deviceID).customImagePath.map {
+                    URL(fileURLWithPath: $0).lastPathComponent
+                } ?? "尚未选择图片")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        case .qwenWork: qwenWorkForm
+        case .codex: codexForm
+        case .pomodoro: pomodoroForm
+        case .systemMonitor: systemForm
+        case .nowPlaying: nowPlayingForm
+        case .excerptQuote: excerptQuoteForm
+        case .sspai: sspaiForm
+        case .emojiWallpaper: emojiWallpaperForm
+        case .homeAssistant: homeAssistantForm
+        case .bambuLab: bambuLabForm(for: .bambuLab)
+        case .bambuLab2: bambuLabForm(for: .bambuLab2)
+        case .bambuLab3: bambuLabForm(for: .bambuLab3)
+        case .bambuLab4: bambuLabForm(for: .bambuLab4)
+        case .bambuLab5: bambuLabForm(for: .bambuLab5)
+        case .formlabs: formlabsForm(for: .formlabs)
+        case .formlabs2: formlabsForm(for: .formlabs2)
+        case .formlabs3: formlabsForm(for: .formlabs3)
+        case .formlabs4: formlabsForm(for: .formlabs4)
+        case .formlabs5: formlabsForm(for: .formlabs5)
+        case .canvas: EmptyView()
+        }
+    }
+
+    /// AI Mac 卡片管理与灵犀 68 使用同一种交互，但所有状态写入当前小屏幕设备快照。
+    private var aiMacCardManagementForm: some View {
+        Form {
+            if let device = model.activeDevice(for: .aiMacScreen) {
+                let config = model.aiMacScreenSettings(for: device.id)
+                Section {
+                    LabeledContent("正在管理", value: device.name)
+                }
+                Section("自动轮播") {
+                    Toggle("卡片页面自动轮播",
+                           isOn: model.aiMacCardRotationBinding(for: device.id))
+                    if config.cardRotationEnabled {
+                        HStack {
+                            Text("轮换间隔")
+                            Spacer()
+                            Text(Self.rotationIntervalText(config.cardRotationMinutes))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: model.aiMacCardRotationMinutesBinding(for: device.id),
+                               in: 1...60, step: 1)
+                    }
+                }
+                Section {
+                    let cards = dragAIMacCards ?? model.aiMacCardList(for: device.id)
+                    if cards.isEmpty {
+                        Text("尚未添加卡片，从下方添加。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        reorderList(items: cards,
+                                    dragged: $draggedAIMacCard,
+                                    dragItems: $dragAIMacCards,
+                                    commit: { model.commitAIMacCardOrder($0, deviceID: device.id) }) { mode in
+                            aiMacCardManagementRow(mode, deviceID: device.id)
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("卡片（拖拽排序）")
+                        HelpIcon(text: "排序同时决定侧栏顺序；轮换开关决定该卡片是否加入当前小屏幕的自动轮播。")
+                    }
+                }
+                let hidden = model.aiMacHiddenCardList(for: device.id)
+                if !hidden.isEmpty {
+                    Section("添加到侧栏") {
+                        ForEach(hidden) { mode in
+                            Button { model.setAIMacCardVisible(mode, visible: true, deviceID: device.id) } label: {
+                                HStack {
+                                    Image(systemName: mode.icon).frame(width: 18)
+                                    Text(mode.title)
+                                    Spacer()
+                                    Image(systemName: "plus.circle").foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.bottom, 12)
+    }
+
+    private func aiMacCardManagementRow(_ mode: DisplayMode, deviceID: UUID) -> some View {
+        let inRotation = model.aiMacCardRotationList(for: deviceID).contains(mode)
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary)
+            Image(systemName: mode.icon).frame(width: 18)
+            Text(mode.title)
+            Spacer()
+            Toggle("", isOn: Binding(get: { true }, set: {
+                model.setAIMacCardVisible(mode, visible: $0, deviceID: deviceID)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            .help("在侧边栏显示该卡片")
+            Toggle("", isOn: Binding(get: { inRotation }, set: {
+                model.setAIMacCardRotationMode(mode, enabled: $0, deviceID: deviceID)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            .help("加入自动轮播")
+        }
+        .onDrag {
+            draggedAIMacCard = mode
+            dragAIMacCards = model.aiMacCardList(for: deviceID)
+            return NSItemProvider(object: String(mode.rawValue) as NSString)
         }
     }
 
@@ -5126,11 +5329,12 @@ struct Sidebar: View {
         case .aiMacScreen:
             return AnyView(deviceInstanceGroup(icon: "display", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id),
-                                               panels: [.aiMacDashboard, .aiMacClock,
-                                                        .aiMacCustomImage, .aiMacBoardManagement,
+                                               panels: [.aiMacCardManagement, .aiMacClock,
+                                                        .aiMacBoardManagement,
                                                         .aiMacControl],
                                                switchType: .aiMacScreen, deviceID: device.id,
-                                               aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id)))
+                                               aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id),
+                                               aiMacCardModes: model.aiMacCardList(for: device.id)))
         }
     }
 
@@ -5155,7 +5359,8 @@ struct Sidebar: View {
                                      emptyHint: String? = nil,
                                      oracleBoards: [OracleCanvasBoard] = [],
                                      excerptBoards: [ExcerptCanvasBoard] = [],
-                                     aiMacBoards: [AIMacCanvasBoard] = []) -> some View {
+                                     aiMacBoards: [AIMacCanvasBoard] = [],
+                                     aiMacCardModes: [DisplayMode] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
@@ -5172,6 +5377,10 @@ struct Sidebar: View {
                 } else if panel == .aiMacBoardManagement,
                           switchType == .aiMacScreen, let deviceID {
                     aiMacBoardManagementSidebarRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
+                } else if panel == .aiMacCardManagement,
+                          switchType == .aiMacScreen, let deviceID {
+                    aiMacCardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else {
                     sidebarRow(panel, switchingTo: switchType, deviceID: deviceID)
@@ -5192,6 +5401,12 @@ struct Sidebar: View {
                 if panel == .aiMacBoardManagement, switchType == .aiMacScreen, let deviceID {
                     ForEach(aiMacBoards) { board in
                         aiMacBoardSidebarRow(board, deviceID: deviceID)
+                            .padding(.leading, Self.submenuIndent + 14)
+                    }
+                }
+                if panel == .aiMacCardManagement, switchType == .aiMacScreen, let deviceID {
+                    ForEach(aiMacCardModes) { mode in
+                        aiMacCardSidebarRow(mode, deviceID: deviceID)
                             .padding(.leading, Self.submenuIndent + 14)
                     }
                 }
@@ -5457,6 +5672,71 @@ struct Sidebar: View {
             .fill(selection == .aiMacBoardManagement
                   ? Color.accentColor.opacity(0.25) : Color.clear))
         .contentShape(Rectangle())
+    }
+
+    private func aiMacCardManagementSidebarRow(_ deviceID: UUID) -> some View {
+        let rotationOn = model.aiMacScreenSettings(for: deviceID).cardRotationEnabled
+        return HStack(spacing: 8) {
+            Button {
+                model.switchDevice(type: .aiMacScreen, to: deviceID)
+                selection = .aiMacCardManagement
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: Panel.aiMacCardManagement.icon)
+                        .frame(width: 18, height: 18)
+                    Text(Panel.aiMacCardManagement.title).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selection == .aiMacCardManagement ? Color.accentColor : Color.primary)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rotationOn ? Color.accentColor : Color.secondary)
+            Toggle("", isOn: model.aiMacCardRotationBinding(for: deviceID))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("该 AI Mac 小屏幕的卡片自动轮播开关")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(selection == .aiMacCardManagement
+                  ? Color.accentColor.opacity(0.25) : Color.clear))
+        .contentShape(Rectangle())
+    }
+
+    private func aiMacCardSidebarRow(_ mode: DisplayMode, deviceID: UUID) -> some View {
+        let current = model.activeDeviceID(for: .aiMacScreen) == deviceID
+            && model.isCurrentAIMacCard(deviceID: deviceID, mode: mode)
+        return Button {
+            if model.activeDeviceID(for: .aiMacScreen) != deviceID {
+                model.switchDevice(type: .aiMacScreen, to: deviceID)
+            }
+            model.activateAIMacCard(mode, deviceID: deviceID)
+            selection = .aiMacCard
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 14)
+                Text(mode.title).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(current && selection == .aiMacCard
+                      ? Color.accentColor.opacity(0.18) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(current ? Color.accentColor : Color.secondary)
+        .help("在这台 AI Mac 小屏幕显示“\(mode.title)”")
     }
 
     /// 「卡片轮换」行：左侧打开轮换设置页，右侧是该键盘设备的自动轮播开关

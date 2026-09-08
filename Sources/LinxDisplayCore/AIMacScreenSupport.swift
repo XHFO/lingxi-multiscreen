@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 /// ESP8266 AI Mac 240×240 小屏幕可显示的正式内容模式。
 public enum AIMacScreenContentMode: String, CaseIterable, Codable, Identifiable {
     case canvas
+    /// 由统一卡片能力目录驱动的功能卡片。
+    case card
     case dashboard
     case clock
     case customImage
@@ -16,6 +18,7 @@ public enum AIMacScreenContentMode: String, CaseIterable, Codable, Identifiable 
     public var title: String {
         switch self {
         case .canvas: return "AI Mac 画板"
+        case .card: return "功能卡片"
         case .dashboard: return "系统仪表盘"
         case .clock: return "桌面时钟"
         case .customImage: return "自定义图片"
@@ -98,12 +101,22 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var canvasBoardIndex: Int
     public var boardRotationEnabled: Bool
     public var boardRotationMinutes: Int
+    /// 当前功能卡片，以及这台设备自己的侧栏顺序与自动轮播池。
+    /// 均使用 DisplayMode.rawValue 存储，新增卡片时旧设置文件可自然向前兼容。
+    public var cardModeRawValue: Int?
+    public var cardPanels: [Int]?
+    public var cardRotationModes: [Int]?
+    public var cardRotationEnabled: Bool
+    public var cardRotationMinutes: Int
 
     public init(host: String = "", mode: AIMacScreenContentMode = .canvas,
                 autoPush: Bool = true, pushIntervalSeconds: Int = 2,
                 jpegQuality: Int = 82, customImagePath: String? = nil,
                 canvasBoards: [AIMacCanvasBoard] = [], canvasBoardIndex: Int = 0,
-                boardRotationEnabled: Bool = false, boardRotationMinutes: Int = 5) {
+                boardRotationEnabled: Bool = false, boardRotationMinutes: Int = 5,
+                cardModeRawValue: Int? = nil, cardPanels: [Int]? = nil,
+                cardRotationModes: [Int]? = nil, cardRotationEnabled: Bool = false,
+                cardRotationMinutes: Int = 5) {
         self.host = host
         self.mode = mode
         self.autoPush = autoPush
@@ -114,7 +127,17 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.canvasBoardIndex = canvasBoardIndex
         self.boardRotationEnabled = boardRotationEnabled
         self.boardRotationMinutes = boardRotationMinutes
+        self.cardModeRawValue = cardModeRawValue
+        self.cardPanels = cardPanels
+        self.cardRotationModes = cardRotationModes
+        self.cardRotationEnabled = cardRotationEnabled
+        self.cardRotationMinutes = cardRotationMinutes
         clamp()
+    }
+
+    public var cardMode: DisplayMode {
+        get { cardModeRawValue.flatMap(DisplayMode.init(rawValue:)) ?? .systemMonitor }
+        set { cardModeRawValue = newValue.rawValue }
     }
 
     public mutating func clamp() {
@@ -128,11 +151,22 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         canvasBoardIndex = canvasBoards.isEmpty
             ? 0 : min(max(canvasBoardIndex, 0), canvasBoards.count - 1)
         boardRotationMinutes = min(max(boardRotationMinutes, 1), 1_440)
+        cardRotationMinutes = min(max(cardRotationMinutes, 1), 60)
+        if let values = cardPanels {
+            var seen = Set<Int>()
+            cardPanels = values.filter { DisplayMode(rawValue: $0) != nil && seen.insert($0).inserted }
+        }
+        if let values = cardRotationModes {
+            var seen = Set<Int>()
+            cardRotationModes = values.filter { DisplayMode(rawValue: $0) != nil && seen.insert($0).inserted }
+        }
+        if DisplayMode(rawValue: cardModeRawValue ?? -1) == nil { cardModeRawValue = nil }
     }
 
     private enum CodingKeys: String, CodingKey {
         case host, mode, autoPush, pushIntervalSeconds, jpegQuality, customImagePath
         case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
+        case cardModeRawValue, cardPanels, cardRotationModes, cardRotationEnabled, cardRotationMinutes
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,6 +184,26 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
                                                              forKey: .boardRotationEnabled) ?? false
         boardRotationMinutes = try container.decodeIfPresent(Int.self,
                                                              forKey: .boardRotationMinutes) ?? 5
+        cardModeRawValue = try container.decodeIfPresent(Int.self, forKey: .cardModeRawValue)
+        cardPanels = try container.decodeIfPresent([Int].self, forKey: .cardPanels)
+        cardRotationModes = try container.decodeIfPresent([Int].self, forKey: .cardRotationModes)
+        cardRotationEnabled = try container.decodeIfPresent(Bool.self,
+                                                            forKey: .cardRotationEnabled) ?? false
+        cardRotationMinutes = try container.decodeIfPresent(Int.self,
+                                                            forKey: .cardRotationMinutes) ?? 5
+        // 把旧版三个固定页面无损迁移到统一卡片模式；旧桌面时钟仍保留为 AI Mac 专属页面。
+        if cardModeRawValue == nil {
+            switch mode {
+            case .dashboard:
+                cardModeRawValue = DisplayMode.systemMonitor.rawValue
+                mode = .card
+            case .customImage:
+                cardModeRawValue = DisplayMode.customImage.rawValue
+                mode = .card
+            case .canvas, .card, .clock:
+                break
+            }
+        }
         clamp()
     }
 }
@@ -251,7 +305,7 @@ public enum AIMacScreenSupport {
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
         switch settings.mode {
-        case .canvas:
+        case .canvas, .card:
             // 完整画板由 AppModel 注入 HA、打印机、媒体等实时数据；核心层单独调用时
             // 返回有效的空白彩色帧，保证新设备尚未添加模块也能正常预览和推送。
             fillBackground(context)
@@ -314,6 +368,86 @@ public enum AIMacScreenSupport {
             if data.length <= maximumJPEGBytes { return data as Data }
         }
         throw AIMacScreenSupportError.imageTooLarge(lastSize)
+    }
+
+    /// 方形彩屏 Emoji 壁纸专用渲染。布局参数继续复用同一张功能卡片设置，
+    /// 但按目标设备的原生尺寸重新排版，不缩放灵犀 68 的纵向成品图。
+    public static func renderEmojiWallpaper(settings: AppSettings) throws -> CGImage {
+        let size = frameSize
+        guard let context = CGContext(data: nil, width: size, height: size,
+                                      bitsPerComponent: 8, bytesPerRow: size * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)
+                                        ?? CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw AIMacScreenSupportError.encodeFailed
+        }
+        let palette = settings.resolvedPalette
+        context.setFillColor(CGColor(red: palette.background.0, green: palette.background.1,
+                                     blue: palette.background.2, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        let emojis = Array(settings.emojiWallpaperText)
+        guard !emojis.isEmpty else {
+            drawText("在设置中输入 emoji", size: 14, weight: .medium,
+                     color: NSColor(calibratedRed: palette.secondaryText.0,
+                                    green: palette.secondaryText.1,
+                                    blue: palette.secondaryText.2, alpha: 1),
+                     rect: CGRect(x: 12, y: 104, width: 216, height: 32),
+                     context: context, alignment: .center)
+            return context.makeImage() ?? { fatalError("create AI Mac emoji image") }()
+        }
+        let base = CGFloat(min(max(settings.emojiWallpaperSize, 20), 76))
+        let gap = CGFloat(min(max(settings.emojiWallpaperSpacing, 0), 28))
+        switch settings.emojiWallpaperLayout {
+        case .grid:
+            let cell = max(28, base + gap)
+            let columns = max(1, Int(216 / cell))
+            let rows = max(1, Int(216 / cell))
+            let usedW = CGFloat(columns) * cell
+            let usedH = CGFloat(rows) * cell
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let emoji = String(emojis[(row * columns + column) % emojis.count])
+                    drawText(emoji, size: base, weight: .regular, color: .white,
+                             rect: CGRect(x: 120 - usedW / 2 + CGFloat(column) * cell,
+                                          y: 120 - usedH / 2 + CGFloat(row) * cell,
+                                          width: cell, height: cell),
+                             context: context, alignment: .center)
+                }
+            }
+        case .mixedSize:
+            let cell = max(42, base * 0.82 + gap)
+            let columns = max(2, Int(220 / cell))
+            let rows = max(2, Int(220 / cell))
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let index = row * columns + column
+                    let scale: CGFloat = (row + column).isMultiple(of: 3) ? 1.18 : 0.78
+                    let emoji = String(emojis[index % emojis.count])
+                    drawText(emoji, size: base * scale, weight: .regular, color: .white,
+                             rect: CGRect(x: 10 + CGFloat(column) * 220 / CGFloat(columns),
+                                          y: 10 + CGFloat(row) * 220 / CGFloat(rows),
+                                          width: 220 / CGFloat(columns),
+                                          height: 220 / CGFloat(rows)),
+                             context: context, alignment: .center)
+                }
+            }
+        case .spiral:
+            let count = max(12, min(30, emojis.count * 6))
+            for index in 0..<count {
+                let progress = CGFloat(index) / CGFloat(max(1, count - 1))
+                let angle = progress * .pi * 5.2
+                let radius = 8 + progress * 102
+                let side = max(30, base * (0.54 + progress * 0.52))
+                let emoji = String(emojis[index % emojis.count])
+                drawText(emoji, size: side * 0.82, weight: .regular, color: .white,
+                         rect: CGRect(x: 120 + cos(angle) * radius - side / 2,
+                                      y: 120 + sin(angle) * radius - side / 2,
+                                      width: side, height: side),
+                         context: context, alignment: .center)
+            }
+        }
+        guard let image = context.makeImage() else { throw AIMacScreenSupportError.encodeFailed }
+        return image
     }
 
     private static func fillBackground(_ context: CGContext) {

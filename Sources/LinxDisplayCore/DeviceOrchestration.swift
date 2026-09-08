@@ -18,9 +18,10 @@ public enum DeviceOnboardingPolicy {
 extension AppSettings {
     /// 各设备类型的数量上限（未列出的类型不限）：
     /// Home Assistant 只允许一个实例；Bambu Lab 打印机最多 5 台（对应 5 张独立卡片位）
-    public static let deviceLimits: [DeviceType: Int] = [
-        .homeAssistant: 1, .bambuLab: 5, .formlabs: 5, .aiMacScreen: 5
-    ]
+    public static let deviceLimits: [DeviceType: Int] = Dictionary(uniqueKeysWithValues:
+        DeviceCapabilityRegistry.all.compactMap { profile in
+            profile.maximumInstances.map { (profile.type, $0) }
+        })
 
     /// 是否还能再添加该类型设备
     public func canAddDevice(of type: DeviceType) -> Bool {

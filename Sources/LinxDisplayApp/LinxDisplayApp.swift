@@ -126,8 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(excerptEntry)
         self.excerptCanvasSubmenu = excerptCanvasSubmenu
 
-        let aiMacCanvasSubmenu = NSMenu(title: "AI Mac 画板")
-        let aiMacEntry = NSMenuItem(title: "AI Mac 画板", action: nil, keyEquivalent: "")
+        let aiMacCanvasSubmenu = NSMenu(title: "AI Mac 小屏幕")
+        let aiMacEntry = NSMenuItem(title: "AI Mac 小屏幕", action: nil, keyEquivalent: "")
         aiMacEntry.submenu = aiMacCanvasSubmenu
         menu.addItem(aiMacEntry)
         self.aiMacCanvasSubmenu = aiMacCanvasSubmenu
@@ -245,6 +245,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let aiMacDevices = model.enabledDevices(for: .aiMacScreen)
         for device in aiMacDevices {
+            let cardModes = model.aiMacCardList(for: device.id)
+            for mode in cardModes {
+                let cardTitle = aiMacDevices.count > 1
+                    ? "\(device.name) · \(mode.title)" : mode.title
+                let item = NSMenuItem(title: cardTitle,
+                                      action: #selector(switchAIMacCard(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(device.id.uuidString)|card|\(mode.rawValue)"
+                item.state = model.activeDeviceID(for: .aiMacScreen) == device.id
+                    && model.isCurrentAIMacCard(deviceID: device.id, mode: mode)
+                    ? .on : .off
+                aiMacCanvasSubmenu?.addItem(item)
+            }
+            if !cardModes.isEmpty && !model.visibleAIMacCanvasBoards(for: device.id).isEmpty {
+                aiMacCanvasSubmenu?.addItem(.separator())
+            }
             for board in model.visibleAIMacCanvasBoards(for: device.id) {
                 let title = aiMacDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
                 let item = NSMenuItem(title: title,
@@ -257,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 aiMacCanvasSubmenu?.addItem(item)
             }
         }
-        addEmptyHintIfNeeded(to: aiMacCanvasSubmenu, title: "尚未创建可见画板")
+        addEmptyHintIfNeeded(to: aiMacCanvasSubmenu, title: "尚未添加可见卡片或画板")
     }
 
     @MainActor
@@ -357,6 +373,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
         MainActor.assumeIsolated {
             model.menuBarSelectAIMacBoard(deviceID: deviceID, boardID: boardID)
+        }
+    }
+
+    @objc private func switchAIMacCard(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let model else { return }
+        let parts = key.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[1] == "card",
+              let deviceID = UUID(uuidString: String(parts[0])),
+              let rawValue = Int(parts[2]),
+              let mode = DisplayMode(rawValue: rawValue) else { return }
+        MainActor.assumeIsolated {
+            if model.activeDeviceID(for: .aiMacScreen) != deviceID {
+                model.switchDevice(type: .aiMacScreen, to: deviceID)
+            }
+            model.activateAIMacCard(mode, deviceID: deviceID)
         }
     }
 

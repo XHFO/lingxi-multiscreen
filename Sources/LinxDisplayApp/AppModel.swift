@@ -79,6 +79,7 @@ public final class AppModel: ObservableObject {
     private var aiMacScreenLastHashes: [UUID: String] = [:]
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
     private var aiMacScreenLastBoardRotation: [UUID: Date] = [:]
+    private var aiMacScreenLastCardRotation: [UUID: Date] = [:]
     private var aiMacSspaiRandomSelection: [String: [SspaiArticle]] = [:]
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
@@ -461,6 +462,9 @@ public final class AppModel: ObservableObject {
                 self?.renderPreview()
                 self?.refreshOracleCanvasPreview()
                 self?.refreshExcerptCanvasPreview()
+                self?.enabledDevices(for: .aiMacScreen).forEach {
+                    self?.refreshAIMacScreenPreview(deviceID: $0.id)
+                }
                 self?.onAppearanceChanged?()
                 self?.scheduleCardSettingsPush()
                 // 先知 IP/显示模式变化时重连按键会话（目标未变则幂等返回）
@@ -479,6 +483,12 @@ public final class AppModel: ObservableObject {
             } catch { return }
             guard let self, !Task.isCancelled else { return }
             await self.pushWhenAvailable(force: false, silentIfUnchanged: true)
+            for device in self.enabledDevices(for: .aiMacScreen) {
+                let config = self.aiMacScreenSettings(for: device.id)
+                if config.autoPush {
+                    await self.pushAIMacScreen(deviceID: device.id, force: false)
+                }
+            }
         }
     }
 
@@ -633,6 +643,7 @@ public final class AppModel: ObservableObject {
         }
         if type == .aiMacScreen {
             aiMacScreenLastBoardRotation[newDevice.id] = Date()
+            aiMacScreenLastCardRotation[newDevice.id] = Date()
             refreshAIMacScreenPreview(deviceID: newDevice.id)
         }
         persistSettings()
@@ -866,6 +877,7 @@ public final class AppModel: ObservableObject {
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
             aiMacScreenLastBoardRotation[id] = nil
+            aiMacScreenLastCardRotation[id] = nil
             aiMacSspaiRandomSelection = aiMacSspaiRandomSelection.filter {
                 !$0.key.hasPrefix(id.uuidString + "|")
             }
@@ -1438,6 +1450,153 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    // MARK: AI Mac 通用卡片能力
+
+    /// 统一目录根据现有打印机设备动态裁剪可用卡片；AI Mac 自己的多画板有独立入口，
+    /// 因此不在通用卡片列表中重复显示“灵犀画板”。
+    public var availableAIMacCardModes: [DisplayMode] {
+        guard let surface = DeviceType.aiMacScreen.capabilityProfile?.cardSurface else { return [] }
+        return CardCapabilityRegistry.modes(
+            for: surface,
+            bambuPrinterCount: enabledDevices(for: .bambuLab).count,
+            formlabsPrinterCount: enabledDevices(for: .formlabs).count,
+            includesDeviceCanvas: false)
+    }
+
+    public func aiMacCardList(for deviceID: UUID) -> [DisplayMode] {
+        let config = aiMacScreenSettings(for: deviceID)
+        guard let stored = config.cardPanels else { return availableAIMacCardModes }
+        return CardCapabilityRegistry.sanitized(stored, available: availableAIMacCardModes)
+    }
+
+    public func aiMacHiddenCardList(for deviceID: UUID) -> [DisplayMode] {
+        let visible = Set(aiMacCardList(for: deviceID))
+        return availableAIMacCardModes.filter { !visible.contains($0) }
+    }
+
+    public func isCurrentAIMacCard(deviceID: UUID, mode: DisplayMode) -> Bool {
+        let config = aiMacScreenSettings(for: deviceID)
+        return config.mode == .card && config.cardMode == mode
+    }
+
+    public func activateAIMacCard(_ mode: DisplayMode, deviceID: UUID) {
+        guard availableAIMacCardModes.contains(mode) else { return }
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
+            config.mode = .card
+            config.cardMode = mode
+        }
+        aiMacScreenLastCardRotation[deviceID] = Date()
+        Task { @MainActor [weak self] in
+            await self?.refreshAIMacCardDataAndPush(mode: mode, deviceID: deviceID)
+        }
+    }
+
+    public func setAIMacCardVisible(_ mode: DisplayMode, visible: Bool, deviceID: UUID) {
+        var list = aiMacCardList(for: deviceID)
+        if visible {
+            if !list.contains(mode) { list.append(mode) }
+        } else {
+            list.removeAll { $0 == mode }
+        }
+        mutateAIMacScreenSettings(deviceID) { config in
+            config.cardPanels = list.map(\.rawValue)
+            config.cardRotationModes = (config.cardRotationModes ?? [])
+                .filter { list.map(\.rawValue).contains($0) }
+        }
+    }
+
+    public func commitAIMacCardOrder(_ modes: [DisplayMode], deviceID: UUID) {
+        mutateAIMacScreenSettings(deviceID) { config in
+            config.cardPanels = CardCapabilityRegistry
+                .sanitized(modes.map(\.rawValue), available: availableAIMacCardModes)
+                .map(\.rawValue)
+        }
+    }
+
+    public func aiMacCardRotationList(for deviceID: UUID) -> [DisplayMode] {
+        let config = aiMacScreenSettings(for: deviceID)
+        let selected = Set(config.cardRotationModes ?? [])
+        return aiMacCardList(for: deviceID).filter { selected.contains($0.rawValue) }
+    }
+
+    public func setAIMacCardRotationMode(_ mode: DisplayMode, enabled: Bool,
+                                         deviceID: UUID) {
+        mutateAIMacScreenSettings(deviceID) { config in
+            var values = config.cardRotationModes ?? []
+            if enabled {
+                if !values.contains(mode.rawValue) { values.append(mode.rawValue) }
+            } else {
+                values.removeAll { $0 == mode.rawValue }
+            }
+            config.cardRotationModes = values
+        }
+    }
+
+    public func aiMacCardRotationBinding(for deviceID: UUID) -> Binding<Bool> {
+        Binding(get: { self.aiMacScreenSettings(for: deviceID).cardRotationEnabled }, set: { value in
+            self.mutateAIMacScreenSettings(deviceID) { $0.cardRotationEnabled = value }
+            self.aiMacScreenLastCardRotation[deviceID] = Date()
+        })
+    }
+
+    public func aiMacCardRotationMinutesBinding(for deviceID: UUID) -> Binding<Double> {
+        Binding(get: { Double(self.aiMacScreenSettings(for: deviceID).cardRotationMinutes) },
+                set: { value in
+            self.mutateAIMacScreenSettings(deviceID) {
+                $0.cardRotationMinutes = Int(value.rounded())
+            }
+            self.aiMacScreenLastCardRotation[deviceID] = Date()
+        })
+    }
+
+    /// 按能力目录刷新一张卡片真正依赖的数据，再向目标小屏推送；不改变灵犀 68 当前卡片。
+    private func refreshAIMacCardDataAndPush(mode: DisplayMode, deviceID: UUID) async {
+        guard let capability = CardCapabilityRegistry.capability(for: mode),
+              aiMacScreenSettings(for: deviceID).mode == .card,
+              aiMacScreenSettings(for: deviceID).cardMode == mode else { return }
+        let requirements = capability.requirements
+        if requirements.contains(.system) {
+            _ = monitor.sample(now: Date())
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            system = monitor.sample(now: Date())
+        }
+        if requirements.contains(.nowPlaying) {
+            await refreshNowPlaying(now: Date())
+        }
+        if requirements.contains(.quotas) {
+            _ = await refreshUsageAndQuota()
+        }
+        if requirements.contains(.sspai) {
+            _ = await fetchSspai()
+        }
+        if requirements.contains(.homeAssistant) {
+            // 普通 HA 卡片需要完整实体池；打印机卡片只刷新该槽位已绑定的实体。
+            if mode.bambuSlotIndex != nil {
+                await refreshBambuEntities(for: mode)
+            } else {
+                await refreshHA(includePictures: false)
+            }
+        }
+        if requirements.contains(.formlabs),
+           let printer = formlabsDevice(for: mode) {
+            await refreshFormlabs(deviceID: printer.id, force: true, pushIfVisible: false)
+        }
+        await pushAIMacScreen(deviceID: deviceID, force: true)
+        if mode == .homeAssistant {
+            let ids = haCardPictureEntityIDs()
+            if await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: ids) {
+                await pushAIMacScreen(deviceID: deviceID, force: false)
+            }
+        } else if mode.bambuSlotIndex != nil {
+            let config = bambuConfig(for: mode)
+            if config.showImage, !config.selectedImageEntityID.isEmpty,
+               await refreshHAPictures(entities: haSnapshot.entities,
+                                       wantedIDs: [config.selectedImageEntityID]) {
+                await pushAIMacScreen(deviceID: deviceID, force: false)
+            }
+        }
+    }
+
     public func aiMacCanvasBoards(for deviceID: UUID) -> [AIMacCanvasBoard] {
         aiMacScreenSettings(for: deviceID).canvasBoards
     }
@@ -1616,9 +1775,11 @@ public final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let stored = try store.saveHistoryImage(from: url)
+            let wasCard = aiMacScreenSettings(for: deviceID).mode == .card
             mutateAIMacScreenSettings(deviceID, pushImmediately: true) {
                 $0.customImagePath = stored.path
-                $0.mode = .customImage
+                $0.mode = wasCard ? .card : .customImage
+                if wasCard { $0.cardMode = .customImage }
             }
         } catch {
             aiMacScreenStatuses[deviceID] = "图片保存失败：\(error.localizedDescription)"
@@ -1645,6 +1806,10 @@ public final class AppModel: ObservableObject {
                                    config: AIMacScreenDeviceSettings,
                                    system snapshot: SystemSnapshot,
                                    now: Date = Date()) throws -> CGImage {
+        if config.mode == .card {
+            return try renderAIMacCard(deviceID: deviceID, mode: config.cardMode,
+                                       config: config, system: snapshot, now: now)
+        }
         guard config.mode == .canvas else {
             return try AIMacScreenSupport.render(settings: config, system: snapshot, now: now)
         }
@@ -1674,6 +1839,63 @@ public final class AppModel: ObservableObject {
             showBambuCamera: true,
             nowPlayingSmartBackground: board.usesNowPlayingSmartBackground,
             nowPlayingShowCover: board.usesNowPlayingCover)
+    }
+
+    /// 通用卡片渲染入口：具体设备只负责尺寸、色彩能力与传输方式；卡片到模块的
+    /// 映射完全来自 CardCapabilityRegistry，后续新增模块不再修改 AI Mac 的页面分支。
+    private func renderAIMacCard(deviceID: UUID, mode: DisplayMode,
+                                 config: AIMacScreenDeviceSettings,
+                                 system snapshot: SystemSnapshot,
+                                 now: Date) throws -> CGImage {
+        guard let capability = CardCapabilityRegistry.capability(for: mode) else {
+            throw AIMacScreenSupportError.encodeFailed
+        }
+        switch capability.recipe {
+        case .customImage:
+            var imageConfig = config
+            imageConfig.mode = .customImage
+            if imageConfig.customImagePath == nil { imageConfig.customImagePath = settings.customImagePath }
+            return try AIMacScreenSupport.render(settings: imageConfig, system: snapshot, now: now)
+        case .emojiWallpaper:
+            return try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
+        case .deviceCanvas:
+            // AI Mac 的设备画板走上层 canvas 分支；通用卡片列表不会暴露这一配方。
+            throw AIMacScreenSupportError.encodeFailed
+        case .modules(let modules):
+            let dark = settings.softwareIsDark
+            let palette = ScreenThemes.resolved(
+                theme: settings.cardTheme,
+                backgroundTone: dark ? .dark : .light,
+                customBackgroundHex: nil,
+                accentTone: settings.accentTone,
+                customAccentHex: settings.customAccentHex,
+                softwareIsDark: dark)
+            let cardHA = mode == .homeAssistant
+                ? haSnapshot.selecting(entityIDs: settings.haCardEntityIDs)
+                : haSnapshot
+            let articles = mode == .sspai ? Array(sspaiArticles.prefix(3)) : []
+            var fields: [Int: CanvasPrinterFields] = [:]
+            for module in modules where module.bambuSlotIndex != nil || module.formlabsSlotIndex != nil {
+                fields[module.rawValue] = settings.canvasPrinterFields(for: module)
+            }
+            return ScreenRenderer.renderDeviceCanvas(
+                modules: modules, system: snapshot,
+                nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
+                customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
+                settings: settings, codex: usage, qwenQuota: qwenQuota,
+                sspaiArticles: articles, ha: cardHA,
+                formlabsItems: formlabsCanvasItems(), now: now,
+                width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
+                palette: palette, optimizeForEInk: false,
+                nowPlayingHorizontal: mode == .nowPlaying,
+                canvasImagePath: config.customImagePath ?? settings.customImagePath,
+                printerFields: fields,
+                optimizeBambuForOracleEInk: false,
+                bambuHeroLayout: true,
+                showBambuCamera: true,
+                nowPlayingSmartBackground: mode == .nowPlaying,
+                nowPlayingShowCover: mode == .nowPlaying)
+        }
     }
 
     public func refreshAIMacScreenPreview(deviceID: UUID) {
@@ -1763,7 +1985,10 @@ public final class AppModel: ObservableObject {
                 && config.canvasBoards.indices.contains(config.canvasBoardIndex)
                 && RuntimePerformancePolicy.needsSystemSample(
                     modules: config.canvasBoards[config.canvasBoardIndex].moduleList)
-            if sampleDashboard && (config.mode == .dashboard || canvasNeedsSystem) {
+            let cardNeedsSystem = config.mode == .card
+                && (CardCapabilityRegistry.capability(for: config.cardMode)?
+                    .requirements.contains(.system) ?? false)
+            if sampleDashboard && (config.mode == .dashboard || canvasNeedsSystem || cardNeedsSystem) {
                 system = monitor.sample(now: Date())
             }
             let image = try renderAIMacScreen(deviceID: deviceID, config: config, system: system)
@@ -1826,6 +2051,10 @@ public final class AppModel: ObservableObject {
         if dueDevices.contains(where: { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             if config.mode == .dashboard { return true }
+            if config.mode == .card {
+                return CardCapabilityRegistry.capability(for: config.cardMode)?
+                    .requirements.contains(.system) ?? false
+            }
             guard config.mode == .canvas,
                   config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
             return RuntimePerformancePolicy.needsSystemSample(
@@ -1848,6 +2077,27 @@ public final class AppModel: ObservableObject {
                                           automaticRotation: true)
                 aiMacScreenLastBoardRotation[device.id] = now
             }
+        }
+        for device in dueDevices {
+            let config = aiMacScreenSettings(for: device.id)
+            guard config.cardRotationEnabled else { continue }
+            let modes = aiMacCardRotationList(for: device.id)
+            guard modes.count > 1 else { continue }
+            let last = aiMacScreenLastCardRotation[device.id] ?? now
+            if aiMacScreenLastCardRotation[device.id] == nil {
+                aiMacScreenLastCardRotation[device.id] = now
+                continue
+            }
+            guard now.timeIntervalSince(last) >= TimeInterval(config.cardRotationMinutes * 60) else {
+                continue
+            }
+            let current = modes.firstIndex(of: config.cardMode) ?? -1
+            let next = modes[(current + 1 + modes.count) % modes.count]
+            mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
+                value.mode = .card
+                value.cardMode = next
+            }
+            aiMacScreenLastCardRotation[device.id] = now
         }
         for device in dueDevices {
             await pushAIMacScreen(deviceID: device.id, force: false, sampleDashboard: false)
@@ -2644,9 +2894,11 @@ public final class AppModel: ObservableObject {
         lastCanvasPreviewMinute = minute
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
-        if let id = activeDeviceID(for: .aiMacScreen),
-           aiMacScreenSettings(for: id).mode == .canvas {
-            refreshAIMacScreenPreview(deviceID: id)
+        if let id = activeDeviceID(for: .aiMacScreen) {
+            let mode = aiMacScreenSettings(for: id).mode
+            if mode == .canvas || mode == .card || mode == .clock || mode == .dashboard {
+                refreshAIMacScreenPreview(deviceID: id)
+            }
         }
     }
 
@@ -3126,6 +3378,10 @@ public func setClockTimeFormat(_ format: String) {
             refreshExcerptCanvasPreview()
             for device in enabledDevices(for: .aiMacScreen) {
                 let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+                if config.mode == .card && config.cardMode == .nowPlaying {
+                    refreshAIMacScreenPreview(deviceID: device.id)
+                    continue
+                }
                 guard config.mode == .canvas,
                       config.canvasBoards.indices.contains(config.canvasBoardIndex),
                       config.canvasBoards[config.canvasBoardIndex].moduleList.contains(.nowPlaying)
@@ -3236,6 +3492,13 @@ public func setClockTimeFormat(_ format: String) {
         }
     }
 
+    private var activeAIMacCardModes: [DisplayMode] {
+        enabledDevices(for: .aiMacScreen).compactMap { device in
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            return config.mode == .card ? config.cardMode : nil
+        }
+    }
+
     /// 任一画板（键盘/先知/摘录/AI Mac）模块组合里含 Codex 或千问额度模块
     private var canvasNeedsQuotaData: Bool {
         let lists = [settings.canvasModuleList,
@@ -3244,6 +3507,8 @@ public func setClockTimeFormat(_ format: String) {
                      allAIMacCanvasModules]
         return lists.contains { list in
             list.contains { $0 == .codex || $0 == .qwenQuota }
+        } || activeAIMacCardModes.contains { mode in
+            CardCapabilityRegistry.capability(for: mode)?.requirements.contains(.quotas) ?? false
         }
     }
 
@@ -3254,6 +3519,10 @@ public func setClockTimeFormat(_ format: String) {
             || (settings.excerptAutoPushEnabled && settings.excerptCanvasModuleList.contains(.nowPlaying))
             || enabledDevices(for: .aiMacScreen).contains { device in
                 let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+                if config.autoPush, config.mode == .card {
+                    return CardCapabilityRegistry.capability(for: config.cardMode)?
+                        .requirements.contains(.nowPlaying) ?? false
+                }
                 guard config.autoPush, config.mode == .canvas,
                       config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
                 return config.canvasBoards[config.canvasBoardIndex].moduleList.contains(.nowPlaying)
@@ -3314,7 +3583,8 @@ public func setClockTimeFormat(_ format: String) {
             + settings.oracleCanvasModuleList
             + settings.excerptCanvasModuleList
             + allAIMacCanvasModules
-        let slots = Set(modules.compactMap(\.formlabsSlotIndex)).sorted()
+        let cardSlots = activeAIMacCardModes.compactMap(\.formlabsSlotIndex)
+        let slots = Set(modules.compactMap(\.formlabsSlotIndex) + cardSlots).sorted()
         guard !slots.isEmpty else { return }
         let printers = enabledDevices(for: .formlabs)
         var refreshed = false
@@ -3332,9 +3602,13 @@ public func setClockTimeFormat(_ format: String) {
         if settings.excerptCanvasModuleList.contains(where: { $0.formlabsSlotIndex != nil }) {
             refreshExcerptCanvasPreview()
         }
-        if let id = activeDeviceID(for: .aiMacScreen),
-           aiMacCanvasModules.contains(where: { $0.formlabsSlotIndex != nil }) {
-            refreshAIMacScreenPreview(deviceID: id)
+        for device in enabledDevices(for: .aiMacScreen) {
+            let config = aiMacScreenSettings(for: device.id)
+            let usesFormlabs = config.mode == .card && config.cardMode.formlabsSlotIndex != nil
+                || config.mode == .canvas && config.canvasBoards.indices.contains(config.canvasBoardIndex)
+                && config.canvasBoards[config.canvasBoardIndex].moduleList
+                    .contains(where: { $0.formlabsSlotIndex != nil })
+            if usesFormlabs { refreshAIMacScreenPreview(deviceID: device.id) }
         }
     }
 
@@ -3690,9 +3964,9 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     /// 当前 Bambu 卡片已经映射的实体 ID（不包含空值，去重）。
-    private func currentBambuEntityIDs() -> [String] {
-        guard settings.displayMode.bambuSlotIndex != nil else { return [] }
-        let config = bambuConfig(for: settings.displayMode)
+    private func bambuEntityIDs(for mode: DisplayMode) -> [String] {
+        guard mode.bambuSlotIndex != nil else { return [] }
+        let config = bambuConfig(for: mode)
         return [config.statusEntityID, config.progressEntityID, config.taskEntityID,
                 config.nozzleTempEntityID, config.bedTempEntityID, config.selectedTimeEntityID,
                 config.errorEntityID, config.selectedImageEntityID]
@@ -3703,13 +3977,20 @@ public func setClockTimeFormat(_ format: String) {
 
     /// Bambu 卡片切入专用刷新：仅请求当前打印机已选择的实体，并合并回原有完整目录。
     private func refreshCurrentBambuEntities() async {
+        await refreshBambuEntities(for: settings.displayMode)
+    }
+
+    /// 指定卡片位的 Bambu 局部刷新。键盘与其他显示设备共用这一入口，
+    /// 因而切换 AI Mac 卡片无需临时改变键盘当前显示模式。
+    private func refreshBambuEntities(for mode: DisplayMode) async {
+        guard mode.bambuSlotIndex != nil else { return }
         // 冷启动直接落在 Bambu 卡片时，先建立一次完整目录；以后切卡仍只刷新已选实体。
         if bambuEntityCatalog.printerEntities.isEmpty {
             await ensureBambuEntityCatalog()
             if !bambuEntityCatalog.printerEntities.isEmpty { return }
         }
         guard !haRefreshing else { return }
-        let ids = currentBambuEntityIDs()
+        let ids = bambuEntityIDs(for: mode)
         guard !ids.isEmpty, !settings.haServerURL.isEmpty else { return }
         haRefreshing = true
         defer { haRefreshing = false }

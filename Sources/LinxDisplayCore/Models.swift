@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 枚举
 
-public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
+public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     case codex = 0
     case pomodoro = 1
     case systemMonitor = 2
@@ -66,6 +66,27 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable {
         case .formlabs3: return "Formlabs 打印机 3"
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
+        }
+    }
+
+    /// 跨设备共用的卡片图标。导航层直接读取这里，避免每新增一种显示设备时
+    /// 再复制一份卡片标题与图标映射。
+    public var icon: String {
+        switch self {
+        case .qwenWork: return "creditcard"
+        case .codex: return "terminal"
+        case .pomodoro: return "timer"
+        case .systemMonitor: return "gauge"
+        case .nowPlaying: return "music.note"
+        case .customImage: return "photo"
+        case .canvas: return "rectangle.3.group"
+        case .excerptQuote: return "text.quote"
+        case .sspai: return "newspaper"
+        case .emojiWallpaper: return "face.smiling"
+        case .homeAssistant: return "house"
+        case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
+             .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
+            return "printer"
         }
     }
 }
@@ -1134,7 +1155,7 @@ public enum Rand0ButtonTarget: Int, CaseIterable, Identifiable, Codable {
 // MARK: - 设备管理
 
 /// 设备类型
-public enum DeviceType: Int, CaseIterable, Identifiable, Codable {
+public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
     case keyboard = 0
     case oracle = 1
     case excerpt = 2

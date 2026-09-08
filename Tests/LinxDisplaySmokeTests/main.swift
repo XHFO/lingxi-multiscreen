@@ -4581,6 +4581,15 @@ Task {
 // MARK: - AI Mac 240×240 小屏幕
 
 func testAIMacScreen() throws {
+    checkEqual(DeviceCapabilityRegistry.all.count, DeviceType.allCases.count,
+               "统一设备能力目录覆盖全部设备类型")
+    let aiProfile = DeviceCapabilityRegistry.profile(for: .aiMacScreen)
+    checkEqual(aiProfile?.screenSize, DisplayPixelSize(width: 240, height: 240),
+               "AI Mac 屏幕规格来自设备能力目录")
+    checkEqual(aiProfile?.cardSurface, .colorSquare,
+               "AI Mac 声明方形彩色卡片能力")
+    checkEqual(AppSettings.deviceLimits[.aiMacScreen], aiProfile?.maximumInstances,
+               "设备数量上限由能力目录统一提供")
     check(DeviceType.allCases.contains(.aiMacScreen), "AI Mac 小屏幕设备类型存在")
     checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "AI Mac 小屏幕设备标题")
     checkEqual(ManagedDevice.defaultName(for: .aiMacScreen, index: 0),
@@ -4723,6 +4732,51 @@ func testAIMacScreen() throws {
         AIMacScreenDeviceSettings.self, from: JSONEncoder().encode(aiCanvasConfig))
     checkEqual(aiCanvasRoundTrip, aiCanvasConfig, "AI Mac 多画板配置 JSON 往返")
 
+    checkEqual(CardCapabilityRegistry.all.count, DisplayMode.allCases.count,
+               "统一卡片能力目录覆盖所有灵犀 68 功能卡片")
+    let squareModes = CardCapabilityRegistry.modes(
+        for: .colorSquare, bambuPrinterCount: 2, formlabsPrinterCount: 1,
+        includesDeviceCanvas: false)
+    check(squareModes.contains(.codex) && squareModes.contains(.homeAssistant)
+          && squareModes.contains(.emojiWallpaper),
+          "方形彩屏自动继承通用功能卡片")
+    check(squareModes.contains(.bambuLab2) && !squareModes.contains(.bambuLab3),
+          "Bambu 卡片位跟随已添加设备数量")
+    check(squareModes.contains(.formlabs) && !squareModes.contains(.formlabs2),
+          "Formlabs 卡片位跟随已添加设备数量")
+    if case .modules(let modules) = CardCapabilityRegistry
+        .capability(for: .systemMonitor)?.recipe {
+        checkEqual(modules, [.cpu, .memory, .disk, .network, .uptime],
+                   "系统监控卡片通过能力目录映射完整模块")
+    } else {
+        check(false, "系统监控卡片缺少通用模块配方")
+    }
+    let sanitizedCards = CardCapabilityRegistry.sanitized(
+        [DisplayMode.codex.rawValue, DisplayMode.codex.rawValue, 999,
+         DisplayMode.bambuLab2.rawValue], available: squareModes)
+    checkEqual(sanitizedCards, [.codex, .bambuLab2],
+               "设备卡片列表过滤非法项并稳定去重")
+    let cardConfig = AIMacScreenDeviceSettings(
+        host: "10.0.0.30", mode: .card,
+        cardModeRawValue: DisplayMode.homeAssistant.rawValue,
+        cardPanels: [DisplayMode.homeAssistant.rawValue, DisplayMode.codex.rawValue],
+        cardRotationModes: [DisplayMode.codex.rawValue],
+        cardRotationEnabled: true, cardRotationMinutes: 9)
+    let cardConfigRoundTrip = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: JSONEncoder().encode(cardConfig))
+    checkEqual(cardConfigRoundTrip, cardConfig,
+               "AI Mac 卡片顺序、当前卡片与轮播设置按设备持久化")
+
+    let legacyDashboardConfig = """
+    {"host":"10.0.0.18","mode":"dashboard","autoPush":true,
+     "pushIntervalSeconds":2,"jpegQuality":82}
+    """.data(using: .utf8)!
+    let migratedDashboard = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: legacyDashboardConfig)
+    checkEqual(migratedDashboard.mode, .card, "旧系统仪表盘迁移到统一卡片模式")
+    checkEqual(migratedDashboard.cardMode, .systemMonitor,
+               "旧系统仪表盘迁移后选择系统监控卡片")
+
     let legacyAIMacConfig = """
     {"host":"10.0.0.8","mode":"clock","autoPush":true,
      "pushIntervalSeconds":2,"jpegQuality":82}
@@ -4768,6 +4822,9 @@ func testAIMacScreen() throws {
     checkEqual(clock.width, 240, "小屏幕时钟宽度")
     checkEqual(clock.height, 240, "小屏幕时钟高度")
     checkEqual(blankCanvas.width, 240, "空白彩色画板仍生成有效 240×240 帧")
+    let squareEmoji = try AIMacScreenSupport.renderEmojiWallpaper(settings: AppSettings())
+    checkEqual(squareEmoji.width, 240, "Emoji 壁纸按方形彩屏原生宽度渲染")
+    checkEqual(squareEmoji.height, 240, "Emoji 壁纸按方形彩屏原生高度渲染")
 
     let coverContext = CGContext(data: nil, width: 64, height: 64,
                                  bitsPerComponent: 8, bytesPerRow: 64 * 4,
