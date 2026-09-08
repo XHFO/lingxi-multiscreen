@@ -119,6 +119,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case cardRotation
     case oracleBoardManagement
     case excerptBoardManagement
+    case aiMacBoardManagement
     case oracleCanvas
     case excerptCanvas
     case general
@@ -229,6 +230,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .cardRotation: return "卡片管理"
         case .oracleBoardManagement: return "口袋先知画板管理"
         case .excerptBoardManagement: return "摘录画板管理"
+        case .aiMacBoardManagement: return "AI Mac 画板管理"
         case .oracleCanvas: return "口袋先知画板"
         case .excerptCanvas: return "摘录画板"
         }
@@ -258,6 +260,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .cardRotation: return "tray.full"
         case .oracleBoardManagement: return "rectangle.stack"
         case .excerptBoardManagement: return "rectangle.stack"
+        case .aiMacBoardManagement: return "rectangle.stack"
         case .oracleCanvas: return "sparkles"
         case .excerptCanvas: return "quote.opening"
         }
@@ -268,7 +271,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .welcome, .general, .appearance: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
-             .cardRotation, .oracleBoardManagement, .excerptBoardManagement: return nil
+             .cardRotation, .oracleBoardManagement, .excerptBoardManagement,
+             .aiMacBoardManagement: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
         case .pomodoro: return .pomodoro
@@ -460,6 +464,8 @@ struct SettingsView: View {
     @State private var dragBoards: [OracleCanvasBoard]?
     @State private var draggedExcerptBoard: ExcerptCanvasBoard?
     @State private var dragExcerptBoards: [ExcerptCanvasBoard]?
+    @State private var draggedAIMacBoard: AIMacCanvasBoard?
+    @State private var dragAIMacBoards: [AIMacCanvasBoard]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
@@ -470,6 +476,8 @@ struct SettingsView: View {
     @State private var boardRenameDraft = ""
     @State private var excerptBoardRenameTarget: ExcerptCanvasBoard?
     @State private var excerptBoardRenameDraft = ""
+    @State private var aiMacBoardRenameTarget: AIMacCanvasBoard?
+    @State private var aiMacBoardRenameDraft = ""
     /// 全局快捷键录制：正在录制的动作（nil = 未录制）与本地按键监听器
     @State private var recordingShortcutAction: GlobalHotkeyManager.Action?
     @State private var recordingMonitor: Any?
@@ -542,9 +550,9 @@ struct SettingsView: View {
             }
     }
 
-    /// 独立设备画板页面（口袋先知/摘录）自带宽幅设备预览，隐藏键盘小屏实时预览
+    /// 独立设备画板页面自带设备预览，隐藏键盘小屏实时预览
     private var isDeviceCanvasPanel: Bool {
-        selected == .oracleCanvas || selected == .excerptCanvas
+        selected == .oracleCanvas || selected == .excerptCanvas || selected == .aiMacScreen
     }
 
     /// 不显示右侧键盘小屏实时预览的面板：两个独立画板（自带设备预览）、设备管理、设置、开始使用；
@@ -553,7 +561,7 @@ struct SettingsView: View {
         if model.settings.devices.isEmpty { return true }
         switch selected {
         case .oracleCanvas, .excerptCanvas, .oracleBoardManagement, .aiMacScreen,
-             .excerptBoardManagement, .devices, .general:
+             .excerptBoardManagement, .aiMacBoardManagement, .devices, .general:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -644,6 +652,12 @@ struct SettingsView: View {
                 dragExcerptBoards = nil
                 draggedExcerptBoard = nil
             }
+            .onChange(of: model.activeDeviceID(for: .aiMacScreen)) { _ in
+                dragAIMacBoards = nil
+                draggedAIMacBoard = nil
+                dragModules = nil
+                draggedModule = nil
+            }
         }
     }
 
@@ -696,10 +710,14 @@ struct SettingsView: View {
                         excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
                     } else if selected == .oracleCanvas {
                         oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
+                    } else if selected == .aiMacScreen {
+                        aiMacScreenForm
                     } else if selected == .oracleBoardManagement {
                         oracleBoardManagementForm
                     } else if selected == .excerptBoardManagement {
                         excerptBoardManagementForm
+                    } else if selected == .aiMacBoardManagement {
+                        aiMacBoardManagementForm
                     } else {
                         Form { panelContent(for: selected) }
                             .formStyle(.grouped)
@@ -762,6 +780,7 @@ struct SettingsView: View {
                      ? "开始使用"
                      : selected == .oracleCanvas ? model.oracleCanvasBoardName
                      : selected == .excerptCanvas ? model.excerptCanvasBoardName
+                     : selected == .aiMacScreen ? model.aiMacCanvasBoardName
                      : selected.title)
                     .font(.headline)
                 if selected.isBeta {
@@ -808,6 +827,7 @@ struct SettingsView: View {
         case .cardRotation: cardRotationForm
         case .oracleBoardManagement: oracleBoardManagementForm
         case .excerptBoardManagement: excerptBoardManagementForm
+        case .aiMacBoardManagement: aiMacBoardManagementForm
         case .oracleCanvas: oracleCanvasForm
         case .excerptCanvas: excerptCanvasForm
         }
@@ -831,100 +851,122 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
     private var aiMacScreenForm: some View {
-        if let device = model.activeDevice(for: .aiMacScreen) {
-            let config = model.aiMacScreenSettings(for: device.id)
-            Section("240 × 240 实时预览") {
-                HStack {
-                    Spacer()
-                    Group {
-                        if let preview = model.aiMacScreenPreviews[device.id] {
-                            Image(nsImage: preview)
-                                .resizable()
-                                .interpolation(.none)
-                        } else {
-                            ZStack {
-                                Color.black.opacity(0.9)
-                                ProgressView().controlSize(.small)
-                            }
+        HStack(alignment: .top, spacing: 0) {
+            Form {
+                if let device = model.activeDevice(for: .aiMacScreen) {
+                    let config = model.aiMacScreenSettings(for: device.id)
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "rectangle.stack")
+                                .foregroundStyle(Color.accentColor)
+                            Text(config.mode == .canvas
+                                 ? model.aiMacCanvasBoardName : config.mode.title)
+                                .font(.headline)
+                            Spacer()
+                            Text(device.name).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text("当前画板")
+                            HelpIcon(text: "本页编辑当前 AI Mac 彩色画板的模块。画板创建、排序、显示和自动轮换在“AI Mac 画板管理”中设置。")
                         }
                     }
-                    .frame(width: 240, height: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-                    Spacer()
-                }
-                .padding(.vertical, 8)
-            }
 
-            Section("显示内容") {
-                Picker("内容模式", selection: model.aiMacScreenModeBinding(for: device.id)) {
-                    ForEach(AIMacScreenContentMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                    if config.mode == .canvas {
+                        if config.canvasBoards.isEmpty {
+                            Section {
+                                Text("尚未创建画板。新画板从空白“未命名”状态开始，添加第一个模块后自动命名。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button("创建新的画板") { model.addAIMacCanvasBoard() }
+                            }
+                        } else {
+                            canvasModuleEditor(owner: .aiMac,
+                                               modulesRaw: model.aiMacCanvasModules.map(\.rawValue),
+                                               moduleList: dragModules ?? model.aiMacCanvasModules,
+                                               available: availableCanvasModules(CanvasModule.oraclePanelModules))
+                        }
+                    } else if config.mode == .customImage {
+                        Section("自定义图片") {
+                            HStack {
+                                Button("选择图片…") {
+                                    model.chooseAIMacScreenImage(deviceID: device.id)
+                                }
+                                Spacer()
+                                Text(config.customImagePath.map {
+                                    URL(fileURLWithPath: $0).lastPathComponent
+                                } ?? "尚未选择")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    } else {
+                        Section {
+                            Text("这是旧版独立显示模式。可在“AI Mac 画板管理”中切回画板模式，将时钟、系统监控等内容作为模块自由组合。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                if config.mode == .customImage {
-                    HStack {
-                        Button("选择图片…") { model.chooseAIMacScreenImage(deviceID: device.id) }
-                        Spacer()
-                        Text(config.customImagePath.map { URL(fileURLWithPath: $0).lastPathComponent }
-                             ?? "尚未选择")
-                            .font(.caption)
+                } else {
+                    Section {
+                        Text("请先在“设备管理”中添加并启用 AI Mac 小屏幕。")
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
                 }
             }
+            .formStyle(.grouped)
+            .frame(maxWidth: .infinity, alignment: .top)
 
-            Section("连接与推送") {
-                deviceConnectionField(device.id, label: "小屏幕 IP 地址",
-                                      binding: model.aiMacScreenHostBinding(for: device.id),
-                                      fieldWidth: 320,
-                                      helpText: "填写设备局域网 IP。0.7.0 固件使用 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
-                Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
-                if config.autoPush {
-                    Stepper("推送间隔 \(config.pushIntervalSeconds) 秒",
-                            value: model.aiMacScreenIntervalBinding(for: device.id), in: 1...60)
-                }
-                if !model.aiMacScreenLosslessIDs.contains(device.id) {
-                    Stepper("JPEG 质量 \(config.jpegQuality)%",
-                            value: model.aiMacScreenJPEGQualityBinding(for: device.id), in: 50...90)
-                }
-                HStack {
-                    Button("连接测试") {
-                        Task { await model.testAIMacScreenConnection(deviceID: device.id) }
+            Divider().padding(.vertical, 4)
+
+            Form {
+                Section {
+                    HStack {
+                        Spacer()
+                        aiMacPreview
+                        Spacer()
                     }
-                    Button("立即推送") {
-                        Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
-                    }
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    Spacer()
-                    if model.aiMacScreenBusyIDs.contains(device.id) {
-                        ProgressView().controlSize(.small)
+                    .padding(.vertical, 8)
+                    Text("彩色原始画面即为实际推送效果，不进行黑白转换、灰阶抖动或墨水屏插值处理。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("240 × 240 彩色预览")
+                        HelpIcon(text: "预览与设备收到的 240×240 彩色像素内容一致；RGB565 固件使用无损帧传输。")
                     }
                 }
-                LabeledContent("传输模式",
-                               value: model.aiMacScreenLosslessIDs.contains(device.id)
-                               ? "RGB565 无损" : "JPEG 兼容")
-                if let time = model.aiMacScreenLastPushText[device.id] {
-                    LabeledContent("最后推送", value: time)
-                }
-                Text(model.aiMacScreenStatuses[device.id] ?? "等待连接小屏幕")
-                    .font(.caption)
-                    .foregroundStyle((model.aiMacScreenStatuses[device.id] ?? "").contains("失败")
-                                     ? Color.red : Color.secondary)
-                    .textSelection(.enabled)
             }
-        } else {
-            Section {
-                Text("请先在“设备管理”中添加并启用 AI Mac 小屏幕。")
-                    .foregroundStyle(.secondary)
+            .formStyle(.grouped)
+            .frame(width: 300)
+        }
+        .padding(.bottom, 12)
+        .onAppear {
+            if let id = model.activeDeviceID(for: .aiMacScreen) {
+                model.refreshAIMacScreenPreview(deviceID: id)
             }
         }
+    }
+
+    private var aiMacPreview: some View {
+        Group {
+            if let id = model.activeDeviceID(for: .aiMacScreen),
+               let preview = model.aiMacScreenPreviews[id] {
+                Image(nsImage: preview).resizable().interpolation(.none)
+            } else {
+                ZStack {
+                    Color.black.opacity(0.9)
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .frame(width: 240, height: 240)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
     }
 
     /// 草稿式连接输入：输入框 + 「应用」（避免逐字符触发拉取/持久化）；key 为草稿存储键
@@ -1610,6 +1652,225 @@ struct SettingsView: View {
             return NSItemProvider(object: board.id.uuidString as NSString)
         }
         .help("点击名称编辑；拖拽排序")
+    }
+
+    /// AI Mac 小屏幕画板管理：沿用口袋先知的多画板、侧栏、排序和轮播逻辑，
+    /// 仅保留彩屏需要的设置，不展示墨水屏灰阶、抖动与插值选项。
+    private var aiMacBoardManagementForm: some View {
+        Form {
+            if let device = model.activeDevice(for: .aiMacScreen) {
+                let config = model.aiMacScreenSettings(for: device.id)
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "display").foregroundStyle(.secondary)
+                        Text("正在管理")
+                        HelpIcon(text: "每台 AI Mac 小屏幕分别保存画板、顺序、可见状态和自动轮播设置，不会与其他小屏幕串用。")
+                        Spacer()
+                        if model.enabledDevices(for: .aiMacScreen).count > 1 {
+                            Picker("", selection: model.activeAIMacScreenBinding) {
+                                ForEach(model.enabledDevices(for: .aiMacScreen)) { item in
+                                    Text(item.name).tag(item.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 200)
+                        } else {
+                            Text(device.name).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("内容模式") {
+                    Picker("", selection: model.aiMacScreenModeBinding(for: device.id)) {
+                        ForEach(AIMacScreenContentMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("“AI Mac 画板”支持与口袋先知相同的模块组合；旧版仪表盘、时钟和自定义图片继续保留。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if config.mode == .canvas {
+                    Section {
+                        let boards = dragAIMacBoards ?? config.canvasBoards
+                        if boards.isEmpty {
+                            Text("尚未创建画板")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            reorderList(items: boards, dragged: $draggedAIMacBoard,
+                                        dragItems: $dragAIMacBoards,
+                                        commit: { model.commitAIMacCanvasBoards($0) }) { board in
+                                aiMacBoardManagementRow(board, config: config)
+                            }
+                        }
+                        Button("创建新的画板") {
+                            model.addAIMacCanvasBoard()
+                            dragModules = nil
+                            selected = .aiMacScreen
+                        }
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text("画板（拖拽排序）")
+                            HelpIcon(text: "新画板为空白“未命名”；添加第一个模块后自动命名。侧栏开关控制是否显示在设备折叠菜单中，轮播开关控制是否参与自动切换。")
+                        }
+                    }
+
+                    if config.canvasBoards.indices.contains(config.canvasBoardIndex) {
+                        Section("显示设置") {
+                            Picker("底色模式",
+                                   selection: model.aiMacBackgroundModeBinding(for: device.id)) {
+                                ForEach(CanvasBackgroundMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            Text("直接渲染 240×240 彩色画面，不进行黑白转换、灰阶量化、抖动或插值。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if config.mode == .customImage {
+                    Section("自定义图片") {
+                        Button("选择图片…") {
+                            model.chooseAIMacScreenImage(deviceID: device.id)
+                        }
+                    }
+                }
+
+                Section("连接与推送") {
+                    deviceConnectionField(device.id, label: "小屏幕 IP 地址",
+                                          binding: model.aiMacScreenHostBinding(for: device.id),
+                                          fieldWidth: 320,
+                                          helpText: "填写设备局域网 IP。0.7.0 固件使用 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
+                    Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
+                    if config.autoPush {
+                        Stepper("推送间隔 \(config.pushIntervalSeconds) 秒",
+                                value: model.aiMacScreenIntervalBinding(for: device.id), in: 1...60)
+                    }
+                    if config.mode == .canvas {
+                        Divider()
+                        Toggle("自动轮换画板",
+                               isOn: model.aiMacBoardRotationBinding(for: device.id))
+                        if config.boardRotationEnabled {
+                            Stepper("轮换间隔 \(config.boardRotationMinutes) 分钟",
+                                    value: model.aiMacBoardRotationMinutesBinding(for: device.id),
+                                    in: 1...1_440)
+                        }
+                        let rotationCount = config.canvasBoards.filter {
+                            $0.isSidebarVisible && $0.participatesInRotation
+                        }.count
+                        if rotationCount < 2 {
+                            Text("至少需要两块同时开启“侧栏”和“轮播”的画板。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if !model.aiMacScreenLosslessIDs.contains(device.id) {
+                        Stepper("JPEG 质量 \(config.jpegQuality)%",
+                                value: model.aiMacScreenJPEGQualityBinding(for: device.id), in: 50...90)
+                    }
+                    HStack {
+                        Button("连接测试") {
+                            Task { await model.testAIMacScreenConnection(deviceID: device.id) }
+                        }
+                        Button("立即推送") {
+                            Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
+                        }
+                        .keyboardShortcut(.return, modifiers: [.command])
+                        Spacer()
+                        if model.aiMacScreenBusyIDs.contains(device.id) {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    LabeledContent("传输模式",
+                                   value: model.aiMacScreenLosslessIDs.contains(device.id)
+                                   ? "RGB565 无损" : "JPEG 兼容")
+                    if let time = model.aiMacScreenLastPushText[device.id] {
+                        LabeledContent("最后推送", value: time)
+                    }
+                    Text(model.aiMacScreenStatuses[device.id] ?? "等待连接小屏幕")
+                        .font(.caption)
+                        .foregroundStyle((model.aiMacScreenStatuses[device.id] ?? "").contains("失败")
+                                         ? Color.red : Color.secondary)
+                }
+            } else {
+                Section {
+                    Text("请先在设备管理中添加 AI Mac 小屏幕。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .alert("重命名画板", isPresented: Binding(
+            get: { aiMacBoardRenameTarget != nil },
+            set: { if !$0 { aiMacBoardRenameTarget = nil } })) {
+            TextField("画板名称", text: $aiMacBoardRenameDraft)
+            Button("确定") {
+                if let board = aiMacBoardRenameTarget {
+                    model.renameAIMacCanvasBoard(id: board.id, to: aiMacBoardRenameDraft)
+                }
+                aiMacBoardRenameTarget = nil
+            }
+            Button("取消", role: .cancel) { aiMacBoardRenameTarget = nil }
+        }
+    }
+
+    private func aiMacBoardManagementRow(_ board: AIMacCanvasBoard,
+                                         config: AIMacScreenDeviceSettings) -> some View {
+        let isCurrent = config.canvasBoards.indices.contains(config.canvasBoardIndex)
+            && config.canvasBoards[config.canvasBoardIndex].id == board.id
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+            Image(systemName: "rectangle.stack").font(.system(size: 12)).frame(width: 16)
+            Button {
+                if let deviceID = model.activeDeviceID(for: .aiMacScreen) {
+                    model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
+                    dragModules = nil
+                    selected = .aiMacScreen
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(board.name).lineLimit(1)
+                    if isCurrent {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Toggle("", isOn: Binding(get: { board.isSidebarVisible }, set: {
+                model.setAIMacCanvasBoardSidebarVisible(id: board.id, visible: $0)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini).frame(width: 44)
+            Toggle("", isOn: Binding(get: { board.participatesInRotation }, set: {
+                model.setAIMacCanvasBoardRotationEnabled(id: board.id, enabled: $0)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini).frame(width: 44)
+            HStack(spacing: 6) {
+                Button {
+                    aiMacBoardRenameTarget = board
+                    aiMacBoardRenameDraft = board.name
+                } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless)
+                Button(role: .destructive) {
+                    model.removeAIMacCanvasBoard(id: board.id)
+                } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+            }
+            .frame(width: 50)
+        }
+        .padding(.vertical, 2)
+        .onDrag {
+            draggedAIMacBoard = board
+            dragAIMacBoards = config.canvasBoards
+            return NSItemProvider(object: board.id.uuidString as NSString)
+        }
     }
 
     /// 摘录画板管理：每台设备独立排序，并分别控制侧边栏显示、自动轮播与设备推送。
@@ -2871,11 +3132,8 @@ struct SettingsView: View {
 
     /// 墨水屏画板「正在播放」横向排布开关绑定（先知/摘录各持独立设置）
     private func nowPlayingHorizontalBinding(for owner: AppModel.CanvasOwner) -> Binding<Bool> {
-        switch owner {
-        case .keyboard: return Binding(get: { false }, set: { _ in })
-        case .oracle: return model.oracleNowPlayingHorizontalBinding
-        case .excerpt: return model.excerptNowPlayingHorizontalBinding
-        }
+        Binding(get: { model.nowPlayingHorizontal(for: owner) },
+                set: { model.setNowPlayingHorizontal($0, for: owner) })
     }
 
     /// 模块行内展开的设置内容
@@ -4575,8 +4833,9 @@ struct Sidebar: View {
         case .aiMacScreen:
             return AnyView(deviceInstanceGroup(icon: "display", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id),
-                                               panels: [.aiMacScreen],
-                                               switchType: .aiMacScreen, deviceID: device.id))
+                                               panels: [.aiMacBoardManagement],
+                                               switchType: .aiMacScreen, deviceID: device.id,
+                                               aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id)))
         }
     }
 
@@ -4600,7 +4859,8 @@ struct Sidebar: View {
                                      panels: [Panel], switchType: DeviceType?, deviceID: UUID?,
                                      emptyHint: String? = nil,
                                      oracleBoards: [OracleCanvasBoard] = [],
-                                     excerptBoards: [ExcerptCanvasBoard] = []) -> some View {
+                                     excerptBoards: [ExcerptCanvasBoard] = [],
+                                     aiMacBoards: [AIMacCanvasBoard] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
@@ -4613,6 +4873,10 @@ struct Sidebar: View {
                 } else if panel == .excerptBoardManagement,
                           switchType == .excerpt, let deviceID {
                     excerptBoardManagementSidebarRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
+                } else if panel == .aiMacBoardManagement,
+                          switchType == .aiMacScreen, let deviceID {
+                    aiMacBoardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else {
                     sidebarRow(panel, switchingTo: switchType, deviceID: deviceID)
@@ -4630,11 +4894,19 @@ struct Sidebar: View {
                             .padding(.leading, Self.submenuIndent + 14)
                     }
                 }
+                if panel == .aiMacBoardManagement, switchType == .aiMacScreen, let deviceID {
+                    ForEach(aiMacBoards) { board in
+                        aiMacBoardSidebarRow(board, deviceID: deviceID)
+                            .padding(.leading, Self.submenuIndent + 14)
+                    }
+                }
             }
             if (switchType == .oracle && oracleBoards.isEmpty)
-                || (switchType == .excerpt && excerptBoards.isEmpty) {
+                || (switchType == .excerpt && excerptBoards.isEmpty)
+                || (switchType == .aiMacScreen && aiMacBoards.isEmpty) {
                 Text(switchType == .oracle && deviceID.map({ !model.oracleCanvasBoards(for: $0).isEmpty }) == true
                      || switchType == .excerpt && deviceID.map({ !model.excerptCanvasBoards(for: $0).isEmpty }) == true
+                     || switchType == .aiMacScreen && deviceID.map({ !model.aiMacCanvasBoards(for: $0).isEmpty }) == true
                      ? "所有画板已隐藏" : "尚未创建画板")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
@@ -4744,6 +5016,33 @@ struct Sidebar: View {
         .help("切换到这台摘录设备并应用「\(board.name)」")
     }
 
+    private func aiMacBoardSidebarRow(_ board: AIMacCanvasBoard, deviceID: UUID) -> some View {
+        let isCurrent = model.activeDeviceID(for: .aiMacScreen) == deviceID
+            && model.isCurrentAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
+        return Button {
+            model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
+            selection = .aiMacScreen
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 14)
+                Text(board.name).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isCurrent && selection == .aiMacScreen
+                      ? Color.accentColor.opacity(0.18) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+        .help("切换到这台 AI Mac 小屏幕并应用「\(board.name)」")
+    }
+
     /// 设备二级菜单相对设备名的缩进宽度（图标与文字整体右移）
     private static let submenuIndent: CGFloat = 16
 
@@ -4826,6 +5125,42 @@ struct Sidebar: View {
                 .fill(selection == .excerptBoardManagement
                       ? Color.accentColor.opacity(0.25) : Color.clear)
         )
+        .contentShape(Rectangle())
+    }
+
+    /// AI Mac「画板管理」行：右侧直接控制该小屏幕的自动轮播。
+    private func aiMacBoardManagementSidebarRow(_ deviceID: UUID) -> some View {
+        let rotationOn = model.aiMacScreenSettings(for: deviceID).boardRotationEnabled
+        return HStack(spacing: 8) {
+            Button {
+                model.switchDevice(type: .aiMacScreen, to: deviceID)
+                selection = .aiMacBoardManagement
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: Panel.aiMacBoardManagement.icon)
+                        .frame(width: 18, height: 18)
+                    Text(Panel.aiMacBoardManagement.title).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selection == .aiMacBoardManagement ? Color.accentColor : Color.primary)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rotationOn ? Color.accentColor : Color.secondary)
+            Toggle("", isOn: model.aiMacBoardRotationBinding(for: deviceID))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("该 AI Mac 小屏幕的自动轮播开关")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(selection == .aiMacBoardManagement
+                  ? Color.accentColor.opacity(0.25) : Color.clear))
         .contentShape(Rectangle())
     }
 
@@ -6191,24 +6526,12 @@ extension AppModel {
     /// 各画板「少数派推荐」显示条数绑定（灵犀/口袋先知/摘录各自独立）
     func sspaiCountBinding(for owner: CanvasOwner) -> Binding<Int> {
         Binding(get: { self.sspaiCount(for: owner) },
-                set: { newValue in
-                    switch owner {
-                    case .keyboard: self.settings.canvasSspaiCount = newValue
-                    case .oracle: self.settings.oracleSspaiCount = newValue
-                    case .excerpt: self.settings.excerptSspaiCount = newValue
-                    }
-                })
+                set: { self.setSspaiCount($0, for: owner) })
     }
     /// 各画板「少数派推荐」随机显示开关绑定（各自独立）
     func sspaiRandomBinding(for owner: CanvasOwner) -> Binding<Bool> {
         Binding(get: { self.sspaiRandomEnabled(for: owner) },
-                set: { newValue in
-                    switch owner {
-                    case .keyboard: self.settings.canvasSspaiRandom = newValue
-                    case .oracle: self.settings.oracleSspaiRandom = newValue
-                    case .excerpt: self.settings.excerptSspaiRandom = newValue
-                    }
-                })
+                set: { self.setSspaiRandom($0, for: owner) })
     }
     /// 摘录语录分类勾选绑定（多选；取消最后一个分类时由 UI 禁用，防止轮换池为空）
     func excerptQuoteCategoryBinding(for category: ExcerptQuoteCategory) -> Binding<Bool> {

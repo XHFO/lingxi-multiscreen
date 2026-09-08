@@ -77,6 +77,8 @@ public final class AppModel: ObservableObject {
     private var aiMacScreenCapabilities: [UUID: AIMacScreenCapabilities] = [:]
     private var aiMacScreenLastHashes: [UUID: String] = [:]
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
+    private var aiMacScreenLastBoardRotation: [UUID: Date] = [:]
+    private var aiMacSspaiRandomSelection: [String: [SspaiArticle]] = [:]
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
     /// 设置连续变化时合并为一次键盘推送，避免滑块/文本编辑逐帧上传。
@@ -569,6 +571,15 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    /// 当前 AI Mac 画板页正在编辑的彩色小屏设备。
+    public var activeAIMacScreenBinding: Binding<UUID> {
+        Binding(get: {
+            self.activeDevice(for: .aiMacScreen)?.id ?? UUID()
+        }, set: { id in
+            self.switchDevice(type: .aiMacScreen, to: id)
+        })
+    }
+
     /// 某台设备的启用开关绑定
     public func deviceEnabledBinding(for id: UUID) -> Binding<Bool> {
         Binding(get: {
@@ -617,6 +628,7 @@ public final class AppModel: ObservableObject {
             syncFormlabsPreviewSlot(for: newDevice.id)
         }
         if type == .aiMacScreen {
+            aiMacScreenLastBoardRotation[newDevice.id] = Date()
             refreshAIMacScreenPreview(deviceID: newDevice.id)
         }
         persistSettings()
@@ -849,6 +861,10 @@ public final class AppModel: ObservableObject {
             aiMacScreenCapabilities[id] = nil
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
+            aiMacScreenLastBoardRotation[id] = nil
+            aiMacSspaiRandomSelection = aiMacSspaiRandomSelection.filter {
+                !$0.key.hasPrefix(id.uuidString + "|")
+            }
             aiMacScreenPreviews[id] = nil
             aiMacScreenStatuses[id] = nil
             aiMacScreenLastPushText[id] = nil
@@ -1259,6 +1275,7 @@ public final class AppModel: ObservableObject {
     private func mutateAIMacScreenSettings(
         _ id: UUID,
         pushImmediately: Bool = false,
+        schedulePush: Bool = true,
         _ body: (inout AIMacScreenDeviceSettings) -> Void
     ) {
         guard let index = settings.devices.firstIndex(where: {
@@ -1277,7 +1294,7 @@ public final class AppModel: ObservableObject {
         }
         persistSettings()
         refreshAIMacScreenPreview(deviceID: id)
-        if pushImmediately || value.autoPush {
+        if schedulePush && (pushImmediately || value.autoPush) {
             Task { @MainActor [weak self] in
                 await self?.pushAIMacScreen(deviceID: id, force: pushImmediately)
             }
@@ -1314,6 +1331,176 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    public func aiMacCanvasBoards(for deviceID: UUID) -> [AIMacCanvasBoard] {
+        aiMacScreenSettings(for: deviceID).canvasBoards
+    }
+
+    public func visibleAIMacCanvasBoards(for deviceID: UUID) -> [AIMacCanvasBoard] {
+        aiMacCanvasBoards(for: deviceID).filter(\.isSidebarVisible)
+    }
+
+    public func isCurrentAIMacCanvasBoard(deviceID: UUID, boardID: UUID) -> Bool {
+        let config = aiMacScreenSettings(for: deviceID)
+        return config.mode == .canvas
+            && config.canvasBoards.indices.contains(config.canvasBoardIndex)
+            && config.canvasBoards[config.canvasBoardIndex].id == boardID
+    }
+
+    public var aiMacCanvasBoardName: String {
+        guard let id = activeDeviceID(for: .aiMacScreen) else { return "未命名" }
+        let config = aiMacScreenSettings(for: id)
+        guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else {
+            return CanvasBoardNamingPolicy.untitledName
+        }
+        return config.canvasBoards[config.canvasBoardIndex].name
+    }
+
+    public var aiMacCanvasModules: [CanvasModule] {
+        guard let id = activeDeviceID(for: .aiMacScreen) else { return [] }
+        let config = aiMacScreenSettings(for: id)
+        guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return [] }
+        return config.canvasBoards[config.canvasBoardIndex].moduleList
+    }
+
+    private func mutateCurrentAIMacCanvasBoard(
+        pushImmediately: Bool = true,
+        _ body: (inout AIMacCanvasBoard) -> Void
+    ) {
+        guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(id, pushImmediately: pushImmediately) { config in
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return }
+            body(&config.canvasBoards[config.canvasBoardIndex])
+            config.canvasBoards[config.canvasBoardIndex].clamp()
+            config.mode = .canvas
+        }
+    }
+
+    public func addAIMacCanvasBoard() {
+        guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(id, pushImmediately: true) { config in
+            config.canvasBoards.append(AIMacCanvasBoard())
+            config.canvasBoardIndex = config.canvasBoards.count - 1
+            config.mode = .canvas
+        }
+        aiMacScreenLastBoardRotation[id] = Date()
+        aiMacScreenStatuses[id] = "已创建空白画板，添加第一个模块后会自动命名"
+    }
+
+    public func applyAIMacCanvasBoard(deviceID: UUID, boardID: UUID) {
+        if activeDeviceID(for: .aiMacScreen) != deviceID {
+            switchDevice(type: .aiMacScreen, to: deviceID)
+        }
+        mutateAIMacScreenSettings(deviceID, pushImmediately: true) { config in
+            guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
+            config.canvasBoardIndex = index
+            config.mode = .canvas
+        }
+        aiMacScreenLastBoardRotation[deviceID] = Date()
+    }
+
+    @discardableResult
+    public func cycleAIMacCanvasBoard(deviceID: UUID, direction: Int,
+                                      automaticRotation: Bool = false) -> Bool {
+        let config = aiMacScreenSettings(for: deviceID)
+        let eligible = config.canvasBoards.indices.filter { index in
+            let board = config.canvasBoards[index]
+            return board.isSidebarVisible
+                && (!automaticRotation || board.participatesInRotation)
+        }
+        guard eligible.count > 1 else { return false }
+        let current = min(max(config.canvasBoardIndex, 0), config.canvasBoards.count - 1)
+        let anchor = eligible.firstIndex(of: current)
+            ?? (direction >= 0 ? eligible.count - 1 : 0)
+        let position = ((anchor + direction) % eligible.count + eligible.count) % eligible.count
+        let nextIndex = eligible[position]
+        mutateAIMacScreenSettings(deviceID, pushImmediately: !automaticRotation,
+                                  schedulePush: !automaticRotation) { value in
+            value.canvasBoardIndex = nextIndex
+            value.mode = .canvas
+        }
+        aiMacScreenLastBoardRotation[deviceID] = Date()
+        return true
+    }
+
+    public func renameAIMacCanvasBoard(id boardID: UUID, to name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty,
+              let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(deviceID) { config in
+            guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
+            config.canvasBoards[index].name = clean
+        }
+    }
+
+    public func setAIMacCanvasBoardSidebarVisible(id boardID: UUID, visible: Bool) {
+        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(deviceID) { config in
+            guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
+            config.canvasBoards[index].sidebarVisible = visible
+        }
+    }
+
+    public func setAIMacCanvasBoardRotationEnabled(id boardID: UUID, enabled: Bool) {
+        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(deviceID) { config in
+            guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
+            config.canvasBoards[index].rotationEnabled = enabled
+        }
+    }
+
+    public func removeAIMacCanvasBoard(id boardID: UUID) {
+        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        mutateAIMacScreenSettings(deviceID, pushImmediately: true) { config in
+            guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
+            config.canvasBoards.remove(at: index)
+            if config.canvasBoards.isEmpty {
+                config.canvasBoardIndex = 0
+            } else if index < config.canvasBoardIndex {
+                config.canvasBoardIndex -= 1
+            } else if config.canvasBoardIndex >= config.canvasBoards.count {
+                config.canvasBoardIndex = config.canvasBoards.count - 1
+            }
+            config.mode = .canvas
+        }
+    }
+
+    public func commitAIMacCanvasBoards(_ boards: [AIMacCanvasBoard]) {
+        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        let old = aiMacScreenSettings(for: deviceID)
+        let currentID = old.canvasBoards.indices.contains(old.canvasBoardIndex)
+            ? old.canvasBoards[old.canvasBoardIndex].id : nil
+        mutateAIMacScreenSettings(deviceID) { config in
+            config.canvasBoards = boards
+            config.canvasBoardIndex = currentID.flatMap { id in
+                boards.firstIndex(where: { $0.id == id })
+            } ?? 0
+        }
+    }
+
+    public func aiMacBackgroundModeBinding(for deviceID: UUID) -> Binding<CanvasBackgroundMode> {
+        Binding(get: {
+            let config = self.aiMacScreenSettings(for: deviceID)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return .dark }
+            return config.canvasBoards[config.canvasBoardIndex].backgroundMode
+        }, set: { value in
+            self.mutateCurrentAIMacCanvasBoard { $0.backgroundMode = value }
+        })
+    }
+
+    public func aiMacBoardRotationBinding(for deviceID: UUID) -> Binding<Bool> {
+        Binding(get: { self.aiMacScreenSettings(for: deviceID).boardRotationEnabled }, set: { value in
+            self.mutateAIMacScreenSettings(deviceID) { $0.boardRotationEnabled = value }
+            self.aiMacScreenLastBoardRotation[deviceID] = Date()
+        })
+    }
+
+    public func aiMacBoardRotationMinutesBinding(for deviceID: UUID) -> Binding<Int> {
+        Binding(get: { self.aiMacScreenSettings(for: deviceID).boardRotationMinutes }, set: { value in
+            self.mutateAIMacScreenSettings(deviceID) { $0.boardRotationMinutes = value }
+            self.aiMacScreenLastBoardRotation[deviceID] = Date()
+        })
+    }
+
     public func chooseAIMacScreenImage(deviceID: UUID) {
         let panel = NSOpenPanel()
         panel.title = "选择 AI Mac 小屏幕图片"
@@ -1331,10 +1518,58 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private func aiMacCanvasArticles(deviceID: UUID, board: AIMacCanvasBoard) -> [SspaiArticle] {
+        let count = min(max(board.sspaiCount, 1), 6)
+        guard board.sspaiRandom, sspaiArticles.count > count else {
+            return Array(sspaiArticles.prefix(count))
+        }
+        let key = "\(deviceID.uuidString)|\(board.id.uuidString)"
+        let cached = aiMacSspaiRandomSelection[key]
+        let stale = cached == nil || cached!.count != count || cached!.contains { article in
+            !sspaiArticles.contains { $0.id == article.id }
+        }
+        if stale {
+            aiMacSspaiRandomSelection[key] = Array(sspaiArticles.shuffled().prefix(count))
+        }
+        return aiMacSspaiRandomSelection[key] ?? Array(sspaiArticles.prefix(count))
+    }
+
+    private func renderAIMacScreen(deviceID: UUID,
+                                   config: AIMacScreenDeviceSettings,
+                                   system snapshot: SystemSnapshot,
+                                   now: Date = Date()) throws -> CGImage {
+        guard config.mode == .canvas else {
+            return try AIMacScreenSupport.render(settings: config, system: snapshot, now: now)
+        }
+        let board = config.canvasBoards.indices.contains(config.canvasBoardIndex)
+            ? config.canvasBoards[config.canvasBoardIndex] : AIMacCanvasBoard()
+        let dark = board.backgroundMode == .dark
+        let palette = ScreenThemes.resolved(theme: settings.cardTheme,
+                                            backgroundTone: dark ? .dark : .light,
+                                            customBackgroundHex: nil,
+                                            accentTone: settings.accentTone,
+                                            customAccentHex: settings.customAccentHex,
+                                            softwareIsDark: dark)
+        return ScreenRenderer.renderDeviceCanvas(
+            modules: board.moduleList, system: snapshot,
+            nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
+            customText: settings.canvasText, settings: settings,
+            codex: usage, qwenQuota: qwenQuota,
+            sspaiArticles: aiMacCanvasArticles(deviceID: deviceID, board: board),
+            ha: haSnapshot.selecting(entityIDs: board.haEntityIDs),
+            formlabsItems: formlabsCanvasItems(), now: now,
+            width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
+            palette: palette, nowPlayingHorizontal: board.nowPlayingHorizontal,
+            canvasImagePath: board.imagePath, printerFields: board.printerFields,
+            optimizeBambuForOracleEInk: false,
+            bambuHeroLayout: true,
+            showBambuCamera: true)
+    }
+
     public func refreshAIMacScreenPreview(deviceID: UUID) {
         let config = aiMacScreenSettings(for: deviceID)
         do {
-            let image = try AIMacScreenSupport.render(settings: config, system: system)
+            let image = try renderAIMacScreen(deviceID: deviceID, config: config, system: system)
             aiMacScreenPreviews[deviceID] = NSImage(
                 cgImage: image, size: NSSize(width: 240, height: 240))
         } catch {
@@ -1414,10 +1649,14 @@ public final class AppModel: ObservableObject {
         aiMacScreenStatuses[deviceID] = "正在生成并推送画面…"
         defer { aiMacScreenBusyIDs.remove(deviceID) }
         do {
-            if sampleDashboard && config.mode == .dashboard {
+            let canvasNeedsSystem = config.mode == .canvas
+                && config.canvasBoards.indices.contains(config.canvasBoardIndex)
+                && RuntimePerformancePolicy.needsSystemSample(
+                    modules: config.canvasBoards[config.canvasBoardIndex].moduleList)
+            if sampleDashboard && (config.mode == .dashboard || canvasNeedsSystem) {
                 system = monitor.sample(now: Date())
             }
-            let image = try AIMacScreenSupport.render(settings: config, system: system)
+            let image = try renderAIMacScreen(deviceID: deviceID, config: config, system: system)
             aiMacScreenPreviews[deviceID] = NSImage(
                 cgImage: image, size: NSSize(width: 240, height: 240))
             let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
@@ -1474,10 +1713,31 @@ public final class AppModel: ObservableObject {
         }
         // 同一秒有多台仪表盘需要推送时只采样一次系统状态，避免设备数增加后
         // CPU/内存/网络统计调用按台数重复放大。
-        if dueDevices.contains(where: {
-            ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).mode == .dashboard
+        if dueDevices.contains(where: { device in
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            if config.mode == .dashboard { return true }
+            guard config.mode == .canvas,
+                  config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
+            return RuntimePerformancePolicy.needsSystemSample(
+                modules: config.canvasBoards[config.canvasBoardIndex].moduleList)
         }) {
             system = monitor.sample(now: now)
+        }
+        for device in dueDevices {
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            guard config.mode == .canvas, config.boardRotationEnabled,
+                  config.canvasBoards.filter({
+                      $0.isSidebarVisible && $0.participatesInRotation
+                  }).count > 1 else { continue }
+            let interval = TimeInterval(config.boardRotationMinutes * 60)
+            let last = aiMacScreenLastBoardRotation[device.id] ?? now
+            if aiMacScreenLastBoardRotation[device.id] == nil {
+                aiMacScreenLastBoardRotation[device.id] = now
+            } else if now.timeIntervalSince(last) >= interval {
+                _ = cycleAIMacCanvasBoard(deviceID: device.id, direction: 1,
+                                          automaticRotation: true)
+                aiMacScreenLastBoardRotation[device.id] = now
+            }
         }
         for device in dueDevices {
             await pushAIMacScreen(deviceID: device.id, force: false, sampleDashboard: false)
@@ -2274,6 +2534,10 @@ public final class AppModel: ObservableObject {
         lastCanvasPreviewMinute = minute
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
+        if let id = activeDeviceID(for: .aiMacScreen),
+           aiMacScreenSettings(for: id).mode == .canvas {
+            refreshAIMacScreenPreview(deviceID: id)
+        }
     }
 
     /// 低频刷新正在播放状态（仅供侧栏常驻封面/歌曲信息，不推送、不影响当前卡片）
@@ -2409,6 +2673,11 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.customImagePath
         case .oracle: return settings.oracleCanvasImagePath
         case .excerpt: return settings.excerptCanvasImagePath
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return nil }
+            return config.canvasBoards[config.canvasBoardIndex].imagePath
         }
     }
 
@@ -2418,6 +2687,11 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.customImageName
         case .oracle: return settings.oracleCanvasImageName
         case .excerpt: return settings.excerptCanvasImageName
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return nil }
+            return config.canvasBoards[config.canvasBoardIndex].imageName
         }
     }
 
@@ -2434,9 +2708,9 @@ public func setClockTimeFormat(_ format: String) {
         }
         if owner == .keyboard {
             showCropEditor(image: image, sourceURL: url)
-        } else if owner == .oracle {
+        } else if owner == .oracle || owner == .aiMac {
             showCropEditor(image: image, sourceURL: url,
-                           cropRatio: 1.0, owner: .oracle) // 先知 200×200 方形
+                           cropRatio: 1.0, owner: owner) // 先知与 AI Mac 均为方形
         } else {
             showCropEditor(image: image, sourceURL: url,
                            cropRatio: 296.0 / 152.0, owner: .excerpt) // 摘录 296×152
@@ -2460,10 +2734,16 @@ public func setClockTimeFormat(_ format: String) {
             case .excerpt:
                 settings.excerptCanvasImagePath = destination.path
                 settings.excerptCanvasImageName = name
+            case .aiMac:
+                mutateCurrentAIMacCanvasBoard { board in
+                    board.imagePath = destination.path
+                    board.imageName = name
+                }
             }
             persistSettings()
             refreshDevicePreview(for: owner)
-            status = "已更新\(owner == .oracle ? "先知" : "摘录")画板图片"
+            let label = owner == .oracle ? "先知" : owner == .excerpt ? "摘录" : "AI Mac"
+            status = "已更新\(label)画板图片"
         } catch {
             status = Self.friendly(error)
         }
@@ -2471,11 +2751,10 @@ public func setClockTimeFormat(_ format: String) {
 
     /// 添加一个画板模块（已存在则忽略）
     public func addCanvasModule(_ module: CanvasModule, to owner: CanvasOwner = .keyboard) {
-        let key = modulesKeyPath(for: owner)
-        let currentModules = settings[keyPath: key]
+        let currentModules = canvasModulesRaw(for: owner)
         guard !currentModules.contains(module.rawValue) else { return }
         assignFirstModuleNameIfNeeded(module, owner: owner, currentModules: currentModules)
-        settings[keyPath: key].append(module.rawValue)
+        setCanvasModulesRaw(currentModules + [module.rawValue], for: owner)
         persistSettings()
         refreshDevicePreview(for: owner)
     }
@@ -2512,24 +2791,30 @@ public func setClockTimeFormat(_ format: String) {
             settings.excerptCanvasBoards[index].name = newName
             captureActiveDeviceSnapshot(of: .excerpt)
             settings.deviceSyncInFlight = false
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard(pushImmediately: false) { board in
+                board.name = CanvasBoardNamingPolicy.nameAfterAddingFirstModule(
+                    currentName: board.name, currentModules: currentModules,
+                    moduleTitle: moduleName)
+            }
         }
     }
 
     /// 移除一个画板模块
     public func removeCanvasModule(_ module: CanvasModule, from owner: CanvasOwner = .keyboard) {
-        let key = modulesKeyPath(for: owner)
-        settings[keyPath: key].removeAll { $0 == module.rawValue }
+        setCanvasModulesRaw(canvasModulesRaw(for: owner).filter { $0 != module.rawValue }, for: owner)
         persistSettings()
         refreshDevicePreview(for: owner)
     }
 
     /// 上移 / 下移一个画板模块
     public func moveCanvasModule(_ module: CanvasModule, up: Bool, owner: CanvasOwner = .keyboard) {
-        let key = modulesKeyPath(for: owner)
-        guard let index = settings[keyPath: key].firstIndex(of: module.rawValue) else { return }
+        var list = canvasModulesRaw(for: owner)
+        guard let index = list.firstIndex(of: module.rawValue) else { return }
         let target = up ? index - 1 : index + 1
-        guard target >= 0, target < settings[keyPath: key].count else { return }
-        settings[keyPath: key].swapAt(index, target)
+        guard target >= 0, target < list.count else { return }
+        list.swapAt(index, target)
+        setCanvasModulesRaw(list, for: owner)
         persistSettings()
         refreshDevicePreview(for: owner)
     }
@@ -2538,22 +2823,21 @@ public func setClockTimeFormat(_ format: String) {
     public func moveCanvasModule(_ module: CanvasModule, before target: CanvasModule,
                                  after: Bool = false, owner: CanvasOwner = .keyboard) {
         guard module != target else { return }
-        let key = modulesKeyPath(for: owner)
-        var list = settings[keyPath: key]
+        var list = canvasModulesRaw(for: owner)
         list.removeAll { $0 == module.rawValue }
         if let index = list.firstIndex(of: target.rawValue) {
             list.insert(module.rawValue, at: after ? index + 1 : index)
         } else {
             list.append(module.rawValue)
         }
-        settings[keyPath: key] = list
+        setCanvasModulesRaw(list, for: owner)
         persistSettings()
         refreshDevicePreview(for: owner)
     }
 
     /// 拖拽排序完成：一次性提交最终模块顺序并刷新预览（拖动中只改本地列表，避免卡顿）
     public func commitCanvasModules(_ modules: [CanvasModule], owner: CanvasOwner) {
-        settings[keyPath: modulesKeyPath(for: owner)] = modules.map(\.rawValue)
+        setCanvasModulesRaw(modules.map(\.rawValue), for: owner)
         persistSettings()
         refreshDevicePreview(for: owner)
     }
@@ -2564,6 +2848,10 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: break
         case .oracle: refreshOracleCanvasPreview()
         case .excerpt: refreshExcerptCanvasPreview()
+        case .aiMac:
+            if let id = activeDeviceID(for: .aiMacScreen) {
+                refreshAIMacScreenPreview(deviceID: id)
+            }
         }
     }
 
@@ -2822,11 +3110,19 @@ public func setClockTimeFormat(_ format: String) {
 
     // MARK: - 数据刷新（Codex 用量 / 千问办公额度：统一调取，一次拉两个源供各功能共享）
 
-    /// 任一画板（键盘/先知/摘录）模块组合里含 Codex 或千问额度模块
+    private var allAIMacCanvasModules: [CanvasModule] {
+        enabledDevices(for: .aiMacScreen).flatMap { device in
+            (device.settings.aiMacScreen ?? AIMacScreenDeviceSettings())
+                .canvasBoards.flatMap(\.moduleList)
+        }
+    }
+
+    /// 任一画板（键盘/先知/摘录/AI Mac）模块组合里含 Codex 或千问额度模块
     private var canvasNeedsQuotaData: Bool {
         let lists = [settings.canvasModuleList,
                      settings.oracleCanvasModuleList,
-                     settings.excerptCanvasModuleList]
+                     settings.excerptCanvasModuleList,
+                     allAIMacCanvasModules]
         return lists.contains { list in
             list.contains { $0 == .codex || $0 == .qwenQuota }
         }
@@ -2837,6 +3133,12 @@ public func setClockTimeFormat(_ format: String) {
     private var deviceCanvasNeedsLiveNowPlaying: Bool {
         (settings.oracleAutoPushEnabled && settings.oracleCanvasModuleList.contains(.nowPlaying))
             || (settings.excerptAutoPushEnabled && settings.excerptCanvasModuleList.contains(.nowPlaying))
+            || enabledDevices(for: .aiMacScreen).contains { device in
+                let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+                guard config.autoPush, config.mode == .canvas,
+                      config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
+                return config.canvasBoards[config.canvasBoardIndex].moduleList.contains(.nowPlaying)
+            }
     }
 
     /// 用量数据是否已过统一刷新周期
@@ -2892,6 +3194,7 @@ public func setClockTimeFormat(_ format: String) {
         let modules = settings.canvasModuleList
             + settings.oracleCanvasModuleList
             + settings.excerptCanvasModuleList
+            + allAIMacCanvasModules
         let slots = Set(modules.compactMap(\.formlabsSlotIndex)).sorted()
         guard !slots.isEmpty else { return }
         let printers = enabledDevices(for: .formlabs)
@@ -2909,6 +3212,10 @@ public func setClockTimeFormat(_ format: String) {
         }
         if settings.excerptCanvasModuleList.contains(where: { $0.formlabsSlotIndex != nil }) {
             refreshExcerptCanvasPreview()
+        }
+        if let id = activeDeviceID(for: .aiMacScreen),
+           aiMacCanvasModules.contains(where: { $0.formlabsSlotIndex != nil }) {
+            refreshAIMacScreenPreview(deviceID: id)
         }
     }
 
@@ -3812,16 +4119,27 @@ public func setClockTimeFormat(_ format: String) {
 
     // MARK: - 口袋先知 / 摘录 独立画板（模块组合，移植自键盘画板）
 
-    /// 画板模块编辑目标：键盘画板与两个独立设备画板各自持有模块列表
+    /// 画板模块编辑目标：键盘画板与三类独立设备画板各自持有模块列表
     public enum CanvasOwner {
-        case keyboard, oracle, excerpt
+        case keyboard, oracle, excerpt, aiMac
     }
 
-    private func modulesKeyPath(for owner: CanvasOwner) -> ReferenceWritableKeyPath<AppSettings, [Int]> {
+    private func canvasModulesRaw(for owner: CanvasOwner) -> [Int] {
         switch owner {
-        case .keyboard: return \AppSettings.canvasModules
-        case .oracle: return \AppSettings.oracleCanvasModules
-        case .excerpt: return \AppSettings.excerptCanvasModules
+        case .keyboard: return settings.canvasModules
+        case .oracle: return settings.oracleCanvasModules
+        case .excerpt: return settings.excerptCanvasModules
+        case .aiMac: return aiMacCanvasModules.map(\.rawValue)
+        }
+    }
+
+    private func setCanvasModulesRaw(_ modules: [Int], for owner: CanvasOwner) {
+        switch owner {
+        case .keyboard: settings.canvasModules = modules
+        case .oracle: settings.oracleCanvasModules = modules
+        case .excerpt: settings.excerptCanvasModules = modules
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard { $0.modules = modules }
         }
     }
 
@@ -3831,6 +4149,11 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.canvasHAEntityIDs
         case .oracle: return settings.oracleCanvasHAEntityIDs
         case .excerpt: return settings.excerptCanvasHAEntityIDs
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return [] }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return [] }
+            return config.canvasBoards[config.canvasBoardIndex].haEntityIDs
         }
     }
 
@@ -3841,6 +4164,7 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: settings.canvasHAEntityIDs = cleaned
         case .oracle: settings.oracleCanvasHAEntityIDs = cleaned
         case .excerpt: settings.excerptCanvasHAEntityIDs = cleaned
+        case .aiMac: mutateCurrentAIMacCanvasBoard { $0.haEntityIDs = cleaned }
         }
     }
 
@@ -3864,6 +4188,54 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.canvasSspaiCount
         case .oracle: return settings.oracleSspaiCount
         case .excerpt: return settings.excerptSspaiCount
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return 3 }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return 3 }
+            return config.canvasBoards[config.canvasBoardIndex].sspaiCount
+        }
+    }
+
+    func setSspaiCount(_ count: Int, for owner: CanvasOwner) {
+        let value = min(max(count, 1), 6)
+        switch owner {
+        case .keyboard: settings.canvasSspaiCount = value
+        case .oracle: settings.oracleSspaiCount = value
+        case .excerpt: settings.excerptSspaiCount = value
+        case .aiMac: mutateCurrentAIMacCanvasBoard { $0.sspaiCount = value }
+        }
+    }
+
+    func setSspaiRandom(_ enabled: Bool, for owner: CanvasOwner) {
+        switch owner {
+        case .keyboard: settings.canvasSspaiRandom = enabled
+        case .oracle: settings.oracleSspaiRandom = enabled
+        case .excerpt: settings.excerptSspaiRandom = enabled
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard { $0.sspaiRandom = enabled }
+            aiMacSspaiRandomSelection = [:]
+        }
+    }
+
+    func nowPlayingHorizontal(for owner: CanvasOwner) -> Bool {
+        switch owner {
+        case .keyboard: return false
+        case .oracle: return settings.oracleNowPlayingHorizontal
+        case .excerpt: return settings.excerptNowPlayingHorizontal
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return false }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
+            return config.canvasBoards[config.canvasBoardIndex].nowPlayingHorizontal
+        }
+    }
+
+    func setNowPlayingHorizontal(_ enabled: Bool, for owner: CanvasOwner) {
+        switch owner {
+        case .keyboard: break
+        case .oracle: settings.oracleNowPlayingHorizontal = enabled
+        case .excerpt: settings.excerptNowPlayingHorizontal = enabled
+        case .aiMac: mutateCurrentAIMacCanvasBoard { $0.nowPlayingHorizontal = enabled }
         }
     }
 
@@ -3873,6 +4245,7 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return .keyboard
         case .oracle: return .oracle
         case .excerpt: return .excerpt
+        case .aiMac: return .aiMacScreen
         }
     }
 
@@ -3884,6 +4257,11 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: stored = settings.canvasPrinterFields
         case .oracle: stored = settings.oracleCanvasPrinterFields
         case .excerpt: stored = settings.excerptCanvasPrinterFields
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { stored = [:]; break }
+            let config = aiMacScreenSettings(for: id)
+            stored = config.canvasBoards.indices.contains(config.canvasBoardIndex)
+                ? config.canvasBoards[config.canvasBoardIndex].printerFields : [:]
         }
         guard owner != .keyboard else { return stored }
         var filled = stored
@@ -3902,6 +4280,8 @@ public func setClockTimeFormat(_ format: String) {
             if settings.oracleCanvasPrinterFields != fields { settings.oracleCanvasPrinterFields = fields }
         case .excerpt:
             if settings.excerptCanvasPrinterFields != fields { settings.excerptCanvasPrinterFields = fields }
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard { $0.printerFields = fields }
         }
     }
 
@@ -3911,6 +4291,11 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.canvasSspaiRandom
         case .oracle: return settings.oracleSspaiRandom
         case .excerpt: return settings.excerptSspaiRandom
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return false }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
+            return config.canvasBoards[config.canvasBoardIndex].sspaiRandom
         }
     }
 
@@ -5652,6 +6037,14 @@ public func setClockTimeFormat(_ format: String) {
         guard activeDeviceID(for: .excerpt) == deviceID,
               settings.excerptCanvasBoards.contains(where: { $0.id == boardID }) else { return }
         Task { await pushExcerptCanvas() }
+    }
+
+    /// 菜单栏直接选择某台 AI Mac 小屏幕的指定彩色画板并立即推送。
+    public func menuBarSelectAIMacBoard(deviceID: UUID, boardID: UUID) {
+        applyAIMacCanvasBoard(deviceID: deviceID, boardID: boardID)
+        guard activeDeviceID(for: .aiMacScreen) == deviceID,
+              aiMacCanvasBoards(for: deviceID).contains(where: { $0.id == boardID }) else { return }
+        Task { await pushAIMacScreen(deviceID: deviceID, force: true) }
     }
 
     // MARK: - 模式 / 主题 / 登录自启

@@ -4585,6 +4585,8 @@ func testAIMacScreen() throws {
     checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "AI Mac 小屏幕设备标题")
     checkEqual(ManagedDevice.defaultName(for: .aiMacScreen, index: 0),
                "AI Mac 小屏幕 1", "AI Mac 小屏幕默认名称")
+    checkEqual(AIMacScreenDeviceSettings().mode, .canvas,
+               "新 AI Mac 小屏幕默认进入彩色画板模式")
 
     checkEqual(EmbeddedAIMacFirmware.version, "0.7.0-lossless-rgb565",
                "内置小屏幕固件版本稳定")
@@ -4646,6 +4648,33 @@ func testAIMacScreen() throws {
     managed.settings.aiMacScreen = AIMacScreenDeviceSettings()
     checkEqual(managed.settings.aiMacScreen?.host, "", "新小屏幕默认不继承测试地址")
 
+    var aiBoard = AIMacCanvasBoard(modules: [CanvasModule.clock.rawValue,
+                                             CanvasModule.cpu.rawValue,
+                                             CanvasModule.clock.rawValue],
+                                   backgroundMode: .light,
+                                   haEntityIDs: ["sensor.room", "sensor.room", ""])
+    aiBoard.clamp()
+    checkEqual(aiBoard.moduleList, [.clock, .cpu], "AI Mac 画板模块去重且保持顺序")
+    checkEqual(aiBoard.haEntityIDs, ["sensor.room"], "AI Mac 画板实体去空去重")
+    check(aiBoard.isSidebarVisible && aiBoard.participatesInRotation,
+          "AI Mac 新画板默认显示在侧栏并参与轮播")
+    let aiCanvasConfig = AIMacScreenDeviceSettings(
+        host: "10.0.0.20", mode: .canvas, canvasBoards: [aiBoard],
+        boardRotationEnabled: true, boardRotationMinutes: 8)
+    let aiCanvasRoundTrip = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: JSONEncoder().encode(aiCanvasConfig))
+    checkEqual(aiCanvasRoundTrip, aiCanvasConfig, "AI Mac 多画板配置 JSON 往返")
+
+    let legacyAIMacConfig = """
+    {"host":"10.0.0.8","mode":"clock","autoPush":true,
+     "pushIntervalSeconds":2,"jpegQuality":82}
+    """.data(using: .utf8)!
+    let migratedAIMacConfig = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: legacyAIMacConfig)
+    checkEqual(migratedAIMacConfig.mode, .clock, "旧 AI Mac 显示模式保持不变")
+    check(migratedAIMacConfig.canvasBoards.isEmpty,
+          "旧 AI Mac 配置缺少画板字段时可安全迁移为空列表")
+
     let legacyJSON = """
     {"id":"\(UUID().uuidString)","type":6,"name":"旧小屏幕","isEnabled":true,"settings":{}}
     """.data(using: .utf8)!
@@ -4660,12 +4689,15 @@ func testAIMacScreen() throws {
                                   uptime: 3600, sampledAt: Date())
     let dashboard = try AIMacScreenSupport.render(
         settings: AIMacScreenDeviceSettings(mode: .dashboard), system: snapshot)
+    let blankCanvas = try AIMacScreenSupport.render(
+        settings: AIMacScreenDeviceSettings(mode: .canvas), system: snapshot)
     let clock = try AIMacScreenSupport.render(
         settings: AIMacScreenDeviceSettings(mode: .clock), system: snapshot)
     checkEqual(dashboard.width, 240, "小屏幕仪表盘宽度")
     checkEqual(dashboard.height, 240, "小屏幕仪表盘高度")
     checkEqual(clock.width, 240, "小屏幕时钟宽度")
     checkEqual(clock.height, 240, "小屏幕时钟高度")
+    checkEqual(blankCanvas.width, 240, "空白彩色画板仍生成有效 240×240 帧")
     let jpeg = try AIMacScreenSupport.encodeJPEG(dashboard, preferredQuality: 82)
     check(jpeg.count <= AIMacScreenSupport.maximumJPEGBytes, "JPEG 兼容帧不超过 24KB")
 

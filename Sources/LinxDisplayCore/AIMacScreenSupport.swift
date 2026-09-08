@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 /// ESP8266 AI Mac 240×240 小屏幕可显示的正式内容模式。
 public enum AIMacScreenContentMode: String, CaseIterable, Codable, Identifiable {
+    case canvas
     case dashboard
     case clock
     case customImage
@@ -14,10 +15,64 @@ public enum AIMacScreenContentMode: String, CaseIterable, Codable, Identifiable 
 
     public var title: String {
         switch self {
+        case .canvas: return "AI Mac 画板"
         case .dashboard: return "系统仪表盘"
         case .clock: return "桌面时钟"
         case .customImage: return "自定义图片"
         }
+    }
+}
+
+/// AI Mac 彩色小屏的一块画板。沿用口袋先知的模块组合、命名、侧栏和轮播逻辑，
+/// 但不保存墨水屏专属的灰阶、抖动和插值参数。
+public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var sidebarVisible: Bool?
+    public var rotationEnabled: Bool?
+    public var modules: [Int]
+    public var backgroundMode: CanvasBackgroundMode
+    public var sspaiCount: Int
+    public var sspaiRandom: Bool
+    public var nowPlayingHorizontal: Bool
+    public var printerFields: [Int: CanvasPrinterFields]
+    public var haEntityIDs: [String]
+    public var imagePath: String?
+    public var imageName: String?
+
+    public init(id: UUID = UUID(), name: String = CanvasBoardNamingPolicy.untitledName,
+                sidebarVisible: Bool? = true, rotationEnabled: Bool? = true,
+                modules: [Int] = [], backgroundMode: CanvasBackgroundMode = .dark,
+                sspaiCount: Int = 3, sspaiRandom: Bool = false,
+                nowPlayingHorizontal: Bool = false,
+                printerFields: [Int: CanvasPrinterFields] = [:],
+                haEntityIDs: [String] = [], imagePath: String? = nil,
+                imageName: String? = nil) {
+        self.id = id
+        self.name = name
+        self.sidebarVisible = sidebarVisible
+        self.rotationEnabled = rotationEnabled
+        self.modules = modules
+        self.backgroundMode = backgroundMode
+        self.sspaiCount = min(max(sspaiCount, 1), 6)
+        self.sspaiRandom = sspaiRandom
+        self.nowPlayingHorizontal = nowPlayingHorizontal
+        self.printerFields = printerFields
+        self.haEntityIDs = haEntityIDs
+        self.imagePath = imagePath
+        self.imageName = imageName
+    }
+
+    public var isSidebarVisible: Bool { sidebarVisible ?? true }
+    public var participatesInRotation: Bool { rotationEnabled ?? true }
+    public var moduleList: [CanvasModule] { modules.compactMap(CanvasModule.init(rawValue:)) }
+
+    public mutating func clamp() {
+        var seen = Set<Int>()
+        modules = modules.filter { CanvasModule(rawValue: $0) != nil && seen.insert($0).inserted }
+        sspaiCount = min(max(sspaiCount, 1), 6)
+        var entitySeen = Set<String>()
+        haEntityIDs = haEntityIDs.filter { !$0.isEmpty && entitySeen.insert($0).inserted }
     }
 }
 
@@ -29,21 +84,63 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var pushIntervalSeconds: Int
     public var jpegQuality: Int
     public var customImagePath: String?
+    public var canvasBoards: [AIMacCanvasBoard]
+    public var canvasBoardIndex: Int
+    public var boardRotationEnabled: Bool
+    public var boardRotationMinutes: Int
 
-    public init(host: String = "", mode: AIMacScreenContentMode = .dashboard,
+    public init(host: String = "", mode: AIMacScreenContentMode = .canvas,
                 autoPush: Bool = true, pushIntervalSeconds: Int = 2,
-                jpegQuality: Int = 82, customImagePath: String? = nil) {
+                jpegQuality: Int = 82, customImagePath: String? = nil,
+                canvasBoards: [AIMacCanvasBoard] = [], canvasBoardIndex: Int = 0,
+                boardRotationEnabled: Bool = false, boardRotationMinutes: Int = 5) {
         self.host = host
         self.mode = mode
         self.autoPush = autoPush
         self.pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         self.jpegQuality = min(max(jpegQuality, 50), 90)
         self.customImagePath = customImagePath
+        self.canvasBoards = canvasBoards
+        self.canvasBoardIndex = canvasBoardIndex
+        self.boardRotationEnabled = boardRotationEnabled
+        self.boardRotationMinutes = boardRotationMinutes
+        clamp()
     }
 
     public mutating func clamp() {
         pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         jpegQuality = min(max(jpegQuality, 50), 90)
+        canvasBoards = canvasBoards.map { board in
+            var clean = board
+            clean.clamp()
+            return clean
+        }
+        canvasBoardIndex = canvasBoards.isEmpty
+            ? 0 : min(max(canvasBoardIndex, 0), canvasBoards.count - 1)
+        boardRotationMinutes = min(max(boardRotationMinutes, 1), 1_440)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case host, mode, autoPush, pushIntervalSeconds, jpegQuality, customImagePath
+        case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        host = try container.decodeIfPresent(String.self, forKey: .host) ?? ""
+        mode = try container.decodeIfPresent(AIMacScreenContentMode.self, forKey: .mode) ?? .dashboard
+        autoPush = try container.decodeIfPresent(Bool.self, forKey: .autoPush) ?? true
+        pushIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .pushIntervalSeconds) ?? 2
+        jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? 82
+        customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
+        canvasBoards = try container.decodeIfPresent([AIMacCanvasBoard].self,
+                                                     forKey: .canvasBoards) ?? []
+        canvasBoardIndex = try container.decodeIfPresent(Int.self, forKey: .canvasBoardIndex) ?? 0
+        boardRotationEnabled = try container.decodeIfPresent(Bool.self,
+                                                             forKey: .boardRotationEnabled) ?? false
+        boardRotationMinutes = try container.decodeIfPresent(Int.self,
+                                                             forKey: .boardRotationMinutes) ?? 5
+        clamp()
     }
 }
 
@@ -144,6 +241,10 @@ public enum AIMacScreenSupport {
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
         switch settings.mode {
+        case .canvas:
+            // 完整画板由 AppModel 注入 HA、打印机、媒体等实时数据；核心层单独调用时
+            // 返回有效的空白彩色帧，保证新设备尚未添加模块也能正常预览和推送。
+            fillBackground(context)
         case .dashboard:
             drawDashboard(in: context, system: system, now: now)
         case .clock:

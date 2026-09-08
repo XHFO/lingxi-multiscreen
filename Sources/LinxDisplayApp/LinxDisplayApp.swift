@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var keyboardCanvasSubmenu: NSMenu?
     private var oracleCanvasSubmenu: NSMenu?
     private var excerptCanvasSubmenu: NSMenu?
+    private var aiMacCanvasSubmenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
@@ -125,6 +126,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(excerptEntry)
         self.excerptCanvasSubmenu = excerptCanvasSubmenu
 
+        let aiMacCanvasSubmenu = NSMenu(title: "AI Mac 画板")
+        let aiMacEntry = NSMenuItem(title: "AI Mac 画板", action: nil, keyEquivalent: "")
+        aiMacEntry.submenu = aiMacCanvasSubmenu
+        menu.addItem(aiMacEntry)
+        self.aiMacCanvasSubmenu = aiMacCanvasSubmenu
+
         menu.addItem(.separator())
 
         // 番茄钟控制子菜单：操作与实时状态
@@ -184,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keyboardCanvasSubmenu?.removeAllItems()
         oracleCanvasSubmenu?.removeAllItems()
         excerptCanvasSubmenu?.removeAllItems()
+        aiMacCanvasSubmenu?.removeAllItems()
 
         let targetKeyboard = model.settings.menuBarKeyboardDeviceID.flatMap { targetID in
             model.enabledDevices(for: .keyboard).first { $0.id == targetID }
@@ -234,6 +242,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         addEmptyHintIfNeeded(to: excerptCanvasSubmenu, title: "尚未创建可见画板")
+
+        let aiMacDevices = model.enabledDevices(for: .aiMacScreen)
+        for device in aiMacDevices {
+            for board in model.visibleAIMacCanvasBoards(for: device.id) {
+                let title = aiMacDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let item = NSMenuItem(title: title,
+                                      action: #selector(switchAIMacBoard(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
+                item.state = model.activeDeviceID(for: .aiMacScreen) == device.id
+                    && model.isCurrentAIMacCanvasBoard(deviceID: device.id, boardID: board.id)
+                    ? .on : .off
+                aiMacCanvasSubmenu?.addItem(item)
+            }
+        }
+        addEmptyHintIfNeeded(to: aiMacCanvasSubmenu, title: "尚未创建可见画板")
     }
 
     @MainActor
@@ -326,6 +350,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
         MainActor.assumeIsolated {
             model.menuBarSelectExcerptBoard(deviceID: deviceID, boardID: boardID)
+        }
+    }
+
+    @objc private func switchAIMacBoard(_ sender: NSMenuItem) {
+        guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
+        MainActor.assumeIsolated {
+            model.menuBarSelectAIMacBoard(deviceID: deviceID, boardID: boardID)
         }
     }
 
