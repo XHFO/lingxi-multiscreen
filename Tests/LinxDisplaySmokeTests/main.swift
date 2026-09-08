@@ -4624,6 +4624,29 @@ func testAIMacScreen() throws {
     """.data(using: .utf8)!
     checkEqual(AIMacScreenDiscovery.discoveredIP(from: discoveredInfo),
                "192.168.31.88", "从设备能力接口读取自动发现 IP")
+    let scanInfo = """
+    {"device":"esp8266-ai-screen","fw":"0.8.1-wifi-portal-fix",
+     "hostname":"lingxi-aimac-123456","ip":"192.168.31.88",
+     "screen":{"width":240,"height":240}}
+    """.data(using: .utf8)!
+    let scanned = AIMacScreenDiscovery.discoveredDevice(
+        from: scanInfo, fallbackIP: "192.168.31.99")
+    checkEqual(scanned?.ip, "192.168.31.88", "扫描结果优先使用设备自报 IP")
+    checkEqual(scanned?.displayName, "AI Mac 123456", "扫描结果生成易读设备名称")
+    checkEqual(scanned?.firmwareVersion, "0.8.1-wifi-portal-fix",
+               "扫描结果保留固件版本")
+    let wrongScreen = """
+    {"device":"esp8266-ai-screen","ip":"192.168.31.90",
+     "screen":{"width":320,"height":240}}
+    """.data(using: .utf8)!
+    check(AIMacScreenDiscovery.discoveredDevice(
+        from: wrongScreen, fallbackIP: "192.168.31.90") == nil,
+          "局域网扫描拒绝尺寸不符的其他设备")
+    let candidates = AIMacScreenDiscovery.scanCandidateHosts(
+        localIPv4s: ["192.168.31.7", "192.168.31.7", "10.0.0.2"])
+    checkEqual(candidates.count, 506, "扫描两个本地 /24 网段并去重接口")
+    check(!candidates.contains("192.168.31.7") && !candidates.contains("10.0.0.2"),
+          "局域网扫描不请求 Mac 自己的地址")
     let ports = ESP8266FirmwareFlasher.serialPorts(in: [
         "cu.usbserial-11440", "cu.wchusbserial1420", "cu.SLAB_USBtoUART",
         "cu.usbmodem2101", "cu.CH341", "cu.cp210-test",
@@ -4689,6 +4712,8 @@ func testAIMacScreen() throws {
     checkEqual(aiBoard.haEntityIDs, ["sensor.room"], "AI Mac 画板实体去空去重")
     check(aiBoard.isSidebarVisible && aiBoard.participatesInRotation,
           "AI Mac 新画板默认显示在侧栏并参与轮播")
+    check(aiBoard.usesNowPlayingCover,
+          "AI Mac 新彩色画板默认显示专辑封面")
     check(aiBoard.usesNowPlayingSmartBackground,
           "AI Mac 新彩色画板默认启用专辑封面取色背景")
     let aiCanvasConfig = AIMacScreenDeviceSettings(
@@ -4717,6 +4742,8 @@ func testAIMacScreen() throws {
                                                        from: legacyAIMacBoard)
     check(migratedAIMacBoard.usesNowPlayingSmartBackground,
           "旧 AI Mac 画板缺少取色字段时默认启用")
+    check(migratedAIMacBoard.usesNowPlayingCover,
+          "旧 AI Mac 画板缺少封面字段时默认显示专辑封面")
 
     let legacyJSON = """
     {"id":"\(UUID().uuidString)","type":6,"name":"旧小屏幕","isEnabled":true,"settings":{}}
@@ -4782,6 +4809,22 @@ func testAIMacScreen() throws {
           "AI Mac 智能取色应把封面主色填充到整块彩色画板（实测 \(smartCorner)）")
     check(!bitmapEqual(smartColorCanvas, plainColorCanvas),
           "AI Mac 关闭智能取色后应恢复手动主题背景")
+    let artworkCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying], system: snapshot,
+        nowPlaying: colorNowPlaying, pomodoro: colorPomodoro,
+        customText: "", settings: colorSettings,
+        width: 240, height: 240, palette: colorPalette,
+        optimizeForEInk: false, nowPlayingSmartBackground: false,
+        nowPlayingShowCover: true)
+    let artworkHiddenCanvas = ScreenRenderer.renderDeviceCanvas(
+        modules: [.nowPlaying], system: snapshot,
+        nowPlaying: colorNowPlaying, pomodoro: colorPomodoro,
+        customText: "", settings: colorSettings,
+        width: 240, height: 240, palette: colorPalette,
+        optimizeForEInk: false, nowPlayingSmartBackground: false,
+        nowPlayingShowCover: false)
+    check(!bitmapEqual(artworkCanvas, artworkHiddenCanvas),
+          "AI Mac 每块画板独立控制专辑封面与封面光晕")
     let jpeg = try AIMacScreenSupport.encodeJPEG(dashboard, preferredQuality: 82)
     check(jpeg.count <= AIMacScreenSupport.maximumJPEGBytes, "JPEG 兼容帧不超过 24KB")
 

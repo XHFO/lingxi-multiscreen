@@ -223,6 +223,9 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacScreenLastPushText: [UUID: String] = [:]
     @Published public var aiMacScreenLosslessIDs: Set<UUID> = []
     @Published public var aiMacScreenBusyIDs: Set<UUID> = []
+    @Published public var aiMacDiscoveredDevices: [AIMacDiscoveredDevice] = []
+    @Published public var aiMacNetworkScanBusy = false
+    @Published public var aiMacNetworkScanStatus = ""
     @Published public var aiMacFlashPorts: [ESPSerialPort] = []
     @Published public var selectedAIMacFlashPort = ""
     @Published public var aiMacFlashProgress = 0.0
@@ -1176,6 +1179,53 @@ public final class AppModel: ObservableObject {
 
     // MARK: - AI Mac 240×240 小屏幕
 
+    public func scanAIMacScreens() async {
+        guard !aiMacNetworkScanBusy else { return }
+        aiMacNetworkScanBusy = true
+        aiMacNetworkScanStatus = "正在扫描当前局域网…"
+        defer { aiMacNetworkScanBusy = false }
+        let devices = await AIMacScreenDiscovery.scanLocalNetwork()
+        aiMacDiscoveredDevices = devices
+        aiMacNetworkScanStatus = devices.isEmpty
+            ? "没有发现已联网的小屏幕，请确认 Mac 与设备位于同一网络"
+            : "发现 \(devices.count) 台已联网的小屏幕"
+    }
+
+    public func isAIMacScreenAdded(_ discovered: AIMacDiscoveredDevice) -> Bool {
+        let host = AIMacScreenSupport.normalizedHost(discovered.ip)
+        return devices(for: .aiMacScreen).contains {
+            AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "") == host
+        }
+    }
+
+    /// 扫描结果按 IP 去重；已有设备会被重新启用并定位，不会产生重复档案。
+    @discardableResult
+    public func addDiscoveredAIMacScreen(_ discovered: AIMacDiscoveredDevice) -> UUID? {
+        let host = AIMacScreenSupport.normalizedHost(discovered.ip)
+        if let existing = devices(for: .aiMacScreen).first(where: {
+            AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "") == host
+        }) {
+            setDeviceEnabled(id: existing.id, enabled: true)
+            switchDevice(type: .aiMacScreen, to: existing.id)
+            aiMacScreenStatuses[existing.id] = "已在设备列表中 · \(host)"
+            Task { await testAIMacScreenConnection(deviceID: existing.id) }
+            return existing.id
+        }
+        guard settings.canAddDevice(of: .aiMacScreen) else {
+            aiMacNetworkScanStatus = "AI Mac 小屏幕已达到 5 台上限"
+            return nil
+        }
+        let id = addDevice(type: .aiMacScreen)
+        mutateAIMacScreenSettings(id, schedulePush: false) { $0.host = host }
+        if let index = settings.devices.firstIndex(where: { $0.id == id }) {
+            settings.devices[index].name = discovered.displayName
+        }
+        aiMacScreenStatuses[id] = "已通过局域网扫描添加 · \(host)"
+        persistSettings()
+        Task { await testAIMacScreenConnection(deviceID: id) }
+        return id
+    }
+
     private var embeddedAIMacFirmwareURL: URL? {
         Bundle.main.resourceURL?
             .appendingPathComponent("Firmware", isDirectory: true)
@@ -1360,6 +1410,14 @@ public final class AppModel: ObservableObject {
         Binding(get: { self.aiMacScreenSettings(for: id).mode }, set: { value in
             self.mutateAIMacScreenSettings(id, pushImmediately: true) { $0.mode = value }
         })
+    }
+
+    public func activateAIMacScreenMode(_ mode: AIMacScreenContentMode,
+                                        deviceID: UUID) {
+        let current = aiMacScreenSettings(for: deviceID).mode
+        mutateAIMacScreenSettings(deviceID, pushImmediately: current != mode) {
+            $0.mode = mode
+        }
     }
 
     public func aiMacScreenAutoPushBinding(for id: UUID) -> Binding<Bool> {
@@ -1614,7 +1672,8 @@ public final class AppModel: ObservableObject {
             optimizeBambuForOracleEInk: false,
             bambuHeroLayout: true,
             showBambuCamera: true,
-            nowPlayingSmartBackground: board.usesNowPlayingSmartBackground)
+            nowPlayingSmartBackground: board.usesNowPlayingSmartBackground,
+            nowPlayingShowCover: board.usesNowPlayingCover)
     }
 
     public func refreshAIMacScreenPreview(deviceID: UUID) {
@@ -4296,6 +4355,27 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: settings.oracleNowPlayingHorizontal = enabled
         case .excerpt: settings.excerptNowPlayingHorizontal = enabled
         case .aiMac: mutateCurrentAIMacCanvasBoard { $0.nowPlayingHorizontal = enabled }
+        }
+    }
+
+    func nowPlayingCover(for owner: CanvasOwner) -> Bool {
+        switch owner {
+        case .aiMac:
+            guard let id = activeDeviceID(for: .aiMacScreen) else { return true }
+            let config = aiMacScreenSettings(for: id)
+            guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return true }
+            return config.canvasBoards[config.canvasBoardIndex].usesNowPlayingCover
+        case .keyboard, .oracle, .excerpt:
+            return settings.canvasNowPlayingCover
+        }
+    }
+
+    func setNowPlayingCover(_ enabled: Bool, for owner: CanvasOwner) {
+        switch owner {
+        case .aiMac:
+            mutateCurrentAIMacCanvasBoard { $0.nowPlayingCover = enabled }
+        case .keyboard, .oracle, .excerpt:
+            settings.canvasNowPlayingCover = enabled
         }
     }
 

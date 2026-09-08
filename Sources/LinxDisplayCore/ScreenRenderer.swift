@@ -773,7 +773,8 @@ public enum ScreenRenderer {
                                           optimizeBambuForOracleEInk: Bool = false,
                                           bambuHeroLayout: Bool = false,
                                           showBambuCamera: Bool = true,
-                                          nowPlayingSmartBackground: Bool = false) -> CGImage {
+                                          nowPlayingSmartBackground: Bool = false,
+                                          nowPlayingShowCover: Bool? = nil) -> CGImage {
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
@@ -828,6 +829,7 @@ public enum ScreenRenderer {
                                  formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
                                  nowPlayingSmartBg: nowPlayingSmartBackground,
+                                 nowPlayingShowCover: nowPlayingShowCover,
                                  canvasCoverBgActive: coverArt != nil,
                                  fullWidth: fullWidthModules.contains(module.rawValue),
                                  deviceCanvas: true,
@@ -1053,6 +1055,7 @@ public enum ScreenRenderer {
                                          formlabsItems: [FormlabsCanvasItem] = [],
                                          imageOverlayOnly: Bool = false,
                                          nowPlayingSmartBg: Bool = false,
+                                         nowPlayingShowCover: Bool? = nil,
                                          canvasCoverBgActive: Bool = false,
                                          fullWidth: Bool = false,
                                          deviceCanvas: Bool = false,
@@ -1666,7 +1669,7 @@ public enum ScreenRenderer {
                     secondaryTextColor = CGColor(red: 1, green: 1, blue: 1, alpha: 0.78)
                 }
             }
-            if settings.canvasNowPlayingCover, let art {
+            if nowPlayingShowCover ?? settings.canvasNowPlayingCover, let art {
                 // 竖排封面尺寸估算（封面在模块上方、文字在下方）：
                 // 空间不足时封面会被压得过小，此时自动转为横向排布（侧边栏式封面居左、歌名/歌手居右）
                 let verticalTextH = max(band.height * 0.32, 20)
@@ -1677,7 +1680,19 @@ public enum ScreenRenderer {
                     let coverSize = max(min(band.height - 4, w * 0.45), 16)
                     let coverX = band.minX + 2
                     let coverY = band.minY + (band.height - coverSize) / 2
-                    let coverRect = rect(coverX, coverY, coverSize, coverSize)
+                    let coverSkia = CGRect(x: coverX, y: coverY,
+                                           width: coverSize, height: coverSize)
+                    let coverRect = rect(coverSkia)
+                    if deviceCanvas, !monochromeDeviceCanvas {
+                        drawCoverGlow(ctx,
+                                      color: boostedGlowColor(dominantColor(of: art)),
+                                      coverSkia: coverSkia,
+                                      extent: min(max(coverSize * 0.24, 10), 22),
+                                      blurSigma: min(max(coverSize * 0.11, 6), 11),
+                                      innerInset: 2,
+                                      cornerRadius: 7,
+                                      opacity: 0.72)
+                    }
                     ctx.saveGState()
                     ctx.addPath(CGPath(roundedRect: coverRect, cornerWidth: 6, cornerHeight: 6, transform: nil))
                     ctx.clip()
@@ -1762,7 +1777,19 @@ public enum ScreenRenderer {
                     let coverSize = min(w - 4, max(band.height - textH - 4, 20))
                     let coverX = band.minX + (w - coverSize) / 2
                     let coverY = band.minY + 1
-                    let coverRect = rect(coverX, coverY, coverSize, coverSize)
+                    let coverSkia = CGRect(x: coverX, y: coverY,
+                                           width: coverSize, height: coverSize)
+                    let coverRect = rect(coverSkia)
+                    if deviceCanvas, !monochromeDeviceCanvas {
+                        drawCoverGlow(ctx,
+                                      color: boostedGlowColor(dominantColor(of: art)),
+                                      coverSkia: coverSkia,
+                                      extent: min(max(coverSize * 0.24, 10), 24),
+                                      blurSigma: min(max(coverSize * 0.11, 6), 12),
+                                      innerInset: 2,
+                                      cornerRadius: 9,
+                                      opacity: 0.72)
+                    }
                     ctx.saveGState()
                     ctx.addPath(CGPath(roundedRect: coverRect, cornerWidth: 8, cornerHeight: 8, transform: nil))
                     ctx.clip()
