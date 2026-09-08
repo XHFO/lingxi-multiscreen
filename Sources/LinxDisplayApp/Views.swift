@@ -492,6 +492,8 @@ struct SettingsView: View {
     @State private var dragAIMacCards: [DisplayMode]?
     /// 待删除的设备（非 nil 时弹出二次确认）
     @State private var deviceToDelete: ManagedDevice?
+    /// 设备管理默认只读；只有用户明确点“编辑”的设备才开放输入、开关与操作按钮。
+    @State private var editingDeviceIDs: Set<UUID> = []
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
     @State private var showResetConfirm1 = false
     @State private var showResetConfirm2 = false
@@ -1423,23 +1425,37 @@ struct SettingsView: View {
                         Divider()
                     }
                     ForEach(model.devices(for: type)) { device in
+                        let isEditing = editingDeviceIDs.contains(device.id)
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 8) {
-                                TextField("设备名称", text: model.deviceNameBinding(for: device.id))
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 320)
-                                if type == .bambuLab, let printerModel = model.bambuModel(for: device.id) {
-                                    Text(printerModel)
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(Color.accentColor.opacity(0.85)))
-                                        .help("识别到的打印机型号")
+                                Group {
+                                    TextField("设备名称", text: model.deviceNameBinding(for: device.id))
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(width: 320)
+                                    if type == .bambuLab, let printerModel = model.bambuModel(for: device.id) {
+                                        Text(printerModel)
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .fill(Color.accentColor.opacity(0.85)))
+                                            .help("识别到的打印机型号")
+                                    }
                                 }
+                                .disabled(!isEditing)
+                                .opacity(isEditing ? (device.isEnabled ? 1 : 0.5) : 0.5)
+                                Spacer()
+                                Button {
+                                    toggleDeviceEditing(device.id)
+                                } label: {
+                                    Label(isEditing ? "完成" : "编辑",
+                                          systemImage: isEditing ? "checkmark.circle.fill" : "pencil")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help(isEditing ? "完成并锁定这台设备的设置" : "解锁这台设备的设置")
                             }
-                            .opacity(device.isEnabled ? 1 : 0.5)
                             // 连接信息按设备类型显示与编辑（键盘/先知只需 IP，摘录需 API Key 与序列号）
                             // 所有输入框统一固定宽度，与设备名称输入框对齐
                             Group {
@@ -1482,28 +1498,6 @@ struct SettingsView: View {
                                                 .foregroundStyle(haTestResult.hasPrefix("连接成功") ? Color.secondary : Color.red)
                                         }
                                     }
-                                    HStack(spacing: 8) {
-                                        Button {
-                                            Task {
-                                                await model.discoverAndAddBambuPrinters(
-                                                    homeAssistantDeviceID: device.id)
-                                            }
-                                        } label: {
-                                            Label(model.bambuAutoDiscoveryBusy
-                                                  ? "正在匹配打印机…" : "扫描并匹配 Bambu Lab 打印机",
-                                                  systemImage: "printer.filled.and.paper")
-                                        }
-                                        .disabled(model.bambuAutoDiscoveryBusy || haTesting)
-                                        if model.bambuAutoDiscoveryBusy {
-                                            ProgressView().controlSize(.small)
-                                        }
-                                    }
-                                    if !model.bambuAutoDiscoveryStatus.isEmpty {
-                                        Text(model.bambuAutoDiscoveryStatus)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
                                 } else if type == .bambuLab {
                                     bambuDeviceConfigInline(device.id)
                                 } else if type == .formlabs {
@@ -1538,12 +1532,15 @@ struct SettingsView: View {
                                                           helpURL: dotImageAPIDocsURL)
                                 }
                             }
-                            .opacity(device.isEnabled ? 1 : 0.5)
+                            .disabled(!isEditing)
+                            .opacity(isEditing ? (device.isEnabled ? 1 : 0.5) : 0.5)
                             // 启用/停用开关：独立位置（禁用后左侧导航隐藏该设备，设置保留）
                             Toggle("启用设备", isOn: model.deviceEnabledBinding(for: device.id))
                                 .toggleStyle(.switch)
                                 .controlSize(.small)
                                 .help("禁用后左侧导航隐藏该设备，设置保留")
+                                .disabled(!isEditing)
+                                .opacity(isEditing ? 1 : 0.5)
                             // 删除设备：独立按钮，删除前二次确认
                             Button(role: .destructive) {
                                 deviceToDelete = device
@@ -1553,11 +1550,52 @@ struct SettingsView: View {
                             .buttonStyle(.borderless)
                             .foregroundStyle(.red)
                             .help("删除该设备")
+                            .disabled(!isEditing)
+                            .opacity(isEditing ? 1 : 0.5)
                         }
                         .padding(.vertical, 10)
                         Divider()
                     }
-                    if let notice = model.settings.deviceLimitNotice(for: type) {
+                    if type == .bambuLab {
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack(spacing: 8) {
+                                Button("添加 \(type.title) 设备") {
+                                    model.addDevice(type: type)
+                                }
+                                .disabled(!model.settings.canAddDevice(of: type))
+                                Button {
+                                    guard let homeAssistantID = bambuDiscoveryHomeAssistantID else { return }
+                                    Task {
+                                        await model.discoverAndAddBambuPrinters(
+                                            homeAssistantDeviceID: homeAssistantID)
+                                    }
+                                } label: {
+                                    Label(model.bambuAutoDiscoveryBusy
+                                          ? "正在匹配…" : "扫描并匹配",
+                                          systemImage: "printer.filled.and.paper")
+                                }
+                                .disabled(model.bambuAutoDiscoveryBusy
+                                          || bambuDiscoveryHomeAssistantID == nil)
+                                .help(bambuDiscoveryHomeAssistantID == nil
+                                      ? "请先添加并配置 Home Assistant 服务器"
+                                      : "通过已添加的 Home Assistant 服务器扫描并自动创建 Bambu Lab 打印机设备")
+                                if model.bambuAutoDiscoveryBusy {
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
+                            if let notice = model.settings.deviceLimitNotice(for: type) {
+                                Text(notice)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if !model.bambuAutoDiscoveryStatus.isEmpty {
+                                Text(model.bambuAutoDiscoveryStatus)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    } else if let notice = model.settings.deviceLimitNotice(for: type) {
                         Text(notice)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1582,6 +1620,8 @@ struct SettingsView: View {
         ) {
             Button("删除", role: .destructive) {
                 if let device = deviceToDelete {
+                    editingDeviceIDs.remove(device.id)
+                    discardDeviceDrafts(device.id)
                     model.removeDevice(id: device.id)
                 }
                 deviceToDelete = nil
@@ -1599,6 +1639,37 @@ struct SettingsView: View {
         .task {
             await model.scanRand0Devices()
         }
+        .onDisappear {
+            editingDeviceIDs.removeAll()
+            connectionDrafts.removeAll()
+            bambuMatchDrafts.removeAll()
+        }
+    }
+
+    private var bambuDiscoveryHomeAssistantID: UUID? {
+        let devices = model.devices(for: .homeAssistant)
+        if let activeID = model.activeDeviceID(for: .homeAssistant),
+           devices.contains(where: { $0.id == activeID }) {
+            return activeID
+        }
+        return devices.first?.id
+    }
+
+    private func toggleDeviceEditing(_ deviceID: UUID) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if editingDeviceIDs.contains(deviceID) {
+                editingDeviceIDs.remove(deviceID)
+                discardDeviceDrafts(deviceID)
+            } else {
+                editingDeviceIDs.insert(deviceID)
+            }
+        }
+    }
+
+    private func discardDeviceDrafts(_ deviceID: UUID) {
+        let prefix = "\(deviceID.uuidString)#"
+        connectionDrafts = connectionDrafts.filter { !$0.key.hasPrefix(prefix) }
+        bambuMatchDrafts[deviceID.uuidString] = nil
     }
 
     /// Home Assistant 通过官方 Zeroconf 广播自动发现；只填入地址，令牌仍由用户本人提供。
@@ -1607,7 +1678,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Label("自动发现服务器", systemImage: "homekit")
                     .font(.headline)
-                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的 Home Assistant。选择服务器后填写长期访问令牌，连接成功时会自动发现并匹配 Bambu Lab 打印机。")
+                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的 Home Assistant。选择服务器后填写长期访问令牌；Bambu Lab 打印机扫描入口位于“Bambu Lab 打印机”设备添加按钮旁。")
                 Spacer()
             }
             HStack(spacing: 8) {
