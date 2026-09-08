@@ -4588,11 +4588,42 @@ func testAIMacScreen() throws {
     checkEqual(AIMacScreenDeviceSettings().mode, .canvas,
                "新 AI Mac 小屏幕默认进入彩色画板模式")
 
-    checkEqual(EmbeddedAIMacFirmware.version, "0.7.0-lossless-rgb565",
+    checkEqual(EmbeddedAIMacFirmware.version, "0.8.0-wifi-provisioning",
                "内置小屏幕固件版本稳定")
     checkEqual(EmbeddedAIMacFirmware.flashAddress, "0x0",
                "ESP8266 固件写入地址稳定")
     check(!EmbeddedAIMacFirmware.validate(Data()), "空数据不能通过固件完整性校验")
+    let provisionImage = try AIMacWiFiProvisioning.makeImage(
+        ssid: "Lingxi-2.4G", password: "test-only-password")
+    checkEqual(provisionImage.count, 4096, "Wi-Fi 配网区固定为一个 4KB 扇区")
+    check(AIMacWiFiProvisioning.validateImage(provisionImage),
+          "Wi-Fi 配网区格式与 CRC 校验通过")
+    checkEqual(AIMacWiFiProvisioning.flashAddress, "0x100000",
+               "Wi-Fi 配网区写入地址稳定")
+    do {
+        _ = try AIMacWiFiProvisioning.makeImage(ssid: "", password: "12345678")
+        check(false, "空 SSID 必须被拒绝")
+    } catch {
+        checkEqual(error as? AIMacWiFiProvisioningError, .emptySSID,
+                   "空 SSID 返回明确错误")
+    }
+    do {
+        _ = try AIMacWiFiProvisioning.makeImage(ssid: "Home", password: "short")
+        check(false, "过短 Wi-Fi 密码必须被拒绝")
+    } catch {
+        checkEqual(error as? AIMacWiFiProvisioningError, .invalidPasswordLength,
+                   "过短 Wi-Fi 密码返回明确错误")
+    }
+    let flashLog = "Chip is ESP8266EX\nMAC: 84:f3:eb:12:34:56\nWriting at 0x00000000"
+    let parsedMAC = AIMacWiFiProvisioning.macAddress(in: flashLog)
+    checkEqual(parsedMAC, "84:f3:eb:12:34:56", "从 esptool 日志读取芯片 MAC")
+    checkEqual(parsedMAC.flatMap(AIMacWiFiProvisioning.hostname(forMAC:)),
+               "lingxi-aimac-123456", "由 MAC 推导唯一 mDNS 主机名")
+    let discoveredInfo = """
+    {"device":"esp8266-ai-screen","ip":"192.168.31.88"}
+    """.data(using: .utf8)!
+    checkEqual(AIMacScreenDiscovery.discoveredIP(from: discoveredInfo),
+               "192.168.31.88", "从设备能力接口读取自动发现 IP")
     let ports = ESP8266FirmwareFlasher.serialPorts(in: [
         "cu.usbserial-11440", "cu.wchusbserial1420", "cu.SLAB_USBtoUART",
         "cu.usbmodem2101", "cu.CH341", "cu.cp210-test",

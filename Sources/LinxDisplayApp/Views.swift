@@ -501,6 +501,11 @@ struct SettingsView: View {
     @State private var showAIMacFlashConfirmation = false
     @State private var aiMacFlashShouldAddDevice = true
     @State private var showAIMacFlashLog = false
+    @State private var aiMacProvisionSSID = ""
+    @State private var aiMacProvisionPassword = ""
+    @State private var showAIMacFlashResult = false
+    @State private var aiMacFlashResultSucceeded = false
+    @State private var aiMacFlashResultMessage = ""
 
     init(model: AppModel) {
         self.model = model
@@ -542,11 +547,26 @@ struct SettingsView: View {
             ) {
                 Button(aiMacFlashShouldAddDevice ? "刷入并添加设备" : "仅刷入固件") {
                     let shouldAdd = aiMacFlashShouldAddDevice
-                    Task { await model.flashAIMacFirmware(addDeviceAfterSuccess: shouldAdd) }
+                    let ssid = aiMacProvisionSSID
+                    let password = aiMacProvisionPassword
+                    Task {
+                        let flashed = await model.flashAIMacFirmware(
+                            addDeviceAfterSuccess: shouldAdd, ssid: ssid, password: password)
+                        if flashed { aiMacProvisionPassword = "" }
+                        aiMacFlashResultSucceeded = flashed
+                        aiMacFlashResultMessage = model.aiMacFlashStatus
+                        showAIMacFlashResult = true
+                    }
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("刷写会覆盖所选 ESP8266 小屏幕中的现有固件。请确认串口选择正确，刷写完成前不要拔掉 USB 数据线。")
+                Text("刷写会覆盖所选 ESP8266 小屏幕中的现有固件，并写入 Wi-Fi“\(aiMacProvisionSSID)”。请确认串口与网络名称正确，完成前不要拔掉 USB 数据线。")
+            }
+            .alert(aiMacFlashResultSucceeded ? "刷写流程完成" : "刷写失败",
+                   isPresented: $showAIMacFlashResult) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(aiMacFlashResultMessage)
             }
     }
 
@@ -1129,7 +1149,7 @@ struct SettingsView: View {
                                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                                           fieldWidth: 320,
-                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.7.0 固件使用 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.0 固件支持 Wi-Fi 预配置与 RGB565 无损帧，旧固件自动回退 JPEG。")
                                     HStack {
                                         Button("连接测试") {
                                             Task { await model.testAIMacScreenConnection(deviceID: device.id) }
@@ -1230,10 +1250,34 @@ struct SettingsView: View {
                     .foregroundStyle(model.embeddedAIMacFirmwareReady ? Color.green : Color.red)
             }
 
-            Text("首次使用时，将 AI Mac 小屏幕通过 USB 数据线连接到 Mac，在这里刷入多屏灵犀定制固件。完成 Wi-Fi 配网后，再填写设备 IP 即可推送画面。")
+            Text("首次使用时，将 AI Mac 小屏幕通过 USB 数据线连接到 Mac。软件会一并写入 Wi-Fi，刷完后等待设备联网、读取 IP 并自动添加。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    TextField("Wi-Fi 名称（SSID）", text: $aiMacProvisionSSID)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 360)
+                    HelpIcon(text: "请输入小屏幕将要连接的 2.4 GHz Wi-Fi。SSID 区分大小写；ESP8266 不支持仅有 5 GHz/6 GHz 的网络。")
+                }
+                SecureField("Wi-Fi 密码（开放网络可留空）", text: $aiMacProvisionPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 360)
+                if (!aiMacProvisionSSID.isEmpty || !aiMacProvisionPassword.isEmpty),
+                   let error = aiMacWiFiInputError {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if !aiMacProvisionSSID.isEmpty {
+                    Label("密码仅用于本次刷写；设备联网后会擦除临时配网区，软件不会保存密码。",
+                          systemImage: "lock.shield")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(model.aiMacFlashBusy)
 
             HStack(spacing: 8) {
                 Picker("USB 串口", selection: $model.selectedAIMacFlashPort) {
@@ -1264,6 +1308,7 @@ struct SettingsView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.embeddedAIMacFirmwareReady
                           || model.selectedAIMacFlashPort.isEmpty
+                          || aiMacWiFiInputError != nil
                           || model.aiMacFlashBusy)
 
                 Button("仅刷入固件") {
@@ -1272,6 +1317,7 @@ struct SettingsView: View {
                 }
                 .disabled(!model.embeddedAIMacFirmwareReady
                           || model.selectedAIMacFlashPort.isEmpty
+                          || aiMacWiFiInputError != nil
                           || model.aiMacFlashBusy)
 
                 if model.aiMacFlashBusy {
@@ -1325,6 +1371,16 @@ struct SettingsView: View {
         }
         .padding(.vertical, 8)
         .onAppear { model.refreshAIMacFlashPorts() }
+    }
+
+    private var aiMacWiFiInputError: String? {
+        do {
+            try AIMacWiFiProvisioning.validateCredentials(
+                ssid: aiMacProvisionSSID, password: aiMacProvisionPassword)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     @ViewBuilder
@@ -1745,7 +1801,7 @@ struct SettingsView: View {
                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                           fieldWidth: 320,
-                                          helpText: "填写设备局域网 IP。0.7.0 固件使用 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
+                                          helpText: "填写设备局域网 IP。0.8.0 固件支持自动发现与 RGB565 无损画面；旧固件自动使用 JPEG 兼容模式。")
                     Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
                     if config.autoPush {
                         Stepper("推送间隔 \(config.pushIntervalSeconds) 秒",

@@ -54,6 +54,7 @@ public final class AppModel: ObservableObject {
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
     private let esp8266Flasher = ESP8266FirmwareFlasher()
+    private var aiMacDiscoveryTask: Task<String, Error>?
     private let monitor = SystemMonitor()
     private let startup = StartupManager()
     private let pomodoro: PomodoroService
@@ -1208,30 +1209,45 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func flashAIMacFirmware(addDeviceAfterSuccess: Bool) async {
-        guard !aiMacFlashBusy else { return }
+    @discardableResult
+    public func flashAIMacFirmware(addDeviceAfterSuccess: Bool,
+                                   ssid: String,
+                                   password: String) async -> Bool {
+        guard !aiMacFlashBusy else { return false }
         guard let port = aiMacFlashPorts.first(where: { $0.path == selectedAIMacFlashPort }) else {
             aiMacFlashStatus = ESP8266FlashError.noPort.localizedDescription
-            return
+            return false
         }
         guard let firmwareURL = embeddedAIMacFirmwareURL,
               let helperURL = embeddedAIMacFlashHelperURL else {
             aiMacFlashStatus = ESP8266FlashError.missingResource("AI Mac 固件").localizedDescription
-            return
+            return false
+        }
+        let provisioningImage: Data
+        do {
+            provisioningImage = try AIMacWiFiProvisioning.makeImage(ssid: ssid,
+                                                                    password: password)
+        } catch {
+            aiMacFlashStatus = error.localizedDescription
+            return false
         }
         aiMacFlashBusy = true
         aiMacFlashProgress = 0
         aiMacFlashLog = ""
-        aiMacFlashStatus = "正在让设备进入刷写模式…"
-        defer { aiMacFlashBusy = false }
+        aiMacFlashStatus = "正在写入固件与 Wi-Fi 配置…"
+        defer {
+            aiMacDiscoveryTask = nil
+            aiMacFlashBusy = false
+        }
         do {
-            try await esp8266Flasher.flash(
+            let result = try await esp8266Flasher.flash(
                 port: port, helperURL: helperURL, firmwareURL: firmwareURL,
+                wifiProvisioningImage: provisioningImage,
                 progress: { [weak self] value in
                     Task { @MainActor in
                         self?.aiMacFlashProgress = value
                         self?.aiMacFlashStatus = value > 0
-                            ? "正在刷入固件… \(Int((value * 100).rounded()))%"
+                            ? "正在刷入固件与配网数据… \(Int((value * 100).rounded()))%"
                             : "正在连接 ESP8266…"
                     }
                 },
@@ -1245,26 +1261,59 @@ public final class AppModel: ObservableObject {
                     }
                 })
             aiMacFlashProgress = 1
-            aiMacFlashStatus = "固件刷入完成，设备正在重新启动"
-            status = "AI Mac 小屏幕固件刷入完成"
-            if addDeviceAfterSuccess {
-                if settings.canAddDevice(of: .aiMacScreen) {
-                    let id = addDevice(type: .aiMacScreen)
-                    aiMacScreenStatuses[id] = "固件已刷入，请完成 Wi-Fi 配网后填写屏幕 IP"
-                } else {
-                    aiMacFlashStatus += "；设备列表已达到 5 台上限"
+            status = "AI Mac 小屏幕固件与 Wi-Fi 配置刷入成功"
+            guard let hostname = result.expectedHostname else {
+                aiMacFlashStatus = "固件与 Wi-Fi 已刷入，但未能读取设备识别码；请等待屏幕显示 IP 后手动添加"
+                return true
+            }
+
+            aiMacFlashStatus = "刷入成功，正在等待 \(hostname).local 联网…"
+            let discovery = Task {
+                try await AIMacScreenDiscovery.waitForDevice(hostname: hostname) {
+                    [weak self] attempt in
+                    Task { @MainActor in
+                        self?.aiMacFlashStatus = "刷入成功，正在等待设备联网… 第 \(attempt) 次检测"
+                    }
                 }
             }
+            aiMacDiscoveryTask = discovery
+            do {
+                let ip = try await discovery.value
+                if addDeviceAfterSuccess {
+                    guard settings.canAddDevice(of: .aiMacScreen) else {
+                        aiMacFlashStatus = "设备已联网（\(ip)），但 AI Mac 设备列表已达到 5 台上限"
+                        return true
+                    }
+                    let id = addDevice(type: .aiMacScreen)
+                    mutateAIMacScreenSettings(id, schedulePush: false) { $0.host = ip }
+                    aiMacScreenStatuses[id] = "已通过刷机流程自动连接 · \(ip)"
+                    aiMacFlashStatus = "全部完成：固件刷入成功，设备已联网并自动添加（\(ip)）"
+                    status = "AI Mac 小屏幕已自动添加"
+                    await testAIMacScreenConnection(deviceID: id)
+                } else {
+                    aiMacFlashStatus = "固件刷入成功，设备已联网 · IP：\(ip)"
+                }
+            } catch is CancellationError {
+                aiMacFlashStatus = "固件与 Wi-Fi 已刷入；已停止等待设备联网"
+            } catch {
+                aiMacFlashStatus = error.localizedDescription
+                status = "固件刷入成功，但自动发现设备尚未完成"
+            }
+            refreshAIMacFlashPorts()
+            return true
         } catch {
             aiMacFlashStatus = error.localizedDescription
             status = "AI Mac 小屏幕固件刷入失败"
+            refreshAIMacFlashPorts()
+            return false
         }
-        refreshAIMacFlashPorts()
     }
 
     public func cancelAIMacFirmwareFlash() {
         esp8266Flasher.cancel()
-        aiMacFlashStatus = "正在停止刷写…"
+        aiMacDiscoveryTask?.cancel()
+        aiMacFlashStatus = aiMacFlashProgress >= 1
+            ? "正在停止等待设备联网…" : "正在停止刷写…"
     }
 
     public func aiMacScreenSettings(for id: UUID) -> AIMacScreenDeviceSettings {

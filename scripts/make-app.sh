@@ -51,9 +51,9 @@ if [ -f "$ROOT/Resources/akko2.png" ]; then
 fi
 # AI Mac 小屏幕内置固件与 Apple Silicon 刷机助手。正常运行不会启动助手，
 # 只有用户在设备管理中二次确认刷写时才会执行。
-FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.7.0.bin"
+FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.8.0.bin"
 FLASH_HELPER_SOURCE="$ROOT/Resources/Firmware/lingxi-esptool"
-FIRMWARE_SHA256="0283b882808bd55cb31210e32659fb1d0dc901cfdf49fc9d717bf777999a3831"
+FIRMWARE_SHA256="2e77a798cd8047167172a631f4a4f73e3b7724777f99992a8b77619e9f057bb1"
 if [ ! -f "$FIRMWARE_SOURCE" ] || [ ! -f "$FLASH_HELPER_SOURCE" ]; then
     echo "错误：AI Mac 小屏幕固件或刷机助手缺失" >&2
     exit 1
@@ -100,6 +100,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<true/>
 	<key>NSInputMonitoringUsageDescription</key>
 	<string>用于接收灵犀68的 Fn + 旋钮事件，并在用户主动启用时将其转换为手动翻页。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于发现并连接灵犀键盘、口袋先知、摘录和 AI Mac 小屏幕等局域网设备。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_lingxi-aimac._tcp</string>
+		<string>_http._tcp</string>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>多屏灵犀 for macOS - 灵犀68 键盘 / 口袋先知 / 摘录 多屏驱动</string>
 </dict>

@@ -3,14 +3,135 @@ import Foundation
 
 /// 多屏灵犀内置的 AI Mac 小屏幕固件信息。
 public enum EmbeddedAIMacFirmware {
-    public static let version = "0.7.0-lossless-rgb565"
-    public static let fileName = "aimac-screen-0.7.0.bin"
+    public static let version = "0.8.0-wifi-provisioning"
+    public static let fileName = "aimac-screen-0.8.0.bin"
     public static let helperName = "lingxi-esptool"
-    public static let sha256 = "0283b882808bd55cb31210e32659fb1d0dc901cfdf49fc9d717bf777999a3831"
+    public static let sha256 = "2e77a798cd8047167172a631f4a4f73e3b7724777f99992a8b77619e9f057bb1"
     public static let flashAddress = "0x0"
 
     public static func validate(_ data: Data) -> Bool {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == sha256
+    }
+}
+
+public enum AIMacWiFiProvisioningError: Error, LocalizedError, Equatable {
+    case emptySSID
+    case ssidTooLong
+    case invalidPasswordLength
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptySSID: return "请输入要连接的 Wi-Fi 名称（SSID）。"
+        case .ssidTooLong: return "Wi-Fi 名称不能超过 32 个 UTF-8 字节。"
+        case .invalidPasswordLength:
+            return "Wi-Fi 密码应留空（开放网络），或为 8–64 个 UTF-8 字节。"
+        }
+    }
+}
+
+/// 由应用在刷写时临时生成的 4KB 配网区。固件连接成功后会擦除这个区域；
+/// 应用也会在刷机助手退出后立即删除 Mac 上的临时文件。
+public enum AIMacWiFiProvisioning {
+    public static let flashAddress = "0x100000"
+    public static let sectorBytes = 4096
+    public static let recordBytes = 116
+    private static let magic = Data("LXWIFI01".utf8)
+
+    public static func validateCredentials(ssid: String, password: String) throws {
+        let ssidBytes = Data(ssid.utf8)
+        let passwordBytes = Data(password.utf8)
+        guard !ssidBytes.isEmpty else { throw AIMacWiFiProvisioningError.emptySSID }
+        guard ssidBytes.count <= 32 else { throw AIMacWiFiProvisioningError.ssidTooLong }
+        guard passwordBytes.isEmpty || (8...64).contains(passwordBytes.count) else {
+            throw AIMacWiFiProvisioningError.invalidPasswordLength
+        }
+    }
+
+    public static func makeImage(ssid: String, password: String) throws -> Data {
+        try validateCredentials(ssid: ssid, password: password)
+        let ssidBytes = Data(ssid.utf8)
+        let passwordBytes = Data(password.utf8)
+        var record = Data()
+        record.append(magic)
+        record.append(1) // format version
+        record.append(UInt8(ssidBytes.count))
+        record.append(UInt8(passwordBytes.count))
+        record.append(0) // flags
+        record.append(fixedField(ssidBytes, count: 33))
+        record.append(fixedField(passwordBytes, count: 65))
+        record.append(contentsOf: [0, 0])
+        appendLittleEndian(crc32(record), to: &record)
+        precondition(record.count == recordBytes)
+
+        var image = record
+        image.append(Data(repeating: 0xFF, count: sectorBytes - image.count))
+        return image
+    }
+
+    public static func validateImage(_ image: Data) -> Bool {
+        guard image.count == sectorBytes,
+              image.prefix(magic.count) == magic,
+              image[8] == 1,
+              image[9] > 0, image[9] <= 32,
+              image[10] <= 64 else { return false }
+        let storedOffset = recordBytes - 4
+        let stored = UInt32(image[storedOffset])
+            | (UInt32(image[storedOffset + 1]) << 8)
+            | (UInt32(image[storedOffset + 2]) << 16)
+            | (UInt32(image[storedOffset + 3]) << 24)
+        return stored == crc32(image.prefix(storedOffset))
+    }
+
+    /// esptool 的写入日志包含芯片 MAC；后 3 字节与 ESP.getChipId() 一致，
+    /// 因而可提前推导固件启动后的唯一 mDNS 主机名。
+    public static func macAddress(in log: String) -> String? {
+        let pattern = #"(?i)\bMAC:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: log,
+                                           range: NSRange(log.startIndex..., in: log)),
+              let range = Range(match.range(at: 1), in: log) else { return nil }
+        return String(log[range]).lowercased()
+    }
+
+    public static func hostname(forMAC mac: String) -> String? {
+        let parts = mac.lowercased().split(separator: ":")
+        guard parts.count == 6,
+              parts.allSatisfy({ $0.count == 2 && UInt8($0, radix: 16) != nil }) else { return nil }
+        return "lingxi-aimac-" + parts.suffix(3).joined()
+    }
+
+    private static func fixedField(_ value: Data, count: Int) -> Data {
+        var result = Data(repeating: 0, count: count)
+        result.replaceSubrange(0..<value.count, with: value)
+        return result
+    }
+
+    private static func appendLittleEndian(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8(truncatingIfNeeded: value))
+        data.append(UInt8(truncatingIfNeeded: value >> 8))
+        data.append(UInt8(truncatingIfNeeded: value >> 16))
+        data.append(UInt8(truncatingIfNeeded: value >> 24))
+    }
+
+    private static func crc32<T: DataProtocol>(_ bytes: T) -> UInt32 {
+        var crc = UInt32.max
+        for byte in bytes {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ ((crc & 1) == 1 ? 0xEDB8_8320 : 0)
+            }
+        }
+        return crc ^ UInt32.max
+    }
+}
+
+public struct ESP8266FlashResult: Equatable, Sendable {
+    public var macAddress: String?
+    public var expectedHostname: String?
+
+    public init(macAddress: String?, expectedHostname: String?) {
+        self.macAddress = macAddress
+        self.expectedHostname = expectedHostname
     }
 }
 
@@ -93,9 +214,10 @@ public final class ESP8266FirmwareFlasher {
         port: ESPSerialPort,
         helperURL: URL,
         firmwareURL: URL,
+        wifiProvisioningImage: Data? = nil,
         progress: @escaping @Sendable (Double) -> Void,
         log: @escaping @Sendable (String) -> Void
-    ) async throws {
+    ) async throws -> ESP8266FlashResult {
         guard FileManager.default.fileExists(atPath: port.path) else {
             throw ESP8266FlashError.invalidPort
         }
@@ -107,10 +229,39 @@ public final class ESP8266FirmwareFlasher {
             throw ESP8266FlashError.invalidFirmware
         }
 
+        var temporaryDirectory: URL?
+        var provisioningURL: URL?
+        if let wifiProvisioningImage {
+            guard AIMacWiFiProvisioning.validateImage(wifiProvisioningImage) else {
+                throw ESP8266FlashError.failed("Wi-Fi 配网数据生成失败。")
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lingxi-aimac-provision-\(UUID().uuidString)",
+                                        isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory,
+                                                        withIntermediateDirectories: true)
+                let url = directory.appendingPathComponent("wifi-provision.bin")
+                try wifiProvisioningImage.write(to: url, options: [.atomic])
+                temporaryDirectory = directory
+                provisioningURL = url
+            } catch {
+                if let temporaryDirectory {
+                    try? FileManager.default.removeItem(at: temporaryDirectory)
+                }
+                throw ESP8266FlashError.failed("无法准备临时配网数据：\(error.localizedDescription)")
+            }
+        }
+        defer {
+            if let temporaryDirectory {
+                try? FileManager.default.removeItem(at: temporaryDirectory)
+            }
+        }
+
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = helperURL
-        process.arguments = [
+        var arguments = [
             "--chip", "esp8266",
             "--port", port.path,
             "--baud", "115200",
@@ -123,6 +274,10 @@ public final class ESP8266FirmwareFlasher {
             EmbeddedAIMacFirmware.flashAddress,
             firmwareURL.path
         ]
+        if let provisioningURL {
+            arguments += [AIMacWiFiProvisioning.flashAddress, provisioningURL.path]
+        }
+        process.arguments = arguments
         process.standardOutput = outputPipe
         process.standardError = outputPipe
 
@@ -135,8 +290,8 @@ public final class ESP8266FirmwareFlasher {
         }
         let state = OutputState()
 
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<ESP8266FlashResult, Error>) in
             outputPipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
@@ -164,7 +319,10 @@ public final class ESP8266FirmwareFlasher {
                     continuation.resume(throwing: ESP8266FlashError.cancelled)
                 } else if finished.terminationStatus == 0 {
                     progress(1)
-                    continuation.resume()
+                    let mac = AIMacWiFiProvisioning.macAddress(in: fullOutput)
+                    continuation.resume(returning: ESP8266FlashResult(
+                        macAddress: mac,
+                        expectedHostname: mac.flatMap(AIMacWiFiProvisioning.hostname(forMAC:))))
                 } else {
                     continuation.resume(throwing: ESP8266FlashError.failed(
                         Self.conciseFailure(from: fullOutput)))
