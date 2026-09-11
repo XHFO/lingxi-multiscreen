@@ -203,6 +203,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .formlabs3: return .formlabs3
         case .formlabs4: return .formlabs4
         case .formlabs5: return .formlabs5
+        case .aiMacClock: return .aiMacCard
         }
     }
 
@@ -490,10 +491,13 @@ struct SettingsView: View {
     @State private var dragAIMacBoards: [AIMacCanvasBoard]?
     @State private var draggedAIMacCard: DisplayMode?
     @State private var dragAIMacCards: [DisplayMode]?
-    /// 待删除的设备（非 nil 时弹出二次确认）
-    @State private var deviceToDelete: ManagedDevice?
+    /// 待删除设备的稳定 ID（非 nil 时弹出二次确认）。不能保存列表中的值副本，
+    /// 新增/重排设备后 SwiftUI 可能继续持有旧快照，导致确认动作指向错误设备。
+    @State private var deviceIDToDelete: UUID?
     /// 设备管理默认只读；只有用户明确点“编辑”的设备才开放输入、开关与操作按钮。
     @State private var editingDeviceIDs: Set<UUID> = []
+    /// 已添加设备默认收起为紧凑卡片；每台设备独立记住本次会话中的展开状态。
+    @State private var expandedDeviceIDs: Set<UUID> = []
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
     @State private var showResetConfirm1 = false
     @State private var showResetConfirm2 = false
@@ -683,6 +687,9 @@ struct SettingsView: View {
             // 但自动轮换开启时键盘按轮换池循环推送，侧栏不跟随（避免用户操作中途界面被切走）。
             // 关闭自动轮换后，点击侧栏项才会切换显示。
             .onChange(of: model.settings.displayMode) { newMode in
+                // 在设备管理中新建键盘时会给它写入默认的「灵犀画板」模式。
+                // 这是设备初始值，不是用户要求切换页面；继续留在设备管理中完成 IP 等配置。
+                if selected == .devices { return }
                 if model.settings.cardRotationEnabled { return }
                 if let panel = Panel.from(displayMode: newMode), panel != selected {
                     selected = panel
@@ -1067,7 +1074,8 @@ struct SettingsView: View {
                     }
 
                     Section {
-                        Button("立即推送到这台设备") {
+                        Button(config.cardMode == .aiMacClock
+                               ? "立即同步到这台设备" : "立即推送到这台设备") {
                             Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
                         }
                         .keyboardShortcut(.return, modifiers: [.command])
@@ -1107,7 +1115,8 @@ struct SettingsView: View {
         }
         .padding(.bottom, 12)
         .onAppear {
-            if let id = model.activeDeviceID(for: .aiMacScreen) {
+            if model.backgroundServicesEnabled,
+               let id = model.activeDeviceID(for: .aiMacScreen) {
                 model.activateAIMacScreenMode(mode, deviceID: id)
             }
         }
@@ -1133,7 +1142,8 @@ struct SettingsView: View {
                     aiMacCardSettings(for: config.cardMode, deviceID: device.id)
 
                     Section {
-                        Button("立即推送到这台设备") {
+                        Button(config.cardMode == .aiMacClock
+                               ? "立即同步到这台设备" : "立即推送到这台设备") {
                             Task { await model.pushAIMacScreen(deviceID: device.id, force: true) }
                         }
                         .keyboardShortcut(.return, modifiers: [.command])
@@ -1164,7 +1174,8 @@ struct SettingsView: View {
         }
         .padding(.bottom, 12)
         .onAppear {
-            if let id = model.activeDeviceID(for: .aiMacScreen) {
+            if model.backgroundServicesEnabled,
+               let id = model.activeDeviceID(for: .aiMacScreen) {
                 let mode = model.aiMacScreenSettings(for: id).cardMode
                 model.activateAIMacCard(mode, deviceID: id)
             }
@@ -1196,7 +1207,7 @@ struct SettingsView: View {
         case .excerptQuote: excerptQuoteForm
         case .sspai: sspaiForm
         case .emojiWallpaper: emojiWallpaperForm
-        case .homeAssistant: homeAssistantForm
+        case .homeAssistant: aiMacHomeAssistantForm(deviceID: deviceID)
         case .bambuLab: bambuLabForm(for: .bambuLab)
         case .bambuLab2: bambuLabForm(for: .bambuLab2)
         case .bambuLab3: bambuLabForm(for: .bambuLab3)
@@ -1207,6 +1218,13 @@ struct SettingsView: View {
         case .formlabs3: formlabsForm(for: .formlabs3)
         case .formlabs4: formlabsForm(for: .formlabs4)
         case .formlabs5: formlabsForm(for: .formlabs5)
+        case .aiMacClock:
+            Section {
+                LabeledContent("运行方式", value: "小屏幕本机实时渲染")
+                Text("软件只负责切换和校准时间；秒级走时、日期计算与画面绘制均由小屏幕完成，不再持续推送时钟图片。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         case .canvas: EmptyView()
         }
     }
@@ -1235,10 +1253,37 @@ struct SettingsView: View {
                     }
                 }
                 Section {
+                    // 与灵犀68键盘卡片管理保持同一列说明，避免两个无标签开关含义不清。
+                    HStack(spacing: 10) {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.clear)
+                        Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.clear)
+                            .frame(width: 18)
+                        Text("卡片")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("侧栏")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44)
+                        Text("轮换")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
                     let cards = dragAIMacCards ?? model.aiMacCardList(for: device.id)
                     if cards.isEmpty {
-                        Text("尚未添加卡片，从下方添加。")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("尚未添加卡片，从下方「添加到侧栏」选择。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
                     } else {
                         reorderList(items: cards,
                                     dragged: $draggedAIMacCard,
@@ -1286,11 +1331,13 @@ struct SettingsView: View {
                 model.setAIMacCardVisible(mode, visible: $0, deviceID: deviceID)
             }))
             .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            .frame(width: 44)
             .help("在侧边栏显示该卡片")
             Toggle("", isOn: Binding(get: { inRotation }, set: {
                 model.setAIMacCardRotationMode(mode, enabled: $0, deviceID: deviceID)
             }))
             .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            .frame(width: 44)
             .help("加入自动轮播")
         }
         .onDrag {
@@ -1398,7 +1445,9 @@ struct SettingsView: View {
                 }
             }
         }
-        .onAppear { model.ensureRand0Session() }
+        .onAppear {
+            if model.backgroundServicesEnabled { model.ensureRand0Session() }
+        }
     }
 
     /// 设备管理页面：多台 灵犀68/口袋先知/摘录 设备的添加、重命名、删除与活动设备切换；
@@ -1407,42 +1456,30 @@ struct SettingsView: View {
         Group {
             ForEach(DeviceType.allCases) { type in
                 Section {
+                    if type == .keyboard {
+                        lingxi68ManualAddInline
+                    }
                     if type == .homeAssistant {
                         homeAssistantDiscoveryInline
-                        Divider()
                     }
                     if type == .oracle {
                         rand0DiscoveryInline
-                        Divider()
                     }
                     if type == .aiMacScreen {
                         aiMacAddExistingDeviceInline
-                        Divider()
                         DisclosureGroup("需要刷写一台新设备？") {
                             aiMacFirmwareFlasherInline
                                 .padding(.top, 6)
                         }
-                        Divider()
                     }
                     ForEach(model.devices(for: type)) { device in
                         let isEditing = editingDeviceIDs.contains(device.id)
-                        VStack(alignment: .leading, spacing: 6) {
+                        DisclosureGroup(isExpanded: deviceExpandedBinding(device.id)) {
+                            VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 8) {
-                                Group {
-                                    TextField("设备名称", text: model.deviceNameBinding(for: device.id))
-                                        .textFieldStyle(.roundedBorder)
-                                        .frame(width: 320)
-                                    if type == .bambuLab, let printerModel = model.bambuModel(for: device.id) {
-                                        Text(printerModel)
-                                            .font(.system(size: 11, weight: .bold))
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                                .fill(Color.accentColor.opacity(0.85)))
-                                            .help("识别到的打印机型号")
-                                    }
-                                }
+                                TextField("设备名称", text: model.deviceNameBinding(for: device.id))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 320)
                                 .disabled(!isEditing)
                                 .opacity(isEditing ? (device.isEnabled ? 1 : 0.5) : 0.5)
                                 Spacer()
@@ -1506,7 +1543,7 @@ struct SettingsView: View {
                                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                                           fieldWidth: 320,
-                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.1 固件支持 Wi-Fi 预配置、热点配网修复与 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.5 固件支持 Wi-Fi 预配置、轻量现代化热点配网页面、设备端实时时钟、Lingxi-Screen-XXXXXX 设备热点与 RGB565 无损帧，旧固件自动回退 JPEG。")
                                     HStack {
                                         Button("连接测试") {
                                             Task { await model.testAIMacScreenConnection(deviceID: device.id) }
@@ -1543,7 +1580,7 @@ struct SettingsView: View {
                                 .opacity(isEditing ? 1 : 0.5)
                             // 删除设备：独立按钮，删除前二次确认
                             Button(role: .destructive) {
-                                deviceToDelete = device
+                                deviceIDToDelete = device.id
                             } label: {
                                 Label("删除设备", systemImage: "trash")
                             }
@@ -1552,22 +1589,37 @@ struct SettingsView: View {
                             .help("删除该设备")
                             .disabled(!isEditing)
                             .opacity(isEditing ? 1 : 0.5)
+                            }
+                            .padding(.top, 10)
+                        } label: {
+                            deviceDisclosureHeader(device, type: type)
                         }
+                        .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-                        Divider()
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.secondary.opacity(device.isEnabled ? 0.055 : 0.03)))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color.secondary.opacity(0.16), lineWidth: 1))
+                        .padding(.vertical, 2)
                     }
                     if type == .bambuLab {
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
                                 Button("添加 \(type.title) 设备") {
-                                    model.addDevice(type: type)
+                                    expandNewDevice(model.addDevice(type: type))
                                 }
                                 .disabled(!model.settings.canAddDevice(of: type))
                                 Button {
                                     guard let homeAssistantID = bambuDiscoveryHomeAssistantID else { return }
                                     Task {
+                                        let existingIDs = Set(model.devices(for: .bambuLab).map(\.id))
                                         await model.discoverAndAddBambuPrinters(
                                             homeAssistantDeviceID: homeAssistantID)
+                                        let addedIDs = model.devices(for: .bambuLab).map(\.id)
+                                            .filter { !existingIDs.contains($0) }
+                                        expandedDeviceIDs.formUnion(addedIDs)
                                     }
                                 } label: {
                                     Label(model.bambuAutoDiscoveryBusy
@@ -1599,9 +1651,10 @@ struct SettingsView: View {
                         Text(notice)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else if type != .aiMacScreen && type != .homeAssistant && type != .oracle {
+                    } else if type != .aiMacScreen && type != .homeAssistant
+                                && type != .oracle && type != .keyboard {
                         Button("添加 \(type.title) 设备") {
-                            model.addDevice(type: type)
+                            expandNewDevice(model.addDevice(type: type))
                         }
                     }
                 } header: {
@@ -1613,31 +1666,34 @@ struct SettingsView: View {
             }
         }
         .confirmationDialog(
-            deviceToDelete.map { "确定删除设备「\($0.name)」吗？该设备的连接信息与画板设置将被移除。" } ?? "",
-            isPresented: Binding(get: { deviceToDelete != nil },
-                                 set: { if !$0 { deviceToDelete = nil } }),
+            deviceIDToDelete.flatMap { targetID in
+                model.settings.devices.first(where: { $0.id == targetID })
+            }.map { "确定删除设备「\($0.name)」吗？该设备的连接信息与画板设置将被移除。" } ?? "",
+            isPresented: Binding(get: { deviceIDToDelete != nil },
+                                 set: { if !$0 { deviceIDToDelete = nil } }),
             titleVisibility: .visible
         ) {
             Button("删除", role: .destructive) {
-                if let device = deviceToDelete {
-                    editingDeviceIDs.remove(device.id)
-                    discardDeviceDrafts(device.id)
-                    model.removeDevice(id: device.id)
+                if let targetID = deviceIDToDelete {
+                    editingDeviceIDs.remove(targetID)
+                    expandedDeviceIDs.remove(targetID)
+                    discardDeviceDrafts(targetID)
+                    model.removeDevice(id: targetID)
                 }
-                deviceToDelete = nil
+                deviceIDToDelete = nil
             }
             Button("取消", role: .cancel) {
-                deviceToDelete = nil
+                deviceIDToDelete = nil
             }
         }
         .task {
-            await model.ensureBambuEntityCatalog()
+            if model.backgroundServicesEnabled { await model.ensureBambuEntityCatalog() }
         }
         .task {
-            await model.scanHomeAssistantServers()
+            if model.backgroundServicesEnabled { await model.scanHomeAssistantServers() }
         }
         .task {
-            await model.scanRand0Devices()
+            if model.backgroundServicesEnabled { await model.scanRand0Devices() }
         }
         .onDisappear {
             editingDeviceIDs.removeAll()
@@ -1666,10 +1722,82 @@ struct SettingsView: View {
         }
     }
 
+    private func deviceExpandedBinding(_ deviceID: UUID) -> Binding<Bool> {
+        Binding(get: { expandedDeviceIDs.contains(deviceID) },
+                set: { expanded in
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if expanded {
+                            expandedDeviceIDs.insert(deviceID)
+                        } else {
+                            expandedDeviceIDs.remove(deviceID)
+                            editingDeviceIDs.remove(deviceID)
+                            discardDeviceDrafts(deviceID)
+                        }
+                    }
+                })
+    }
+
+    private func expandNewDevice(_ deviceID: UUID) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            expandedDeviceIDs.insert(deviceID)
+            editingDeviceIDs.insert(deviceID)
+        }
+    }
+
+    private func deviceDisclosureHeader(_ device: ManagedDevice,
+                                        type: DeviceType) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: type.capabilityProfile?.icon ?? "externaldrive")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(device.isEnabled ? Color.accentColor : Color.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(device.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(device.isEnabled ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                Text(type.title)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            if type == .bambuLab, let printerModel = model.bambuModel(for: device.id) {
+                Text(printerModel)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.10),
+                                in: Capsule(style: .continuous))
+            }
+            Spacer(minLength: 8)
+            Label(device.isEnabled ? "已启用" : "已停用",
+                  systemImage: device.isEnabled ? "checkmark.circle.fill" : "pause.circle.fill")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(device.isEnabled ? Color.green : Color.secondary)
+        }
+        .contentShape(Rectangle())
+    }
+
     private func discardDeviceDrafts(_ deviceID: UUID) {
         let prefix = "\(deviceID.uuidString)#"
         connectionDrafts = connectionDrafts.filter { !$0.key.hasPrefix(prefix) }
         bambuMatchDrafts[deviceID.uuidString] = nil
+    }
+
+    /// 灵犀68 当前无法提供可验证的设备身份接口，暂时仅开放手动添加，避免把
+    /// 同网段内其他兼容上传路由的设备误识别为键盘。
+    private var lingxi68ManualAddInline: some View {
+        HStack(spacing: 8) {
+            Button {
+                expandNewDevice(model.addDevice(type: .keyboard))
+            } label: {
+                Label("手动添加键盘", systemImage: "plus")
+            }
+            .disabled(!model.settings.canAddDevice(of: .keyboard))
+            HelpIcon(text: "添加后填写灵犀68键盘的局域网 IP 地址；当前暂不提供自动搜索。")
+            Spacer()
+        }
+        .padding(.vertical, 8)
     }
 
     /// Home Assistant 通过官方 Zeroconf 广播自动发现；只填入地址，令牌仍由用户本人提供。
@@ -1683,7 +1811,7 @@ struct SettingsView: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    model.addDevice(type: .homeAssistant)
+                    expandNewDevice(model.addDevice(type: .homeAssistant))
                 } label: {
                     Label("手动添加", systemImage: "plus")
                 }
@@ -1722,7 +1850,7 @@ struct SettingsView: View {
                             Spacer()
                             let added = model.isHomeAssistantAdded(service)
                             Button(added ? "已选择" : "使用") {
-                                _ = model.addDiscoveredHomeAssistant(service)
+                                expandNewDevice(model.addDiscoveredHomeAssistant(service))
                             }
                             .disabled(added)
                         }
@@ -1751,7 +1879,7 @@ struct SettingsView: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    model.addDevice(type: .oracle)
+                    expandNewDevice(model.addDevice(type: .oracle))
                 } label: {
                     Label("手动添加", systemImage: "plus")
                 }
@@ -1759,7 +1887,7 @@ struct SettingsView: View {
                     Task { await model.scanRand0Devices(force: true) }
                 } label: {
                     Label(model.rand0DiscoveryBusy ? "正在扫描…" : "重新扫描",
-                          systemImage: "dot.radiowaves.left.and.right")
+                          systemImage: "arrow.clockwise")
                 }
                 .disabled(model.rand0DiscoveryBusy)
                 if model.rand0DiscoveryBusy {
@@ -1788,7 +1916,8 @@ struct SettingsView: View {
                             Spacer()
                             let added = model.isRand0DeviceAdded(discovered)
                             Button(added ? "已添加" : "添加") {
-                                _ = model.addDiscoveredRand0Device(discovered)
+                                let id = model.addDiscoveredRand0Device(discovered)
+                                expandedDeviceIDs.insert(id)
                             }
                             .disabled(added)
                         }
@@ -1817,7 +1946,7 @@ struct SettingsView: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    model.addDevice(type: .aiMacScreen)
+                    expandNewDevice(model.addDevice(type: .aiMacScreen))
                 } label: {
                     Label("手动添加", systemImage: "plus")
                 }
@@ -1826,8 +1955,8 @@ struct SettingsView: View {
                 Button {
                     Task { await model.scanAIMacScreens() }
                 } label: {
-                    Label(model.aiMacNetworkScanBusy ? "正在扫描…" : "扫描局域网",
-                          systemImage: "dot.radiowaves.left.and.right")
+                    Label(model.aiMacNetworkScanBusy ? "正在扫描…" : "重新扫描",
+                          systemImage: "arrow.clockwise")
                 }
                 .disabled(model.aiMacNetworkScanBusy)
                 if model.aiMacNetworkScanBusy {
@@ -1858,7 +1987,9 @@ struct SettingsView: View {
                             Spacer()
                             let added = model.isAIMacScreenAdded(discovered)
                             Button(added ? "已添加" : "添加") {
-                                _ = model.addDiscoveredAIMacScreen(discovered)
+                                if let id = model.addDiscoveredAIMacScreen(discovered) {
+                                    expandedDeviceIDs.insert(id)
+                                }
                             }
                             .disabled(added || !model.settings.canAddDevice(of: .aiMacScreen))
                         }
@@ -1892,6 +2023,33 @@ struct SettingsView: View {
                         ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(model.embeddedAIMacFirmwareReady ? Color.green : Color.red)
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "shippingbox.and.arrow.backward")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("开源硬件 · ESP8266 Wi-Fi 天气时钟")
+                        .font(.callout.weight(.semibold))
+                    Text("AI Mac 小屏幕并非专有硬件；其本体是社区开源的 ESP8266 240×240 Wi-Fi 天气时钟（MG01 / SD2 小电视）。多屏灵犀提供适配该硬件的定制固件、刷写与内容推送功能。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Link("开源硬件工程", destination: URL(string: "https://oshwhub.com/q21182889/sd2")!)
+                        Link("社区 AI Mac 项目", destination: URL(string: "https://github.com/pengchujin/esp8266-ai")!)
+                    }
+                    .font(.caption.weight(.medium))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(Color.blue.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(Color.blue.opacity(0.32), lineWidth: 1)
             }
 
             Text("首次使用时，将 AI Mac 小屏幕通过 USB 数据线连接到 Mac。软件会一并写入 Wi-Fi，刷完后等待设备联网、读取 IP 并自动添加。")
@@ -2305,7 +2463,7 @@ struct SettingsView: View {
             Button("取消", role: .cancel) { boardRenameTarget = nil }
         }
         .onAppear {
-            model.ensureRand0Session()
+            if model.backgroundServicesEnabled { model.ensureRand0Session() }
         }
     }
 
@@ -3431,7 +3589,7 @@ struct SettingsView: View {
         }
         .onAppear {
             model.refreshOracleCanvasPreview()
-            model.ensureRand0Session()
+            if model.backgroundServicesEnabled { model.ensureRand0Session() }
         }
     }
 
@@ -3928,6 +4086,24 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.menu)
+            if model.lyricsKeyboardDeviceID(for: owner) != nil {
+                let offset = model.settings.lyricsTimingOffsetMilliseconds
+                HStack(spacing: 8) {
+                    Text("歌词时间校准")
+                    HelpIcon(text: "用于修正歌词文件自身的时间偏差。正值让歌词延后，负值让歌词提前；设备传输耗时会由软件按每台键盘自动校准。")
+                    Spacer()
+                    Text(offset == 0
+                         ? "自动"
+                         : String(format: "%+.1f 秒", Double(offset) / 1_000))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Stepper("", value: Binding(
+                        get: { model.settings.lyricsTimingOffsetMilliseconds },
+                        set: { model.settings.lyricsTimingOffsetMilliseconds = $0 }
+                    ), in: -5_000...5_000, step: 100)
+                    .labelsHidden()
+                }
+            }
         }
     }
 
@@ -4333,6 +4509,145 @@ struct SettingsView: View {
         }
     }
 
+    /// 小屏幕的 Home Assistant 卡片实体列表按设备保存，不再借用当前键盘的选择。
+    @ViewBuilder
+    private func aiMacHomeAssistantForm(deviceID: UUID) -> some View {
+        Section {
+            let selectedIDs = model.aiMacHAEntityIDs(for: deviceID)
+            let entityRefs = dragHAEntities ?? selectedIDs.map(HAEntityRef.init)
+            if entityRefs.isEmpty {
+                Text("尚未添加实体")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                reorderList(items: entityRefs,
+                            dragged: $draggedHAEntity,
+                            dragItems: $dragHAEntities,
+                            commit: { refs in
+                                model.aiMacHAEntitiesBinding(for: deviceID).wrappedValue = refs.map(\.id)
+                            }) { ref in
+                    aiMacHAEntityRow(ref, deviceID: deviceID, selectedIDs: selectedIDs)
+                }
+            }
+            HAEntityAdder(entities: model.haSnapshot.entities,
+                          alreadyAdded: Set(selectedIDs)) { entityIDs in
+                model.addAIMacHAEntities(entityIDs, deviceID: deviceID)
+            }
+            if let error = model.haSnapshot.errorText {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if model.settings.haServerURL.isEmpty {
+                Text("尚未配置服务器：请先在设备管理中添加 Home Assistant 服务器。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("这台小屏幕显示的实体")
+                HelpIcon(text: "每台 AI Mac 小屏幕分别保存自己的实体列表；支持 sensor、开关、camera 和 image 实体。修改后会立即刷新预览并推送当前卡片。")
+            }
+        }
+    }
+
+    private func aiMacHAEntityRow(_ ref: HAEntityRef, deviceID: UUID,
+                                   selectedIDs: [String]) -> some View {
+        let entity = model.haSnapshot.entities.first { $0.entityId == ref.id }
+        let isStale = AppModel.haStaleHintsEnabled
+            && entity == nil && !model.haSnapshot.entities.isEmpty
+        let icon = entity.map { SFIconMapper.symbol(for: $0) } ?? "questionmark.circle"
+        let alias = model.settings.haEntityAliases[ref.id]
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Image(systemName: isStale ? "exclamationmark.triangle" : icon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(isStale ? Color.orange : Color.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(alias ?? (entity?.displayName ?? ref.id))
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .foregroundStyle(isStale ? Color.secondary
+                                         : (alias != nil ? Color.accentColor : Color.primary))
+                    Text(isStale ? "失效 · 当前服务器无此实体（\(ref.id)）" : ref.id)
+                        .font(.system(size: 9))
+                        .foregroundStyle(isStale ? Color.orange : Color.secondary.opacity(0.7))
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let entity {
+                    Text(entity.displayValue)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                if isStale {
+                    EntityDomainPicker(
+                        title: "重选",
+                        selection: Binding(get: { "" }, set: {
+                            model.replaceAIMacHAEntity(oldID: ref.id, newID: $0,
+                                                      deviceID: deviceID)
+                        }),
+                        entities: model.haSnapshot.entities,
+                        emptyLabel: "换绑实体", clearLabel: "不使用")
+                        .frame(width: 150)
+                        .fixedSize()
+                }
+                Button {
+                    editingAliasEntityID = ref.id
+                    aliasDraft = alias ?? ""
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("自定义显示名称")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        model.removeAIMacHAEntity(ref.id, deviceID: deviceID)
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("从这台小屏幕移除")
+            }
+            .padding(.vertical, 8)
+            .onDrag {
+                draggedHAEntity = ref
+                dragHAEntities = selectedIDs.map(HAEntityRef.init)
+                return NSItemProvider(object: ref.id as NSString)
+            }
+            .help("拖拽排序")
+
+            if editingAliasEntityID == ref.id {
+                HStack(spacing: 6) {
+                    TextField("自定义显示名称（留空恢复默认）", text: $aliasDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            model.setHAEntityAlias(ref.id, alias: aliasDraft)
+                            model.setAIMacHAEntityIDs(selectedIDs, deviceID: deviceID)
+                            editingAliasEntityID = nil
+                        }
+                    Button("保存") {
+                        model.setHAEntityAlias(ref.id, alias: aliasDraft)
+                        model.setAIMacHAEntityIDs(selectedIDs, deviceID: deviceID)
+                        editingAliasEntityID = nil
+                    }
+                    .controlSize(.small)
+                    Button("取消") { editingAliasEntityID = nil }
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
     /// Bambu Lab 打印机卡片详情页：界面显示调整（布局样式 + 各区块开关）。
     /// 卡片渲染由键盘右侧实时预览展示，本页不再重复预览；实体映射在「设备管理」中配置。
     private func bambuLabForm(for panel: Panel) -> some View {
@@ -4501,9 +4816,9 @@ struct SettingsView: View {
         let useDefaultFilter = model.bambuDefaultEntityFilterBinding(for: deviceID).wrappedValue
         let defaultStatusEntities = catalog.defaultStatusEntities
         let allStatusEntities = catalog.allStatusEntities
-        // 默认规则没有识别结果时自动展示全部 sensor，不能让“推荐筛选”变成空白墙。
-        let statusEntities = useDefaultFilter && !defaultStatusEntities.isEmpty
-            ? defaultStatusEntities : allStatusEntities
+        // 默认筛选必须保持严格；没有可信候选时显示空结果，并由用户主动关闭筛选
+        // 查看全部 sensor。不能静默回退，否则普通家电实体会再次混入打印机列表。
+        let statusEntities = useDefaultFilter ? defaultStatusEntities : allStatusEntities
         let configuredStatusID = model.bambuSettings(for: deviceID)?.statusEntityID ?? ""
         return VStack(alignment: .leading, spacing: 6) {
             // 自动匹配必须由打印状态实体确定打印机身份，再推导同一前缀下的其余字段。
@@ -4516,7 +4831,7 @@ struct SettingsView: View {
                                largePopover: true,
                                defaultFilter: model.bambuDefaultEntityFilterBinding(for: deviceID),
                                unfilteredEntities: allStatusEntities,
-                               filterEnabledDescription: "只显示软件判断为打印状态的实体。",
+                               filterEnabledDescription: "仅显示 entity_id 含完整 _print_status 字段的实体。",
                                filterDisabledDescription: "显示全部 sensor 实体，适合设备名称或 entity_id 已被修改的情况。")
                 .onChange(of: bambuMatchDraftBinding(deviceID).wrappedValue) { _, newValue in
                     if !newValue.isEmpty,
@@ -4530,7 +4845,7 @@ struct SettingsView: View {
                     }
                 }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                HelpIcon(text: "自动匹配，需要用户将实体选中到备选打印机的“打印状态实体”才可完成匹配。软件会根据该状态实体确定打印机前缀，再推导进度、任务、温度、剩余时间、结束时间、错误、摄像头与任务封面实体；结果可手动修改，点击每行右侧 × 可解除单项关联并停止显示。")
+                HelpIcon(text: "自动匹配只使用 entity_id 含完整 _print_status 字段的“打印状态实体”作为入口，再根据打印机前缀推导进度、任务、温度、剩余时间、结束时间、错误、摄像头与任务封面实体。若用户修改过 entity_id，可关闭默认筛选后手动指定；结果仍可逐项修改或解除关联。")
                 Text("实体映射")
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 4)
@@ -5556,6 +5871,11 @@ struct Sidebar: View {
         model.keyboardCardList(for: deviceID).isEmpty
     }
 
+    /// 新添加的小屏幕默认不展示全部功能卡片，由卡片管理引导用户按需开启。
+    private func aiMacHasNoCards(_ deviceID: UUID) -> Bool {
+        model.aiMacCardList(for: deviceID).isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             // 按设备实例分类：每台设备（设备管理中添加的）下面挂它的卡片功能，
@@ -5649,10 +5969,11 @@ struct Sidebar: View {
         case .aiMacScreen:
             return AnyView(deviceInstanceGroup(icon: "display", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id),
-                                               panels: [.aiMacCardManagement, .aiMacClock,
-                                                        .aiMacBoardManagement,
+                                               panels: [.aiMacCardManagement, .aiMacBoardManagement,
                                                         .aiMacControl],
                                                switchType: .aiMacScreen, deviceID: device.id,
+                                               emptyHint: aiMacHasNoCards(device.id)
+                                                   ? "尚未添加卡片，去卡片管理添加" : nil,
                                                aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id),
                                                aiMacCardModes: model.aiMacCardList(for: device.id)))
         }
@@ -5751,7 +6072,8 @@ struct Sidebar: View {
                     if let switchType, let deviceID {
                         model.switchDevice(type: switchType, to: deviceID)
                     }
-                    selection = .cardRotation
+                    selection = switchType == .aiMacScreen
+                        ? .aiMacCardManagement : .cardRotation
                 } label: {
                     Label(emptyHint, systemImage: "plus.circle")
                         .font(.system(size: 11))
@@ -6035,6 +6357,7 @@ struct Sidebar: View {
         let current = model.activeDeviceID(for: .aiMacScreen) == deviceID
             && model.isCurrentAIMacCard(deviceID: deviceID, mode: mode)
         let selected = current && selection == .aiMacCard
+        let title = model.menuTitle(for: mode)
         return Button {
             if model.activeDeviceID(for: .aiMacScreen) != deviceID {
                 model.switchDevice(type: .aiMacScreen, to: deviceID)
@@ -6045,7 +6368,7 @@ struct Sidebar: View {
             HStack(spacing: 8) {
                 Image(systemName: mode.icon)
                     .frame(width: 18, height: 18)
-                Text(mode.title).lineLimit(1)
+                Text(title).lineLimit(1)
                 Spacer(minLength: 0)
             }
             // 与灵犀键盘 sidebarRow 使用同一字号、图标框和行高标准。
@@ -6058,7 +6381,7 @@ struct Sidebar: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(selected ? Color.accentColor : Color.primary)
-        .help("在这台 AI Mac 小屏幕显示“\(mode.title)”")
+        .help("在这台 AI Mac 小屏幕显示“\(title)”")
     }
 
     /// 「卡片轮换」行：左侧打开轮换设置页，右侧是该键盘设备的自动轮播开关

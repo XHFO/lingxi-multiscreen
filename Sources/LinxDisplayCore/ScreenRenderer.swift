@@ -854,6 +854,244 @@ public enum ScreenRenderer {
         return result
     }
 
+    /// AI Mac 240×240 的 Bambu 独立卡片。方形屏幕不再复用窄屏画板的“大进度”
+    /// 分支，而是固定保留设备名、状态、任务、进度、温度和时间，并在下半区同时
+    /// 容纳摄像头静态帧与任务封面。未绑定/被关闭的内容会释放给图片区。
+    public static func renderAIMacBambuCard(
+        _ bambu: BambuLabCardSettings,
+        entities: [HAEntity],
+        cameraImage: Data? = nil,
+        taskCoverImage: Data? = nil,
+        settings: AppSettings,
+        sampledAt: Date = Date(),
+        palette: ScreenPalette,
+        width: Int = 240,
+        height: Int = 240
+    ) -> CGImage {
+        guard let ctx = CGContext(data: nil, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return placeholderCanvas()
+        }
+        ctx.setAllowsAntialiasing(true)
+        ctx.setShouldAntialias(true)
+        ctx.setFillColor(palette.backgroundCG)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        // rect()/drawText() 使用 142×428 渲染器的逻辑坐标，和设备画板保持同一 CTM。
+        ctx.translateBy(x: 0, y: CGFloat(height) - CGFloat(ScreenRenderer.height))
+
+        let card = CGRect(x: 8, y: 8, width: CGFloat(width) - 16,
+                          height: CGFloat(height) - 16)
+        fillRound(ctx, rect(card), radius: 16, color: palette.cardCG)
+        strokeRound(ctx, rect(card), radius: 16, color: palette.borderCG, width: 1)
+
+        func entity(_ id: String) -> HAEntity? {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return entities.first { $0.entityId == trimmed }
+        }
+
+        let accent = bambu.themeAccent == .bambuLab
+            ? Self.bambuLabAccentColor : palette.accentCG
+        let name = bambu.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = entity(bambu.statusEntityID)
+        let rawStatus = status?.state ?? ""
+        let error = entity(bambu.errorEntityID)
+        let staleSeconds = TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60)
+        let isError = rawStatus.lowercased() == "error"
+            || (error.map { value in
+                let state = value.state.trimmingCharacters(in: .whitespaces).lowercased()
+                return !state.isEmpty
+                    && !["none", "无", "normal", "ok", "0", "off", "unavailable", "unknown"]
+                        .contains(state)
+                    && HAErrorCodePolicy.isFresh(entity: value, staleSeconds: staleSeconds)
+            } ?? false)
+        let statusColor = isError ? CGColor(red: 0.94, green: 0.35, blue: 0.28, alpha: 1) : accent
+
+        // 固定左上角标头；右侧状态胶囊不再占据正文中的一整行。
+        ctx.setFillColor(accent)
+        ctx.fillEllipse(in: rect(card.minX + 10, card.minY + 11, 8, 8))
+        let statusBoxW: CGFloat = bambu.showStatus ? 78 : 0
+        drawAdaptiveText(ctx, name.isEmpty ? "Bambu Lab 打印机" : name,
+                         maxSize: 15, minSize: 10, bold: true,
+                         color: palette.primaryTextCG,
+                         in: rect(card.minX + 24, card.minY + 6,
+                                  card.width - 38 - statusBoxW, 27), align: .left)
+        if bambu.showStatus {
+            let statusBox = CGRect(x: card.maxX - 88, y: card.minY + 7,
+                                   width: 78, height: 24)
+            if rawStatus.isEmpty {
+                fillRound(ctx, rect(statusBox), radius: 10, color: palette.insetCG)
+                strokeRound(ctx, rect(statusBox), radius: 10,
+                            color: palette.borderCG, width: 1)
+                drawText(ctx, bambu.statusEntityID.isEmpty ? "未配置" : "加载中",
+                         size: 11, bold: true, color: palette.secondaryTextCG,
+                         in: rect(statusBox), align: .center)
+            } else {
+                drawBambuCompactStatus(ctx, rawState: rawStatus, isError: isError,
+                                       color: statusColor, background: palette.insetCG,
+                                       border: palette.borderCG, in: statusBox)
+            }
+        }
+        drawLine(ctx, x1: card.minX + 10, y1: card.minY + 37,
+                 x2: card.maxX - 10, y2: card.minY + 37,
+                 color: palette.borderCG)
+
+        let innerX = card.minX + 10
+        let innerW = card.width - 20
+        var cursorY = card.minY + 43
+        let taskText = (bambu.showTask ? entity(bambu.taskEntityID)?.displayState : nil)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !taskText.isEmpty, taskText.lowercased() != "unknown" {
+            drawBambuCanvasTask(ctx, taskText,
+                                in: CGRect(x: innerX, y: cursorY,
+                                           width: innerW, height: 31),
+                                preferredSize: 14, color: palette.primaryTextCG,
+                                bold: true)
+            cursorY += 34
+        }
+
+        let progress = bambu.showProgress
+            ? entity(bambu.progressEntityID).flatMap { Double($0.state) } : nil
+        if let progress {
+            let clamped = min(max(progress, 0), 100)
+            let percent = String(format: "%.0f%%", clamped)
+            let percentW: CGFloat = 43
+            let bar = CGRect(x: innerX, y: cursorY + 7,
+                             width: innerW - percentW - 7, height: 5)
+            drawProgress(ctx, rect(bar), progress: clamped / 100,
+                         accent: accent, background: palette.borderCG)
+            strokeRound(ctx, rect(bar), radius: 2.5,
+                        color: palette.secondaryTextCG.copy(alpha: 0.45) ?? palette.borderCG,
+                        width: 0.8)
+            drawText(ctx, percent, size: 13, bold: true,
+                     color: palette.primaryTextCG,
+                     in: rect(card.maxX - 10 - percentW, cursorY,
+                              percentW, 19), align: .right)
+            cursorY += 23
+        }
+
+        let nozzle = entity(bambu.nozzleTempEntityID)
+        let bed = entity(bambu.bedTempEntityID)
+        let hasTemperature = bambu.showTemperature && (nozzle != nil || bed != nil)
+        let timeEntity = bambu.showRemaining ? entity(bambu.selectedTimeEntityID) : nil
+        let hasTime = timeEntity.map {
+            !$0.state.isEmpty && !["unknown", "unavailable"].contains($0.state.lowercased())
+        } ?? false
+        let hasErrorLine = bambu.showError && isError
+        let detailRows = (hasTemperature ? 1 : 0) + (hasTime ? 1 : 0) + (hasErrorLine ? 1 : 0)
+        let detailH = CGFloat(detailRows) * 17
+        let footerH: CGFloat = 16
+        let detailBottom = card.maxY - footerH - 4
+        let detailTop = detailBottom - detailH
+
+        let cameraConfigured = bambu.showImage
+            && !bambu.imageEntityID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let taskCoverConfigured = bambu.showImage
+            && !bambu.taskImageEntityID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasPictureArea = cameraConfigured || taskCoverConfigured
+        if hasPictureArea {
+            let pictureTop = cursorY + 5
+            let pictureBottom = detailTop - (detailRows > 0 ? 5 : 0)
+            let pictureH = max(pictureBottom - pictureTop, 40)
+            let gap: CGFloat = cameraConfigured && taskCoverConfigured ? 7 : 0
+            let cameraW = cameraConfigured && taskCoverConfigured
+                ? floor((innerW - gap) * 0.64) : innerW
+            let taskW = cameraConfigured && taskCoverConfigured
+                ? innerW - gap - cameraW : innerW
+            let lightBackground = 0.299 * palette.background.0
+                + 0.587 * palette.background.1 + 0.114 * palette.background.2 >= 0.55
+
+            func drawPictureSlot(_ data: Data?, title: String, symbol: String,
+                                 box: CGRect, cover: Bool, glow: Bool) {
+                if glow, let data, let decoded = decodeArtwork(data) {
+                    drawCoverGlow(ctx,
+                                  color: cameraGlowColor(dominantColor(of: decoded),
+                                                         lightBackground: lightBackground),
+                                  coverSkia: box, extent: 15, blurSigma: 7,
+                                  innerInset: 0, cornerRadius: 9,
+                                  opacity: lightBackground ? 0.82 : 0.68)
+                }
+                fillRound(ctx, rect(box), radius: 9, color: palette.insetCG)
+                let didDraw = data.map {
+                    drawImageData(ctx, data: $0, into: box, cover: cover, radius: 9)
+                } ?? false
+                if !didDraw {
+                    let iconSide = min(max(box.height * 0.28, 16), 26)
+                    drawEntityIcon(ctx, symbol: symbol,
+                                   in: rect(box.midX - iconSide / 2,
+                                            box.midY - iconSide / 2 - 3,
+                                            iconSide, iconSide),
+                                   color: palette.tertiaryTextCG)
+                    drawText(ctx, "等待画面", size: 8.5, bold: false,
+                             color: palette.tertiaryTextCG,
+                             in: rect(box.minX + 4, box.maxY - 22,
+                                      box.width - 8, 13), align: .center)
+                }
+                strokeRound(ctx, rect(box), radius: 9,
+                            color: palette.borderCG, width: 1)
+                let labelW = min(max(measureTextWidth(title, size: 8, bold: true) + 12, 36),
+                                 box.width - 8)
+                let labelBox = CGRect(x: box.minX + 5, y: box.minY + 5,
+                                      width: labelW, height: 16)
+                fillRound(ctx, rect(labelBox), radius: 7,
+                          color: palette.backgroundCG.copy(alpha: 0.78) ?? palette.backgroundCG)
+                drawText(ctx, title, size: 8, bold: true,
+                         color: palette.primaryTextCG,
+                         in: rect(labelBox), align: .center)
+            }
+
+            var pictureX = innerX
+            if cameraConfigured {
+                let box = CGRect(x: pictureX, y: pictureTop,
+                                 width: cameraW, height: pictureH)
+                drawPictureSlot(cameraImage, title: "实况", symbol: "video.fill",
+                                box: box, cover: true, glow: true)
+                pictureX = box.maxX + gap
+            }
+            if taskCoverConfigured {
+                let box = CGRect(x: pictureX, y: pictureTop,
+                                 width: taskW, height: pictureH)
+                drawPictureSlot(taskCoverImage, title: "任务", symbol: "photo.fill",
+                                box: box, cover: false, glow: false)
+            }
+        }
+
+        var detailY = detailTop
+        if hasTemperature {
+            let text = "喷嘴  \(nozzle?.displayValue ?? "—")    热床  \(bed?.displayValue ?? "—")"
+            drawAdaptiveText(ctx, text, maxSize: 11.5, minSize: 8.5,
+                             bold: true, color: palette.secondaryTextCG,
+                             in: rect(innerX, detailY, innerW, 16), align: .center)
+            detailY += 17
+        }
+        if hasTime, let timeEntity {
+            let value = bambuCompactCanvasTimeText(timeEntity, mode: bambu.timeDisplayMode)
+            let prefix = bambu.timeDisplayMode == .endTime ? "预计结束" : "剩余"
+            drawAdaptiveText(ctx, "\(prefix)  \(value)", maxSize: 11.5, minSize: 8.5,
+                             bold: true, color: palette.secondaryTextCG,
+                             in: rect(innerX, detailY, innerW, 16), align: .center)
+            detailY += 17
+        }
+        if hasErrorLine {
+            let raw = error?.state ?? status?.state ?? "未知错误"
+            let reason = BambuHMSCode.reason(for: raw) ?? raw
+            drawAdaptiveText(ctx, "⚠ \(reason)", maxSize: 11, minSize: 8,
+                             bold: true, color: statusColor,
+                             in: rect(innerX, detailY, innerW, 16), align: .center)
+        }
+
+        drawLine(ctx, x1: card.minX + 18, y1: card.maxY - footerH - 1,
+                 x2: card.maxX - 18, y2: card.maxY - footerH - 1,
+                 color: palette.borderCG)
+        drawText(ctx, "数据更新  \(formatDate(sampledAt, "HH:mm:ss"))",
+                 size: 8.5, bold: true, color: palette.tertiaryTextCG,
+                 in: rect(innerX, card.maxY - footerH, innerW, footerH), align: .center)
+
+        return ctx.makeImage() ?? placeholderCanvas()
+    }
+
     /// 墨水屏文字调色板：把文字与强调色统一为最深对比色（无色相），
     /// 浅色底 → 纯黑、深色底 → 纯白；背景/边框保持不变。
     private static func einkTextPalette(_ base: ScreenPalette) -> ScreenPalette {
@@ -5079,7 +5317,7 @@ public enum ScreenRenderer {
     /// 从封面主色生成进度条强调色：深色封面提亮、浅色封面加深，
     /// 保证在封面底（=主色）上有足够对比；不跟随全局强调色。
     /// 对比度增强：深色提亮到更高亮度、浅色加深到更低亮度，进度条更清晰可见
-    private static func coverProgressAccent(_ rgb: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
+    public static func coverProgressAccent(_ rgb: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
         let lum = 0.299 * rgb.0 + 0.587 * rgb.1 + 0.114 * rgb.2
         if lum < 0.5 {
             // 深色封面：提亮到明显亮于背景（目标亮度 0.9 封顶）

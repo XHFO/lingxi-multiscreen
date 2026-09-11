@@ -24,6 +24,21 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     case formlabs3 = 18
     case formlabs4 = 19
     case formlabs5 = 20
+    /// AI Mac 彩色小屏专属的设备端实时桌面时钟。
+    case aiMacClock = 21
+
+    /// 设置文件可能来自包含实验卡片的开发版。遇到当前版本不认识的编号时，
+    /// 只回退当前显示页，不能让整份设备与画板配置解码失败。
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(Int.self)
+        self = DisplayMode(rawValue: rawValue) ?? .systemMonitor
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 
     /// Bambu 卡片位对应的打印机序号（0..4；非 Bambu 卡片返回 nil）
     public var bambuSlotIndex: Int? {
@@ -66,6 +81,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .formlabs3: return "Formlabs 打印机 3"
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
+        case .aiMacClock: return "桌面时钟"
         }
     }
 
@@ -78,6 +94,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .pomodoro: return "timer"
         case .systemMonitor: return "gauge"
         case .nowPlaying: return "music.note"
+        case .aiMacClock: return "clock"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -316,7 +333,7 @@ public enum RuntimePerformancePolicy {
             return timeFormat.contains("s") ? 1 : 30
         case .excerptQuote, .sspai:
             return 30
-        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant,
+        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant, .aiMacClock,
              .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))

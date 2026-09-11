@@ -111,12 +111,35 @@ extension AppSettings {
         guard let target = devices.first(where: { $0.type == type && $0.id == id })
                 ?? devices.first(where: { $0.type == type }) else { return nil }
         guard activeDeviceID(for: type) != target.id else { return nil }
+        let previousSyncState = deviceSyncInFlight
         deviceSyncInFlight = true
-        defer { deviceSyncInFlight = false }
+        defer { deviceSyncInFlight = previousSyncState }
         captureActiveDeviceSnapshots()               // 1. 旧设备的镜像存回它自己的快照
         setActiveDeviceID(type, target.id)           // 2. 活动设备切到目标
         target.settings.apply(to: self, type: type)  // 3. 目标快照套用到镜像
         captureActiveDeviceSnapshots()               // 4. 套用结果定型回目标快照
+        return target
+    }
+
+    /// 按稳定 ID 原子删除设备。删除活动设备时，先屏蔽设置监听器的自动快照回写，
+    /// 再选择同类型首台已启用设备并恢复它自己的快照。否则 `devices.removeAll` 的
+    /// 中间通知会把待删除设备的全局镜像写进老设备，表现为“删除新键盘却清空老键盘”。
+    @discardableResult
+    public func removeManagedDevice(id: UUID) -> ManagedDevice? {
+        guard let target = devices.first(where: { $0.id == id }) else { return nil }
+        let type = target.type
+        let removingActiveDevice = activeDeviceID(for: type) == id
+
+        let previousSyncState = deviceSyncInFlight
+        deviceSyncInFlight = true
+        defer { deviceSyncInFlight = previousSyncState }
+
+        devices.removeAll { $0.id == id }
+        if removingActiveDevice {
+            let fallback = enabledDevices(for: type).first
+            setActiveDeviceID(type, fallback?.id)
+            fallback?.settings.apply(to: self, type: type)
+        }
         return target
     }
 

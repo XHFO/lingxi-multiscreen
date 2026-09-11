@@ -304,6 +304,10 @@ public final class AppSettings: ObservableObject {
     @Published public var nowPlayingDateSize = 17 {
         didSet { onChange() }
     }
+    /// 歌词源的人工校准量（毫秒）。正值让歌词延后，负值让歌词提前。
+    @Published public var lyricsTimingOffsetMilliseconds = 0 {
+        didSet { onChange() }
+    }
     /// 画板「正在播放」模块：歌名字号（键盘/先知/摘录画板共用）
     @Published public var canvasNowPlayingTitleSize = 12 {
         didSet { onChange() }
@@ -1036,6 +1040,7 @@ public final class AppSettings: ObservableObject {
         nowPlayingArtistSize = min(max(nowPlayingArtistSize, 6), 20)
         nowPlayingTimeSize = min(max(nowPlayingTimeSize, 10), 40)
         nowPlayingDateSize = min(max(nowPlayingDateSize, 8), 30)
+        lyricsTimingOffsetMilliseconds = min(max(lyricsTimingOffsetMilliseconds, -5_000), 5_000)
         canvasNowPlayingTitleSize = min(max(canvasNowPlayingTitleSize, 7), 24)
         canvasNowPlayingArtistSize = min(max(canvasNowPlayingArtistSize, 6), 20)
         oracleAutoPushMinutes = min(max(oracleAutoPushMinutes, 1), 1440)
@@ -1156,7 +1161,7 @@ public final class AppSettings: ObservableObject {
              bambuPrinterName, bambuPrinters,
              nowPlayingTitleSize, nowPlayingArtistSize,
              nowPlayingFooterVisible, nowPlayingTimeFormat, nowPlayingDateFormat,
-             nowPlayingTimeSize, nowPlayingDateSize,
+             nowPlayingTimeSize, nowPlayingDateSize, lyricsTimingOffsetMilliseconds,
              canvasNowPlayingTitleSize, canvasNowPlayingArtistSize,
              oracleBackgroundMode,
              oracleAutoPushEnabled, oracleAutoPushMinutes,
@@ -1299,6 +1304,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(nowPlayingDateFormat, forKey: .nowPlayingDateFormat)
         try container.encode(nowPlayingTimeSize, forKey: .nowPlayingTimeSize)
         try container.encode(nowPlayingDateSize, forKey: .nowPlayingDateSize)
+        try container.encode(lyricsTimingOffsetMilliseconds,
+                             forKey: .lyricsTimingOffsetMilliseconds)
         try container.encode(canvasNowPlayingTitleSize, forKey: .canvasNowPlayingTitleSize)
         try container.encode(canvasNowPlayingArtistSize, forKey: .canvasNowPlayingArtistSize)
         try container.encode(oracleBackgroundMode.rawValue, forKey: .oracleBackgroundMode)
@@ -1533,6 +1540,8 @@ extension AppSettings: Codable {
         nowPlayingDateFormat = try container.decodeIfPresent(String.self, forKey: .nowPlayingDateFormat) ?? nowPlayingDateFormat
         nowPlayingTimeSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingTimeSize) ?? nowPlayingTimeSize
         nowPlayingDateSize = try container.decodeIfPresent(Int.self, forKey: .nowPlayingDateSize) ?? nowPlayingDateSize
+        lyricsTimingOffsetMilliseconds = try container.decodeIfPresent(
+            Int.self, forKey: .lyricsTimingOffsetMilliseconds) ?? lyricsTimingOffsetMilliseconds
         canvasNowPlayingTitleSize = try container.decodeIfPresent(Int.self, forKey: .canvasNowPlayingTitleSize) ?? canvasNowPlayingTitleSize
         canvasNowPlayingArtistSize = try container.decodeIfPresent(Int.self, forKey: .canvasNowPlayingArtistSize) ?? canvasNowPlayingArtistSize
         if let raw = try container.decodeIfPresent(Int.self, forKey: .oracleBackgroundMode),

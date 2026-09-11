@@ -3,10 +3,10 @@ import Foundation
 
 /// 多屏灵犀内置的 AI Mac 小屏幕固件信息。
 public enum EmbeddedAIMacFirmware {
-    public static let version = "0.8.1-wifi-portal-fix"
-    public static let fileName = "aimac-screen-0.8.1.bin"
+    public static let version = "0.8.6-native-now-playing"
+    public static let fileName = "aimac-screen-0.8.6.bin"
     public static let helperName = "lingxi-esptool"
-    public static let sha256 = "411ef4b0799939bad09887a78a594e0727c9d06b170b58f530cfaedfa7bf2c35"
+    public static let sha256 = "55bfe4ca0088b143048d1002b7d9cd81673c8ae48f09c95d9c73791eabca8525"
     public static let flashAddress = "0x0"
 
     public static func validate(_ data: Data) -> Bool {

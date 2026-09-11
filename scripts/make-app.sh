@@ -51,9 +51,9 @@ if [ -f "$ROOT/Resources/akko2.png" ]; then
 fi
 # AI Mac 小屏幕内置固件与 Apple Silicon 刷机助手。正常运行不会启动助手，
 # 只有用户在设备管理中二次确认刷写时才会执行。
-FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.8.1.bin"
+FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.8.6.bin"
 FLASH_HELPER_SOURCE="$ROOT/Resources/Firmware/lingxi-esptool"
-FIRMWARE_SHA256="411ef4b0799939bad09887a78a594e0727c9d06b170b58f530cfaedfa7bf2c35"
+FIRMWARE_SHA256="55bfe4ca0088b143048d1002b7d9cd81673c8ae48f09c95d9c73791eabca8525"
 if [ ! -f "$FIRMWARE_SOURCE" ] || [ ! -f "$FLASH_HELPER_SOURCE" ]; then
     echo "错误：AI Mac 小屏幕固件或刷机助手缺失" >&2
     exit 1

@@ -1,6 +1,18 @@
 AI Mac 小屏幕刷机资源
 ======================
 
+ESP8266 Wi-Fi weather clock hardware
+------------------------------------
+The supported AI Mac 240 x 240 screen is not proprietary hardware. It is based
+on the community open-source ESP8266 Wi-Fi weather clock commonly sold as the
+MG01 / SD2 mini TV. Hardware reference: https://oshwhub.com/q21182889/sd2
+Community AI Mac firmware and bridge reference:
+https://github.com/pengchujin/esp8266-ai
+
+MultiScreen supplies its own compatible firmware, flashing flow and display
+protocol for this class of hardware. The references above identify the open
+hardware origin and related community work; they do not imply endorsement.
+
 lingxi-esptool
 --------------
 This application bundles esptool.py 3.0 as an Apple Silicon helper executable.
@@ -11,10 +23,24 @@ License: GNU General Public License, version 2 or later.
 The helper is used only when the user explicitly starts an ESP8266 firmware
 flash from Device Management. It is not started during normal application use.
 
-aimac-screen-0.8.1.bin
+aimac-screen-0.8.6.bin
 ----------------------
 Customized ESP8266 firmware for the AI Mac 240 x 240 screen. The source is
 maintained separately from the MultiScreen application repository; this bundle
 contains only the compiled firmware image required by the in-app flasher. The
-0.8.1 firmware accepts a temporary Wi-Fi provisioning sector at 0x100000, then
+0.8.6 firmware accepts a temporary Wi-Fi provisioning sector at 0x100000, then
 erases that sector after it successfully joins the selected 2.4 GHz network.
+It also provides a fully offline, responsive captive portal for selecting and
+joining a 2.4 GHz Wi-Fi network.
+It also provides a device-rendered real-time desktop clock controlled by the
+host application without continuous image uploads.
+The now-playing progress bar and elapsed/remaining time can also advance on the
+device from a playback anchor, keeping them aligned with linked keyboard lyrics.
+
+TFT_eSPI bitmap fonts
+---------------------
+The desktop-clock software preview includes the Font 2 and Font 7 bitmap glyphs
+used by the bundled firmware so that the preview matches the physical display.
+Project: https://github.com/Bodmer/TFT_eSPI
+Copyright (c) 2023 Bodmer and contributors.
+License: FreeBSD/BSD; see the upstream TFT_eSPI license for full terms.

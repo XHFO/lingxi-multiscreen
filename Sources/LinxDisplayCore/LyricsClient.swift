@@ -50,7 +50,7 @@ public struct LyricsTrack: Codable, Equatable {
         guard !timedLines.isEmpty else {
             return LyricsDisplayWindow(lines: Array(plainLines.prefix(2)), currentIndex: 0)
         }
-        let current = timedLines.lastIndex { $0.time <= elapsed + 0.08 } ?? 0
+        let current = timedLines.lastIndex { $0.time <= elapsed } ?? 0
         let lower = max(0, current - 1)
         let upper = min(timedLines.count - 1, current + 1)
         return LyricsDisplayWindow(lines: Array(timedLines[lower...upper].map(\.text)),
@@ -59,7 +59,7 @@ public struct LyricsTrack: Codable, Equatable {
 
     public func currentLineIndex(at elapsed: TimeInterval) -> Int? {
         guard !timedLines.isEmpty else { return nil }
-        return timedLines.lastIndex { $0.time <= elapsed + 0.08 } ?? 0
+        return timedLines.lastIndex { $0.time <= elapsed } ?? 0
     }
 }
 
@@ -77,17 +77,32 @@ public struct LyricsDisplayWindow: Equatable {
 /// 新歌词行时触发实际渲染与上传。
 public enum LyricsTimelinePolicy {
     /// 轻量行号检查频率；未换行时不会重绘或上传。
-    public static let checkInterval: TimeInterval = 0.25
-    /// 抵消 JPEG 渲染、网络上传和键盘换帧造成的可见延迟。
-    public static let presentationLead: TimeInterval = 0.30
+    public static let checkInterval: TimeInterval = 0.05
+    /// 首帧尚无实测耗时时只做小幅提前。上传请求返回的时刻并不
+    /// 等于屏幕真正换帧的时刻，预留过多会让歌词抢跑。
+    public static let initialPresentationLead: TimeInterval = 0.08
+    public static let maximumPresentationLead: TimeInterval = 0.65
+
+    /// 只补偿实测渲染 + 上传耗时的 65%，并限制最大提前量。这样仍能
+    /// 抵消大部分输送延迟，同时给设备解码、刷新与网络抖动留出安全余量。
+    public static func presentationLead(observedLatency: TimeInterval?) -> TimeInterval {
+        guard let observedLatency, observedLatency.isFinite, observedLatency > 0 else {
+            return initialPresentationLead
+        }
+        return min(max(observedLatency * 0.65, 0.03), maximumPresentationLead)
+    }
 
     public static func displayElapsed(for info: NowPlayingInfo,
-                                      at now: Date = Date()) -> TimeInterval {
-        var elapsed = max(info.elapsedTime, 0)
+                                      at now: Date = Date(),
+                                      presentationLead: TimeInterval = 0,
+                                      userDelay: TimeInterval = 0) -> TimeInterval {
+        var elapsed = info.effectiveElapsed(at: now)
         if info.isPlaying {
-            elapsed += max(now.timeIntervalSince(info.sampledAt), 0)
-            elapsed += presentationLead
+            elapsed += max(presentationLead, 0)
         }
+        // 正值表示用户希望歌词延后，故从用于匹配歌词的播放位置中扣除。
+        elapsed -= userDelay
+        elapsed = max(elapsed, 0)
         if info.duration > 0 {
             elapsed = min(elapsed, info.duration)
         }

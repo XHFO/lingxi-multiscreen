@@ -48,6 +48,25 @@ public struct NowPlayingInfo: Equatable {
     /// 是否处于播放状态（播放速率 > 0 视为播放中）
     public var isPlaying: Bool { playbackRate > 0.01 }
 
+    /// 以 MediaRemote 的位置和采样时刻为唯一时钟锚点。倍速播放时必须按实际
+    /// playbackRate 推进，否则歌词在 0.5x / 1.5x 等速度下会持续漂移。
+    public func effectiveElapsed(at date: Date = Date()) -> TimeInterval {
+        var value = max(elapsedTime, 0)
+        if isPlaying {
+            value += max(date.timeIntervalSince(sampledAt), 0) * max(playbackRate, 0)
+        }
+        if duration > 0 { value = min(value, duration) }
+        return value
+    }
+
+    /// 把当前推算位置重新锚定到指定时间，供低频 MediaRemote 查询之间本地推进。
+    public func anchored(at date: Date = Date()) -> NowPlayingInfo {
+        var result = self
+        result.elapsedTime = effectiveElapsed(at: date)
+        result.sampledAt = date
+        return result
+    }
+
     public var progress: Double {
         duration > 0 ? min(max(elapsedTime / duration, 0), 1) : 0
     }
@@ -71,6 +90,38 @@ public struct NowPlayingInfo: Equatable {
         merged.elapsedTime = current.elapsedTime
         return merged
     }
+
+    /// 合并远端采样和本地时钟，同时区分“MediaRemote 返回同一旧值”与用户 seek。
+    /// 旧值继续沿用本地时钟；明显的前跳或后跳则立即采用新位置。
+    public func reconciledWithProgressed(current: NowPlayingInfo,
+                                         previousRemote: NowPlayingInfo?,
+                                         seekThreshold: TimeInterval = 1.5) ->
+        (info: NowPlayingInfo, didSeek: Bool) {
+        guard title == current.title,
+              artist == current.artist,
+              abs(duration - current.duration) < 0.5,
+              current.isPlaying,
+              isPlaying else {
+            return (self, false)
+        }
+
+        let predicted = current.effectiveElapsed(at: sampledAt)
+        let offset = elapsedTime - predicted
+        guard abs(offset) > seekThreshold else { return (self, false) }
+        if offset > 0 { return (self, true) }
+
+        if let previousRemote,
+           previousRemote.title == title,
+           previousRemote.artist == artist,
+           abs(previousRemote.duration - duration) < 0.5 {
+            let remoteDelta = elapsedTime - previousRemote.elapsedTime
+            if remoteDelta < -seekThreshold { return (self, true) }
+            if abs(remoteDelta) < 0.35 {
+                return (current.anchored(at: sampledAt), false)
+            }
+        }
+        return (self, true)
+    }
 }
 
 /// 通过系统私有框架 MediaRemote 读取「正在播放」信息。
@@ -79,11 +130,20 @@ public struct NowPlayingInfo: Equatable {
 public final class NowPlayingClient {
 
     private typealias GetNowPlayingInfo = @convention(c) (DispatchQueue, @escaping @convention(block) (CFDictionary?) -> Void) -> Void
+    private typealias RegisterForNotifications = @convention(c) (DispatchQueue) -> Void
 
     private static let getNowPlayingInfo: GetNowPlayingInfo? = {
         guard let handle = dlopen(NowPlayingClient.frameworkPath, RTLD_LAZY),
               let symbol = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") else { return nil }
         return unsafeBitCast(symbol, to: GetNowPlayingInfo.self)
+    }()
+
+    private static let registerForNotifications: RegisterForNotifications? = {
+        guard let handle = dlopen(NowPlayingClient.frameworkPath, RTLD_LAZY),
+              let symbol = dlsym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: RegisterForNotifications.self)
     }()
 
     private static let frameworkPath = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote"
@@ -98,6 +158,19 @@ public final class NowPlayingClient {
         public static let elapsedTime = "kMRMediaRemoteNowPlayingInfoElapsedTime"
         public static let playbackRate = "kMRMediaRemoteNowPlayingInfoPlaybackRate"
         public static let artworkData = "kMRMediaRemoteNowPlayingInfoArtworkData"
+        public static let timestamp = "kMRMediaRemoteNowPlayingInfoTimestamp"
+    }
+
+    /// MediaRemote 的变化通知用于立即捕获换歌、暂停/继续和拖动进度。若当前系统
+    /// 不提供注册符号，调用会安全退化为现有的定时校准。
+    public static let changeNotifications: [Notification.Name] = [
+        Notification.Name("kMRMediaRemoteNowPlayingInfoDidChangeNotification"),
+        Notification.Name("kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification"),
+        Notification.Name("kMRMediaRemoteNowPlayingApplicationDidChangeNotification")
+    ]
+
+    public func registerForChangeNotifications() {
+        Self.registerForNotifications?(DispatchQueue.main)
     }
 
     public init() {}
@@ -173,7 +246,8 @@ public final class NowPlayingClient {
             playbackRate: (json["playbackRate"] as? Double) ?? 0,
             artwork: (json["artwork"] as? String).flatMap { Data(base64Encoded: $0) },
             appName: nil,
-            sampledAt: Date()
+            sampledAt: (json["sampledAt"] as? Double)
+                .map(Date.init(timeIntervalSince1970:)) ?? Date()
         )
     }
 
@@ -194,6 +268,18 @@ public final class NowPlayingClient {
         guard let dict = info as? [String: Any] else { return }
         guard let title = dict["kMRMediaRemoteNowPlayingInfoTitle"] as? String, !title.isEmpty else { return }
         let artworkData = dict["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data
+        let callbackAt = Date()
+        let callbackEpoch = callbackAt.timeIntervalSince1970
+        var sampledEpoch = callbackEpoch
+        if let timestamp = dict["kMRMediaRemoteNowPlayingInfoTimestamp"] as? Date {
+            let candidate = timestamp.timeIntervalSince1970
+            if abs(candidate - callbackEpoch) < 86400 { sampledEpoch = candidate }
+        } else if let timestamp = dict["kMRMediaRemoteNowPlayingInfoTimestamp"] as? NSNumber {
+            let raw = timestamp.doubleValue
+            let candidate = raw > 1000000000
+                ? raw : Date(timeIntervalSinceReferenceDate: raw).timeIntervalSince1970
+            if abs(candidate - callbackEpoch) < 86400 { sampledEpoch = candidate }
+        }
         let obj: [String: Any] = [
             "playing": true,
             "title": title,
@@ -202,7 +288,10 @@ public final class NowPlayingClient {
             "duration": dict["kMRMediaRemoteNowPlayingInfoDuration"] as? Double ?? 0,
             "elapsedTime": dict["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? Double ?? 0,
             "playbackRate": dict["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double ?? 0,
-            "artwork": artworkData?.base64EncodedString() ?? ""
+            "artwork": artworkData?.base64EncodedString() ?? "",
+            // 优先使用播放器提供的进度锚点。仅在播放器没有提供 timestamp 时才用
+            // 回调时刻，避免把媒体端已经滞后的 elapsedTime 当成“此刻”的进度。
+            "sampledAt": sampledEpoch
         ]
         if let data = try? JSONSerialization.data(withJSONObject: obj),
            let text = String(data: data, encoding: .utf8) {
@@ -252,10 +341,28 @@ public final class NowPlayingClient {
                     playbackRate: (dict[Self.Keys.playbackRate] as? Double) ?? 0,
                     artwork: dict[Self.Keys.artworkData] as? Data,
                     appName: nil,
-                    sampledAt: Date()
+                    sampledAt: Self.playbackSampleDate(
+                        dict[Self.Keys.timestamp], fallback: Date())
                 ))
             }
         }
+    }
+
+    private static func playbackSampleDate(_ value: Any?, fallback: Date) -> Date {
+        let candidate: Date?
+        if let date = value as? Date {
+            candidate = date
+        } else if let number = value as? NSNumber {
+            let raw = number.doubleValue
+            candidate = raw > 1_000_000_000
+                ? Date(timeIntervalSince1970: raw)
+                : Date(timeIntervalSinceReferenceDate: raw)
+        } else {
+            candidate = nil
+        }
+        guard let candidate,
+              abs(candidate.timeIntervalSince(fallback)) < 86_400 else { return fallback }
+        return candidate
     }
 
     /// 解析用（供测试构造数据）

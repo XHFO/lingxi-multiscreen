@@ -29,6 +29,8 @@ public enum CardRenderRecipe: Equatable {
     case modules([CanvasModule])
     case customImage
     case emojiWallpaper
+    /// 设备自行逐秒绘制；主应用仅生成软件预览和发送模式/校时指令。
+    case nativeClock
     case deviceCanvas
 }
 
@@ -87,7 +89,8 @@ public enum CardCapabilityRegistry {
         .init(mode: .formlabs2, recipe: .modules([.formlabs2]), requirements: [.formlabs]),
         .init(mode: .formlabs3, recipe: .modules([.formlabs3]), requirements: [.formlabs]),
         .init(mode: .formlabs4, recipe: .modules([.formlabs4]), requirements: [.formlabs]),
-        .init(mode: .formlabs5, recipe: .modules([.formlabs5]), requirements: [.formlabs])
+        .init(mode: .formlabs5, recipe: .modules([.formlabs5]), requirements: [.formlabs]),
+        .init(mode: .aiMacClock, surfaces: [.colorSquare], recipe: .nativeClock)
     ]
 
     private static let byMode = Dictionary(uniqueKeysWithValues: all.map { ($0.mode, $0) })

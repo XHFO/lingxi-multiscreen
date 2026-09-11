@@ -6,49 +6,89 @@
 
 本项目最初基于 [NCZkevin/LinxDisplayWindows](https://github.com/NCZkevin/LinxDisplayWindows) 开发，将其移植为 macOS 原生 SwiftUI 版本，并在此基础上做了大量功能增加与重构（多设备管理、卡片管理、墨水屏画板、按键控制、口袋先知多画板等）。感谢原作者的贡献。
 
+AI Mac 小屏幕并非专有硬件：它使用社区开源的 ESP8266 240×240 Wi-Fi 天气时钟硬件（常见名称为 MG01 / SD2 小电视）。硬件工程可在[立创开源硬件平台](https://oshwhub.com/q21182889/sd2)查看，社区 AI Mac 固件与桥接项目见 [pengchujin/esp8266-ai](https://github.com/pengchujin/esp8266-ai)。多屏灵犀在该类开源硬件上提供独立的定制固件、刷写、设备管理与多屏内容推送能力。
+
 ## 界面与功能预览
 
-首次打开软件进入「开始使用」引导页，添加设备后即可配置各功能。以下为各功能面板的实际软件界面（左侧导航 + 设置面板 + 实时预览）：
+以下截图全部来自 1.5.4 正式候选版正在运行的真实窗口，使用系统当前媒体、Home Assistant、X2D 与设备状态；没有合成封面或虚构状态。浅色、深色截图已按设备和功能完整归档在 [`docs/screens/1.5.4`](docs/screens/1.5.4/README.md)。
 
-| 开始使用（首次启动） | 设备管理 |
-| --- | --- |
-| ![开始使用](docs/screens/开始使用-引导页.png) | ![设备管理](docs/screens/界面-设备管理.png) |
+### AI Mac：开源硬件与内置固件
 
-| 灵犀画板（键盘） | Emoji 壁纸（螺旋 + 时间毛玻璃） |
-| --- | --- |
-| ![灵犀画板](docs/screens/界面-灵犀画板.png) | ![Emoji 壁纸](docs/screens/界面-Emoji壁纸.png) |
+AI Mac 小屏幕使用社区开源的 ESP8266 240×240 Wi-Fi 天气时钟硬件。软件在设备管理中明确展示来源，并提供定制固件校验、2.4 GHz Wi-Fi 预配置、USB 刷写和联网后自动添加。
 
-| 系统监控（含磁盘） | 千问办公额度 |
-| --- | --- |
-| ![系统监控](docs/screens/界面-系统监控.png) | ![千问办公额度](docs/screens/界面-千问办公额度.png) |
+![AI Mac 开源 ESP8266 Wi-Fi 天气时钟与内置固件（浅色）](docs/screens/1.5.4/light/global/设备管理.png)
 
-| 番茄钟（含全局快捷键） | 正在播放（封面强调色） |
-| --- | --- |
-| ![番茄钟](docs/screens/界面-番茄钟.png) | ![正在播放](docs/screens/界面-正在播放.png) |
+![AI Mac 开源 ESP8266 Wi-Fi 天气时钟与内置固件（深色）](docs/screens/1.5.4/dark/global/设备管理.png)
 
-| 自定义图片（全屏填充） | 摘录语录（竖排） |
-| --- | --- |
-| ![自定义图片](docs/screens/界面-自定义图片.png) | ![摘录语录](docs/screens/界面-摘录语录.png) |
+### X2D 实时打印状态
 
-| 少数派推荐 | Codex 用量 | 卡片管理 |
+![X2D 实时打印机卡片（浅色）](docs/screens/1.5.4/light/lingxi68/灵犀68-X2D打印机.png)
+
+![X2D 实时打印机卡片（深色）](docs/screens/1.5.4/dark/lingxi68/灵犀68-X2D打印机.png)
+
+### AI Mac 彩色正在播放
+
+![AI Mac 正在播放（浅色）](docs/screens/1.5.4/light/ai-mac/AIMac-正在播放.png)
+
+![AI Mac 正在播放（深色）](docs/screens/1.5.4/dark/ai-mac/AIMac-正在播放.png)
+
+### 按设备分类
+
+#### AI Mac 小屏幕
+
+| 功能 | 浅色 | 深色 |
 | --- | --- | --- |
-| ![少数派推荐](docs/screens/界面-少数派推荐.png) | ![Codex 用量](docs/screens/界面-Codex用量.png) | ![卡片管理](docs/screens/界面-卡片管理.png) |
+| 卡片管理 | ![AI Mac 卡片管理浅色](docs/screens/1.5.4/light/ai-mac/AIMac-卡片管理.png) | ![AI Mac 卡片管理深色](docs/screens/1.5.4/dark/ai-mac/AIMac-卡片管理.png) |
+| 彩色画板 | ![AI Mac 彩色画板浅色](docs/screens/1.5.4/light/ai-mac/AIMac-彩色画板.png) | ![AI Mac 彩色画板深色](docs/screens/1.5.4/dark/ai-mac/AIMac-彩色画板.png) |
+| 画板管理 | ![AI Mac 画板管理浅色](docs/screens/1.5.4/light/ai-mac/AIMac-画板管理.png) | ![AI Mac 画板管理深色](docs/screens/1.5.4/dark/ai-mac/AIMac-画板管理.png) |
+| 桌面时钟 | ![AI Mac 桌面时钟浅色](docs/screens/1.5.4/light/ai-mac/AIMac-桌面时钟.png) | ![AI Mac 桌面时钟深色](docs/screens/1.5.4/dark/ai-mac/AIMac-桌面时钟.png) |
+| 屏幕控制 | ![AI Mac 屏幕控制浅色](docs/screens/1.5.4/light/ai-mac/AIMac-屏幕控制.png) | ![AI Mac 屏幕控制深色](docs/screens/1.5.4/dark/ai-mac/AIMac-屏幕控制.png) |
 
-墨水屏设备功能页（口袋先知 / 摘录，含处理前后预览对比）：
+#### 灵犀68
 
-| 口袋先知画板 | 摘录画板 |
-| --- | --- |
-| ![口袋先知画板](docs/screens/口袋先知画板-设备页.png) | ![摘录画板](docs/screens/摘录画板-设备页.png) |
+| 功能 | 浅色 | 深色 |
+| --- | --- | --- |
+| 卡片管理 | ![灵犀68 卡片管理浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-卡片管理.png) | ![灵犀68 卡片管理深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-卡片管理.png) |
+| 灵犀画板 | ![灵犀画板浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-灵犀画板.png) | ![灵犀画板深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-灵犀画板.png) |
+| 正在播放 | ![灵犀68 正在播放浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-正在播放.png) | ![灵犀68 正在播放深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-正在播放.png) |
+| 系统监控 | ![系统监控浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-系统监控.png) | ![系统监控深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-系统监控.png) |
+| 番茄钟 | ![番茄钟浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-番茄钟.png) | ![番茄钟深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-番茄钟.png) |
+| Codex 用量 | ![Codex 用量浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-Codex用量.png) | ![Codex 用量深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-Codex用量.png) |
+| 千问办公额度 | ![千问办公额度浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-千问额度.png) | ![千问办公额度深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-千问额度.png) |
+| Home Assistant | ![Home Assistant 浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-HomeAssistant.png) | ![Home Assistant 深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-HomeAssistant.png) |
+| Formlabs | ![Formlabs 浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-Formlabs打印机.png) | ![Formlabs 深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-Formlabs打印机.png) |
+| Emoji 壁纸 | ![Emoji 壁纸浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-Emoji壁纸.png) | ![Emoji 壁纸深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-Emoji壁纸.png) |
+| 自定义图片 | ![自定义图片浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-自定义图片.png) | ![自定义图片深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-自定义图片.png) |
+| 摘录语录 | ![摘录语录浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-摘录语录.png) | ![摘录语录深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-摘录语录.png) |
+| 少数派推荐 | ![少数派推荐浅色](docs/screens/1.5.4/light/lingxi68/灵犀68-少数派推荐.png) | ![少数派推荐深色](docs/screens/1.5.4/dark/lingxi68/灵犀68-少数派推荐.png) |
+
+#### 口袋先知与摘录
+
+| 设备与功能 | 浅色 | 深色 |
+| --- | --- | --- |
+| 口袋先知画板 | ![口袋先知画板浅色](docs/screens/1.5.4/light/oracle/口袋先知-画板.png) | ![口袋先知画板深色](docs/screens/1.5.4/dark/oracle/口袋先知-画板.png) |
+| 口袋先知画板管理 | ![口袋先知画板管理浅色](docs/screens/1.5.4/light/oracle/口袋先知-画板管理.png) | ![口袋先知画板管理深色](docs/screens/1.5.4/dark/oracle/口袋先知-画板管理.png) |
+| 口袋先知按键控制 | ![口袋先知按键控制浅色](docs/screens/1.5.4/light/oracle/口袋先知-按键控制.png) | ![口袋先知按键控制深色](docs/screens/1.5.4/dark/oracle/口袋先知-按键控制.png) |
+| 摘录画板 | ![摘录画板浅色](docs/screens/1.5.4/light/excerpt/摘录-画板.png) | ![摘录画板深色](docs/screens/1.5.4/dark/excerpt/摘录-画板.png) |
+| 摘录画板管理 | ![摘录画板管理浅色](docs/screens/1.5.4/light/excerpt/摘录-画板管理.png) | ![摘录画板管理深色](docs/screens/1.5.4/dark/excerpt/摘录-画板管理.png) |
+
+#### 全局设置
+
+| 功能 | 浅色 | 深色 |
+| --- | --- | --- |
+| 外观 | ![外观浅色](docs/screens/1.5.4/light/global/外观.png) | ![外观深色](docs/screens/1.5.4/dark/global/外观.png) |
+| 设置 | ![全局设置浅色](docs/screens/1.5.4/light/global/全局设置.png) | ![全局设置深色](docs/screens/1.5.4/dark/global/全局设置.png) |
 
 ## 1.5.4 更新重点
 
 - 新增 AI Mac 240×240 小屏幕正式设备类型，支持系统仪表盘、桌面时钟和自定义图片；最多添加 5 台，每台独立保存 IP、内容模式和推送间隔。
-- 适配 ESP8266 AI Mac 固件：0.8.1 自动使用大端 RGB565 无损帧，修复热点配网页面的 SSID 选择和密码输入，旧固件自动回退 24KB 内 JPEG 兼容推送。
+- 软件内明确标注 AI Mac 的开源硬件属性：本体为 ESP8266 240×240 Wi-Fi 天气时钟（MG01 / SD2 小电视），并提供开源硬件工程与社区项目入口。
+- 适配 ESP8266 AI Mac 0.8.6 固件：自动使用大端 RGB565 无损帧，并提供适合 ESP8266 内存限制的现代化热点配网页面；设备热点使用带唯一尾号的 `Lingxi-Screen-XXXXXX`，旧固件自动回退 24KB 内 JPEG 兼容推送。
 - 设备管理内置定制固件与 USB 刷写流程：刷写前填写 2.4 GHz Wi-Fi，固件与临时配网区一次写入；界面明确提示 ESP8266 不支持 5 GHz/6 GHz，刷写成功后自动等待设备联网、获取 IP 并创建设备档案。密码不写入软件设置，设备成功联网后会擦除临时配网区。
 - AI Mac 小屏幕新增彩色多画板：沿用口袋先知的空白新建、模块组合、自动保存、拖拽排序、侧栏显示和自动轮换逻辑，直接输出 240×240 彩色画面，不经过墨水屏灰阶、抖动或插值处理。
 - AI Mac 彩色画板完整保留主题强调色、打印机品牌色和封面光晕；正在播放模块可按画板开启智能封面取色，以封面主色生成整板背景、高对比文字、进度色与描边。
 - AI Mac 设备管理支持手动添加或扫描当前局域网内已刷写、已联网的小屏幕，无需重新走刷机配网；扫描结果会验证固件身份并按 IP 去重。侧栏按每台设备独立列出卡片管理、全部功能卡片、桌面时钟、画板管理、各块画板与屏幕控制，专辑封面带动态采样彩色光晕。
-- AI Mac 现已适配灵犀68 的全部功能卡片，并按 240×240 原生彩色尺寸重新排版；每台小屏幕可独立设置卡片显示/隐藏、拖拽顺序、轮播参与和轮换间隔。底层新增统一卡片能力目录，新增卡片或新设备时由能力声明自动接入导航、轮播与渲染。
+- AI Mac 现已适配灵犀68 的全部功能卡片，并按 240×240 原生彩色尺寸重新排版；每台小屏幕可独立设置卡片显示/隐藏、拖拽顺序、轮播参与和轮换间隔。桌面时钟也纳入卡片管理，时间和样式由小屏幕固件本机逐秒演算与绘制，软件只负责切换和校时。底层新增统一卡片能力目录，新增卡片或新设备时由能力声明自动接入导航、轮播与渲染。
 - 提供 240×240 实时预览、连接测试、立即推送与 1–60 秒自动推送；画面没有变化时不重复发送，降低设备和网络负担。
 
 ## 1.5.3 更新重点
@@ -78,7 +118,7 @@
 - **Home Assistant**：独立实体状态卡片可分别为灵犀68、口袋先知和摘录画板选择显示实体；长名称与长状态自适应排版，每页最多 4 个等高卡片，实体较少时自动调整留白；`camera.*` 与 `image.*` 可抓取当前静态帧显示。连接配置全局共享，访问令牌只保存在本机。
 - **Bambu Lab 打印机**：打印机作为独立设备添加，支持多打印机卡片、手动实体映射与解除绑定、字段显示控制、错误告警和打印完成提示；可同时绑定摄像头与任务封面并切换显示。自动匹配需先选择打印状态实体，筛选弹窗可关闭默认筛选以兼容重命名过的设备和实体。
 - **Formlabs 打印机**：通过 Formlabs Dashboard 纯云端 API 管理最多 5 台打印机，显示任务名称、进度、层数、打印配置耗材、剩余时间与缩略图；支持 Formlabs 品牌蓝或跟随软件主题，并缓存最近任务避免完成后卡片突然清空。
-- **AI Mac 小屏幕**：通过局域网驱动 ESP8266 AI Mac 240×240 彩屏，完整支持灵犀68 的 Codex、千问、番茄钟、系统监控、正在播放、自定义图片、摘录、少数派、Emoji、Home Assistant、Bambu Lab 与 Formlabs 卡片，同时支持彩色多画板和桌面时钟。每台设备独立保存卡片顺序、显示/隐藏、自动轮播、画板和推送设置；画面不做墨水屏黑白/抖动处理。设备管理内置定制固件、完整性校验、Wi-Fi 预配置与 USB 刷写流程，刷写后自动发现 IP 并添加设备；新固件使用 RGB565 无损帧，旧固件自动使用 JPEG 兼容模式。
+- **AI Mac 小屏幕（开源硬件）**：设备本体是社区开源的 ESP8266 240×240 Wi-Fi 天气时钟（MG01 / SD2 小电视），多屏灵犀通过局域网驱动并提供定制固件。完整支持灵犀68 的 Codex、千问、番茄钟、系统监控、正在播放、自定义图片、摘录、少数派、Emoji、Home Assistant、Bambu Lab 与 Formlabs 卡片，同时支持彩色多画板和桌面时钟。每台设备独立保存卡片顺序、显示/隐藏、自动轮播、画板和推送设置；画面不做墨水屏黑白/抖动处理。设备管理内置完整性校验、Wi-Fi 预配置与 USB 刷写流程，刷写后自动发现 IP 并添加设备；新固件使用 RGB565 无损帧，旧固件自动使用 JPEG 兼容模式。
 - **可扩展卡片框架**：卡片标题、图标、设备支持范围、实时数据依赖与渲染配方由统一能力目录描述；新显示设备声明自己的屏幕族即可复用兼容卡片，打印机卡片位会根据实际设备数量动态出现。
 - **侧边栏**：系统标准分栏（NavigationSplitView），分隔条可拖拽调整宽度；可折叠为纯图标窄栏，展开/收起带弹簧动画；设备分组整行点击展开、手风琴式收起；正在播放专辑封面光晕点亮/变暗平滑过渡。
 - **实时预览**：右侧键盘预览与键盘实际显示严格一致，窗口任意缩放时预览始终完整显示、绝不裁切。

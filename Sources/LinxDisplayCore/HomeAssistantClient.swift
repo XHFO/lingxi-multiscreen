@@ -345,53 +345,13 @@ public struct BambuLabCardSettings: Codable, Equatable {
         try c.encode(showImage, forKey: .showImage)
     }
 
-    /// 自动识别：从实体列表匹配 printer/bambu 相关实体，按关键词归类到各字段
+    /// 自动识别：先完整锁定唯一的 `_print_status` 实体，再按同一设备前缀关联字段。
+    /// 保留这个旧入口供历史调用使用，但不再维护另一套宽松的 status/state 猜测逻辑。
     public static func autoDetect(entities: [HAEntity]) -> BambuLabCardSettings {
-        // 只从打印机相关域（sensor/binary_sensor/number/select/switch 等）中按关键词匹配，
-        // 自动化/脚本/场景等无关类型不参与
-        let relevant = HAEntityPicker.printerRelevant(entities)
-        let printer = relevant.filter { e in
-            let id = e.entityId.lowercased()
-            return id.contains("bambu") || id.contains("printer")
+        guard let seed = BambuEntityMatcher.automaticPrintStatusCandidates(entities).first else {
+            return .empty
         }
-        var s = BambuLabCardSettings()
-        func match(_ keywords: [String], domains: Set<String>) -> String? {
-            printer.first { e in
-                guard domains.contains(HAEntityPicker.domain(of: e.entityId)) else { return false }
-                let id = e.entityId.lowercased()
-                let text = "\(id) \(e.friendlyName.lowercased())"
-                return keywords.contains { text.contains($0) }
-            }?.entityId
-        }
-        let valueDomains: Set<String> = ["sensor", "number"]
-        s.statusEntityID = match(["status", "state"], domains: ["sensor"]) ?? ""
-        s.progressEntityID = match(["progress"], domains: valueDomains) ?? ""
-        s.taskEntityID = match(
-            ["current_task", "print_task", "task_name", "job_name", "current_job"],
-            domains: ["sensor", "text", "select"]) ?? ""
-        s.nozzleTempEntityID = match(
-            ["nozzle_temp", "temp_nozzle", "nozzle_temperature", "hotend_temp"],
-            domains: valueDomains) ?? ""
-        s.bedTempEntityID = match(
-            ["bed_temp", "temp_bed", "bed_temperature"], domains: valueDomains) ?? ""
-        s.remainingEntityID = match(
-            ["remaining_time", "remaining"], domains: valueDomains) ?? ""
-        s.endTimeEntityID = match(
-            ["estimated_end_time", "estimated_finish_time", "estimated_completion_time",
-             "end_time", "finish_time", "completion_time", "estimated_finish", "estimated_end",
-             "预计结束", "结束时间", "预计完成", "完成时间"],
-            domains: valueDomains) ?? ""
-        s.errorEntityID = match(
-            ["hms_error", "hms_errors", "error", "err"],
-            domains: ["sensor", "binary_sensor"]) ?? ""
-        // 摄像头与任务封面分别匹配并同时保存，卡片里可以即时切换来源。
-        let base = s.statusEntityID.isEmpty ? "sensor.bambu_printer" :
-            BambuEntityMatcher.prefix(of: s.statusEntityID)
-        s.imageEntityID = BambuEntityMatcher.matchPicture(
-            base: base, allEntities: relevant, source: .camera)
-        s.taskImageEntityID = BambuEntityMatcher.matchPicture(
-            base: base, allEntities: relevant, source: .taskCover)
-        return s
+        return BambuEntityMatcher.detect(from: seed, allEntities: entities)
     }
 }
 
@@ -1000,6 +960,10 @@ public enum BambuEntityMatcher {
     /// 已知关键词后缀（用于提取打印机实体前缀）
     static let suffixes: [String] = [
         "printer_status", "print_status",
+        // SD 卡状态属于打印机的辅助诊断实体。把完整后缀放在通用
+        // `status` / `state` 前面，使前缀提取仍能回到同一台打印机，
+        // 但绝不能让它反过来成为自动发现的打印状态种子。
+        "sdcard_status", "sd_card_status", "sdcard_state", "sd_card_state",
         "current_task", "print_task", "job_name", "current_job",
         "nozzle_temperature", "hotend_temp", "nozzle_temp", "temp_nozzle",
         "bed_temperature", "bed_temp", "temp_bed",
@@ -1016,21 +980,30 @@ public enum BambuEntityMatcher {
         "error", "err", "hms",
     ]
 
-    /// 自动匹配只允许从打印机的“打印状态实体”开始。
-    /// `_print_status` / `_printer_status` 是 Bambu 集成最稳定的命名；兼容旧集成的
-    /// `_status` / `_state` 时，还要求名称或型号带有明确的打印机特征，避免把普通状态传感器列入候选。
-    public static func isPrintStatusEntity(_ entity: HAEntity) -> Bool {
-        guard HAEntityPicker.domain(of: entity.entityId) == "sensor" else { return false }
-        let id = entity.entityId.lowercased()
-        if id.hasSuffix("_print_status") || id.hasSuffix("_printer_status") { return true }
-        guard id.hasSuffix("_status") || id.hasSuffix("_state") else { return false }
-        if BambuModelDetector.model(of: entity) != nil { return true }
-        let text = "\(id) \(entity.friendlyName.lowercased())"
-        return text.contains("bambu") || text.contains("printer")
-            || text.contains("打印机") || text.contains("打印状态")
+    /// 完整识别 entity_id 的 `_print_status` 字段。Home Assistant 在实体名冲突时
+    /// 可能追加 `_2`、`_3`，这些仍属于同一个字段；其他任意后续文字均不接受。
+    private static func printStatusFieldRange(in entityID: String) -> Range<String.Index>? {
+        let id = entityID.lowercased()
+        guard let range = id.range(of: "_print_status", options: .backwards) else { return nil }
+        let tail = id[range.upperBound...]
+        if tail.isEmpty { return range }
+        guard tail.first == "_" else { return nil }
+        let duplicateNumber = tail.dropFirst()
+        guard !duplicateNumber.isEmpty,
+              duplicateNumber.allSatisfy(\.isNumber) else { return nil }
+        return range
     }
 
-    /// 打印机常见运行状态。用户即使改掉实体显示名称或 entity_id 后缀，状态值仍可作为候选线索。
+    /// 自动匹配只允许从 Bambu 集成的专用 `_print_status` 实体开始。
+    /// 不能把 `_status` / `_state` 等通用后缀当作等价字段：SD 卡、网络和其他
+    /// 诊断实体也会使用这些后缀。改过 entity_id 的用户可关闭默认筛选后手动指定。
+    public static func isPrintStatusEntity(_ entity: HAEntity) -> Bool {
+        guard HAEntityPicker.domain(of: entity.entityId) == "sensor" else { return false }
+        guard !isSDCardEntity(entity) else { return false }
+        return printStatusFieldRange(in: entity.entityId) != nil
+    }
+
+    /// 打印机常见运行状态，仅用于给已经命中 `_print_status` 的候选增加可信度。
     static let printerStateValues: Set<String> = [
         "idle", "printing", "paused", "error", "standby", "completed", "finish",
         "running", "busy", "preparing", "unloading", "loading", "cooling", "heating",
@@ -1066,6 +1039,21 @@ public enum BambuEntityMatcher {
         }
     }
 
+    /// Bambu 集成会暴露 `SD Card Status` / `SD卡状态` 等诊断传感器。
+    /// 它们既带打印机型号，也以 status/state 结尾，不能依靠通用状态规则区分；
+    /// 因此同时检查稳定 entity_id 与本地化显示名，覆盖不同集成版本的命名。
+    private static func isSDCardEntity(_ entity: HAEntity) -> Bool {
+        let text = "\(entity.entityId) \(entity.friendlyName)".lowercased()
+        let compact = text
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        return compact.contains("sdcard")
+            || compact.contains("sd卡")
+            || compact.contains("存储卡")
+            || compact.contains("memorycard")
+    }
+
     private static func siblingEvidenceIndex(_ allEntities: [HAEntity]) -> SiblingEvidenceIndex {
         var groupCountsByPrefix: SiblingEvidenceIndex = [:]
         for entity in allEntities {
@@ -1094,29 +1082,39 @@ public enum BambuEntityMatcher {
         siblingEvidenceCount(for: entity, index: siblingEvidenceIndex(allEntities))
     }
 
-    /// 自动匹配候选可信度：标准后缀最高，其次是型号/通用状态后缀与同前缀兄弟实体，
-    /// 再其次是当前状态值；friendly_name 仅作低优先级兜底，改名不会让可靠候选消失。
+    /// 自动匹配候选可信度。入口先严格验证完整 `_print_status` 字段，型号、兄弟
+    /// 实体和状态值只负责确认它属于 Bambu 打印机及排序，不能把其他状态提升为入口。
     private static func printStatusCandidateScore(_ entity: HAEntity, siblingCount: Int) -> Int {
         guard HAEntityPicker.domain(of: entity.entityId) == "sensor" else { return 0 }
+        guard !isSDCardEntity(entity) else { return 0 }
         let id = entity.entityId.lowercased()
-        if id.hasSuffix("_print_status") || id.hasSuffix("_printer_status") { return 100 }
-
-        let hasStatusSuffix = id.hasSuffix("_status") || id.hasSuffix("_state")
+        guard printStatusFieldRange(in: id) != nil else { return 0 }
         let modelKnown = BambuModelDetector.model(of: entity) != nil
         let stateKnown = printerStateValues.contains(entity.state.lowercased())
         let nameText = entity.friendlyName.lowercased()
         let nameHint = nameText.contains("bambu") || nameText.contains("printer")
-            || nameText.contains("打印机") || nameText.contains("打印状态")
+            || nameText.contains("打印机")
 
-        guard stateKnown || siblingCount >= 2 || nameHint || (hasStatusSuffix && modelKnown) else { return 0 }
-        var score = 0
-        if hasStatusSuffix { score += 35 }
+        // Home Assistant 会把用户设备名与翻译后的实体名拼在一起。家电集成也可能
+        // 产生 `_print_status`（例如“滚筒洗衣机 2 号 打印状态”），因此后缀本身
+        // 不能再作为打印机身份。明确的非打印机设备名只有在具备型号、品牌或至少
+        // 两组同前缀打印机实体证据时才允许进入候选。
+        let nonPrinterHints = [
+            "洗衣机", "滚筒", "烘干机", "洗碗机", "washer", "washing_machine",
+            "washing machine", "laundry", "dryer", "dishwasher",
+        ]
+        let looksLikeOtherAppliance = nonPrinterHints.contains {
+            id.contains($0) || nameText.contains($0)
+        }
+        if looksLikeOtherAppliance && !modelKnown && !nameHint && siblingCount < 2 {
+            return 0
+        }
+
+        var score = 135
         if modelKnown { score += 25 }
         score += min(siblingCount, 6) * 8
         if stateKnown { score += 12 }
         if nameHint { score += 4 }
-        // 没有明确后缀时至少需要型号、打印状态值或两个兄弟实体，避免普通传感器误入。
-        if !hasStatusSuffix && !stateKnown && siblingCount < 2 && !nameHint { return 0 }
         return score
     }
 
@@ -1143,6 +1141,28 @@ public enum BambuEntityMatcher {
         return scored.map(\.entity)
     }
 
+    /// 自动创建设备与默认筛选使用的严格候选。实体必须完整以 `_print_status`
+    /// 结尾，并且还要能确认 Bambu 型号/品牌，或在同一前缀下
+    /// 找到至少两类打印机兄弟实体。用户改过所有名称时仍可关闭默认筛选后手动指定。
+    public static func automaticPrintStatusCandidates(_ entities: [HAEntity]) -> [HAEntity] {
+        let relevant = HAEntityPicker.printerRelevant(entities)
+        let evidence = siblingEvidenceIndex(relevant)
+        let filtered = printStatusCandidates(relevant).filter { entity in
+            let id = entity.entityId.lowercased()
+            let name = entity.friendlyName.lowercased()
+            let hasIdentity = BambuModelDetector.model(of: entity) != nil
+                || id.contains("bambu") || name.contains("bambu")
+                || id.contains("printer") || name.contains("printer")
+                || name.contains("打印机")
+            return hasIdentity
+                || siblingEvidenceCount(for: entity, index: evidence) >= 2
+        }
+        // 一个打印机可能因 HA 名称冲突同时残留 `_print_status` 与 `_print_status_2`；
+        // 自动设备发现按规范化打印机前缀只返回一个入口，不能重复创建设备。
+        var seenPrefixes = Set<String>()
+        return filtered.filter { seenPrefixes.insert(prefix(of: $0.entityId)).inserted }
+    }
+
     /// 打印状态选择器的最终候选集。关闭默认筛选时仅保留类型约束，列出全部 sensor；
     /// 具体选中的实体会作为用户明确指定的自动匹配起点。
     public static func printStatusCandidates(_ entities: [HAEntity],
@@ -1160,6 +1180,9 @@ public enum BambuEntityMatcher {
     /// 从实体 id 提取前缀：去掉已知关键词后缀（sensor.bambu_xxx_status → sensor.bambu_xxx）
     public static func prefix(of entityID: String) -> String {
         let lower = entityID.lowercased()
+        if let printStatusRange = printStatusFieldRange(in: lower) {
+            return String(lower[..<printStatusRange.lowerBound])
+        }
         var best: (suffix: String, range: Range<String.Index>)?
         for suffix in suffixes {
             let pattern = "_" + suffix

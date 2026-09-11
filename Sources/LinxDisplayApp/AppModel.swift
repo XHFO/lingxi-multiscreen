@@ -32,8 +32,8 @@ struct BambuEntityCatalog {
             pictureEntities, source: .camera, requireAvailablePicture: false)
         taskCoverEntities = BambuEntityMatcher.pictureCandidates(
             pictureEntities, source: .taskCover, requireAvailablePicture: false)
-        defaultStatusEntities = BambuEntityMatcher.printStatusCandidates(
-            printerEntities, useDefaultFilter: true)
+        defaultStatusEntities = BambuEntityMatcher.automaticPrintStatusCandidates(
+            printerEntities)
         allStatusEntities = BambuEntityMatcher.printStatusCandidates(
             printerEntities, useDefaultFilter: false)
     }
@@ -47,7 +47,7 @@ private struct BambuCameraZoomRuntime {
 /// 应用总控：每秒时钟驱动渲染与推送，逻辑对齐原版 MainViewModel。
 @MainActor
 public final class AppModel: ObservableObject {
-    private let store = SettingsStore()
+    private let store: SettingsStore
     private let codex = CodexRateLimitClient()
     private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
@@ -77,12 +77,16 @@ public final class AppModel: ObservableObject {
     private var lyricsRequestedSongKey: String?
     private var linkedLyricsLastLineKeys: [UUID: String] = [:]
     private var linkedLyricsBusyIDs: Set<UUID> = []
-    /// 歌词属于强时效画面：整条推送链只保留最新歌词帧，旧任务会被取消并淘汰。
-    private var linkedLyricsScheduledLineKey: String?
-    private var linkedLyricsPushTask: Task<Void, Never>?
-    private var linkedLyricsRetryLineKey: String?
-    private var linkedLyricsRetryNotBefore: Date?
-    private var lastTickDate: Date?
+    /// 歌词属于强时效画面：每台键盘各自只保留最新帧，互不等待、互不共用延迟。
+    private var linkedLyricsScheduledLineKeys: [UUID: String] = [:]
+    private var linkedLyricsPushTasks: [UUID: Task<Void, Never>] = [:]
+    private var linkedLyricsRetryLineKeys: [UUID: String] = [:]
+    private var linkedLyricsRetryNotBefore: [UUID: Date] = [:]
+    /// 每台灵犀 68 的渲染 + 上传耗时 EWMA，用来把换帧完成点贴近歌词时间戳。
+    private var linkedLyricsUploadLatency: [UUID: TimeInterval] = [:]
+    private var lastRemoteNowPlaying: NowPlayingInfo?
+    private var nowPlayingChangeObservers: [NSObjectProtocol] = []
+    private var nowPlayingEventRefreshTask: Task<Void, Never>?
     private var lastPreviewRender: Date?
     private var lastImageRotation: Date?
     /// 当前自定义图片的文件修订指纹。即使路径不变，只要内容被替换也会重新取色。
@@ -91,8 +95,12 @@ public final class AppModel: ObservableObject {
     private var aiMacScreenCapabilities: [UUID: AIMacScreenCapabilities] = [:]
     private var aiMacScreenLastHashes: [UUID: String] = [:]
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
+    /// 每台小屏幕的渲染 + 上传耗时，用于让图片内进度指向预计换帧完成时刻。
+    private var aiMacScreenUploadLatency: [UUID: TimeInterval] = [:]
     private var aiMacScreenLastBoardRotation: [UUID: Date] = [:]
     private var aiMacScreenLastCardRotation: [UUID: Date] = [:]
+    /// 设备端时钟只需低频校时；逐秒走时与重绘由小屏幕自身完成。
+    private var aiMacScreenLastClockSyncAt: [UUID: Date] = [:]
     /// 系统锁屏/睡眠期间暂停画面推送，并按设备记住熄屏前亮度。
     private var aiMacScreensSystemSleeping = false
     private var aiMacScreenSavedBrightness: [UUID: Int] = [:]
@@ -254,6 +262,9 @@ public final class AppModel: ObservableObject {
     @Published public var homeAssistantDiscoveredServices: [HomeAssistantDiscoveredService] = []
     @Published public var homeAssistantDiscoveryBusy = false
     @Published public var homeAssistantDiscoveryStatus = ""
+    @Published public var lingxi68DiscoveredDevices: [Lingxi68DiscoveredDevice] = []
+    @Published public var lingxi68DiscoveryBusy = false
+    @Published public var lingxi68DiscoveryStatus = ""
     @Published public var rand0DiscoveredDevices: [Rand0DiscoveredDevice] = []
     @Published public var rand0DiscoveryBusy = false
     @Published public var rand0DiscoveryStatus = ""
@@ -266,6 +277,7 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacFlashLog = ""
     @Published public var aiMacFlashBusy = false
     /// 设备管理页自动发现每类只主动运行一次；用户仍可点“重新扫描”。
+    private var didAutoScanLingxi68 = false
     private var didAutoScanHomeAssistant = false
     private var didAutoScanRand0 = false
     /// Bambu 实体选择候选缓存；依靠 haSnapshot 的发布通知驱动界面读取，无需单独发布。
@@ -297,8 +309,14 @@ public final class AppModel: ObservableObject {
 
     /// 外观变化时由窗口应用（跟随系统 / 浅色 / 深色）
     public var onAppearanceChanged: (() -> Void)?
+    /// 正式应用允许定时刷新、自动发现与网络推送；发布截图使用隔离模型关闭这些行为。
+    public let backgroundServicesEnabled: Bool
 
-    public init() {
+    /// 正式运行默认启用全部后台服务。视觉导出可以注入隔离存储并关闭后台服务，
+    /// 这样不会读取、改写或推送用户正在使用的设备数据。
+    public init(store: SettingsStore = SettingsStore(), startBackgroundServices: Bool = true) {
+        backgroundServicesEnabled = startBackgroundServices
+        self.store = store
         let loaded = store.load()
         settings = loaded
         pomodoro = PomodoroService(state: store.loadPomodoro())
@@ -387,21 +405,24 @@ public final class AppModel: ObservableObject {
                 device.settings.apply(to: loaded, type: type)
             }
         }
-        setupLingxi68KnobController()
-        refreshInputMonitoringStatus()
         wireSettingsHandlers()
-        applyLingxi68KnobPaging()
-        applyStartupState()
         lastCustomImageRevision = currentCustomImageRevision()
-        refreshAIMacFlashPorts()
-        startTimer()
-        startLyricsTimer()
         renderPreview()
-        Task { await activateMode() }
-        // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
-        ensureRand0Session()
-        // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
-        Task { await checkForUpdate() }
+        if startBackgroundServices {
+            setupLingxi68KnobController()
+            refreshInputMonitoringStatus()
+            applyLingxi68KnobPaging()
+            applyStartupState()
+            refreshAIMacFlashPorts()
+            startTimer()
+            startLyricsTimer()
+            startNowPlayingNotifications()
+            Task { await activateMode() }
+            // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
+            ensureRand0Session()
+            // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
+            Task { await checkForUpdate() }
+        }
     }
 
     /// 启动/恢复初始设定后把系统相关状态与设置对齐（登录项、外观、自动推送计时起点）。
@@ -454,6 +475,7 @@ public final class AppModel: ObservableObject {
         aiMacScreenCapabilities = [:]
         aiMacScreenLastHashes = [:]
         aiMacScreenLastPushAt = [:]
+        aiMacScreenUploadLatency = [:]
         aiMacScreenSavedBrightness = [:]
         aiMacScreenPowerTasks.values.forEach { $0.cancel() }
         aiMacScreenPowerTasks = [:]
@@ -466,13 +488,10 @@ public final class AppModel: ObservableObject {
         lyricsRequestedSongKey = nil
         linkedLyricsLastLineKeys = [:]
         linkedLyricsBusyIDs = []
-        linkedLyricsScheduledLineKey = nil
-        linkedLyricsPushTask?.cancel()
-        linkedLyricsPushTask = nil
-        linkedLyricsRetryLineKey = nil
-        linkedLyricsRetryNotBefore = nil
+        resetLinkedLyricsScheduling()
+        linkedLyricsUploadLatency = [:]
+        lastRemoteNowPlaying = nil
         nowPlayingLyrics = nil
-        lastTickDate = nil
         lastImageRotation = nil
         lastOracleBoardRotation = nil
         lastExcerptBoardRotation = nil
@@ -530,6 +549,7 @@ public final class AppModel: ObservableObject {
     /// 设置修改后的轻量防抖推送。最终仍按渲染结果 hash 去重，因此与当前卡片
     /// 无关的设置不会产生网络上传，也不会用“画面未变化”覆盖界面状态。
     private func scheduleCardSettingsPush() {
+        guard backgroundServicesEnabled else { return }
         cardSettingsPushTask?.cancel()
         cardSettingsPushTask = Task { @MainActor [weak self] in
             do {
@@ -896,14 +916,13 @@ public final class AppModel: ObservableObject {
         return device.id
     }
 
-    /// 删除一台设备（允许删除全部设备；删除的是活动设备时活动设备置空）
+    /// 删除一台设备（允许删除全部设备；删除的是活动设备时切换到同类回退设备）
     public func removeDevice(id: UUID) {
         guard let device = settings.devices.first(where: { $0.id == id }) else { return }
         let type = device.type
-        settings.devices.removeAll { $0.id == id }
-        if activeDeviceID(for: type) == id {
-            setActiveDeviceID(type, nil)
-            activeDevice(for: type)?.settings.apply(to: settings, type: type)
+        let removingActiveDevice = activeDeviceID(for: type) == id
+        guard settings.removeManagedDevice(id: id) != nil else { return }
+        if removingActiveDevice {
             if type == .oracle {
                 lastOracleAutoPush = settings.oracleAutoPushEnabled ? nil : Date()
                 lastOracleBoardRotation = Date()
@@ -930,8 +949,10 @@ public final class AppModel: ObservableObject {
             aiMacScreenCapabilities[id] = nil
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
+            aiMacScreenUploadLatency[id] = nil
             aiMacScreenLastBoardRotation[id] = nil
             aiMacScreenLastCardRotation[id] = nil
+            aiMacScreenLastClockSyncAt[id] = nil
             aiMacScreenPowerTasks[id]?.cancel()
             aiMacScreenPowerTasks[id] = nil
             aiMacScreenPowerGenerations[id] = nil
@@ -943,11 +964,18 @@ public final class AppModel: ObservableObject {
             aiMacScreenStatuses[id] = nil
             aiMacScreenLastPushText[id] = nil
             aiMacScreenLosslessIDs.remove(id)
+            aiMacScreenLastClockSyncAt[id] = nil
             aiMacScreenBusyIDs.remove(id)
         }
         if type == .keyboard {
             linkedLyricsLastLineKeys[id] = nil
             linkedLyricsBusyIDs.remove(id)
+            linkedLyricsScheduledLineKeys[id] = nil
+            linkedLyricsPushTasks[id]?.cancel()
+            linkedLyricsPushTasks[id] = nil
+            linkedLyricsRetryLineKeys[id] = nil
+            linkedLyricsRetryNotBefore[id] = nil
+            linkedLyricsUploadLatency[id] = nil
             // 删除目标键盘时同时解除所有来源设备的关联，避免留下不可见的失效 ID。
             for index in settings.devices.indices {
                 if settings.devices[index].type == .oracle,
@@ -1203,7 +1231,51 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Home Assistant / Bambu Lab 自动发现
+    // MARK: - 灵犀68 / Home Assistant / Bambu Lab 自动发现
+
+    /// 灵犀68 固件当前没有可靠的设备身份接口。保留这个入口便于将来恢复兼容，
+    /// 但现阶段不执行局域网探测，避免把其他提供相似上传路由的设备误识别为键盘。
+    public func scanLingxi68Devices(force: Bool = false) async {
+        guard !lingxi68DiscoveryBusy else { return }
+        if !force, didAutoScanLingxi68 { return }
+        didAutoScanLingxi68 = true
+        lingxi68DiscoveredDevices = []
+        lingxi68DiscoveryStatus = "灵犀68键盘当前仅支持手动添加"
+    }
+
+    public func isLingxi68DeviceAdded(_ discovered: Lingxi68DiscoveredDevice) -> Bool {
+        let host = EndpointBuilder.host(from: discovered.ip)
+        return devices(for: .keyboard).contains {
+            EndpointBuilder.host(from: $0.settings.endpoint ?? "") == host
+        }
+    }
+
+    @discardableResult
+    public func addDiscoveredLingxi68Device(_ discovered: Lingxi68DiscoveredDevice) -> UUID {
+        let host = EndpointBuilder.host(from: discovered.ip)
+        if let existing = devices(for: .keyboard).first(where: {
+            EndpointBuilder.host(from: $0.settings.endpoint ?? "") == host
+        }) {
+            setDeviceEnabled(id: existing.id, enabled: true)
+            switchDevice(type: .keyboard, to: existing.id)
+            lingxi68DiscoveryStatus = "该键盘已在列表中 · \(host)"
+            persistSettings()
+            return existing.id
+        }
+        let id = addDevice(type: .keyboard)
+        guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return id }
+        settings.deviceSyncInFlight = true
+        let endpoint = EndpointBuilder.endpoint(fromHost: host)
+        settings.devices[index].settings.endpoint = endpoint
+        settings.devices[index].name = discovered.displayName
+        settings.endpoint = endpoint
+        settings.deviceSyncInFlight = false
+        lingxi68DiscoveredDevices.removeAll { $0.id == discovered.id }
+        lingxi68DiscoveryStatus = "已添加 \(discovered.displayName) · \(host)"
+        persistSettings()
+        renderPreview()
+        return id
+    }
 
     /// 设备管理页首次进入时自动扫描一次；后续只有用户主动点“重新扫描”才再次运行。
     public func scanHomeAssistantServers(force: Bool = false) async {
@@ -1284,7 +1356,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func reconcileBambuPrinters(entities: [HAEntity]) -> String {
-        let candidates = BambuEntityMatcher.printStatusCandidates(entities, useDefaultFilter: true)
+        let candidates = BambuEntityMatcher.automaticPrintStatusCandidates(entities)
         var seenPrefixes = Set<String>()
         let unique = candidates.filter {
             seenPrefixes.insert(BambuEntityMatcher.prefix(of: $0.entityId)).inserted
@@ -1711,6 +1783,7 @@ public final class AppModel: ObservableObject {
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
             aiMacScreenLosslessIDs.remove(id)
+            aiMacScreenLastClockSyncAt[id] = nil
         }
         persistSettings()
         refreshAIMacScreenPreview(deviceID: id)
@@ -1918,6 +1991,52 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    /// AI Mac 的 Home Assistant 卡片实体按小屏幕设备隔离。旧档案没有该字段时，
+    /// 首次显示兼容原键盘卡片选择；一旦用户编辑便写成该设备自己的明确列表。
+    public func aiMacHAEntityIDs(for deviceID: UUID) -> [String] {
+        aiMacScreenSettings(for: deviceID).haCardEntityIDs ?? settings.haCardEntityIDs
+    }
+
+    public func setAIMacHAEntityIDs(_ entityIDs: [String], deviceID: UUID) {
+        let cleaned = HAEntityListEditor.merge([], adding: entityIDs)
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) {
+            $0.haCardEntityIDs = cleaned
+        }
+        guard isCurrentAIMacCard(deviceID: deviceID, mode: .homeAssistant) else { return }
+        Task { @MainActor [weak self] in
+            await self?.refreshAIMacCardDataAndPush(mode: .homeAssistant,
+                                                    deviceID: deviceID)
+        }
+    }
+
+    public func addAIMacHAEntities(_ entityIDs: [String], deviceID: UUID) {
+        setAIMacHAEntityIDs(
+            HAEntityListEditor.merge(aiMacHAEntityIDs(for: deviceID), adding: entityIDs),
+            deviceID: deviceID)
+    }
+
+    public func removeAIMacHAEntity(_ entityID: String, deviceID: UUID) {
+        setAIMacHAEntityIDs(aiMacHAEntityIDs(for: deviceID).filter { $0 != entityID },
+                           deviceID: deviceID)
+    }
+
+    public func replaceAIMacHAEntity(oldID: String, newID: String, deviceID: UUID) {
+        let target = newID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, target != oldID else { return }
+        var list = aiMacHAEntityIDs(for: deviceID)
+        guard let index = list.firstIndex(of: oldID) else { return }
+        if list.contains(target) { list.remove(at: index) } else { list[index] = target }
+        if let alias = settings.haEntityAliases.removeValue(forKey: oldID) {
+            settings.haEntityAliases[target] = alias
+        }
+        setAIMacHAEntityIDs(list, deviceID: deviceID)
+    }
+
+    public func aiMacHAEntitiesBinding(for deviceID: UUID) -> Binding<[String]> {
+        Binding(get: { self.aiMacHAEntityIDs(for: deviceID) },
+                set: { self.setAIMacHAEntityIDs($0, deviceID: deviceID) })
+    }
+
     /// 按能力目录刷新一张卡片真正依赖的数据，再向目标小屏推送；不改变灵犀 68 当前卡片。
     private func refreshAIMacCardDataAndPush(mode: DisplayMode, deviceID: UUID) async {
         guard let capability = CardCapabilityRegistry.capability(for: mode),
@@ -1952,15 +2071,21 @@ public final class AppModel: ObservableObject {
         }
         await pushAIMacScreen(deviceID: deviceID, force: true)
         if mode == .homeAssistant {
-            let ids = haCardPictureEntityIDs()
+            let ids = HAEntityPicker.pictureEntityIDs(
+                in: aiMacHAEntityIDs(for: deviceID))
             if await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: ids) {
                 await pushAIMacScreen(deviceID: deviceID, force: false)
             }
         } else if mode.bambuSlotIndex != nil {
             let config = bambuConfig(for: mode)
-            if config.showImage, !config.selectedImageEntityID.isEmpty,
+            // AI Mac 的独立打印机卡同时显示实况与任务封面。两张图合并为一次
+            // 图片刷新流程，仍沿用内容哈希去重，不增加新的轮询定时器。
+            let pictureIDs = [config.imageEntityID, config.taskImageEntityID]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if config.showImage, !pictureIDs.isEmpty,
                await refreshHAPictures(entities: haSnapshot.entities,
-                                       wantedIDs: [config.selectedImageEntityID]) {
+                                       wantedIDs: pictureIDs) {
                 await pushAIMacScreen(deviceID: deviceID, force: false)
             }
         }
@@ -2174,10 +2299,13 @@ public final class AppModel: ObservableObject {
     private func renderAIMacScreen(deviceID: UUID,
                                    config: AIMacScreenDeviceSettings,
                                    system snapshot: SystemSnapshot,
+                                   nowPlayingOverride: NowPlayingInfo? = nil,
                                    now: Date = Date()) throws -> CGImage {
+        let playbackInfo = nowPlayingOverride ?? nowPlaying
         if config.mode == .card {
             return try renderAIMacCard(deviceID: deviceID, mode: config.cardMode,
-                                       config: config, system: snapshot, now: now)
+                                       config: config, system: snapshot,
+                                       nowPlaying: playbackInfo, now: now)
         }
         guard config.mode == .canvas else {
             return try AIMacScreenSupport.render(settings: config, system: snapshot, now: now)
@@ -2193,7 +2321,7 @@ public final class AppModel: ObservableObject {
                                             softwareIsDark: dark)
         return ScreenRenderer.renderDeviceCanvas(
             modules: board.moduleList, system: snapshot,
-            nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
+            nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
             customText: settings.canvasText, settings: settings,
             codex: usage, qwenQuota: qwenQuota,
             sspaiArticles: aiMacCanvasArticles(deviceID: deviceID, board: board),
@@ -2215,6 +2343,7 @@ public final class AppModel: ObservableObject {
     private func renderAIMacCard(deviceID: UUID, mode: DisplayMode,
                                  config: AIMacScreenDeviceSettings,
                                  system snapshot: SystemSnapshot,
+                                 nowPlaying playbackInfo: NowPlayingInfo,
                                  now: Date) throws -> CGImage {
         guard let capability = CardCapabilityRegistry.capability(for: mode) else {
             throw AIMacScreenSupportError.encodeFailed
@@ -2227,6 +2356,12 @@ public final class AppModel: ObservableObject {
             return try AIMacScreenSupport.render(settings: imageConfig, system: snapshot, now: now)
         case .emojiWallpaper:
             return try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
+        case .nativeClock:
+            // 软件端仅保留外观预览；真正的时间计算、秒级刷新和绘制均由固件完成。
+            var previewConfig = config
+            previewConfig.mode = .clock
+            return try AIMacScreenSupport.render(settings: previewConfig,
+                                                 system: snapshot, now: now)
         case .deviceCanvas:
             // AI Mac 的设备画板走上层 canvas 分支；通用卡片列表不会暴露这一配方。
             throw AIMacScreenSupportError.encodeFailed
@@ -2240,8 +2375,27 @@ public final class AppModel: ObservableObject {
                 customAccentHex: settings.customAccentHex,
                 softwareIsDark: dark)
             let cardHA = mode == .homeAssistant
-                ? haSnapshot.selecting(entityIDs: settings.haCardEntityIDs)
+                ? haSnapshot.selecting(entityIDs: aiMacHAEntityIDs(for: deviceID))
                 : haSnapshot
+            if mode.bambuSlotIndex != nil {
+                let bambu = bambuConfig(for: mode)
+                let cameraID = bambu.imageEntityID
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let cameraRaw = cameraID.isEmpty ? nil : haSnapshot.picture(for: cameraID)
+                let cameraFrame = bambu.autoCameraZoom
+                    ? (bambuAutoZoomImages[cameraID] ?? cameraRaw) : cameraRaw
+                let taskCoverID = bambu.taskImageEntityID
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let taskCover = taskCoverID.isEmpty
+                    ? nil : haSnapshot.picture(for: taskCoverID)
+                return ScreenRenderer.renderAIMacBambuCard(
+                    bambu, entities: haSnapshot.entities,
+                    cameraImage: cameraFrame, taskCoverImage: taskCover,
+                    settings: settings, sampledAt: haSnapshot.sampledAt,
+                    palette: palette,
+                    width: AIMacScreenSupport.frameSize,
+                    height: AIMacScreenSupport.frameSize)
+            }
             let articles = mode == .sspai ? Array(sspaiArticles.prefix(3)) : []
             var fields: [Int: CanvasPrinterFields] = [:]
             for module in modules where module.bambuSlotIndex != nil || module.formlabsSlotIndex != nil {
@@ -2249,7 +2403,7 @@ public final class AppModel: ObservableObject {
             }
             return ScreenRenderer.renderDeviceCanvas(
                 modules: modules, system: snapshot,
-                nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
+                nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
                 customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
                 settings: settings, codex: usage, qwenQuota: qwenQuota,
                 sspaiArticles: articles, ha: cardHA,
@@ -2270,7 +2424,8 @@ public final class AppModel: ObservableObject {
     public func refreshAIMacScreenPreview(deviceID: UUID) {
         let config = aiMacScreenSettings(for: deviceID)
         do {
-            let image = try renderAIMacScreen(deviceID: deviceID, config: config, system: system)
+            let image = try renderAIMacScreen(deviceID: deviceID, config: config,
+                                              system: system)
             aiMacScreenPreviews[deviceID] = NSImage(
                 cgImage: image, size: NSSize(width: 240, height: 240))
         } catch {
@@ -2498,9 +2653,41 @@ public final class AppModel: ObservableObject {
         }
         aiMacScreenBusyIDs.insert(deviceID)
         aiMacScreenLastPushAt[deviceID] = Date()
-        aiMacScreenStatuses[deviceID] = "正在生成并推送画面…"
+        let isNativeClock = config.mode == .card && config.cardMode == .aiMacClock
+        aiMacScreenStatuses[deviceID] = isNativeClock
+            ? "正在同步设备端时钟…" : "正在生成并推送画面…"
         defer { aiMacScreenBusyIDs.remove(deviceID) }
         do {
+            if isNativeClock {
+                // 普通自动推送节拍不会再产生时钟图片。仅每 30 分钟低频校时，
+                // 手动切入、自动轮播切入以及系统唤醒都会强制立即同步一次。
+                if !force, let last = aiMacScreenLastClockSyncAt[deviceID],
+                   Date().timeIntervalSince(last) < 30 * 60 {
+                    aiMacScreenStatuses[deviceID] = "设备端时钟正在实时运行"
+                    return
+                }
+                // 用户可能刚用本应用从旧固件刷到 0.8.5；强制重读能力，不能沿用
+                // 刷写前缓存的“无设备端时钟”结果。
+                let capabilities = try await fetchAIMacScreenCapabilities(
+                    deviceID: deviceID, force: true, allowJPEGFallback: false)
+                guard let url = capabilities.nativeClockURL,
+                      let request = AIMacScreenSupport.nativeClockRequest(
+                        url: url, now: Date(), timeZone: .current) else {
+                    throw AIMacScreenSupportError.nativeClockUnavailable
+                }
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode) else {
+                    throw AIMacScreenSupportError.nativeClockUnavailable
+                }
+                let syncedAt = Date()
+                aiMacScreenLastClockSyncAt[deviceID] = syncedAt
+                let formatter = DateFormatter()
+                formatter.dateFormat = "HH:mm:ss"
+                aiMacScreenLastPushText[deviceID] = formatter.string(from: syncedAt)
+                aiMacScreenStatuses[deviceID] = "设备端时钟已同步 · 本机实时走时"
+                return
+            }
             let canvasNeedsSystem = config.mode == .canvas
                 && config.canvasBoards.indices.contains(config.canvasBoardIndex)
                 && RuntimePerformancePolicy.needsSystemSample(
@@ -2511,10 +2698,20 @@ public final class AppModel: ObservableObject {
             if sampleDashboard && (config.mode == .dashboard || canvasNeedsSystem || cardNeedsSystem) {
                 system = monitor.sample(now: Date())
             }
-            let image = try renderAIMacScreen(deviceID: deviceID, config: config, system: system)
+            let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
+            let usesNativeNowPlaying = config.mode == .card
+                && config.cardMode == .nowPlaying
+                && capabilities.supportsNativeNowPlaying
+            let estimatedLatency = min(max(aiMacScreenUploadLatency[deviceID] ?? 0.18,
+                                           0.05), 1.5)
+            let presentationTime = Date().addingTimeInterval(estimatedLatency)
+            let projectedPlayback = nowPlaying.anchored(at: presentationTime)
+            let uploadStartedAt = Date()
+            let image = try renderAIMacScreen(
+                deviceID: deviceID, config: config, system: system,
+                nowPlayingOverride: projectedPlayback, now: presentationTime)
             aiMacScreenPreviews[deviceID] = NSImage(
                 cgImage: image, size: NSSize(width: 240, height: 240))
-            let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
             let bytes: Data
             let endpoint: URL
             let modeText: String
@@ -2534,7 +2731,13 @@ public final class AppModel: ObservableObject {
                 String(format: "%02x", $0)
             }.joined()
             if !force, aiMacScreenLastHashes[deviceID] == frameHash {
-                aiMacScreenStatuses[deviceID] = "画面未变化，已跳过推送"
+                if usesNativeNowPlaying {
+                    try await syncAIMacNativeNowPlaying(
+                        deviceID: deviceID, capabilities: capabilities, info: nowPlaying)
+                    aiMacScreenStatuses[deviceID] = "设备端播放进度已校准"
+                } else {
+                    aiMacScreenStatuses[deviceID] = "画面未变化，已跳过推送"
+                }
                 return
             }
             if capabilities.supportsLosslessRGB565 {
@@ -2545,13 +2748,64 @@ public final class AppModel: ObservableObject {
                     jpeg: bytes, endpoint: endpoint.absoluteString, timeout: 12)
             }
             aiMacScreenLastHashes[deviceID] = frameHash
+            let measuredLatency = min(max(Date().timeIntervalSince(uploadStartedAt), 0), 3)
+            if let previous = aiMacScreenUploadLatency[deviceID] {
+                aiMacScreenUploadLatency[deviceID] = previous * 0.7 + measuredLatency * 0.3
+            } else {
+                aiMacScreenUploadLatency[deviceID] = measuredLatency
+            }
+            // 任意成功画面上传都会让固件退出原生时钟；下次轮换回时钟必须重新发指令。
+            aiMacScreenLastClockSyncAt[deviceID] = nil
+            if usesNativeNowPlaying {
+                try await syncAIMacNativeNowPlaying(
+                    deviceID: deviceID, capabilities: capabilities, info: nowPlaying)
+            }
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
             aiMacScreenLastPushText[deviceID] = formatter.string(from: Date())
-            aiMacScreenStatuses[deviceID] = "推送成功 · \(modeText)"
+            aiMacScreenStatuses[deviceID] = usesNativeNowPlaying
+                ? "推送成功 · \(modeText) · 设备端实时进度"
+                : "推送成功 · \(modeText)"
         } catch {
             aiMacScreenStatuses[deviceID] = "推送失败：\(error.localizedDescription)"
         }
+    }
+
+    private func syncAIMacNativeNowPlaying(
+        deviceID: UUID, capabilities: AIMacScreenCapabilities,
+        info: NowPlayingInfo
+    ) async throws {
+        guard let url = capabilities.nativeNowPlayingURL else { return }
+        let basePalette = ScreenThemes.resolved(
+            theme: settings.cardTheme,
+            backgroundTone: settings.softwareIsDark ? .dark : .light,
+            customBackgroundHex: nil,
+            accentTone: settings.accentTone,
+            customAccentHex: settings.customAccentHex,
+            softwareIsDark: settings.softwareIsDark)
+        let palette: ScreenPalette
+        let accent: (CGFloat, CGFloat, CGFloat)
+        if let artwork = cachedArtworkImage(for: info.artwork) {
+            let dominant = ScreenRenderer.dominantColor(of: artwork)
+            palette = ScreenRenderer.artworkPalette(
+                baseColor: dominant, themeAccent: basePalette.accent)
+            accent = ScreenRenderer.coverProgressAccent(dominant)
+        } else {
+            palette = basePalette
+            accent = basePalette.accent
+        }
+        guard let request = AIMacScreenSupport.nativeNowPlayingRequest(
+            url: url, info: info, background: palette.inset,
+            track: palette.border, accent: accent, text: palette.secondaryText,
+            now: Date()) else { throw AIMacScreenSupportError.invalidDevice }
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw AIMacScreenSupportError.invalidDevice
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        aiMacScreenLastPushText[deviceID] = formatter.string(from: Date())
     }
 
     private func maybeAutoPushAIMacScreens(now: Date) async {
@@ -3227,7 +3481,9 @@ public final class AppModel: ObservableObject {
     deinit {
         timer?.invalidate()
         lyricsTimer?.invalidate()
-        linkedLyricsPushTask?.cancel()
+        linkedLyricsPushTasks.values.forEach { $0.cancel() }
+        nowPlayingEventRefreshTask?.cancel()
+        nowPlayingChangeObservers.forEach(NotificationCenter.default.removeObserver)
         rand0Session?.disconnect()
     }
 
@@ -3247,16 +3503,41 @@ public final class AppModel: ObservableObject {
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.linkedLyricsKeyboardIDs.isEmpty,
-                      self.nowPlayingLyrics != nil else { return }
+                guard let self, !self.linkedLyricsKeyboardIDs.isEmpty else { return }
                 self.scheduleLinkedLyricsPush(force: false, now: Date())
             }
         }
         RunLoop.main.add(lyricsTimer!, forMode: .common)
     }
 
+    /// MediaRemote 变化时立即重新取样。通知不可用的系统会自动继续使用 6 秒兜底校准。
+    private func startNowPlayingNotifications() {
+        nowPlayingClient.registerForChangeNotifications()
+        nowPlayingChangeObservers = NowPlayingClient.changeNotifications.map { name in
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.scheduleNowPlayingEventRefresh() }
+            }
+        }
+    }
+
+    /// 一次播放器操作通常会连续发出多个通知；轻量防抖后只启动一次探测子进程。
+    private func scheduleNowPlayingEventRefresh() {
+        guard deviceCanvasNeedsLiveNowPlaying || !linkedLyricsKeyboardIDs.isEmpty else { return }
+        nowPlayingEventRefreshTask?.cancel()
+        nowPlayingEventRefreshTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            await self.refreshNowPlaying(now: Date(), forceRemote: true)
+        }
+    }
+
     private func tick() async {
         let now = Date()
+        // 设备端时钟每秒重绘，软件效果图也只在应用处于前台时跟随同一秒刷新；
+        // 这里仅更新 240×240 本地预览，不触发图片上传或设备网络请求。
+        refreshActiveAIMacClockPreview(now: now)
         // 跟随系统外观变化（外观模式为「跟随系统」时）
         updateSoftwareDarkState()
         // 设备画板含「正在播放」模块且开启自动推送时：按 6 秒节流刷新播放状态，
@@ -3394,6 +3675,9 @@ public final class AppModel: ObservableObject {
             } else {
                 await refreshPreviewOrPush(now: now)
             }
+        case .aiMacClock:
+            // AI Mac 专属卡片不会成为灵犀 68 的活动模式；异常旧值仅保持预览。
+            renderPreviewIfDue(now: now)
         }
         // 用量数据统一调取：任一画板（键盘/先知/摘录）含 Codex 或千问额度模块时，
         // 按统一刷新周期（codexRefreshSeconds）并行拉取一次，供所有功能共享（避免各自重复调用）
@@ -3414,7 +3698,8 @@ public final class AppModel: ObservableObject {
         }
         // 独立画板定时推送：按各自间隔自动推送口袋先知 / 摘录画布到设备
         await maybeAutoPushDeviceCanvases(now: now)
-        // 240×240 小屏幕共用本应用每秒时钟；每台设备仍按自己的最短间隔与内容指纹推送。
+        // 240×240 小屏幕按设备检查轮播与普通内容；桌面时钟只做低频校时，
+        // 秒级走时与画面重绘完全留在设备端。
         await maybeAutoPushAIMacScreens(now: now)
         // 歌词时间轴有独立调度器；这里仅补一次检查，不阻塞全局设备刷新。
         scheduleLinkedLyricsPush(force: false, now: now)
@@ -3427,6 +3712,26 @@ public final class AppModel: ObservableObject {
     }
 
     private var lastCanvasPreviewMinute: Int?
+
+    private func refreshActiveAIMacClockPreview(now: Date) {
+        guard NSApp.isActive,
+              let id = activeDeviceID(for: .aiMacScreen),
+              let device = settings.devices.first(where: {
+                  $0.id == id && $0.type == .aiMacScreen && $0.isEnabled
+              }) else { return }
+        let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        let isNativeClock = (config.mode == .card && config.cardMode == .aiMacClock)
+            || config.mode == .clock
+        guard isNativeClock else { return }
+        do {
+            let image = try renderAIMacScreen(deviceID: id, config: config,
+                                              system: system, now: now)
+            aiMacScreenPreviews[id] = NSImage(
+                cgImage: image, size: NSSize(width: 240, height: 240))
+        } catch {
+            // 常规定时刷新会继续维护状态提示；效果图刷新失败不覆盖设备状态。
+        }
+    }
 
     private func refreshCanvasPreviews(now: Date) {
         let minute = Int(now.timeIntervalSince1970 / 60)
@@ -3446,7 +3751,6 @@ public final class AppModel: ObservableObject {
     private func refreshSidebarNowPlaying(now: Date) async {
         if let last = lastNowPlayingFetch, now.timeIntervalSince(last) < 30 { return }
         lastNowPlayingFetch = now
-        lastTickDate = now
         do {
             nowPlaying = try await nowPlayingClient.fetch()
         } catch {
@@ -3856,32 +4160,32 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     /// 正在播放：每 ~6 秒经子进程拉取一次系统状态，间隔内本地推进播放进度
-    private func refreshNowPlaying(now: Date) async {
+    private func refreshNowPlaying(now: Date, forceRemote: Bool = false) async {
         // 播放中保持 6 秒校准；无媒体/暂停时退避到 30 秒，避免空闲状态频繁启动
         // Swift MediaRemote 探测子进程而拖慢整个系统。检测到播放后自动恢复高频校准。
         let fetchInterval: TimeInterval = nowPlaying.isPlaying ? 6 : 30
-        if let last = lastNowPlayingFetch, now.timeIntervalSince(last) < fetchInterval {
-            // 本地推进：只加“距上一次 tick”的间隔，避免重复累计；并钳制不超过总时长
-            if nowPlaying.isPlaying, let lastTick = lastTickDate {
-                nowPlaying.elapsedTime += now.timeIntervalSince(lastTick)
-                if nowPlaying.duration > 0 {
-                    nowPlaying.elapsedTime = min(nowPlaying.elapsedTime, nowPlaying.duration)
-                }
-                nowPlaying.sampledAt = now
-            }
-            lastTickDate = now
+        if !forceRemote, let last = lastNowPlayingFetch,
+           now.timeIntervalSince(last) < fetchInterval {
+            // 使用同一锚点函数推进，歌词判断不再叠加第二套本地计时。
+            if nowPlaying.isPlaying { nowPlaying = nowPlaying.anchored(at: now) }
             await refreshLyricsIfNeeded()
             return
         }
         lastNowPlayingFetch = now
-        lastTickDate = now
+        let previousInfo = nowPlaying
+        var timelineChanged = false
         do {
             let fetched = try await nowPlayingClient.fetch()
-            // MediaRemote 的 elapsedTime 可能长时间不更新（实测多次拉取返回同一值）：
-            // 同一首歌时，用本地推进值托底，避免进度条每 6 秒往回跳；换曲则直接采用新值。
-            nowPlaying = fetched.mergedWithProgressed(current: nowPlaying)
+            let merged = fetched.reconciledWithProgressed(
+                current: nowPlaying, previousRemote: lastRemoteNowPlaying)
+            lastRemoteNowPlaying = fetched
+            nowPlaying = merged.info
+            timelineChanged = merged.didSeek
+                || previousInfo.isPlaying != nowPlaying.isPlaying
         } catch NowPlayingError.notPlaying {
             nowPlaying = .placeholder
+            lastRemoteNowPlaying = nil
+            timelineChanged = previousInfo.title != nowPlaying.title
         } catch {
             if nowPlaying.title.isEmpty || nowPlaying.title == "未在播放" {
                 nowPlaying = .placeholder
@@ -3889,6 +4193,20 @@ public func setClockTimeFormat(_ format: String) {
         }
         updateSidebarArtwork()
         await refreshLyricsIfNeeded()
+        if timelineChanged {
+            resetLinkedLyricsScheduling()
+            scheduleLinkedLyricsPush(force: true, now: Date())
+            // 小屏幕的播放状态锚点也要在暂停、继续和 seek 时立即刷新，不能等
+            // 用户设定的下一次完整图片推送。
+            for device in enabledDevices(for: .aiMacScreen) {
+                let config = aiMacScreenSettings(for: device.id)
+                if config.autoPush, config.mode == .card,
+                   config.cardMode == .nowPlaying,
+                   config.lyricsKeyboardDeviceID != nil {
+                    await pushAIMacScreen(deviceID: device.id, force: false)
+                }
+            }
+        }
     }
 
     private func nowPlayingSongKey(_ info: NowPlayingInfo) -> String? {
@@ -3907,6 +4225,9 @@ public func setClockTimeFormat(_ format: String) {
         }
         guard force || lyricsRequestedSongKey != songKey else { return }
         lyricsRequestedSongKey = songKey
+        // 换歌查询期间不能继续按新歌曲进度渲染上一首歌的歌词。
+        nowPlayingLyrics = nil
+        resetLinkedLyricsScheduling()
         let requestedInfo = nowPlaying
         do {
             let fetched = try await lyricsClient.fetch(for: requestedInfo)
@@ -3936,131 +4257,169 @@ public func setClockTimeFormat(_ format: String) {
         return result
     }
 
-    private func linkedLyricsPayload(force: Bool, now: Date) ->
-        (window: LyricsDisplayWindow, lineKey: String)? {
-        let window: LyricsDisplayWindow
+    private func resetLinkedLyricsScheduling(clearDisplayedLines: Bool = true) {
+        linkedLyricsPushTasks.values.forEach { $0.cancel() }
+        linkedLyricsPushTasks = [:]
+        linkedLyricsScheduledLineKeys = [:]
+        linkedLyricsRetryLineKeys = [:]
+        linkedLyricsRetryNotBefore = [:]
+        if clearDisplayedLines { linkedLyricsLastLineKeys = [:] }
+    }
+
+    private func linkedLyricsPayload(for keyboardID: UUID, force: Bool, now: Date) ->
+        (window: LyricsDisplayWindow?, lyricsOnly: Bool, lineKey: String)? {
         let lineKey: String
         if let lyrics = nowPlayingLyrics {
-            let displayElapsed = LyricsTimelinePolicy.displayElapsed(for: nowPlaying, at: now)
-            window = lyrics.displayWindow(at: displayElapsed)
+            let lead = LyricsTimelinePolicy.presentationLead(
+                observedLatency: linkedLyricsUploadLatency[keyboardID])
+            let userDelay = TimeInterval(settings.lyricsTimingOffsetMilliseconds) / 1_000
+            let displayElapsed = LyricsTimelinePolicy.displayElapsed(
+                for: nowPlaying, at: now, presentationLead: lead,
+                userDelay: userDelay)
+            let window = lyrics.displayWindow(at: displayElapsed)
             guard !window.lines.isEmpty else { return nil }
             let lineIndex = lyrics.currentLineIndex(at: displayElapsed) ?? -1
             lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(window.lines.joined(separator: "|"))"
+            return (window, true, lineKey)
+        } else if let songKey = nowPlayingSongKey(nowPlaying) {
+            // 查询中或服务没有返回歌词时，保持灵犀 68 的标准正在播放页：
+            // 显示专辑封面、歌曲信息与进度，而不是“暂未找到歌词”的空白文字页。
+            // 五秒更新一次进度，同时把首次回退帧的耗时用于后续歌词换帧校准。
+            let elapsedBucket = Int(nowPlaying.effectiveElapsed(at: now) / 5)
+            lineKey = "cover|\(songKey)|\(nowPlaying.artwork?.count ?? 0)|\(elapsedBucket)"
+            return (nil, false, lineKey)
         } else {
-            // 用户刚建立关联时即使尚未播放或未找到歌词，也要把目标键盘切换并
-            // 推送纯歌词占位页；平时的每秒 tick 不重复发送该占位画面。
+            // 尚无播放内容时保留原有占位页，平时 tick 不重复发送。
             guard force else { return nil }
             let message = nowPlayingSongKey(nowPlaying) == nil ? "暂无播放内容" : "暂未找到歌词"
-            window = LyricsDisplayWindow(lines: [message], currentIndex: 0)
+            let window = LyricsDisplayWindow(lines: [message], currentIndex: 0)
             lineKey = "placeholder|\(message)"
+            return (window, true, lineKey)
         }
-        return (window, lineKey)
     }
 
     /// 高频歌词推送使用 latest-only 队列：新歌词出现时取消尚在等待或上传的旧帧，
     /// 并等待旧任务真正退出后再发送最新帧，避免键盘唤醒后补发过期画面。
     private func scheduleLinkedLyricsPush(force: Bool, now: Date = Date()) {
-        guard !linkedLyricsKeyboardIDs.isEmpty else {
-            linkedLyricsScheduledLineKey = nil
-            linkedLyricsPushTask?.cancel()
-            linkedLyricsPushTask = nil
+        let keyboardIDs = linkedLyricsKeyboardIDs
+        guard !keyboardIDs.isEmpty else {
+            resetLinkedLyricsScheduling(clearDisplayedLines: false)
             return
         }
-        guard let payload = linkedLyricsPayload(force: force, now: now) else { return }
-        if !force, linkedLyricsRetryLineKey == payload.lineKey,
-           let retryAt = linkedLyricsRetryNotBefore, now < retryAt { return }
-        guard force || linkedLyricsScheduledLineKey != payload.lineKey else { return }
-        if linkedLyricsRetryLineKey != payload.lineKey {
-            linkedLyricsRetryLineKey = nil
-            linkedLyricsRetryNotBefore = nil
+        // 删除刚解除关联设备留下的任务；其他设备继续使用自己的队列与延迟模型。
+        for keyboardID in Array(linkedLyricsPushTasks.keys)
+            where !keyboardIDs.contains(keyboardID) {
+            linkedLyricsPushTasks[keyboardID]?.cancel()
+            linkedLyricsPushTasks[keyboardID] = nil
+            linkedLyricsScheduledLineKeys[keyboardID] = nil
         }
-        linkedLyricsScheduledLineKey = payload.lineKey
-        let previousTask = linkedLyricsPushTask
-        previousTask?.cancel()
-        linkedLyricsPushTask = Task { @MainActor [weak self] in
-            _ = await previousTask?.result
-            guard let self, !Task.isCancelled,
-                  self.linkedLyricsScheduledLineKey == payload.lineKey else { return }
-            let succeeded = await self.performLinkedLyricsPush(window: payload.window,
-                                                                lineKey: payload.lineKey)
-            guard !Task.isCancelled,
-                  self.linkedLyricsScheduledLineKey == payload.lineKey else { return }
-            if succeeded {
-                self.linkedLyricsRetryLineKey = nil
-                self.linkedLyricsRetryNotBefore = nil
-            } else {
-                // 设备休眠/离线时不累积旧帧；只让当前歌词在短暂退避后重试。
-                self.linkedLyricsScheduledLineKey = nil
-                self.linkedLyricsRetryLineKey = payload.lineKey
-                self.linkedLyricsRetryNotBefore = Date().addingTimeInterval(2)
+        for keyboardID in keyboardIDs {
+            guard let payload = linkedLyricsPayload(for: keyboardID, force: force, now: now) else {
+                continue
+            }
+            if !force, linkedLyricsRetryLineKeys[keyboardID] == payload.lineKey,
+               let retryAt = linkedLyricsRetryNotBefore[keyboardID], now < retryAt { continue }
+            if !force, linkedLyricsScheduledLineKeys[keyboardID] == payload.lineKey { continue }
+            if linkedLyricsRetryLineKeys[keyboardID] != payload.lineKey {
+                linkedLyricsRetryLineKeys[keyboardID] = nil
+                linkedLyricsRetryNotBefore[keyboardID] = nil
+            }
+            linkedLyricsScheduledLineKeys[keyboardID] = payload.lineKey
+            let previousTask = linkedLyricsPushTasks[keyboardID]
+            previousTask?.cancel()
+            linkedLyricsPushTasks[keyboardID] = Task { @MainActor [weak self] in
+                _ = await previousTask?.result
+                guard let self, !Task.isCancelled,
+                      self.linkedLyricsScheduledLineKeys[keyboardID] == payload.lineKey else {
+                    return
+                }
+                let succeeded = await self.performLinkedLyricsPush(
+                    keyboardID: keyboardID, window: payload.window,
+                    lyricsOnly: payload.lyricsOnly, lineKey: payload.lineKey)
+                guard !Task.isCancelled,
+                      self.linkedLyricsScheduledLineKeys[keyboardID] == payload.lineKey else {
+                    return
+                }
+                if succeeded {
+                    self.linkedLyricsRetryLineKeys[keyboardID] = nil
+                    self.linkedLyricsRetryNotBefore[keyboardID] = nil
+                } else {
+                    // 休眠/离线时不积压历史帧，只让仍然有效的当前歌词稍后重试。
+                    self.linkedLyricsScheduledLineKeys[keyboardID] = nil
+                    self.linkedLyricsRetryLineKeys[keyboardID] = payload.lineKey
+                    self.linkedLyricsRetryNotBefore[keyboardID] = Date().addingTimeInterval(1)
+                }
             }
         }
     }
 
-    /// 将当前歌词行推送到所有已关联的键盘。建立关联时目标键盘已自动关闭
-    /// 卡片轮播并切到“正在播放”，该页面使用纯歌词布局。
-    /// 非活动键盘直接使用自己的端点和显示快照，不切换软件当前操作设备。
-    private func performLinkedLyricsPush(window: LyricsDisplayWindow,
+    /// 单台键盘只处理自己的最新帧。多台设备的 HTTP 上传可以并行，慢设备不会再
+    /// 推迟快设备；非活动键盘仍使用自己的端点和显示快照。
+    private func performLinkedLyricsPush(keyboardID: UUID,
+                                         window: LyricsDisplayWindow?,
+                                         lyricsOnly: Bool,
                                          lineKey: String) async -> Bool {
         let activeID = activeDeviceID(for: .keyboard)
-        var allSucceeded = true
-        for keyboardID in linkedLyricsKeyboardIDs {
-            guard linkedLyricsLastLineKeys[keyboardID] != lineKey,
-                  linkedLyricsScheduledLineKey == lineKey,
-                  !Task.isCancelled,
-                  !linkedLyricsBusyIDs.contains(keyboardID),
-                  let device = enabledDevices(for: .keyboard).first(where: { $0.id == keyboardID }) else {
-                continue
-            }
-            let mode = keyboardID == activeID
-                ? settings.displayMode : (device.settings.displayMode ?? .codex)
-            guard mode == .nowPlaying else { continue }
-            linkedLyricsBusyIDs.insert(keyboardID)
-            defer { linkedLyricsBusyIDs.remove(keyboardID) }
-
-            let endpoint = keyboardID == activeID
-                ? settings.endpoint : (device.settings.endpoint ?? "")
-            guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                allSucceeded = false
-                continue
-            }
-            var ownsGlobalPushSlot = false
-            do {
-                if keyboardID == activeID {
-                    while busy {
-                        try await Task.sleep(nanoseconds: 50_000_000)
-                        guard linkedLyricsScheduledLineKey == lineKey else {
-                            throw CancellationError()
-                        }
-                    }
-                    busy = true
-                    ownsGlobalPushSlot = true
-                }
-                defer {
-                    if ownsGlobalPushSlot { busy = false }
-                }
-                let renderSettings = keyboardID == activeID
-                    ? settings : linkedLyricsRenderSettings(for: device)
-                let artwork = cachedArtworkImage(for: nowPlaying.artwork)
-                let result = try ScreenRenderer.renderNowPlaying(
-                    nowPlaying, settings: renderSettings, artworkImage: artwork,
-                    lyrics: window,
-                    lyricsOnly: true)
-                guard !Task.isCancelled, linkedLyricsScheduledLineKey == lineKey else { continue }
-                _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
-                                              endpoint: endpoint)
-                guard !Task.isCancelled, linkedLyricsScheduledLineKey == lineKey else { continue }
-                linkedLyricsLastLineKeys[keyboardID] = lineKey
-                if keyboardID == activeID {
-                    lastUploadedHash = Self.sha256(result.data)
-                    lastPushAttempt = Date()
-                    lastPush = "最后推送：\(Self.formatNow())"
-                }
-            } catch {
-                if !Task.isCancelled { allSucceeded = false }
-            }
+        guard linkedLyricsLastLineKeys[keyboardID] != lineKey,
+              linkedLyricsScheduledLineKeys[keyboardID] == lineKey,
+              !Task.isCancelled,
+              !linkedLyricsBusyIDs.contains(keyboardID),
+              let device = enabledDevices(for: .keyboard).first(where: { $0.id == keyboardID }) else {
+            return true
         }
-        return allSucceeded
+        let mode = keyboardID == activeID
+            ? settings.displayMode : (device.settings.displayMode ?? .codex)
+        guard mode == .nowPlaying else { return true }
+        linkedLyricsBusyIDs.insert(keyboardID)
+        defer { linkedLyricsBusyIDs.remove(keyboardID) }
+
+        let endpoint = keyboardID == activeID
+            ? settings.endpoint : (device.settings.endpoint ?? "")
+        guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        var ownsGlobalPushSlot = false
+        do {
+            if keyboardID == activeID {
+                while busy {
+                    try await Task.sleep(nanoseconds: 25_000_000)
+                    guard linkedLyricsScheduledLineKeys[keyboardID] == lineKey else {
+                        throw CancellationError()
+                    }
+                }
+                busy = true
+                ownsGlobalPushSlot = true
+            }
+            defer { if ownsGlobalPushSlot { busy = false } }
+            let renderSettings = keyboardID == activeID
+                ? settings : linkedLyricsRenderSettings(for: device)
+            let uploadStartedAt = Date()
+            let artwork = cachedArtworkImage(for: nowPlaying.artwork)
+            let result = try ScreenRenderer.renderNowPlaying(
+                nowPlaying, settings: renderSettings, artworkImage: artwork,
+                lyrics: window, lyricsOnly: lyricsOnly)
+            guard !Task.isCancelled,
+                  linkedLyricsScheduledLineKeys[keyboardID] == lineKey else { return true }
+            _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
+                                          endpoint: endpoint)
+            guard !Task.isCancelled,
+                  linkedLyricsScheduledLineKeys[keyboardID] == lineKey else { return true }
+            let measuredLatency = min(max(Date().timeIntervalSince(uploadStartedAt), 0), 3)
+            if let previous = linkedLyricsUploadLatency[keyboardID] {
+                linkedLyricsUploadLatency[keyboardID] = previous * 0.65 + measuredLatency * 0.35
+            } else {
+                linkedLyricsUploadLatency[keyboardID] = measuredLatency
+            }
+            linkedLyricsLastLineKeys[keyboardID] = lineKey
+            if keyboardID == activeID {
+                lastUploadedHash = Self.sha256(result.data)
+                lastPushAttempt = Date()
+                lastPush = "最后推送：\(Self.formatNow())"
+            }
+            return true
+        } catch {
+            return Task.isCancelled
+        }
     }
 
     /// 上次侧栏封面数据（用于检测封面变化，实时刷新设备画板预览）
@@ -4195,6 +4554,9 @@ public func setClockTimeFormat(_ format: String) {
             } else {
                 await push(force: true)
             }
+        case .aiMacClock:
+            // 仅供 AI Mac 卡片目录使用，不进入灵犀 68 的模式激活路径。
+            break
         }
     }
 
@@ -4689,11 +5051,28 @@ public func setClockTimeFormat(_ format: String) {
     func pictureEntityIDs() -> [String] {
         if !Self.haPictureSupportEnabled { return [] }
         var ids = haCardPictureEntityIDs()
+        func add(_ candidate: String) {
+            let id = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !id.isEmpty, !ids.contains(id) { ids.append(id) }
+        }
         for printer in enabledDevices(for: .bambuLab) {
             let config = BambuLabCardSettings.from(printer)
             guard config.showImage else { continue }
-            let id = config.selectedImageEntityID.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !id.isEmpty, !ids.contains(id) { ids.append(id) }
+            add(config.selectedImageEntityID)
+        }
+        // 只有当前正在显示 Bambu 独立卡片的 AI Mac 才额外保留双图，避免让
+        // 键盘/墨水屏的单图选择无条件扩大后台图片下载量。
+        for mode in activeAIMacCardModes where mode.bambuSlotIndex != nil {
+            let config = bambuConfig(for: mode)
+            guard config.showImage else { continue }
+            add(config.imageEntityID)
+            add(config.taskImageEntityID)
+        }
+        for device in enabledDevices(for: .aiMacScreen) {
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            guard config.mode == .card, config.cardMode == .homeAssistant else { continue }
+            HAEntityPicker.pictureEntityIDs(
+                in: config.haCardEntityIDs ?? settings.haCardEntityIDs).forEach(add)
         }
         return ids
     }
@@ -4716,7 +5095,7 @@ public func setClockTimeFormat(_ format: String) {
         let config = bambuConfig(for: mode)
         return [config.statusEntityID, config.progressEntityID, config.taskEntityID,
                 config.nozzleTempEntityID, config.bedTempEntityID, config.selectedTimeEntityID,
-                config.errorEntityID, config.selectedImageEntityID]
+                config.errorEntityID, config.imageEntityID, config.taskImageEntityID]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
@@ -4950,6 +5329,11 @@ public func setClockTimeFormat(_ format: String) {
         canvasHAEntityIDs(for: .keyboard).forEach { add($0) }
         canvasHAEntityIDs(for: .oracle).forEach { add($0) }
         canvasHAEntityIDs(for: .excerpt).forEach { add($0) }
+        for device in enabledDevices(for: .aiMacScreen) {
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            (config.haCardEntityIDs ?? settings.haCardEntityIDs).forEach { add($0) }
+            config.canvasBoards.flatMap(\.haEntityIDs).forEach { add($0) }
+        }
         for printer in devices(for: .bambuLab) {
             let config = BambuLabCardSettings.from(printer)
             add(config.statusEntityID); add(config.progressEntityID); add(config.taskEntityID)
@@ -5306,11 +5690,7 @@ public func setClockTimeFormat(_ format: String) {
         if let keyboardID {
             prepareKeyboardForLyricsLink(keyboardID)
         }
-        linkedLyricsLastLineKeys = [:]
-        linkedLyricsScheduledLineKey = nil
-        linkedLyricsPushTask?.cancel()
-        linkedLyricsRetryLineKey = nil
-        linkedLyricsRetryNotBefore = nil
+        resetLinkedLyricsScheduling()
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshLyricsIfNeeded(force: true)
@@ -7432,9 +7812,10 @@ public func setClockTimeFormat(_ format: String) {
             let artwork = cachedArtworkImage(for: nowPlaying.artwork)
             let keyboardID = activeDeviceID(for: .keyboard)
             let linked = keyboardID.map { linkedLyricsKeyboardIDs.contains($0) } ?? false
+            let playbackNow = nowPlaying.anchored(at: Date())
             let lyrics = lyricsForKeyboard(keyboardID)?
-                .displayWindow(at: nowPlaying.elapsedTime)
-            return try ScreenRenderer.renderNowPlaying(nowPlaying, settings: settings,
+                .displayWindow(at: playbackNow.elapsedTime)
+            return try ScreenRenderer.renderNowPlaying(playbackNow, settings: settings,
                                                        artworkImage: artwork, lyrics: lyrics,
                                                        lyricsOnly: linked)
         case .codex:
@@ -7449,6 +7830,10 @@ public func setClockTimeFormat(_ format: String) {
                 ha: haSnapshot(forCanvas: .keyboard),
                 formlabsItems: formlabsCanvasItems(),
                 artworkImage: cachedArtworkImage(for: nowPlaying.artwork))
+        case .aiMacClock:
+            // 若损坏的旧设置把专属模式写到键盘，安全回退为系统监控画面。
+            return try ScreenRenderer.renderSystem(system, history: monitor.networkHistory,
+                                                   settings: settings)
         }
     }
 

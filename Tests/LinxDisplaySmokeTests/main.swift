@@ -397,6 +397,35 @@ func testRand0SessionLifecycle() async {
 // MARK: - 设置与工具
 
 func testSettingsAndUtilities() {
+    let unknownMode = try? JSONDecoder().decode(DisplayMode.self, from: Data("999".utf8))
+    checkEqual(unknownMode, .systemMonitor, "未知实验卡片编号只回退显示页，不破坏整份设置")
+    check(Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 204, headers: ["Allow": "GET, POST, OPTIONS"], body: Data()),
+        "灵犀68 自动发现识别允许 POST 的上传路由")
+    check(Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 204,
+        headers: ["Content-Type": "text/plain", "Cache-Control": "no-store",
+                  "Access-Control-Allow-Origin": "*"], body: Data()),
+        "灵犀68 自动发现识别固件预检响应")
+    check(!Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 405, headers: ["Server": "nginx"], body: Data()),
+        "灵犀68 自动发现不会把 nginx 的通用 405 误报为键盘")
+    check(!Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 405, headers: ["Server": "EPSON_Linux UPnP/1.0"], body: Data()),
+        "灵犀68 自动发现不会把打印机的通用 405 误报为键盘")
+    check(Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 405, headers: ["Server": "ESP8266WebServer"], body: Data()),
+        "灵犀68 自动发现保留 ESP 固件的方法限制响应")
+    check(Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 400, headers: ["Content-Type": "text/plain"],
+        body: Data("not jpeg".utf8)),
+        "灵犀68 自动发现识别空 POST 返回的 JPEG 校验错误")
+    check(!Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 400, headers: ["Server": "nginx"], body: Data("Bad Request".utf8)),
+        "灵犀68 自动发现不会把普通 Web 服务的 400 误报为键盘")
+    check(!Lingxi68Discovery.matchesUploadEndpoint(
+        statusCode: 200, headers: ["Server": "nginx"], body: Data("普通网页".utf8)),
+        "灵犀68 自动发现不会把普通网页误报为键盘")
     let settings = AppSettings()
     settings.endpoint = "http://10.0.0.5/image/upload"
     settings.cardTheme = .neonPurple
@@ -1191,8 +1220,25 @@ func testNowPlaying() throws {
                                         sampledAt: timelineNow.addingTimeInterval(-0.2))
     let projectedLyricsTime = LyricsTimelinePolicy.displayElapsed(
         for: timelineSample, at: timelineNow)
-    check(abs(projectedLyricsTime - 10.5) < 0.001,
-          "歌词时间轴独立推进并补偿显示传输延迟")
+    check(abs(projectedLyricsTime - 10.2) < 0.001,
+          "歌词时间轴只按真实采样锚点推进")
+    check(abs(LyricsTimelinePolicy.displayElapsed(
+        for: timelineSample, at: timelineNow, presentationLead: 0.12) - 10.32) < 0.001,
+          "歌词时间轴只应用调用方提供的设备实测补偿")
+    check(abs(LyricsTimelinePolicy.presentationLead(observedLatency: 0.25) - 0.1625) < 0.001,
+          "歌词上传补偿保留换帧安全余量")
+    checkEqual(LyricsTimelinePolicy.presentationLead(observedLatency: 5), 0.65,
+               "歌词提前补偿不随慢请求无限增大")
+    check(abs(LyricsTimelinePolicy.displayElapsed(
+        for: timelineSample, at: timelineNow, presentationLead: 0.12,
+        userDelay: 0.5) - 9.82) < 0.001,
+        "歌词人工正偏移表示延后显示")
+    let lyricOffsetSettings = AppSettings()
+    lyricOffsetSettings.lyricsTimingOffsetMilliseconds = 700
+    let lyricOffsetDecoded = try JSONDecoder().decode(
+        AppSettings.self, from: JSONEncoder().encode(lyricOffsetSettings))
+    checkEqual(lyricOffsetDecoded.lyricsTimingOffsetMilliseconds, 700,
+               "歌词人工时间校准可持久化")
     var pausedTimelineSample = timelineSample
     pausedTimelineSample.playbackRate = 0
     checkEqual(LyricsTimelinePolicy.displayElapsed(for: pausedTimelineSample, at: timelineNow),
@@ -1201,6 +1247,10 @@ func testNowPlaying() throws {
     endingTimelineSample.elapsedTime = 119.9
     checkEqual(LyricsTimelinePolicy.displayElapsed(for: endingTimelineSample, at: timelineNow),
                120, "歌词时间轴不超过歌曲总时长")
+    var fastTimelineSample = timelineSample
+    fastTimelineSample.playbackRate = 1.5
+    check(abs(fastTimelineSample.effectiveElapsed(at: timelineNow) - 10.3) < 0.001,
+          "歌词时间轴按实际播放倍速推进")
 
     // 页脚顺序：上=时钟(强调色)，下=日期(强调色)——正在播放页脚跟随封面/全局强调色
     let footImg = noArt.image
@@ -1381,6 +1431,22 @@ func testNowPlaying() throws {
                                     duration: 240, elapsedTime: 72, playbackRate: 1)
     checkEqual(stale.mergedWithProgressed(current: progressed).elapsedTime, 72,
                "同曲停滞值应保留本地推进")
+    let priorRemote = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
+                                     duration: 240, elapsedTime: 60, playbackRate: 1,
+                                     sampledAt: progressed.sampledAt.addingTimeInterval(-12))
+    let frozenRemote = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
+                                      duration: 240, elapsedTime: 60, playbackRate: 1,
+                                      sampledAt: progressed.sampledAt)
+    let frozenMerge = frozenRemote.reconciledWithProgressed(
+        current: progressed, previousRemote: priorRemote)
+    check(!frozenMerge.didSeek && frozenMerge.info.elapsedTime >= 72,
+          "MediaRemote 重复旧值时继续使用本地播放时钟")
+    let backwardSeek = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
+                                      duration: 240, elapsedTime: 30, playbackRate: 1,
+                                      sampledAt: progressed.sampledAt)
+        .reconciledWithProgressed(current: progressed, previousRemote: priorRemote)
+    check(backwardSeek.didSeek && backwardSeek.info.elapsedTime == 30,
+          "用户向后拖动时立即采用新的播放位置")
     let ahead = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
                                duration: 240, elapsedTime: 90, playbackRate: 1)
     checkEqual(ahead.mergedWithProgressed(current: progressed).elapsedTime, 90,
@@ -4501,6 +4567,51 @@ func testDeviceManagement() throws {
     checkEqual(fresh.devices.isEmpty, true, "全新设置无设备")
     check(!DeviceOnboardingPolicy.shouldShow(for: reloaded.devices), "已有设备时不应显示首次添加引导")
 
+    // 删除新添加的活动键盘必须按稳定 ID 删除，并完整恢复老键盘快照。
+    // 模拟真实设置监听器：若删除过程中漏掉 deviceSyncInFlight，它会立刻把新键盘的
+    // 空镜像写回老键盘，从而复现“删除新键盘后老键盘消失/配置被清空”。
+    let oldKeyboardID = UUID()
+    let newKeyboardID = UUID()
+    var oldKeyboardSettings = DeviceSettings()
+    oldKeyboardSettings.endpoint = "http://192.168.1.68/image/upload"
+    oldKeyboardSettings.keyboardCardPanels = ["system", "canvas"]
+    var newKeyboardSettings = DeviceSettings()
+    newKeyboardSettings.endpoint = ""
+    newKeyboardSettings.keyboardCardPanels = []
+    var oldKeyboard = ManagedDevice(type: .keyboard, name: "老键盘",
+                                    settings: oldKeyboardSettings)
+    oldKeyboard.id = oldKeyboardID
+    var newKeyboard = ManagedDevice(type: .keyboard, name: "新键盘",
+                                    settings: newKeyboardSettings)
+    newKeyboard.id = newKeyboardID
+    let deleteSettings = AppSettings()
+    deleteSettings.devices = [oldKeyboard, newKeyboard]
+    deleteSettings.activeKeyboardDeviceID = newKeyboardID
+    deleteSettings.endpoint = ""
+    deleteSettings.keyboardCardPanels = []
+    var unsafeDeleteCallbacks = 0
+    deleteSettings.onChange = {
+        guard !deleteSettings.deviceSyncInFlight else { return }
+        unsafeDeleteCallbacks += 1
+        deleteSettings.captureActiveDeviceSnapshots()
+    }
+    let deletedKeyboard = deleteSettings.removeManagedDevice(id: newKeyboardID)
+    checkEqual(deletedKeyboard?.id, newKeyboardID, "删除动作返回用户选中的新键盘")
+    checkEqual(deleteSettings.devices.map(\.id), [oldKeyboardID],
+               "删除新键盘后必须只保留老键盘")
+    checkEqual(deleteSettings.activeKeyboardDeviceID, oldKeyboardID,
+               "删除活动新键盘后明确切回老键盘")
+    checkEqual(deleteSettings.devices[0].settings.endpoint,
+               "http://192.168.1.68/image/upload",
+               "删除新键盘不能清空老键盘连接信息")
+    checkEqual(deleteSettings.devices[0].settings.keyboardCardPanels,
+               ["system", "canvas"],
+               "删除新键盘不能覆盖老键盘卡片配置")
+    checkEqual(deleteSettings.endpoint, "http://192.168.1.68/image/upload",
+               "删除后全局镜像恢复老键盘连接信息")
+    checkEqual(unsafeDeleteCallbacks, 0,
+               "删除设备的全部中间状态必须屏蔽自动快照回写")
+
     // 从完全不存在的数据目录加载：必须得到空白设置，且不能生成或迁入测试参数。
     let virginBase = FileManager.default.temporaryDirectory
         .appendingPathComponent("linx-virgin-release-test-\(UUID().uuidString)")
@@ -4728,12 +4839,26 @@ func testAIMacScreen() throws {
                "新 AI Mac 小屏幕默认进入彩色画板模式")
     check(AIMacScreenDeviceSettings().followSystemSleep,
           "新 AI Mac 小屏幕默认跟随系统锁屏与睡眠")
+    checkEqual(AIMacScreenDeviceSettings().cardPanels, [],
+               "新 AI Mac 小屏幕默认不展示全部侧栏卡片")
+    checkEqual(AIMacScreenDeviceSettings().cardRotationModes, [],
+               "新 AI Mac 小屏幕默认不启用任何卡片轮换")
 
-    checkEqual(EmbeddedAIMacFirmware.version, "0.8.1-wifi-portal-fix",
+    checkEqual(EmbeddedAIMacFirmware.version, "0.8.6-native-now-playing",
                "内置小屏幕固件版本稳定")
     checkEqual(EmbeddedAIMacFirmware.flashAddress, "0x0",
                "ESP8266 固件写入地址稳定")
     check(!EmbeddedAIMacFirmware.validate(Data()), "空数据不能通过固件完整性校验")
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let bundledFirmwareURL = repositoryRoot
+        .appendingPathComponent("Resources/Firmware", isDirectory: true)
+        .appendingPathComponent(EmbeddedAIMacFirmware.fileName)
+    let bundledFirmware = try Data(contentsOf: bundledFirmwareURL)
+    check(EmbeddedAIMacFirmware.validate(bundledFirmware),
+          "实际打包的小屏幕固件必须与应用内的版本和 SHA-256 一致")
     let provisionImage = try AIMacWiFiProvisioning.makeImage(
         ssid: "Lingxi-2.4G", password: "test-only-password")
     checkEqual(provisionImage.count, 4096, "Wi-Fi 配网区固定为一个 4KB 扇区")
@@ -4808,7 +4933,10 @@ func testAIMacScreen() throws {
     {"device":"esp8266-ai-screen","screen":{"width":240,"height":240},
      "brightness":73,
      "rgb565_api":{"path":"/frame/rgb565","content_type":"application/x-rgb565",
-     "byte_order":"big-endian","bytes":115200}}
+     "byte_order":"big-endian","bytes":115200},
+     "native_clock_api":{"path":"/api/clock","device_rendered":true,"tick_ms":1000},
+     "native_now_playing_api":{"path":"/api/now-playing",
+     "device_rendered_progress":true,"tick_ms":100}}
     """.data(using: .utf8)!
     let rgbCapabilities = try AIMacScreenSupport.parseCapabilities(
         data: rgbInfo, host: "192.168.1.66")
@@ -4817,6 +4945,39 @@ func testAIMacScreen() throws {
                "能力接口使用固件声明的 RGB565 路径")
     check(rgbCapabilities.supportsBrightnessControl, "0.8.1 能力接口识别背光控制")
     checkEqual(rgbCapabilities.brightnessLevel, 73, "读取小屏幕当前亮度")
+    check(rgbCapabilities.supportsNativeClock, "0.8.5 能力接口识别设备端实时时钟")
+    checkEqual(rgbCapabilities.nativeClockURL?.path, "/api/clock",
+               "设备端时钟使用固件声明的控制路径")
+    check(rgbCapabilities.supportsNativeNowPlaying,
+          "0.8.6 能力接口识别设备端实时播放进度")
+    checkEqual(rgbCapabilities.nativeNowPlayingURL?.path, "/api/now-playing",
+               "设备端播放进度使用固件声明的控制路径")
+    let clockSyncDate = Date(timeIntervalSince1970: 1_788_888_888)
+    let clockRequest = rgbCapabilities.nativeClockURL.flatMap {
+        AIMacScreenSupport.nativeClockRequest(
+            url: $0, now: clockSyncDate,
+            timeZone: TimeZone(secondsFromGMT: 8 * 3600)!)
+    }
+    checkEqual(clockRequest?.httpMethod, "POST", "设备端时钟切换使用 POST 请求")
+    check(clockRequest?.url?.query?.contains("enabled=1") == true
+          && clockRequest?.url?.query?.contains("epoch=1788888888") == true
+          && clockRequest?.url?.query?.contains("tz=28800") == true,
+          "设备端时钟仅接收模式、时间与时区，不传时钟图片")
+    let nativePlayback = NowPlayingInfo(
+        title: "同步测试", duration: 240, elapsedTime: 12.5,
+        playbackRate: 1, sampledAt: clockSyncDate)
+    let playbackRequest = rgbCapabilities.nativeNowPlayingURL.flatMap {
+        AIMacScreenSupport.nativeNowPlayingRequest(
+            url: $0, info: nativePlayback,
+            background: (0.1, 0.2, 0.3), track: (0.2, 0.3, 0.4),
+            accent: (0.3, 0.8, 0.6), text: (0.9, 0.9, 0.9),
+            now: clockSyncDate)
+    }
+    checkEqual(playbackRequest?.httpMethod, "POST", "设备端播放进度使用 POST 请求")
+    check(playbackRequest?.url?.query?.contains("elapsed_ms=12500") == true
+          && playbackRequest?.url?.query?.contains("duration_ms=240000") == true
+          && playbackRequest?.url?.query?.contains("rate_milli=1000") == true,
+          "设备端播放进度接收统一时间轴锚点")
     let sleepRequest = rgbCapabilities.brightnessURL.flatMap {
         AIMacScreenSupport.brightnessRequest(url: $0, level: 0)
     }
@@ -4834,16 +4995,20 @@ func testAIMacScreen() throws {
         data: jpegInfo, host: "screen.local")
     check(!jpegCapabilities.supportsLosslessRGB565, "旧固件能力信息回退 JPEG")
     check(!jpegCapabilities.supportsBrightnessControl, "旧固件不误报背光控制能力")
+    check(!jpegCapabilities.supportsNativeClock, "旧固件不误报设备端时钟能力")
     checkEqual(jpegCapabilities.jpegUploadURL.path, "/image/upload",
                "JPEG 兼容上传路径稳定")
 
     let linkedKeyboardID = UUID()
-    var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .clock,
+    var stored = AIMacScreenDeviceSettings(host: "10.0.0.8", mode: .card,
                                            autoPush: false, followSystemSleep: false,
                                            awakeBrightness: 58,
                                            lyricsKeyboardDeviceID: linkedKeyboardID,
                                            pushIntervalSeconds: 9,
-                                           jpegQuality: 71)
+                                           jpegQuality: 71,
+                                           cardModeRawValue: DisplayMode.aiMacClock.rawValue,
+                                           cardPanels: [DisplayMode.aiMacClock.rawValue],
+                                           haCardEntityIDs: ["sensor.office", "camera.printer"])
     var fields = DeviceSettings()
     fields.aiMacScreen = stored
     var managed = ManagedDevice(type: .aiMacScreen, name: "桌面圆屏", settings: fields)
@@ -4852,6 +5017,14 @@ func testAIMacScreen() throws {
     checkEqual(decodedDevice.settings.aiMacScreen, stored, "小屏幕设备设置 JSON 往返")
     checkEqual(decodedDevice.settings.aiMacScreen?.lyricsKeyboardDeviceID, linkedKeyboardID,
                "小屏幕歌词联动目标按设备持久化")
+    checkEqual(decodedDevice.settings.aiMacScreen?.haCardEntityIDs,
+               ["sensor.office", "camera.printer"],
+               "小屏幕 Home Assistant 卡片实体按设备持久化")
+    let legacyAIMacJSON = #"{"host":"legacy.local","mode":"card"}"#
+    let legacyAIMac = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: Data(legacyAIMacJSON.utf8))
+    checkEqual(legacyAIMac.haCardEntityIDs, nil,
+               "旧版小屏幕设置缺实体列表时保留兼容迁移标记")
 
     var oracleLink = DeviceSettings()
     oracleLink.oracleLyricsKeyboardDeviceID = linkedKeyboardID
@@ -4896,8 +5069,10 @@ func testAIMacScreen() throws {
         for: .colorSquare, bambuPrinterCount: 2, formlabsPrinterCount: 1,
         includesDeviceCanvas: false)
     check(squareModes.contains(.codex) && squareModes.contains(.homeAssistant)
-          && squareModes.contains(.emojiWallpaper),
+          && squareModes.contains(.emojiWallpaper) && squareModes.contains(.aiMacClock),
           "方形彩屏自动继承通用功能卡片")
+    let keyboardModes = CardCapabilityRegistry.modes(for: .keyboard)
+    check(!keyboardModes.contains(.aiMacClock), "设备端桌面时钟不会出现在灵犀 68 卡片列表")
     check(squareModes.contains(.bambuLab2) && !squareModes.contains(.bambuLab3),
           "Bambu 卡片位跟随已添加设备数量")
     check(squareModes.contains(.formlabs) && !squareModes.contains(.formlabs2),
@@ -4941,7 +5116,12 @@ func testAIMacScreen() throws {
     """.data(using: .utf8)!
     let migratedAIMacConfig = try JSONDecoder().decode(
         AIMacScreenDeviceSettings.self, from: legacyAIMacConfig)
-    checkEqual(migratedAIMacConfig.mode, .clock, "旧 AI Mac 显示模式保持不变")
+    checkEqual(migratedAIMacConfig.mode, .card, "旧 AI Mac 桌面时钟迁移到卡片模式")
+    checkEqual(migratedAIMacConfig.cardMode, .aiMacClock,
+               "旧桌面时钟迁移为设备端实时时钟卡片")
+    check(migratedAIMacConfig.cardPanels == nil
+          || migratedAIMacConfig.cardPanels?.contains(DisplayMode.aiMacClock.rawValue) == true,
+          "旧桌面时钟迁移后自动保留在侧栏")
     check(migratedAIMacConfig.canvasBoards.isEmpty,
           "旧 AI Mac 配置缺少画板字段时可安全迁移为空列表")
 
@@ -4975,14 +5155,32 @@ func testAIMacScreen() throws {
         settings: AIMacScreenDeviceSettings(mode: .canvas), system: snapshot)
     let clock = try AIMacScreenSupport.render(
         settings: AIMacScreenDeviceSettings(mode: .clock), system: snapshot)
+    let clockNextSecond = try AIMacScreenSupport.render(
+        settings: AIMacScreenDeviceSettings(mode: .clock), system: snapshot,
+        now: Date(timeIntervalSince1970: 1_788_888_889))
     checkEqual(dashboard.width, 240, "小屏幕仪表盘宽度")
     checkEqual(dashboard.height, 240, "小屏幕仪表盘高度")
     checkEqual(clock.width, 240, "小屏幕时钟宽度")
     checkEqual(clock.height, 240, "小屏幕时钟高度")
+    let clockFixed = try AIMacScreenSupport.render(
+        settings: AIMacScreenDeviceSettings(mode: .clock), system: snapshot,
+        now: Date(timeIntervalSince1970: 1_788_888_888))
+    check(!bitmapEqual(clockFixed, clockNextSecond),
+          "AI Mac 固件同款时钟预览应跟随设备秒数逐秒变化")
     checkEqual(blankCanvas.width, 240, "空白彩色画板仍生成有效 240×240 帧")
     let squareEmoji = try AIMacScreenSupport.renderEmojiWallpaper(settings: AppSettings())
     checkEqual(squareEmoji.width, 240, "Emoji 壁纸按方形彩屏原生宽度渲染")
     checkEqual(squareEmoji.height, 240, "Emoji 壁纸按方形彩屏原生高度渲染")
+    var squareEmojiLayouts: [CGImage] = []
+    for layout in EmojiWallpaperLayout.allCases {
+        let layoutSettings = AppSettings()
+        layoutSettings.emojiWallpaperLayout = layout
+        squareEmojiLayouts.append(
+            try AIMacScreenSupport.renderEmojiWallpaper(settings: layoutSettings))
+    }
+    check(!bitmapEqual(squareEmojiLayouts[0], squareEmojiLayouts[1])
+          && !bitmapEqual(squareEmojiLayouts[1], squareEmojiLayouts[2]),
+          "AI Mac Emoji 三种居中壁纸布局应分别渲染")
     let idlePomodoro = PomodoroSnapshot(phase: .idle, effectivePhase: .idle,
                                         taskName: "", remaining: 0, duration: 0,
                                         completedFocusSessions: 0)
@@ -5867,22 +6065,22 @@ func testHomeAssistant() throws {
     checkEqual(legacyDecoded.showStatus, true, "旧档案解码-显示开关回退开启")
     // 自动匹配隔离：两台打印机使用不同前缀实体，自动匹配应只填充各自字段
     let multiPrinterEntities = [
-        HAEntity(entityId: "sensor.p1p_status", friendlyName: "P1P 状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1p_print_status", friendlyName: "P1P 打印状态", state: "printing", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.p1p_progress", friendlyName: "P1P 进度", state: "50", unitOfMeasurement: "%"),
         HAEntity(entityId: "sensor.p1p_nozzle_temp", friendlyName: "P1P 喷嘴温度", state: "200", unitOfMeasurement: "°C"),
-        HAEntity(entityId: "sensor.a1_status", friendlyName: "A1 状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.a1_print_status", friendlyName: "A1 打印状态", state: "idle", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.a1_progress", friendlyName: "A1 进度", state: "30", unitOfMeasurement: "%"),
         HAEntity(entityId: "sensor.a1_nozzle_temp", friendlyName: "A1 喷嘴温度", state: "180", unitOfMeasurement: "°C"),
         HAEntity(entityId: "sensor.other_temp", friendlyName: "其他温度", state: "25", unitOfMeasurement: "°C"),
     ]
-    let p1pKnown = multiPrinterEntities[0]  // sensor.p1p_status
-    let a1Known = multiPrinterEntities[3]   // sensor.a1_status
+    let p1pKnown = multiPrinterEntities[0]  // sensor.p1p_print_status
+    let a1Known = multiPrinterEntities[3]   // sensor.a1_print_status
     let p1pMatched = BambuEntityMatcher.detect(from: p1pKnown, allEntities: multiPrinterEntities)
     let a1Matched = BambuEntityMatcher.detect(from: a1Known, allEntities: multiPrinterEntities)
-    checkEqual(p1pMatched.statusEntityID, "sensor.p1p_status", "P1P 自动匹配应使用 P1P 前缀实体")
+    checkEqual(p1pMatched.statusEntityID, "sensor.p1p_print_status", "P1P 自动匹配应使用 P1P 前缀实体")
     checkEqual(p1pMatched.progressEntityID, "sensor.p1p_progress", "P1P 自动匹配进度应使用 P1P 前缀实体")
     checkEqual(p1pMatched.nozzleTempEntityID, "sensor.p1p_nozzle_temp", "P1P 自动匹配喷嘴温度应使用 P1P 前缀实体")
-    checkEqual(a1Matched.statusEntityID, "sensor.a1_status", "A1 自动匹配应使用 A1 前缀实体")
+    checkEqual(a1Matched.statusEntityID, "sensor.a1_print_status", "A1 自动匹配应使用 A1 前缀实体")
     checkEqual(a1Matched.progressEntityID, "sensor.a1_progress", "A1 自动匹配进度应使用 A1 前缀实体")
     checkEqual(a1Matched.nozzleTempEntityID, "sensor.a1_nozzle_temp", "A1 自动匹配喷嘴温度应使用 A1 前缀实体")
     check(p1pMatched.statusEntityID != a1Matched.statusEntityID, "两台打印机自动匹配结果应互不串扰")
@@ -5890,12 +6088,104 @@ func testHomeAssistant() throws {
     // 自动匹配入口只接受打印状态实体；普通进度/通用状态传感器不能触发匹配
     let genericStatus = HAEntity(entityId: "sensor.living_status", friendlyName: "客厅状态",
                                  state: "on", unitOfMeasurement: nil)
+    let washerPrintStatus = HAEntity(entityId: "sensor.2_print_status",
+                                     friendlyName: "滚筒洗衣机 2 号 打印状态",
+                                     state: "idle", unitOfMeasurement: nil)
     check(BambuEntityMatcher.isPrintStatusEntity(p1pKnown), "P1P 状态识别为打印状态实体")
     check(!BambuEntityMatcher.isPrintStatusEntity(multiPrinterEntities[1]), "打印进度不能作为自动匹配种子")
     check(!BambuEntityMatcher.isPrintStatusEntity(genericStatus), "普通状态传感器不进入打印状态候选")
     checkEqual(BambuEntityMatcher.printStatusCandidates(multiPrinterEntities + [genericStatus]).count,
                2, "自动匹配候选只保留两台打印机的状态实体")
-    // 用户改显示名称后仍按稳定 ID / 同前缀兄弟实体 / 状态值识别，不依赖 friendly_name。
+    check(!BambuEntityMatcher.printStatusCandidates([washerPrintStatus]).contains {
+        $0.entityId == washerPrintStatus.entityId
+    }, "默认打印状态筛选不能把洗衣机的 print_status 实体当成打印机")
+    check(!BambuEntityMatcher.automaticPrintStatusCandidates(
+        multiPrinterEntities + [washerPrintStatus]).contains {
+            $0.entityId == washerPrintStatus.entityId
+        }, "Bambu 自动添加不能使用洗衣机的打印状态实体")
+    checkEqual(Set(BambuEntityMatcher.automaticPrintStatusCandidates(
+        multiPrinterEntities + [washerPrintStatus]).map(\.entityId)),
+        Set([p1pKnown.entityId, a1Known.entityId]),
+        "Bambu 自动添加只保留具备型号或兄弟实体证据的打印状态")
+    // 完整打印机通常有很多同前缀实体。辅助实体数量再多，也只能由唯一的
+    // 打印状态实体作为自动发现种子，不能每个实体各创建一台重复打印机。
+    let richPrinterEntities = [
+        HAEntity(entityId: "sensor.p1s_print_status", friendlyName: "P1S 打印状态",
+                 state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1s_print_progress", friendlyName: "P1S 打印进度",
+                 state: "42", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.p1s_current_task", friendlyName: "P1S 当前任务",
+                 state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1s_nozzle_temperature", friendlyName: "P1S 喷嘴温度",
+                 state: "220", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p1s_bed_temperature", friendlyName: "P1S 热床温度",
+                 state: "60", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.p1s_remaining_time", friendlyName: "P1S 剩余时间",
+                 state: "30", unitOfMeasurement: "min"),
+        HAEntity(entityId: "sensor.p1s_estimated_end_time", friendlyName: "P1S 结束时间",
+                 state: "2026-09-11T23:30:00+08:00", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1s_hms_error", friendlyName: "P1S 错误",
+                 state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.p1s_current_stage", friendlyName: "P1S 当前阶段",
+                 state: "printing", unitOfMeasurement: nil),
+    ]
+    checkEqual(BambuEntityMatcher.printStatusCandidates(richPrinterEntities).map(\.entityId),
+               ["sensor.p1s_print_status"],
+               "完整打印机的辅助实体不能进入打印状态候选")
+    checkEqual(BambuEntityMatcher.automaticPrintStatusCandidates(richPrinterEntities).map(\.entityId),
+               ["sensor.p1s_print_status"],
+               "自动发现每台完整打印机只使用打印状态实体作为种子")
+    // X2D 的 SD 卡诊断实体同样带型号并以 status/state 结尾，过去会被误判为
+    // 第二个打印状态种子。无论实体 ID 还是本地化名称采用哪种常见写法，
+    // 自动发现都只能选择真正的 print_status。
+    let x2dPrintStatus = HAEntity(entityId: "sensor.x2d_print_status",
+                                  friendlyName: "X2D 打印状态",
+                                  state: "printing", unitOfMeasurement: nil,
+                                  model: "X2D")
+    let x2dSDCardStatus = HAEntity(entityId: "sensor.x2d_sdcard_status",
+                                   friendlyName: "X2D SD卡状态",
+                                   state: "normal", unitOfMeasurement: nil,
+                                   model: "X2D")
+    let x2dSDCardState = HAEntity(entityId: "sensor.x2d_sd_card_state",
+                                  friendlyName: "X2D SD Card State",
+                                  state: "idle", unitOfMeasurement: nil,
+                                  model: "X2D")
+    let x2dLocalizedSD = HAEntity(entityId: "sensor.x2d_storage_status",
+                                  friendlyName: "X2D 存储卡状态",
+                                  state: "idle", unitOfMeasurement: nil,
+                                  model: "X2D")
+    let x2dEntities = [
+        x2dSDCardStatus, x2dSDCardState, x2dLocalizedSD, x2dPrintStatus,
+        HAEntity(entityId: "sensor.x2d_print_progress", friendlyName: "X2D 打印进度",
+                 state: "18", unitOfMeasurement: "%", model: "X2D"),
+        HAEntity(entityId: "sensor.x2d_current_task", friendlyName: "X2D 当前任务",
+                 state: "测试模型", unitOfMeasurement: nil, model: "X2D"),
+    ]
+    check(!BambuEntityMatcher.isPrintStatusEntity(x2dSDCardStatus),
+          "SD 卡状态不能识别为打印状态实体")
+    check(!BambuEntityMatcher.isPrintStatusEntity(x2dSDCardState),
+          "SD Card State 不能识别为打印状态实体")
+    checkEqual(BambuEntityMatcher.prefix(of: x2dSDCardStatus.entityId), "sensor.x2d",
+               "SD 卡诊断实体应归属于打印机主前缀")
+    checkEqual(BambuEntityMatcher.printStatusCandidates(x2dEntities).map(\.entityId),
+               [x2dPrintStatus.entityId],
+               "X2D 状态候选只能保留打印状态实体")
+    checkEqual(BambuEntityMatcher.automaticPrintStatusCandidates(x2dEntities).map(\.entityId),
+               [x2dPrintStatus.entityId],
+               "X2D 自动发现只能使用打印状态实体作为种子")
+    let duplicatePrintStatus = HAEntity(entityId: "sensor.x2d_print_status_2",
+                                         friendlyName: "X2D 打印状态 2",
+                                         state: "printing", unitOfMeasurement: nil,
+                                         model: "X2D")
+    check(BambuEntityMatcher.isPrintStatusEntity(duplicatePrintStatus),
+          "HA 冲突编号仍可完整识别 _print_status 字段")
+    checkEqual(BambuEntityMatcher.prefix(of: duplicatePrintStatus.entityId), "sensor.x2d",
+               "带冲突编号的打印状态仍归一到打印机主前缀")
+    checkEqual(BambuEntityMatcher.automaticPrintStatusCandidates(
+        x2dEntities + [duplicatePrintStatus]).map(\.entityId),
+        [x2dPrintStatus.entityId],
+        "同一打印机多个 print_status 残留只生成一个自动发现入口")
+    // 用户只改显示名称时仍按稳定 `_print_status` ID 识别，不依赖 friendly_name。
     let renamedExact = HAEntity(entityId: "sensor.x2d_serial_print_status",
                                 friendlyName: "书房设备", state: "printing", unitOfMeasurement: nil)
     let renamedLegacy = HAEntity(entityId: "sensor.custom_machine_status",
@@ -5912,14 +6202,23 @@ func testHomeAssistant() throws {
     let renameCandidates = BambuEntityMatcher.printStatusCandidates(renamePool)
     check(renameCandidates.contains { $0.entityId == renamedExact.entityId },
           "标准打印状态 ID 改显示名称后仍在候选中")
-    check(renameCandidates.contains { $0.entityId == renamedLegacy.entityId },
-          "旧状态实体改显示名称后由同前缀兄弟实体识别")
-    check(renameCandidates.contains { $0.entityId == customIDStatus.entityId },
-          "用户改 entity_id 后由打印状态值保留候选")
+    check(!renameCandidates.contains { $0.entityId == renamedLegacy.entityId },
+          "通用 status 即使存在同前缀兄弟实体也不能自动入选")
+    check(!renameCandidates.contains { $0.entityId == customIDStatus.entityId },
+          "用户改 entity_id 后必须关闭默认筛选再手动指定")
     checkEqual(renameCandidates.first?.entityId, renamedExact.entityId,
                "明确 print_status 后缀在默认排序中优先")
     check(!renameCandidates.contains { $0.entityId == genericStatus.entityId },
           "普通状态传感器不会因放宽改名兼容而误入")
+    let printerStatusAlias = HAEntity(entityId: "sensor.x2d_printer_status",
+                                      friendlyName: "X2D 打印机状态",
+                                      state: "printing", unitOfMeasurement: nil,
+                                      model: "X2D")
+    check(!BambuEntityMatcher.isPrintStatusEntity(printerStatusAlias),
+          "自动匹配必须完整命中 _print_status，不能接受 _printer_status")
+    checkEqual(BambuEntityMatcher.printStatusCandidates(
+        [printerStatusAlias] + renamedSiblings).map(\.entityId), [],
+        "型号、打印中状态和兄弟实体不能绕过 _print_status 硬规则")
     let invalidSeedMatch = BambuEntityMatcher.detect(from: multiPrinterEntities[1],
                                                      allEntities: multiPrinterEntities)
     checkEqual(invalidSeedMatch.statusEntityID, "", "非打印状态实体不会启动自动匹配")
@@ -6018,7 +6317,7 @@ func testHomeAssistant() throws {
     checkEqual(legacyS.devices.filter { $0.type == .bambuLab }.count, 2, "迁移幂等-设备数不变")
     // 实体自动匹配：从打印状态实体推导其余字段（前缀 + 关键词）
     let printerEntities = [
-        HAEntity(entityId: "sensor.bambu_01h08c0a0001_status", friendlyName: "Bambu Lab A1 状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_01h08c0a0001_print_status", friendlyName: "Bambu Lab A1 打印状态", state: "idle", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_progress", friendlyName: "打印进度", state: "50", unitOfMeasurement: "%"),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_nozzle_temp", friendlyName: "喷嘴温度", state: "200", unitOfMeasurement: "°C"),
         HAEntity(entityId: "sensor.bambu_01h08c0a0001_bed_temp", friendlyName: "热床温度", state: "55", unitOfMeasurement: "°C"),
@@ -6031,7 +6330,7 @@ func testHomeAssistant() throws {
     ]
     let known = printerEntities[0]
     let matched = BambuEntityMatcher.detect(from: known, allEntities: printerEntities)
-    checkEqual(matched.statusEntityID, "sensor.bambu_01h08c0a0001_status", "自动匹配状态实体")
+    checkEqual(matched.statusEntityID, "sensor.bambu_01h08c0a0001_print_status", "自动匹配状态实体")
     checkEqual(matched.progressEntityID, "sensor.bambu_01h08c0a0001_progress", "自动匹配进度实体")
     checkEqual(matched.nozzleTempEntityID, "sensor.bambu_01h08c0a0001_nozzle_temp", "自动匹配喷嘴实体")
     checkEqual(matched.bedTempEntityID, "sensor.bambu_01h08c0a0001_bed_temp", "自动匹配热床实体")
@@ -6184,7 +6483,7 @@ func testHomeAssistant() throws {
 
     // Bambu Lab 自动识别：从实体列表按关键词归类字段
     let bambuEntities = [
-        HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.bambu_print_status", friendlyName: "打印状态", state: "idle", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_print_progress", friendlyName: "打印进度", state: "45", unitOfMeasurement: "%"),
         HAEntity(entityId: "sensor.bambu_current_task", friendlyName: "当前任务", state: "花瓶 v2", unitOfMeasurement: nil),
         HAEntity(entityId: "sensor.bambu_nozzle_temp", friendlyName: "喷嘴温度", state: "210", unitOfMeasurement: "°C"),
@@ -6195,7 +6494,7 @@ func testHomeAssistant() throws {
         HAEntity(entityId: "sensor.other_temp", friendlyName: "无关实体", state: "1", unitOfMeasurement: nil)
     ]
     let detected = BambuLabCardSettings.autoDetect(entities: bambuEntities)
-    checkEqual(detected.statusEntityID, "sensor.bambu_printer_status", "Bambu 自动识别-状态")
+    checkEqual(detected.statusEntityID, "sensor.bambu_print_status", "Bambu 自动识别-状态")
     checkEqual(detected.progressEntityID, "sensor.bambu_print_progress", "Bambu 自动识别-进度")
     checkEqual(detected.taskEntityID, "sensor.bambu_current_task", "Bambu 自动识别-任务")
     checkEqual(detected.nozzleTempEntityID, "sensor.bambu_nozzle_temp", "Bambu 自动识别-喷嘴温度")
@@ -6209,13 +6508,13 @@ func testHomeAssistant() throws {
     // Bambu 卡片设置写入/读取设备快照（按 HA 设备独立）
     var bsnap = DeviceSettings()
     var bc = BambuLabCardSettings()
-    bc.statusEntityID = "sensor.bambu_printer_status"
+    bc.statusEntityID = "sensor.bambu_print_status"
     bc.enableAlert = false
     bc.apply(to: &bsnap)
-    checkEqual(bsnap.bambuStatusEntityID, "sensor.bambu_printer_status", "Bambu 快照写入状态")
+    checkEqual(bsnap.bambuStatusEntityID, "sensor.bambu_print_status", "Bambu 快照写入状态")
     checkEqual(bsnap.bambuEnableAlert, false, "Bambu 快照写入告警开关")
     let bcBack = BambuLabCardSettings.from(bsnap)
-    checkEqual(bcBack.statusEntityID, "sensor.bambu_printer_status", "Bambu 快照读回状态")
+    checkEqual(bcBack.statusEntityID, "sensor.bambu_print_status", "Bambu 快照读回状态")
     checkEqual(bcBack.enableAlert, false, "Bambu 快照读回告警开关")
 
     // Bambu 卡片渲染：含实体聚合展示；错误态警示不同
@@ -6225,7 +6524,7 @@ func testHomeAssistant() throws {
     checkEqual(bambuCard.image.height, 428, "Bambu 卡片高度")
     check(bambuCard.data.count <= ScreenRenderer.maximumFileSize, "Bambu 卡片大小")
     var bambuErr = bambuEntities
-    bambuErr[0] = HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "error", unitOfMeasurement: nil)
+    bambuErr[0] = HAEntity(entityId: "sensor.bambu_print_status", friendlyName: "打印状态", state: "error", unitOfMeasurement: nil)
     bambuErr[6] = HAEntity(entityId: "sensor.bambu_error_code", friendlyName: "错误码", state: "0x03080005", unitOfMeasurement: nil)
     let bambuErrorCard = try ScreenRenderer.renderBambuLab(bambuSetting, entities: bambuErr, settings: haSettings)
     check(bambuErrorCard.data != bambuCard.data, "Bambu 错误态渲染应不同")
@@ -6235,7 +6534,7 @@ func testHomeAssistant() throws {
     var binSetting = bambuSetting
     binSetting.errorEntityID = "binary_sensor.bambu_hms_errors"
     var offErr = bambuEntities
-    offErr[0] = HAEntity(entityId: "sensor.bambu_printer_status", friendlyName: "打印机状态", state: "running", unitOfMeasurement: nil)
+    offErr[0] = HAEntity(entityId: "sensor.bambu_print_status", friendlyName: "打印状态", state: "running", unitOfMeasurement: nil)
     offErr[6] = HAEntity(entityId: "binary_sensor.bambu_hms_errors", friendlyName: "HMS 错误", state: "off",
                          unitOfMeasurement: nil, lastChanged: freshNow)
     let cardOff = try ScreenRenderer.renderBambuLab(binSetting, entities: offErr, settings: haSettings, now: freshNow)
@@ -7374,7 +7673,7 @@ func testHomeAssistant() throws {
     check(HAEntityPicker.printerRelevant(pictureEntities).count == 2,
           "打印机候选集包含画面实体")
     // 4) 自动匹配的画面绑定
-    let a1Status = HAEntity(entityId: "sensor.bambu_lab_a1_status", friendlyName: "A1 状态",
+    let a1Status = HAEntity(entityId: "sensor.bambu_lab_a1_print_status", friendlyName: "A1 打印状态",
                             state: "printing", unitOfMeasurement: nil)
     let camA1 = HAEntity(entityId: "image.bambu_lab_a1_camera", friendlyName: "A1 摄像头",
                          state: "ok", unitOfMeasurement: nil, entityPicture: "/api/a1cam")
@@ -7468,7 +7767,7 @@ func testHomeAssistant() throws {
     checkEqual(noneMatch.imageEntityID, "", "无画面实体时不绑")
     checkEqual(noneMatch.taskImageEntityID, "", "无任务封面实体时不绑")
     // 画面实体按设备编号命名（image.2_camera）时，靠显示名称里的型号词匹配
-    let p1pStatus = HAEntity(entityId: "sensor.bambu_lab_p1p_status", friendlyName: "P1P 状态",
+    let p1pStatus = HAEntity(entityId: "sensor.bambu_lab_p1p_print_status", friendlyName: "P1P 打印状态",
                              state: "printing", unitOfMeasurement: nil)
     let p1pCam = HAEntity(entityId: "image.2_camera", friendlyName: "Bambu Lab P1P Camera",
                           state: "ok", unitOfMeasurement: nil, entityPicture: "/api/2cam")
@@ -7654,6 +7953,54 @@ func testHomeAssistant() throws {
         showBambuCamera: false)
     check(!bitmapEqual(taskCoverBoard, cameraSuppressedBoard),
           "排除摄像头后仍允许用户选择显示打印任务封面")
+    var aiMacPrinter = boardPrinter
+    aiMacPrinter.name = "工作室 X2D"
+    aiMacPrinter.statusEntityID = printerEntitiesForCard[0].entityId
+    aiMacPrinter.taskEntityID = "sensor.a1_task"
+    aiMacPrinter.nozzleTempEntityID = "sensor.a1_nozzle"
+    aiMacPrinter.bedTempEntityID = "sensor.a1_bed"
+    aiMacPrinter.remainingEntityID = "sensor.a1_remaining"
+    aiMacPrinter.showStatus = true
+    aiMacPrinter.showProgress = true
+    aiMacPrinter.showTask = true
+    aiMacPrinter.showTemperature = true
+    aiMacPrinter.showRemaining = true
+    aiMacPrinter.showImage = true
+    let aiMacPrinterEntities = boardEntities + [
+        HAEntity(entityId: "sensor.a1_task", friendlyName: "A1 任务",
+                 state: "工作室多色支架最终版本.3mf", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.a1_nozzle", friendlyName: "A1 喷嘴",
+                 state: "220", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.a1_bed", friendlyName: "A1 热床",
+                 state: "65", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "sensor.a1_remaining", friendlyName: "A1 剩余时间",
+                 state: "0.75", unitOfMeasurement: "h")
+    ]
+    let aiMacBambu = ScreenRenderer.renderAIMacBambuCard(
+        aiMacPrinter, entities: aiMacPrinterEntities,
+        cameraImage: pictureData, taskCoverImage: pictureData,
+        settings: boardSettings, sampledAt: cameraBoardSnapshot.sampledAt,
+        palette: boardSettings.resolvedPalette)
+    checkEqual(aiMacBambu.width, 240, "AI Mac 打印机独立卡片宽度")
+    checkEqual(aiMacBambu.height, 240, "AI Mac 打印机独立卡片高度")
+    let aiMacCameraPending = ScreenRenderer.renderAIMacBambuCard(
+        aiMacPrinter, entities: aiMacPrinterEntities,
+        cameraImage: nil, taskCoverImage: pictureData,
+        settings: boardSettings, sampledAt: cameraBoardSnapshot.sampledAt,
+        palette: boardSettings.resolvedPalette)
+    check(!bitmapEqual(aiMacBambu, aiMacCameraPending),
+          "AI Mac 打印机独立卡片应同时渲染摄像头与任务封面")
+    var aiMacMinimalPrinter = aiMacPrinter
+    aiMacMinimalPrinter.showTask = false
+    aiMacMinimalPrinter.showTemperature = false
+    aiMacMinimalPrinter.showRemaining = false
+    aiMacMinimalPrinter.showImage = false
+    let aiMacMinimal = ScreenRenderer.renderAIMacBambuCard(
+        aiMacMinimalPrinter, entities: aiMacPrinterEntities,
+        settings: boardSettings, sampledAt: cameraBoardSnapshot.sampledAt,
+        palette: boardSettings.resolvedPalette)
+    check(!bitmapEqual(aiMacBambu, aiMacMinimal),
+          "AI Mac 打印机字段关闭后应释放对应内容区")
     let haPlain = try ScreenRenderer.renderHA([imageEntity], errorText: nil,
                                               settings: pictureCardSettings)
     let haPicture = try ScreenRenderer.renderHA([imageEntity], images: ["image.bambu_lab_a1_camera": pictureData],
