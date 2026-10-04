@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 // MARK: - 面板类型
 
-/// 「Beta」小徽标：低对比浅灰标签，标识 Home Assistant / Bambu Lab 实验性功能。
+/// 「Beta」小徽标：低对比浅灰标签，标识尚在验证的功能。
 struct BetaBadge: View {
     var body: some View {
         Text("Beta")
@@ -32,7 +32,8 @@ extension Panel {
             || self == .bambuLab3 || self == .bambuLab4 || self == .bambuLab5
             || isFormlabsCard || self == .aiMacScreen || self == .aiMacDashboard
             || self == .aiMacClock || self == .aiMacCustomImage || self == .aiMacControl
-            || self == .aiMacCard || self == .aiMacCardManagement
+            || self == .aiMacCard || self == .aiMacCardManagement || self == .awtrix
+            || self == .awtrixCardManagement || self == .m5Controller
     }
 
     /// 是否为 Bambu Lab 打印机卡片位（第 1/2/3/4/5 台；显示在键盘设备分组内，
@@ -104,6 +105,9 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case excerptQuote
     case sspai
     case emojiWallpaper
+    case awtrix
+    case awtrixCardManagement
+    case m5Controller
     case homeAssistant
     case bambuLab
     case bambuLab2
@@ -222,6 +226,9 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return "摘录语录"
         case .sspai: return "少数派推荐"
         case .emojiWallpaper: return "Emoji 壁纸"
+        case .awtrix: return "显示设置"
+        case .awtrixCardManagement: return "卡片管理"
+        case .m5Controller: return "M5 StickS3 控制器"
         case .homeAssistant: return "Home Assistant"
         case .bambuLab: return "Bambu Lab 打印机"
         case .bambuLab2: return "Bambu Lab 打印机 2"
@@ -266,6 +273,9 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .excerptQuote: return "text.quote"
         case .sspai: return "newspaper"
         case .emojiWallpaper: return "face.smiling"
+        case .awtrix: return "slider.horizontal.3"
+        case .awtrixCardManagement: return "tray.full"
+        case .m5Controller: return "gamecontroller"
         case .homeAssistant: return "house"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
@@ -290,7 +300,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     /// 选择该面板时对应的显示模式（设置/外观/设备管理/按键控制/独立画板/开始使用无对应键盘显示模式）
     var displayMode: DisplayMode? {
         switch self {
-        case .welcome, .general, .appearance: return nil
+        case .welcome, .general, .appearance, .awtrix, .awtrixCardManagement,
+             .m5Controller: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
@@ -318,6 +329,107 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .formlabs4: return .formlabs4
         case .formlabs5: return .formlabs5
         }
+    }
+}
+
+/// AWTRIX 应用由设备动态返回，不能塞进静态 `Panel` 枚举；用设备与应用名组成
+/// 稳定路由，确保多台设备即使安装了同名应用也不会串页。
+struct AWTRIXAppRoute: Equatable, Hashable {
+    let deviceID: UUID
+    let appName: String
+    /// 内置「灵犀文字」编辑页不依赖设备是否已返回 pushed app。
+    /// 独立路由身份使首次推送前和执行「移除」后仍可进入编辑。
+    let isBuiltInText: Bool
+
+    var isHomeAssistant: Bool {
+        appName.caseInsensitiveCompare(AWTRIXCardPolicy.homeAssistantAppName) == .orderedSame
+    }
+
+    init(deviceID: UUID, appName: String, isBuiltInText: Bool = false) {
+        self.deviceID = deviceID
+        self.appName = appName
+        self.isBuiltInText = isBuiltInText
+    }
+
+    var key: String {
+        "\(deviceID.uuidString)|\(isBuiltInText ? "lingxi-text" : "device-app")|\(appName)"
+    }
+}
+
+/// AWTRIX 的 32×8 设备实时画面预览。图片本身始终使用最近邻缩放，
+/// 再以随尺寸自适应的暗色缝隙还原真实 LED 点阵观感。
+private struct AWTRIXPixelMatrixPreview: View {
+    let image: NSImage?
+    var maximumWidth: CGFloat
+    var waitingText: String?
+
+    init(image: NSImage?, maximumWidth: CGFloat,
+         waitingText: String? = nil) {
+        self.image = image
+        self.maximumWidth = maximumWidth
+        self.waitingText = waitingText
+    }
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.012, green: 0.014, blue: 0.018)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .antialiased(false)
+                    .aspectRatio(4, contentMode: .fit)
+                AWTRIXPixelGapOverlay()
+            } else if let waitingText {
+                VStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text(waitingText)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+            }
+        }
+        .aspectRatio(4, contentMode: .fit)
+        .frame(maxWidth: maximumWidth)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+        }
+    }
+}
+
+/// 每个像素之间保留约单个屏幕像素的暗缝。缝隙按单颗 LED 的实际显示尺寸缩放，
+/// 小预览不会被粗线吃掉，大预览也不会退化为一整块无分隔的位图。
+private struct AWTRIXPixelGapOverlay: View {
+    private static let columns = 32
+    private static let rows = 8
+
+    var body: some View {
+        GeometryReader { proxy in
+            Canvas { context, size in
+                let cellWidth = size.width / CGFloat(Self.columns)
+                let cellHeight = size.height / CGFloat(Self.rows)
+                let cellSize = min(cellWidth, cellHeight)
+                let gap = min(1.4, max(0.55, cellSize * 0.09))
+                let gapColor = Color(red: 0.006, green: 0.007, blue: 0.009)
+
+                for column in 0...Self.columns {
+                    let x = CGFloat(column) * cellWidth - gap / 2
+                    context.fill(Path(CGRect(x: x, y: 0, width: gap,
+                                             height: size.height)),
+                                 with: .color(gapColor))
+                }
+                for row in 0...Self.rows {
+                    let y = CGFloat(row) * cellHeight - gap / 2
+                    context.fill(Path(CGRect(x: 0, y: y, width: size.width,
+                                             height: gap)),
+                                 with: .color(gapColor))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -452,6 +564,194 @@ private let dotImageAPIDocsURL = URL(string: "https://dot.mindreset.tech/docs/se
 private let rand0DisplayModeDocsURL = URL(string: "https://dot.mindreset.tech/docs/rand_0/start/features/display_mode")!
 private let formlabsDeveloperDocsURL = URL(string: "https://formlabs.com/support/Formlabs-Developer-Platform-overview/")!
 
+/// 严格按 StickS3 固件的 135×240 布局绘制：46px 双行头部、三张固定高度卡片和
+/// 22px 操作提示。软件预览与实机使用相同的菜单顺序、间距和颜色层级。
+private struct M5ControllerScreenPreview: View {
+    let info: M5ControllerInfo
+    let connected: Bool
+    let secured: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let sx = geo.size.width / 135
+            let sy = geo.size.height / 240
+            let scale = min(sx, sy)
+            let cardHeight = 52 * sy
+            let active = min(max(info.active, 0), max(0, info.devices.count - 1))
+            let page = active / 3
+            let pageCount = max(1, (info.devices.count + 2) / 3)
+            let start = page * 3
+            let visibleCards = Array(info.devices.dropFirst(start).prefix(3))
+            ZStack(alignment: .topLeading) {
+                Color(red: 12 / 255, green: 15 / 255, blue: 19 / 255)
+
+                Rectangle()
+                    .fill(Color(red: 30 / 255, green: 37 / 255, blue: 46 / 255))
+                    .frame(height: 46 * sy)
+                Text(info.title ?? "灵犀控制器")
+                    .font(.system(size: 14 * scale, weight: .bold))
+                    .foregroundStyle(Color(red: 240 / 255, green: 243 / 255, blue: 247 / 255))
+                    .lineLimit(1)
+                    .frame(width: (info.devices.count > 3 ? 78 : 119) * sx, alignment: .leading)
+                    .offset(x: 8 * sx, y: 3 * sy)
+
+                if info.devices.count > 3 {
+                    Text("\(page + 1)/\(pageCount)页")
+                        .font(.system(size: 12 * scale, weight: .medium))
+                        .foregroundStyle(Color(red: 170 / 255, green: 178 / 255, blue: 190 / 255))
+                        .frame(width: 43 * sx, alignment: .trailing)
+                        .offset(x: 84 * sx, y: 5 * sy)
+                }
+
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1.2 * scale)
+                        .stroke(Color(red: 170 / 255, green: 178 / 255, blue: 190 / 255),
+                                lineWidth: max(1, scale))
+                    Rectangle()
+                        .fill(Color(red: 52 / 255, green: 199 / 255, blue: 123 / 255))
+                        .padding(2 * scale)
+                        .frame(width: 13 * sx)
+                }
+                .frame(width: 26 * sx, height: 13 * sy)
+                .offset(x: 8 * sx, y: 28 * sy)
+                Rectangle()
+                    .fill(Color(red: 170 / 255, green: 178 / 255, blue: 190 / 255))
+                    .frame(width: 2 * sx, height: 5 * sy)
+                    .offset(x: 34 * sx, y: 32 * sy)
+                Text("58%")
+                    .font(.system(size: 12 * scale, weight: .medium))
+                    .foregroundStyle(Color(red: 170 / 255, green: 178 / 255, blue: 190 / 255))
+                    .offset(x: 40 * sx, y: 26 * sy)
+
+                HStack(spacing: 4 * scale) {
+                    Circle().fill(Color.white).frame(width: 6 * scale, height: 6 * scale)
+                    Text(!connected ? "未连接" : (secured ? "已配对" : "待配对"))
+                        .font(.system(size: 12 * scale, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 58 * sx, height: 18 * sy)
+                .background(!connected
+                            ? Color(red: 255 / 255, green: 69 / 255, blue: 58 / 255)
+                            : (secured
+                               ? Color(red: 52 / 255, green: 199 / 255, blue: 123 / 255)
+                               : Color(red: 255 / 255, green: 176 / 255, blue: 32 / 255)),
+                            in: Capsule())
+                .offset(x: 71 * sx, y: 25 * sy)
+
+                Rectangle()
+                    .fill(Color(red: 44 / 255, green: 54 / 255, blue: 66 / 255))
+                    .frame(height: max(1, sy))
+                    .offset(y: 45 * sy)
+
+                ForEach(Array(visibleCards.enumerated()), id: \.offset) { index, card in
+                    let globalIndex = start + index
+                    let selected = globalIndex == active
+                    HStack(spacing: 8 * scale) {
+                        Text("\(globalIndex + 1)")
+                            .font(.system(size: 12 * scale, weight: .bold))
+                            .foregroundStyle(selected
+                                             ? Color(red: 45 / 255, green: 127 / 255, blue: 249 / 255)
+                                             : Color(red: 12 / 255, green: 15 / 255, blue: 19 / 255))
+                            .frame(width: 16 * scale, height: 16 * scale)
+                            .background(selected
+                                        ? Color(red: 240 / 255, green: 243 / 255, blue: 247 / 255)
+                                        : Color(red: 112 / 255, green: 120 / 255, blue: 132 / 255),
+                                        in: Circle())
+                        VStack(alignment: .leading, spacing: 4 * scale) {
+                            Text(card.name)
+                                .font(.system(size: 14 * scale, weight: .semibold))
+                                .lineLimit(1)
+                            Text(card.available ? (card.detail.isEmpty ? "就绪" : card.detail) : "离线")
+                                .font(.system(size: 12 * scale, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(selected
+                                         ? Color.white
+                                         : Color(red: 240 / 255, green: 243 / 255, blue: 247 / 255))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 7 * sx)
+                    .frame(width: 123 * sx, height: cardHeight)
+                    .background(selected
+                                ? Color(red: 45 / 255, green: 127 / 255, blue: 249 / 255)
+                                : Color(red: 30 / 255, green: 37 / 255, blue: 46 / 255),
+                                in: RoundedRectangle(cornerRadius: 6 * scale, style: .continuous))
+                    .offset(x: 6 * sx, y: (50 + CGFloat(index) * 56) * sy)
+                }
+
+                Rectangle()
+                    .fill(Color(red: 30 / 255, green: 37 / 255, blue: 46 / 255))
+                    .frame(height: 22 * sy)
+                    .offset(y: 218 * sy)
+                Text(info.footer ?? "A/B选择 长A进入")
+                    .font(.system(size: 12 * scale, weight: .medium))
+                    .foregroundStyle(Color(red: 170 / 255, green: 178 / 255, blue: 190 / 255))
+                    .frame(width: geo.size.width, height: 22 * sy)
+                    .offset(y: 218 * sy)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 3 * scale, style: .continuous))
+        }
+        .aspectRatio(135 / 240, contentMode: .fit)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("StickS3 屏幕预览")
+        .accessibilityValue("\(info.title ?? "灵犀控制器")，第 \(min(max(info.active, 0), max(0, info.devices.count - 1)) + 1) 项，共 \(info.devices.count) 项")
+    }
+}
+
+private struct M5ControllerDevicePreview: View {
+    let deviceName: String
+    let info: M5ControllerInfo
+    let connected: Bool
+    let secured: Bool
+
+    var body: some View {
+        GeometryReader { outer in
+            let ratio: CGFloat = 433 / 834
+            let availableWidth = max(120, outer.size.width - 32)
+            let availableHeight = max(260, outer.size.height - 92)
+            let fittedHeight = min(availableHeight, availableWidth / ratio)
+            let fittedWidth = fittedHeight * ratio
+            VStack(spacing: 12) {
+                ZStack(alignment: .topLeading) {
+                    if let image = PreviewResources.m5StickS3Image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .frame(width: fittedWidth, height: fittedHeight)
+                            .accessibilityHidden(true)
+                    } else {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(Color.black.opacity(0.82))
+                            .frame(width: fittedWidth, height: fittedHeight)
+                            .accessibilityHidden(true)
+                    }
+
+                    M5ControllerScreenPreview(info: info,
+                                              connected: connected,
+                                              secured: secured)
+                        .frame(width: fittedWidth * 0.58, height: fittedHeight * 0.50)
+                        .offset(x: fittedWidth * 0.21, y: fittedHeight * 0.098)
+                }
+                .frame(width: fittedWidth, height: fittedHeight)
+
+                Text(deviceName)
+                    .font(.headline)
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Label("A 下一项 / 长按进入", systemImage: "a.circle.fill")
+                    Label("B 上一项 / 长按返回", systemImage: "b.circle.fill")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 14)
+            .frame(width: outer.size.width, height: outer.size.height, alignment: .top)
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     /// NavigationSplitView 侧栏列可见性
@@ -491,9 +791,16 @@ struct SettingsView: View {
     @State private var dragAIMacBoards: [AIMacCanvasBoard]?
     @State private var draggedAIMacCard: DisplayMode?
     @State private var dragAIMacCards: [DisplayMode]?
+    @State private var draggedAWTRIXApp: AWTRIXCardDescriptor?
+    @State private var dragAWTRIXApps: [AWTRIXCardDescriptor]?
+    @State private var draggedAWTRIXHAEntity: HAEntityRef?
+    @State private var dragAWTRIXHAEntities: [HAEntityRef]?
+    @State private var awtrixAppRoute: AWTRIXAppRoute?
     /// 待删除设备的稳定 ID（非 nil 时弹出二次确认）。不能保存列表中的值副本，
     /// 新增/重排设备后 SwiftUI 可能继续持有旧快照，导致确认动作指向错误设备。
     @State private var deviceIDToDelete: UUID?
+    /// 解除控制器配对前说明系统蓝牙记录不会被第三方应用删除。
+    @State private var m5ControllerIDToUnpair: UUID?
     /// 设备管理默认只读；只有用户明确点“编辑”的设备才开放输入、开关与操作按钮。
     @State private var editingDeviceIDs: Set<UUID> = []
     /// 已添加设备默认收起为紧凑卡片；每台设备独立记住本次会话中的展开状态。
@@ -510,7 +817,10 @@ struct SettingsView: View {
     @State private var aiMacBoardRenameDraft = ""
     /// 全局快捷键录制：正在录制的动作（nil = 未录制）与本地按键监听器
     @State private var recordingShortcutAction: GlobalHotkeyManager.Action?
+    @State private var recordingM5ShortcutID: String?
+    @State private var recordingM5ControllerID: UUID?
     @State private var recordingMonitor: Any?
+    @State private var shortcutCaptureMonitor: ShortcutCaptureMonitor?
     /// 恢复初始快捷键确认 / 快捷键冲突提示
     @State private var showRestoreShortcutsConfirm = false
     @State private var showRestorePageShortcutsConfirm = false
@@ -536,6 +846,12 @@ struct SettingsView: View {
     @State private var showAIMacFlashResult = false
     @State private var aiMacFlashResultSucceeded = false
     @State private var aiMacFlashResultMessage = ""
+    /// M5 StickS3 刷机沿用 AI Mac 的二次确认、进度、日志和结果反馈结构。
+    @State private var showM5FlashConfirmation = false
+    @State private var showM5FlashLog = false
+    @State private var showM5FlashResult = false
+    @State private var m5FlashResultSucceeded = false
+    @State private var m5FlashResultMessage = ""
 
     init(model: AppModel) {
         self.model = model
@@ -598,6 +914,49 @@ struct SettingsView: View {
             } message: {
                 Text(aiMacFlashResultMessage)
             }
+            .confirmationDialog(
+                "确认刷入 M5 StickS3 控制器固件？",
+                isPresented: $showM5FlashConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("刷入固件") {
+                    Task {
+                        let flashed = await model.flashM5StickS3Firmware()
+                        m5FlashResultSucceeded = flashed
+                        m5FlashResultMessage = model.m5FlashStatus
+                        showM5FlashResult = true
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("刷写会覆盖所选 ESP32-S3 设备中的现有固件。请确认连接的是 M5Stack StickS3，完成前不要拔掉 USB 数据线；成功后设备会自动重启并开始蓝牙扫描。")
+            }
+            .alert(m5FlashResultSucceeded ? "StickS3 刷写完成" : "StickS3 刷写失败",
+                   isPresented: $showM5FlashResult) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(m5FlashResultMessage)
+            }
+            .confirmationDialog(
+                "管理 M5 StickS3 配对",
+                isPresented: Binding(get: { m5ControllerIDToUnpair != nil },
+                                     set: { if !$0 { m5ControllerIDToUnpair = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("重新配对…") {
+                    if let id = m5ControllerIDToUnpair {
+                        model.m5BeginRepairController(deviceID: id)
+                    }
+                    m5ControllerIDToUnpair = nil
+                }
+                Button("仅解除软件绑定", role: .destructive) {
+                    if let id = m5ControllerIDToUnpair { model.m5UnpairController(deviceID: id) }
+                    m5ControllerIDToUnpair = nil
+                }
+                Button("取消", role: .cancel) { m5ControllerIDToUnpair = nil }
+            } message: {
+                Text("“重新配对”会先清除控制器端密钥并打开系统蓝牙设置，然后在页面内引导你忽略旧记录、重新扫描；“仅解除”只移除多屏灵犀中的绑定。")
+            }
     }
 
     /// 独立设备画板页面自带设备预览，隐藏键盘小屏实时预览
@@ -616,7 +975,7 @@ struct SettingsView: View {
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .excerptBoardManagement, .aiMacBoardManagement,
-             .devices, .general:
+             .devices, .general, .awtrix, .awtrixCardManagement, .m5Controller:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -660,7 +1019,7 @@ struct SettingsView: View {
             // 侧栏列最大宽度随窗口宽度动态收缩，保证详情区永远放得下——
             // 预览面板任何窗口尺寸下都完整展示、绝不被裁切（与旧版自适应行为一致）
             let previewNeed: CGFloat = hidesPreviewPanel ? 0 : PreviewPanel.preferredWidth(forHeight: geo.size.height)
-            let detailNeed: CGFloat = 380 + previewNeed + 2
+            let detailNeed: CGFloat = selected == .m5Controller ? 620 : 380 + previewNeed + 2
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 sidebarColumn(windowWidth: geo.size.width)
                     // 图标模式最窄 82
@@ -670,6 +1029,14 @@ struct SettingsView: View {
             } detail: {
                 detailColumn
             }
+            // macOS 27 会把系统默认 sidebarToggle 收进“更多工具栏项目”的二级菜单，
+            // 收起侧栏后会同时出现自定义展开按钮与额外溢出菜单。移除系统项并由
+            // 内容区提供一对直接展开/收起按钮，macOS 26/27 的交互保持一致。
+            .toolbar(removing: .sidebarToggle)
+            // macOS 27 即使默认项已移除，仍可能为这个空工具栏保留右上角双箭头
+            // “更多工具栏项目”。本窗口所有操作均由内容区标题栏承载，直接隐藏
+            // windowToolbar，避免产生没有实际用途的二级入口。
+            .toolbarVisibility(.hidden, for: .windowToolbar)
             .onChange(of: selected) { newValue in
                 if let mode = newValue.displayMode {
                     model.setMode(mode)
@@ -718,6 +1085,22 @@ struct SettingsView: View {
                 dragAIMacCards = nil
                 draggedAIMacCard = nil
             }
+            .onChange(of: model.activeDeviceID(for: .awtrix)) { _ in
+                dragAWTRIXApps = nil
+                draggedAWTRIXApp = nil
+                dragAWTRIXHAEntities = nil
+                draggedAWTRIXHAEntity = nil
+                if let route = awtrixAppRoute,
+                   route.deviceID != model.activeDeviceID(for: .awtrix) {
+                    awtrixAppRoute = nil
+                }
+            }
+            .onChange(of: model.settings.devices.map(\.id)) { ids in
+                // 删除正在查看的 AWTRIX 后不保留指向旧 UUID 的动态路由。
+                if let route = awtrixAppRoute, !ids.contains(route.deviceID) {
+                    awtrixAppRoute = nil
+                }
+            }
         }
     }
 
@@ -726,10 +1109,14 @@ struct SettingsView: View {
         GeometryReader { geo in
             Group {
                 if geo.size.width <= 96 {
-                    MiniSidebar(selection: $selected, model: model)
+                    MiniSidebar(selection: $selected,
+                                awtrixAppRoute: $awtrixAppRoute,
+                                model: model)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 } else {
-                    Sidebar(selection: $selected, model: model)
+                    Sidebar(selection: $selected,
+                            awtrixAppRoute: $awtrixAppRoute,
+                            model: model)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
@@ -763,42 +1150,49 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 headerBar
                 Divider()
-                ScrollView([.vertical]) {
-                    if model.settings.devices.isEmpty && !worksWithoutDevices(selected) {
-                        emptyDevicesOnboarding
-                    } else if selected == .excerptCanvas {
-                        excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
-                    } else if selected == .oracleCanvas {
-                        oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
-                    } else if selected == .aiMacScreen {
-                        aiMacScreenForm
-                    } else if selected == .aiMacDashboard {
-                        aiMacStandaloneModeForm(.dashboard)
-                    } else if selected == .aiMacClock {
-                        aiMacStandaloneModeForm(.clock)
-                    } else if selected == .aiMacCustomImage {
-                        aiMacStandaloneModeForm(.customImage)
-                    } else if selected == .aiMacCard {
-                        aiMacCardForm
-                    } else if selected == .aiMacCardManagement {
-                        aiMacCardManagementForm
-                    } else if selected == .oracleBoardManagement {
-                        oracleBoardManagementForm
-                    } else if selected == .excerptBoardManagement {
-                        excerptBoardManagementForm
-                    } else if selected == .aiMacBoardManagement {
-                        aiMacBoardManagementForm
-                    } else if selected == .aiMacControl {
-                        aiMacControlForm
-                    } else {
-                        Form { panelContent(for: selected) }
-                            .formStyle(.grouped)
-                            .padding(.bottom, 12)
+                if selected == .m5Controller {
+                    // StickS3 使用独立双栏：左侧 Form 自己滚动，右侧预览保持固定。
+                    // 不再嵌套到通用 ScrollView，避免双重滚动和预览被带走。
+                    m5ControllerWorkspace
+                        .id(selected.rawValue)
+                } else {
+                    ScrollView([.vertical]) {
+                        if model.settings.devices.isEmpty && !worksWithoutDevices(selected) {
+                            emptyDevicesOnboarding
+                        } else if selected == .excerptCanvas {
+                            excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
+                        } else if selected == .oracleCanvas {
+                            oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
+                        } else if selected == .aiMacScreen {
+                            aiMacScreenForm
+                        } else if selected == .aiMacDashboard {
+                            aiMacStandaloneModeForm(.dashboard)
+                        } else if selected == .aiMacClock {
+                            aiMacStandaloneModeForm(.clock)
+                        } else if selected == .aiMacCustomImage {
+                            aiMacStandaloneModeForm(.customImage)
+                        } else if selected == .aiMacCard {
+                            aiMacCardForm
+                        } else if selected == .aiMacCardManagement {
+                            aiMacCardManagementForm
+                        } else if selected == .oracleBoardManagement {
+                            oracleBoardManagementForm
+                        } else if selected == .excerptBoardManagement {
+                            excerptBoardManagementForm
+                        } else if selected == .aiMacBoardManagement {
+                            aiMacBoardManagementForm
+                        } else if selected == .aiMacControl {
+                            aiMacControlForm
+                        } else {
+                            Form { panelContent(for: selected) }
+                                .formStyle(.grouped)
+                                .padding(.bottom, 12)
+                        }
                     }
+                    .scrollContentBackground(.hidden)
+                    // 面板切换时重建滚动视图，确保每次打开都从页面顶部开始。
+                    .id(selected.rawValue + "|" + (awtrixAppRoute?.key ?? ""))
                 }
-                .scrollContentBackground(.hidden)
-                // 面板切换时重建滚动视图，确保每次打开都从页面顶部开始（不继承上一面板的滚动位置）
-                .id(selected)
             }
             .frame(minWidth: 300, maxWidth: .infinity) // 空间不足时中间区先让位，预览保持完整
 
@@ -826,36 +1220,62 @@ struct SettingsView: View {
         window.setFrame(frame, display: true, animate: true)
     }
 
-    // MARK: 顶部栏（收起态才出现的展开按钮 + 标题 + 状态）
+    // MARK: 顶部栏（直接展开/收起按钮 + 标题 + 状态）
+
+    private func keyboardPanelTitle(_ panel: Panel) -> String {
+        guard let mode = panel.displayMode,
+              mode.bambuSlotIndex != nil || mode.formlabsSlotIndex != nil else {
+            return panel.title
+        }
+        return model.menuTitle(for: mode)
+    }
+
+    private func awtrixAppDisplayTitle(_ route: AWTRIXAppRoute) -> String {
+        if route.isBuiltInText { return "灵犀文字" }
+        if route.isHomeAssistant { return "Home Assistant" }
+        return model.awtrixAppInfo(deviceID: route.deviceID, name: route.appName)?.title
+            ?? route.appName
+    }
+
+    private var currentPanelTitle: String {
+        if selected == .awtrix, let route = awtrixAppRoute {
+            return awtrixAppDisplayTitle(route)
+        }
+        if selected == .oracleCanvas { return model.oracleCanvasBoardName }
+        if selected == .excerptCanvas { return model.excerptCanvasBoardName }
+        if selected == .aiMacScreen { return model.aiMacCanvasBoardName }
+        if selected == .aiMacCard {
+            return model.activeDeviceID(for: .aiMacScreen)
+                .map { model.menuTitle(for: model.aiMacScreenSettings(for: $0).cardMode) }
+                ?? selected.title
+        }
+        return keyboardPanelTitle(selected)
+    }
 
     private var headerBar: some View {
         HStack(spacing: 10) {
-            // 展开按钮只在侧栏收起后才出现（滑动+淡入动画，不突兀）；
-            // 展开态详情页不放按钮——折叠操作在侧栏右上角
-            if columnVisibility == .detailOnly {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { columnVisibility = .all }
-                } label: {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 26, height: 22)
-                        .contentShape(Rectangle())
+            // 不使用 NavigationSplitView 自动注入的系统 sidebarToggle：macOS 27
+            // 会把它折叠进“更多工具栏项目”，形成额外二级菜单。按钮固定在详情
+            // 标题栏内，窄侧栏时也不会与透明标题栏下的窗口控制按钮重叠。
+            let sidebarIsCollapsed = columnVisibility == .detailOnly
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    columnVisibility = sidebarIsCollapsed ? .all : .detailOnly
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("展开侧边栏")
-                .transition(.move(edge: .leading).combined(with: .opacity))
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 26, height: 22)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(sidebarIsCollapsed ? "展开侧边栏" : "收起侧边栏")
+            .accessibilityLabel(sidebarIsCollapsed ? "展开侧边栏" : "收起侧边栏")
 
             HStack(spacing: 6) {
                 Text(model.settings.devices.isEmpty && !worksWithoutDevices(selected)
-                     ? "开始使用"
-                     : selected == .oracleCanvas ? model.oracleCanvasBoardName
-                     : selected == .excerptCanvas ? model.excerptCanvasBoardName
-                     : selected == .aiMacScreen ? model.aiMacCanvasBoardName
-                     : selected == .aiMacCard ? model.activeDeviceID(for: .aiMacScreen)
-                        .map { model.aiMacScreenSettings(for: $0).cardMode.title } ?? selected.title
-                     : selected.title)
+                     ? "开始使用" : currentPanelTitle)
                     .font(.headline)
                 if selected.isBeta {
                     BetaBadge()
@@ -864,7 +1284,7 @@ struct SettingsView: View {
 
             Spacer()
 
-            Text(model.status)
+            Text(currentPanelStatus)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -875,6 +1295,27 @@ struct SettingsView: View {
     }
 
     // MARK: 各面板内容
+
+    private var currentPanelStatus: String {
+        if selected == .m5Controller {
+            guard model.m5ControllerConnected else {
+                switch model.m5BluetoothState {
+                case .poweredOff: return "蓝牙已关闭"
+                case .unauthorized: return "尚未允许蓝牙访问"
+                case .unsupported: return "这台 Mac 不支持蓝牙控制"
+                case .unknown, .ready: return "蓝牙未连接"
+                }
+            }
+            if !model.m5ControllerHIDSecured { return "控制已连接，等待系统配对" }
+            if !model.m5ControllerHIDReady { return "已配对，等待键盘服务" }
+            return "控制与键盘均已连接"
+        }
+        guard selected == .awtrix || selected == .awtrixCardManagement else { return model.status }
+        let deviceID = selected == .awtrix
+            ? (awtrixAppRoute?.deviceID ?? model.activeDeviceID(for: .awtrix))
+            : model.activeDeviceID(for: .awtrix)
+        return deviceID.flatMap { model.awtrixStatuses[$0] } ?? "尚未连接"
+    }
 
     @ViewBuilder
     private func panelContent(for panel: Panel) -> some View {
@@ -892,6 +1333,14 @@ struct SettingsView: View {
         case .excerptQuote: excerptQuoteForm
         case .sspai: sspaiForm
         case .emojiWallpaper: emojiWallpaperForm
+        case .awtrix:
+            if let route = awtrixAppRoute {
+                awtrixAppDetailForm(route)
+            } else {
+                awtrixForm
+            }
+        case .awtrixCardManagement: awtrixCardManagementForm
+        case .m5Controller: m5ControllerForm
         case .homeAssistant: homeAssistantForm
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
@@ -1009,13 +1458,13 @@ struct SettingsView: View {
                         Spacer()
                     }
                     .padding(.vertical, 8)
-                    Text("彩色原始画面即为实际推送效果，不进行黑白转换、灰阶抖动或墨水屏插值处理。")
+                    Text("彩色画面不进行黑白转换、灰阶抖动或墨水屏插值；连接设备后，最终预览会模拟实际 RGB565 或 JPEG 传输像素。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
                     HStack(spacing: 4) {
                         Text("240 × 240 彩色预览")
-                        HelpIcon(text: "预览与设备收到的 240×240 彩色像素内容一致；RGB565 固件使用无损帧传输。")
+                        HelpIcon(text: "拖动色彩滑杆时先显示高质量近似预览，松开后按设备实际 RGB565 或 JPEG 字节重新生成最终预览。设备尚未连接、能力未知时显示原始 240×240 渲染；经典默认正在播放的设备端进度覆盖层会继续实时前进。")
                     }
                 }
             }
@@ -1131,11 +1580,11 @@ struct SettingsView: View {
                     let config = model.aiMacScreenSettings(for: device.id)
                     Section {
                         LabeledContent("设备", value: device.name)
-                        LabeledContent("功能卡片", value: config.cardMode.title)
+                        LabeledContent("功能卡片", value: model.menuTitle(for: config.cardMode))
                     } header: {
                         HStack(spacing: 4) {
-                            Text(config.cardMode.title)
-                            HelpIcon(text: "卡片设置由所有兼容设备共用；这台小屏幕的当前卡片、侧栏顺序和轮播列表则单独保存。")
+                            Text(model.menuTitle(for: config.cardMode))
+                            HelpIcon(text: "系统监控、Home Assistant 实体选择、当前卡片、侧栏顺序和轮播列表按这台小屏幕单独保存；其他卡片的通用选项与兼容设备共享。")
                         }
                     }
 
@@ -1198,7 +1647,7 @@ struct SettingsView: View {
         case .qwenWork: qwenWorkForm
         case .codex: codexForm
         case .pomodoro: pomodoroForm
-        case .systemMonitor: systemForm
+        case .systemMonitor: aiMacSystemForm(deviceID: deviceID)
         case .nowPlaying:
             VStack(alignment: .leading, spacing: 10) {
                 nowPlayingForm
@@ -1305,7 +1754,7 @@ struct SettingsView: View {
                             Button { model.setAIMacCardVisible(mode, visible: true, deviceID: device.id) } label: {
                                 HStack {
                                     Image(systemName: mode.icon).frame(width: 18)
-                                    Text(mode.title)
+                                    Text(model.menuTitle(for: mode))
                                     Spacer()
                                     Image(systemName: "plus.circle").foregroundStyle(Color.accentColor)
                                 }
@@ -1325,7 +1774,7 @@ struct SettingsView: View {
         return HStack(spacing: 10) {
             Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary)
             Image(systemName: mode.icon).frame(width: 18)
-            Text(mode.title)
+            Text(model.menuTitle(for: mode))
             Spacer()
             Toggle("", isOn: Binding(get: { true }, set: {
                 model.setAIMacCardVisible(mode, visible: $0, deviceID: deviceID)
@@ -1450,6 +1899,776 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - M5 StickS3 蓝牙控制器
+
+    @ViewBuilder
+    private var m5BluetoothHint: some View {
+        if let hint = m5BluetoothHintText {
+            Label(hint, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var m5BluetoothHintText: String? {
+        switch model.m5BluetoothState {
+        case .unauthorized:
+            return "蓝牙权限未授权：请在“系统设置 → 隐私与安全性 → 蓝牙”中允许“多屏灵犀”，然后重新打开应用。"
+        case .poweredOff:
+            return "系统蓝牙已关闭：请在“系统设置 → 蓝牙”中打开后重试。"
+        case .unsupported:
+            return "本机不支持蓝牙，无法使用 M5 StickS3 控制器。"
+        case .unknown, .ready:
+            return nil
+        }
+    }
+
+    private var m5ControllerDiscoveryInline: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let repairID = model.m5RepairingControllerID,
+               model.settings.devices.contains(where: { $0.id == repairID }) {
+                VStack(alignment: .leading, spacing: 8) {
+                    switch model.m5RepairPhase {
+                    case .removeSystemRecord:
+                        Label("第 1 步 · 忽略旧的蓝牙记录",
+                              systemImage: "1.circle.fill")
+                            .font(.headline)
+                        Text("请在已经打开的“系统设置 → 蓝牙”中忽略 \(model.m5RepairingPeripheralName ?? "Lingxi-Controller")。这一步由 macOS 管理，软件无法代替你删除。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            Button("打开蓝牙设置") { model.m5OpenBluetoothSettings() }
+                            Button("已忽略，开始扫描") { model.m5ContinueRepairScan() }
+                                .buttonStyle(.borderedProminent)
+                            Button("取消") { model.m5CancelRepair() }
+                        }
+                    case .scanning:
+                        Label("第 2 步 · 选择重新出现的控制器",
+                              systemImage: "2.circle.fill")
+                            .font(.headline)
+                        Text(model.m5ControllerScanning
+                             ? "正在查找 \(model.m5RepairingPeripheralName ?? "Lingxi-Controller")。设备出现后，点按“连接并配对”。"
+                             : "扫描已停止。可以重新扫描，或返回蓝牙设置确认旧记录已经忽略。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            if model.m5ControllerScanning {
+                                Button("停止扫描") { model.m5StopScan() }
+                                    .buttonStyle(.bordered)
+                            } else {
+                                Button("重新扫描") { model.m5ContinueRepairScan() }
+                                    .buttonStyle(.borderedProminent)
+                            }
+                            Button("返回蓝牙设置") { model.m5ReturnToRepairSystemStep() }
+                            Button("取消") { model.m5CancelRepair() }
+                            if model.m5ControllerScanning { ProgressView().controlSize(.small) }
+                        }
+                    case .waitingForSystemPairing:
+                        Label("第 3 步 · 完成系统配对",
+                              systemImage: "3.circle.fill")
+                            .font(.headline)
+                        Text(model.m5ControllerConnected
+                             ? "控制通道已经连接。请接受 macOS 的蓝牙输入设备配对请求；输入服务就绪后，本向导会自动结束。"
+                             : "正在连接 \(model.m5RepairingPeripheralName ?? "Lingxi-Controller")。请保持设备亮屏并靠近 Mac。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Button("打开蓝牙设置") { model.m5OpenBluetoothSettings() }
+                            Button("结束向导") { model.m5CancelRepair() }
+                        }
+                    case nil:
+                        EmptyView()
+                    }
+                }
+                .padding(10)
+                .background(Color.accentColor.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 8))
+            }
+            if model.m5RepairPhase == nil {
+                HStack(spacing: 8) {
+                    Button(model.m5ControllerScanning ? "停止扫描" : "扫描 M5 StickS3") {
+                        if model.m5ControllerScanning { model.m5StopScan() }
+                        else { model.m5StartScan() }
+                    }
+                    if model.m5ControllerScanning { ProgressView().controlSize(.small) }
+                    HelpIcon(text: "仅扫描刷写了多屏灵犀控制器固件、并广播 Lingxi-Controller 服务的 M5Stack StickS3。点按“连接并配对”后，还需接受 macOS 的蓝牙输入设备配对请求；只有输入服务就绪后软件才会显示配对完成。设备不需要配置 Wi-Fi。")
+                    Spacer()
+                }
+            }
+            m5BluetoothHint
+            if model.m5RepairPhase == nil || model.m5RepairPhase == .scanning {
+                ForEach(model.m5DiscoveredControllers) { found in
+                    HStack {
+                        Image(systemName: "gamecontroller")
+                            .foregroundStyle(Color.accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(found.name)
+                            Text(found.id.uuidString)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("连接并配对") { model.m5PairController(found) }
+                            .controlSize(.small)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private var m5FirmwareFlasherInline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("M5 StickS3 控制器固件", systemImage: "memorychip")
+                    .font(.headline)
+                Text("v\(EmbeddedM5StickS3Firmware.version)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Label(model.embeddedM5FirmwareReady ? "内置固件已校验" : "内置固件不可用",
+                      systemImage: model.embeddedM5FirmwareReady
+                        ? "checkmark.shield.fill" : "xmark.shield.fill")
+                    .font(.caption)
+                    .foregroundStyle(model.embeddedM5FirmwareReady ? Color.green : Color.red)
+            }
+
+            Text("通过 USB 一次写入 ESP32-S3 完整固件，无需安装 PlatformIO 或 esptool。刷入完成后 StickS3 会自动重启，软件随即扫描蓝牙控制器供配对。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("请确认设备型号为 M5Stack StickS3")
+                        .fontWeight(.semibold)
+                    Text("列表只显示 ESP32-S3 原生 USB 的 usbmodem 串口，避免误刷其他串口设备。若没有出现，请更换支持数据传输的 USB 线并重新连接。")
+                        .font(.caption)
+                }
+            } icon: {
+                Image(systemName: "cable.connector")
+                    .font(.title3)
+            }
+            .foregroundStyle(.orange)
+            .padding(10)
+            .frame(maxWidth: 430, alignment: .leading)
+            .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.orange.opacity(0.45), lineWidth: 1)
+            }
+
+            HStack(spacing: 8) {
+                Picker("USB 串口", selection: $model.selectedM5FlashPort) {
+                    if model.m5FlashPorts.isEmpty {
+                        Text("未发现 StickS3").tag("")
+                    } else {
+                        ForEach(model.m5FlashPorts) { port in
+                            Text(port.displayName).tag(port.path)
+                        }
+                    }
+                }
+                .frame(maxWidth: 360)
+                .disabled(model.m5FlashBusy)
+
+                Button {
+                    model.refreshM5FlashPorts()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.m5FlashBusy)
+            }
+
+            HStack(spacing: 8) {
+                Button("一键刷入固件") {
+                    showM5FlashConfirmation = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.embeddedM5FirmwareReady
+                          || model.selectedM5FlashPort.isEmpty
+                          || model.m5FlashBusy
+                          || model.aiMacFlashBusy)
+
+                if model.m5FlashBusy {
+                    Button("取消", role: .destructive) {
+                        model.cancelM5FirmwareFlash()
+                    }
+                }
+            }
+
+            if model.m5FlashBusy || model.m5FlashProgress > 0 {
+                ProgressView(value: model.m5FlashProgress)
+                    .progressViewStyle(.linear)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if model.m5FlashBusy { ProgressView().controlSize(.small) }
+                Text(model.m5FlashStatus)
+                    .font(.caption)
+                    .foregroundStyle(model.m5FlashStatus.contains("失败")
+                                     || model.m5FlashStatus.contains("缺失")
+                                     || model.m5FlashStatus.contains("校验失败")
+                                     ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                if !model.m5FlashLog.isEmpty {
+                    Button(showM5FlashLog ? "收起日志" : "查看日志") {
+                        withAnimation { showM5FlashLog.toggle() }
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+
+            if showM5FlashLog, !model.m5FlashLog.isEmpty {
+                ScrollView {
+                    Text(model.m5FlashLog)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(height: 120)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Label("刷写过程中不要拔线或关闭应用；成功后请在下方蓝牙扫描结果中完成配对。",
+                  systemImage: "exclamationmark.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
+        .onAppear { model.refreshM5FlashPorts() }
+    }
+
+    private func m5ControllerDeviceConfigInline(_ deviceID: UUID) -> some View {
+        let config = model.m5ControllerSettings(for: deviceID)
+        let targets = model.m5ControllableDevices()
+        let connectionText = !model.m5ControllerConnected ? "蓝牙未连接"
+            : (model.m5ControllerHIDReady ? "控制与键盘均已连接"
+               : (model.m5ControllerHIDSecured ? "已配对，等待键盘服务"
+                  : "控制已连接，等待系统配对"))
+        let connectionColor: Color = !model.m5ControllerConnected ? .secondary
+            : (model.m5ControllerHIDReady ? .green : .orange)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(connectionColor)
+                    .frame(width: 9, height: 9)
+                Text(connectionText)
+                    .font(.callout)
+                Spacer()
+                if config.pairedPeripheralID != nil {
+                    Button("管理配对…") { m5ControllerIDToUnpair = deviceID }
+                        .controlSize(.small)
+                    HelpIcon(text: "选择“重新配对”后，软件会先清除控制器端密钥并打开系统蓝牙设置，再分步骤引导忽略旧记录和重新扫描；也可以只解除软件绑定。")
+                }
+            }
+            if config.pairedPeripheralID != nil {
+                Text("已配对：\(config.pairedName ?? config.pairedPeripheralID ?? "")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("尚未配对，请使用上方扫描入口。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Toggle("蜂鸣器反馈", isOn: model.m5BuzzerBinding(controllerID: deviceID))
+                .toggleStyle(.switch)
+                .help("关闭后 StickS3 的选择、确认和返回操作保持静音；屏幕提示与按键控制不受影响。")
+            HStack(spacing: 4) {
+                Text("被控设备")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HelpIcon(text: "选择允许这台控制器操作的显示设备。支持灵犀68、口袋先知、摘录、AI Mac 小屏幕和 AWTRIX NG。")
+            }
+            if targets.isEmpty {
+                Text("尚无可用的显示设备")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(targets) { target in
+                    Toggle(isOn: model.m5TargetToggleBinding(controllerID: deviceID,
+                                                             targetID: target.id)) {
+                        HStack(spacing: 6) {
+                            Image(systemName: target.type.capabilityProfile?.icon ?? "display")
+                                .foregroundStyle(Color.accentColor)
+                            Text(target.name)
+                            Text(target.type.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                }
+            }
+            Divider().padding(.vertical, 2)
+            m5HAControlConfigInline(deviceID)
+        }
+    }
+
+    @ViewBuilder
+    private func m5HAControlConfigInline(_ deviceID: UUID) -> some View {
+        let ids = model.m5HAEntityIDs(for: deviceID)
+        let entities = model.m5HAEntityCandidates()
+        HStack(spacing: 4) {
+            Text("Home Assistant 控制")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HelpIcon(text: "选择允许这台控制器操作的实体。支持开关、灯、风扇、窗帘、锁、场景、脚本、媒体、空调和扫地机；窗帘使用 0% / 100% 位置控制。Home Assistant 令牌始终留在 Mac。")
+            Spacer()
+        }
+        if model.settings.haServerURL.isEmpty {
+            Text("请先在设备管理中添加并连接 Home Assistant。")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else if entities.isEmpty {
+            Text("尚未取得可控制实体，请先刷新 Home Assistant 数据。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            if ids.isEmpty {
+                Text("尚未添加 StickS3 控制实体")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(Array(ids.enumerated()), id: \.element) { index, id in
+                    let entity = model.haSnapshot.entities.first { $0.entityId == id }
+                    HStack(spacing: 7) {
+                        Image(systemName: entity.map { SFIconMapper.symbol(for: $0) }
+                              ?? "questionmark.circle")
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.settings.haEntityAliases[id] ?? entity?.displayName ?? id)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                            Text(entity?.displayValue ?? id)
+                                .font(.system(size: 9))
+                                .foregroundStyle(entity == nil ? Color.orange : Color.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Button { model.moveM5HAEntity(id, direction: -1, controllerID: deviceID) } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == 0)
+                        Button { model.moveM5HAEntity(id, direction: 1, controllerID: deviceID) } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(index == ids.count - 1)
+                        Button { model.removeM5HAEntity(id, controllerID: deviceID) } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            HAEntityAdder(entities: entities, alreadyAdded: Set(ids)) { selected in
+                model.addM5HAEntities(selected, controllerID: deviceID)
+            }
+        }
+    }
+
+    private var m5ControllerForm: some View {
+        Group {
+            if let device = model.activeDevice(for: .m5Controller) {
+                let config = model.m5ControllerSettings(for: device.id)
+                let targets = model.m5ResolvedTargets(config)
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: model.m5GyroMouseEnabledBinding(controllerID: device.id)) {
+                            Label("启用飞鼠指针", systemImage: "cursorarrow.motionlines")
+                        }
+                        .toggleStyle(.switch)
+
+                        if config.resolvedGyroMouseEnabled {
+                            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                                GridRow {
+                                    Text("灵敏度")
+                                    Slider(value: model.m5GyroMouseSensitivityBinding(
+                                        controllerID: device.id), in: 0.35...2.5, step: 0.05)
+                                    Text(config.resolvedGyroMouseSensitivity.formatted(
+                                        .number.precision(.fractionLength(2))))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 36, alignment: .trailing)
+                                }
+                                GridRow {
+                                    Text("防抖死区")
+                                    Slider(value: model.m5GyroMouseDeadZoneBinding(
+                                        controllerID: device.id), in: 0.4...4.0, step: 0.1)
+                                    Text(config.resolvedGyroMouseDeadZone.formatted(
+                                        .number.precision(.fractionLength(1))))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 36, alignment: .trailing)
+                                }
+                                GridRow {
+                                    Text("平滑程度")
+                                    Slider(value: model.m5GyroMouseSmoothingBinding(
+                                        controllerID: device.id), in: 0...0.85, step: 0.05)
+                                    Text(config.resolvedGyroMouseSmoothing.formatted(
+                                        .percent.precision(.fractionLength(0))))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 36, alignment: .trailing)
+                                }
+                            }
+
+                            HStack(spacing: 20) {
+                                Toggle("反转水平移动", isOn: model.m5GyroMouseInvertXBinding(
+                                    controllerID: device.id))
+                                Toggle("反转垂直移动", isOn: model.m5GyroMouseInvertYBinding(
+                                    controllerID: device.id))
+                            }
+                            .toggleStyle(.checkbox)
+
+                            Toggle(isOn: model.m5GyroMouseClutchEnabledBinding(
+                                controllerID: device.id)) {
+                                HStack(spacing: 4) {
+                                    Text("短按 B 临时脱开指针")
+                                    HelpIcon(text: "参考 LG 电视飞鼠的临时脱开逻辑：短按 B 暂停或恢复指针跟随，脱开后可放松手腕、调整握姿而不移动光标；此时 B 不再作为鼠标右键。长按 B 仍然返回上一级。")
+                                }
+                            }
+                            .toggleStyle(.switch)
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    model.m5RecenterGyroMouse(controllerID: device.id)
+                                } label: {
+                                    Label("重新居中", systemImage: "scope")
+                                }
+                                .disabled(!model.m5ControllerConnected)
+
+                                Text("保持自然握姿并静止约半秒，指针会回到当前显示器中央。之后慢移精准、快速扫腕自动加速，不受固定中心角限制。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            HStack(spacing: 12) {
+                                Label("A 左键 / 长按拖拽", systemImage: "a.circle.fill")
+                                Label(config.resolvedGyroMouseClutchEnabled
+                                      ? "B 脱开 / 恢复，长按返回"
+                                      : "B 右键 / 长按返回",
+                                      systemImage: "b.circle.fill")
+                                Label("A+B 重新居中", systemImage: "scope")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .padding(.vertical, 2)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 4) {
+                            Text("多媒体控制")
+                                .font(.headline)
+                            HelpIcon(text: "从控制器的“Mac 快捷键”进入。播放控制：左摇上一曲、右摇下一曲、长按 A 播放或暂停；音量控制：左摇音量减、右摇音量加、长按 A 静音或恢复。全部由 StickS3 的 BLE HID Consumer Control 直接发送，不需要辅助功能权限。")
+                        }
+                        Toggle("在控制器上显示多媒体控制",
+                               isOn: model.m5MediaControlsEnabledBinding(controllerID: device.id))
+                            .toggleStyle(.switch)
+                        if config.resolvedMediaControlsEnabled {
+                            ForEach(M5MediaControlCard.allCases) { card in
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text(card.title)
+                                        .font(.subheadline.weight(.semibold))
+                                    HStack(spacing: 8) {
+                                        m5MediaGestureLabel(icon: "arrow.left",
+                                                            label: "左摇",
+                                                            action: card.leftAction)
+                                        m5MediaGestureLabel(icon: "a.circle.fill",
+                                                            label: "长按 A",
+                                                            action: card.holdAction)
+                                        m5MediaGestureLabel(icon: "arrow.right",
+                                                            label: "右摇",
+                                                            action: card.rightAction)
+                                    }
+                                }
+                                .padding(10)
+                                .background(Color.secondary.opacity(0.08),
+                                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+
+                    Divider()
+
+                    let requiresMacInjection = config.resolvedMacShortcuts.contains {
+                        $0.isEnabled && $0.shortcut.hidKeyboardReport == nil
+                    }
+                    if requiresMacInjection && !model.accessibilityGranted {
+                        HStack {
+                            Label("少数无法映射的快捷键需要辅助功能权限",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("打开设置") { model.openAccessibilitySettings() }
+                                .controlSize(.small)
+                        }
+                    }
+                    ForEach(M5MacShortcutGroup.allCases) { group in
+                        DisclosureGroup(group.title) {
+                            m5ShortcutSettings(group: group, controllerID: device.id)
+                                .padding(.vertical, 4)
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("Mac 快捷键")
+                        HelpIcon(text: "飞鼠指针与多媒体控制由 StickS3 直接作为蓝牙 HID 输入设备发送，不需要辅助功能权限。首次刷入包含鼠标能力的固件后，macOS 可能仍缓存旧键盘描述；若指针无响应，请使用本页“管理配对 → 重新配对”完成引导流程。")
+                    }
+                }
+
+                Section {
+                    if model.m5ControllableDevices().isEmpty {
+                        Text("尚无可用的显示设备。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.m5ControllableDevices()) { target in
+                            Toggle(isOn: model.m5TargetToggleBinding(controllerID: device.id,
+                                                                     targetID: target.id)) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: target.type.capabilityProfile?.icon ?? "display")
+                                        .foregroundStyle(Color.accentColor)
+                                    Text(target.name)
+                                    Text(target.type.title)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                        }
+                    }
+                    if !targets.isEmpty {
+                        let index = min(max(config.activeTargetIndex, 0), targets.count - 1)
+                        LabeledContent("当前被控设备", value: targets[index].name)
+                    }
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("被控设备")
+                        HelpIcon(text: "从主菜单进入“多屏设备”后，A/B 选择设备，长按 A 确认切换；摇晃设备翻页当前目标。停留在“语音输入”动作时摇一摇会清空当前输入框。禁用或离线的目标会保留显示，但无法执行。")
+                    }
+                }
+
+                Section {
+                    m5HAControlConfigInline(device.id)
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("Home Assistant 专属控制页")
+                        HelpIcon(text: "这一页与控制器主菜单的 Home Assistant 入口对应；选择实体后即可在 StickS3 上切换并执行控制。")
+                    }
+                }
+
+                Section {
+                    Toggle("蜂鸣器反馈", isOn: model.m5BuzzerBinding(controllerID: device.id))
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("交互反馈")
+                        HelpIcon(text: "选择、确认与返回会播放简短提示音；关闭后仅保留屏幕反馈。每台 StickS3 独立保存，设置通过蓝牙立即同步；刷写入口仅位于设备管理。")
+                    }
+                }
+
+            } else {
+                Section {
+                    Text("尚未添加 M5 StickS3 控制器，请在设备管理中扫描并配对。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .onDisappear { model.m5StopScan() }
+    }
+
+    private func m5MediaControlIcon(_ action: M5MediaControlAction) -> String {
+        switch action {
+        case .playPause: return "playpause.fill"
+        case .previousTrack: return "backward.end.fill"
+        case .nextTrack: return "forward.end.fill"
+        case .volumeDown: return "speaker.wave.1.fill"
+        case .volumeUp: return "speaker.wave.3.fill"
+        case .mute: return "speaker.slash.fill"
+        }
+    }
+
+    private func m5MediaGestureLabel(icon: String, label: String,
+                                     action: M5MediaControlAction) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Image(systemName: m5MediaControlIcon(action))
+                    Text(action.title)
+                }
+                .font(.caption.weight(.medium))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 与设备设置页一致的双栏结构：左侧设置为唯一滚动区，右侧固定显示实机效果。
+    /// 预览不会随设置滚动离开视线，也不会再与通用键盘预览混用。
+    private var m5ControllerWorkspace: some View {
+        GeometryReader { geo in
+            let previewWidth = min(300, max(220, geo.size.width * 0.36))
+            HStack(alignment: .top, spacing: 0) {
+                Form { m5ControllerForm }
+                    .formStyle(.grouped)
+                    .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity,
+                           alignment: .top)
+
+                Divider().padding(.vertical, 4)
+
+                Group {
+                    if let device = model.activeDevice(for: .m5Controller) {
+                        let config = model.m5ControllerSettings(for: device.id)
+                        let targetCount = model.m5ResolvedTargets(config).count
+                        let enabledShortcuts = config.resolvedMacShortcuts.filter(\.isEnabled)
+                        let vibeCount = enabledShortcuts.filter { $0.group == .vibeCoding }.count
+                        let fallback = M5ControllerInfo(
+                            active: 0,
+                            devices: [
+                                .init(name: "Vibe Coding", detail: "\(vibeCount) 个可用动作",
+                                      available: vibeCount > 0),
+                                .init(name: "多屏设备", detail: "\(targetCount) 台已配置",
+                                      available: true),
+                                .init(name: "Home Assistant",
+                                      detail: "\(config.homeAssistantEntityIDs?.count ?? 0) 个控制实体",
+                                      available: true),
+                                .init(name: "Mac 快捷键",
+                                      detail: "媒体 + \(max(0, enabledShortcuts.count - vibeCount)) 个动作",
+                                      available: true)
+                            ],
+                            title: "灵犀控制器", footer: "A/B选择 长A进入"
+                        )
+                        M5ControllerDevicePreview(
+                            deviceName: device.name,
+                            info: model.m5ControllerConnected
+                                ? (model.m5ControllerPreviewInfo ?? fallback)
+                                : fallback,
+                            connected: model.m5ControllerConnected,
+                            secured: model.m5ControllerHIDSecured
+                        )
+                    } else {
+                        VStack(spacing: 10) {
+                            Image(systemName: "gamecontroller")
+                                .font(.system(size: 42))
+                                .foregroundStyle(.secondary)
+                            Text("尚未添加控制器")
+                                .font(.headline)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .frame(minWidth: previewWidth, idealWidth: previewWidth, maxWidth: previewWidth,
+                       minHeight: 0, maxHeight: .infinity, alignment: .top)
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+        }
+    }
+
+    @ViewBuilder
+    private func m5ShortcutSettings(group: M5MacShortcutGroup,
+                                    controllerID: UUID) -> some View {
+        let shortcuts = model.m5MacShortcuts(controllerID: controllerID, group: group)
+        if shortcuts.isEmpty {
+            Text("尚未添加快捷键")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(shortcuts) { item in
+                HStack(spacing: 8) {
+                    Toggle("", isOn: model.m5MacShortcutEnabledBinding(
+                        controllerID: controllerID, shortcutID: item.id))
+                        .labelsHidden()
+                        .toggleStyle(.checkbox)
+                        .accessibilityLabel(item.name)
+                        .accessibilityHint("启用或停用这个控制器动作")
+                    if group == .custom {
+                        TextField("动作名称", text: model.m5MacShortcutNameBinding(
+                            controllerID: controllerID, shortcutID: item.id))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 150, maxWidth: 230)
+                    } else {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(item.name)
+                            if item.id == "vibe.voice" {
+                                Text("StickS3 长按 A 时保持按下，松开结束")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if item.shortcut.hidKeyboardReport != nil {
+                                    Text("由设备蓝牙键盘直接发送，可兼容微信输入法")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .frame(minWidth: 180, alignment: .leading)
+                    }
+                    Spacer()
+                    Text(item.shortcut.displayString)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 72, alignment: .trailing)
+                    Button(recordingM5ShortcutID == item.id
+                           && recordingM5ControllerID == controllerID ? "取消" : "录制") {
+                        if recordingM5ShortcutID == item.id,
+                           recordingM5ControllerID == controllerID {
+                            cancelShortcutRecording()
+                        } else {
+                            startM5ShortcutRecording(item.id, controllerID: controllerID)
+                        }
+                    }
+                    .controlSize(.small)
+                    if group == .custom {
+                        Button(role: .destructive) {
+                            model.removeM5CustomShortcut(item.id, controllerID: controllerID)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        if group == .custom {
+            Button {
+                model.addM5CustomShortcut(controllerID: controllerID)
+            } label: {
+                Label("添加快捷键", systemImage: "plus")
+            }
+            .controlSize(.small)
+        }
+        if recordingM5ControllerID == controllerID,
+           let id = recordingM5ShortcutID,
+           shortcuts.contains(where: { $0.id == id }) {
+            Label("请按下新的按键组合；单独的左/右 Control、Option、Command 请按下后松开。",
+                  systemImage: "keyboard")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+        }
+    }
+
     /// 设备管理页面：多台 灵犀68/口袋先知/摘录 设备的添加、重命名、删除与活动设备切换；
     /// 每台设备独立记住自己的画板与卡片设置；Home Assistant 服务器为全局唯一连接配置
     private var devicesForm: some View {
@@ -1471,6 +2690,13 @@ struct SettingsView: View {
                             aiMacFirmwareFlasherInline
                                 .padding(.top, 6)
                         }
+                    }
+                    if type == .m5Controller {
+                        DisclosureGroup("需要刷写一台新控制器？") {
+                            m5FirmwareFlasherInline
+                                .padding(.top, 6)
+                        }
+                        m5ControllerDiscoveryInline
                     }
                     ForEach(model.devices(for: type)) { device in
                         let isEditing = editingDeviceIDs.contains(device.id)
@@ -1556,6 +2782,35 @@ struct SettingsView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
+                                } else if type == .awtrix {
+                                    deviceConnectionField(device.id, label: "设备地址或 IP",
+                                                          binding: model.awtrixBaseURLBinding(for: device.id),
+                                                          fieldWidth: 320,
+                                                          helpText: "填写 AWTRIX NG 的局域网 IP 或完整 http:// 地址。")
+                                    deviceConnectionField(device.id, label: "HTTP 用户名",
+                                                          binding: model.awtrixUsernameBinding(for: device.id),
+                                                          fieldWidth: 320,
+                                                          helpText: "设备没有启用 HTTP Basic Auth 时留空。")
+                                    draftField(key: "\(device.id.uuidString)#AWTRIX密码",
+                                               label: "HTTP 密码",
+                                               binding: model.awtrixPasswordBinding(for: device.id),
+                                               fieldWidth: 320, secure: true,
+                                               helpText: "设备没有启用 HTTP Basic Auth 时留空；密码仅保存在本机。")
+                                    HStack {
+                                        Button("连接测试") {
+                                            Task { await model.testAWTRIXConnection(deviceID: device.id) }
+                                        }
+                                        if model.awtrixBusyIDs.contains(device.id) {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                        Spacer()
+                                        Text(model.awtrixStatuses[device.id] ?? "尚未测试")
+                                            .font(.caption)
+                                            .foregroundStyle(model.awtrixSnapshots[device.id] == nil
+                                                             ? Color.secondary : Color.green)
+                                    }
+                                } else if type == .m5Controller {
+                                    m5ControllerDeviceConfigInline(device.id)
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
                                                           binding: model.deviceDotApiKeyBinding(for: device.id),
@@ -1652,7 +2907,8 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if type != .aiMacScreen && type != .homeAssistant
-                                && type != .oracle && type != .keyboard {
+                                && type != .oracle && type != .keyboard
+                                && type != .m5Controller {
                         Button("添加 \(type.title) 设备") {
                             expandNewDevice(model.addDevice(type: type))
                         }
@@ -1660,6 +2916,9 @@ struct SettingsView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text(type.title)
+                        if type.isBeta {
+                            BetaBadge()
+                        }
                         HelpIcon(text: "连接信息填写后需点“应用”才生效；每台设备独立记录连接与画板设置，切换设备后会恢复该设备之前的设置。灵犀68 键盘与口袋先知填写 IP，摘录填写 API Key 与设备序列号。")
                     }
                 }
@@ -1668,7 +2927,12 @@ struct SettingsView: View {
         .confirmationDialog(
             deviceIDToDelete.flatMap { targetID in
                 model.settings.devices.first(where: { $0.id == targetID })
-            }.map { "确定删除设备「\($0.name)」吗？该设备的连接信息与画板设置将被移除。" } ?? "",
+            }.map {
+                if $0.type == .m5Controller {
+                    return "确定删除设备「\($0.name)」吗？软件会清空控制器卡片、控制目标和本地配对记录，但无法代替 macOS 删除系统蓝牙键盘记录。若要重新配对，删除后还需前往“系统设置 → 蓝牙”，手动忽略 Lingxi-Controller。"
+                }
+                return "确定删除设备「\($0.name)」吗？该设备的连接信息与画板设置将被移除。"
+            } ?? "",
             isPresented: Binding(get: { deviceIDToDelete != nil },
                                  set: { if !$0 { deviceIDToDelete = nil } }),
             titleVisibility: .visible
@@ -1695,6 +2959,7 @@ struct SettingsView: View {
         .task {
             if model.backgroundServicesEnabled { await model.scanRand0Devices() }
         }
+        .onDisappear { model.m5StopScan() }
         .onDisappear {
             editingDeviceIDs.removeAll()
             connectionDrafts.removeAll()
@@ -2709,6 +3974,46 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("饱和度")
+                            Spacer()
+                            Text("\(config.saturationPercent)%").monospacedDigit()
+                        }
+                        Slider(value: model.aiMacScreenSaturationBinding(for: device.id),
+                               in: 50...200, step: 1, onEditingChanged: { editing in
+                            if !editing {
+                                model.finishAIMacScreenColorCalibrationAdjustment(deviceID: device.id)
+                            }
+                        })
+                            .accessibilityLabel("画面饱和度")
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("对比度")
+                            Spacer()
+                            Text("\(config.contrastPercent)%").monospacedDigit()
+                        }
+                        Slider(value: model.aiMacScreenContrastBinding(for: device.id),
+                               in: 75...150, step: 1, onEditingChanged: { editing in
+                            if !editing {
+                                model.finishAIMacScreenColorCalibrationAdjustment(deviceID: device.id)
+                            }
+                        })
+                            .accessibilityLabel("画面对比度")
+                    }
+                    Button("恢复默认色彩") {
+                        model.resetAIMacScreenColorCalibration(deviceID: device.id)
+                    }
+                    .disabled(!config.hasColorCalibration)
+                } header: {
+                    HStack(spacing: 4) {
+                        Text("画面色彩")
+                        HelpIcon(text: "只校准这台小屏幕的软件推送画面，适用于经典、Liquid Glass、图片与 Emoji。饱和度范围为 50%–200%，对比度为 75%–150%，默认均为 100%。修改后预览即时更新；开启自动推送时会同步到设备。设备端桌面时钟不受影响；为避免未校准的固件图层覆盖画面，开启校准后正在播放进度会跟随图片推送间隔刷新。这不是屏幕背光亮度调节。")
+                    }
+                }
+
                 Section("画面推送") {
                     Toggle("自动推送", isOn: model.aiMacScreenAutoPushBinding(for: device.id))
                     if config.autoPush {
@@ -3152,7 +4457,7 @@ struct SettingsView: View {
                                 Image(systemName: panel.icon)
                                     .font(.system(size: 12))
                                     .frame(width: 16)
-                                Text(panel.title)
+                                Text(keyboardPanelTitle(panel))
                                 if panel.isBeta {
                                     BetaBadge()
                                 }
@@ -4401,6 +5706,16 @@ struct SettingsView: View {
             }
         }
         Section("卡片外观") {
+            Picker(selection: model.cardRenderingModeBinding) {
+                ForEach(CardRenderingMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("卡片渲染")
+                    HelpIcon(text: "使用 SwiftUI 合成可导出的玻璃风格图片，并非系统原生交互材质。仅用于灵犀68 与 AI Mac 彩色屏幕；口袋先知与摘录墨水屏、纯图片与设备端桌面时钟保持原样。")
+                }
+            }
             Picker(selection: model.themeBinding) {
                 ForEach(CardTheme.allCases) { theme in
                     Text(theme.title).tag(theme)
@@ -4432,6 +5747,910 @@ struct SettingsView: View {
             if model.settings.accentTone == .custom {
                 ColorPicker("自定义强调色", selection: model.customAccentBinding, supportsOpacity: false)
             }
+        }
+    }
+
+    /// 与其他显示设备一样：连接信息在设备管理，显示参数修改后自动应用。
+    @ViewBuilder
+    private var awtrixForm: some View {
+        if let device = model.activeDevice(for: .awtrix) {
+            let deviceID = device.id
+            let config = model.awtrixSettings(for: deviceID)
+            let snapshot = model.awtrixSnapshots[deviceID]
+            Section {
+                LabeledContent("当前设备") { Text(device.name) }
+                if let currentApp = snapshot?.device.currentApp {
+                    LabeledContent("当前画面") {
+                        Text(model.awtrixCards(for: deviceID).first { $0.name == currentApp }?.title
+                             ?? currentApp)
+                    }
+                }
+                HStack {
+                    Text(model.awtrixStatuses[deviceID] ?? "尚未连接")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if model.awtrixBusyIDs.contains(deviceID) {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button("刷新状态") { Task { await model.refreshAWTRIX(deviceID: deviceID) } }
+                }
+            }
+            .task(id: deviceID) {
+                if model.awtrixSnapshots[deviceID] == nil {
+                    await model.refreshAWTRIX(deviceID: deviceID)
+                }
+            }
+            Section("屏幕控制") {
+                Toggle("开启屏幕", isOn: Binding(
+                    get: { model.awtrixSnapshots[deviceID]?.device.matrixPower ?? true },
+                    set: { enabled in Task { await model.setAWTRIXPower(enabled, deviceID: deviceID) } }))
+                HStack(spacing: 6) {
+                    Text("亮度")
+                    HelpIcon(text: "修改后自动应用到当前设备。亮度上限为 120，以保持这块灯板稳定运行。")
+                    Slider(value: awtrixDisplayDoubleBinding(deviceID, \.brightness), in: 1...120, step: 1)
+                    Text("\(config.brightness)")
+                        .monospacedDigit()
+                        .frame(width: 34, alignment: .trailing)
+                }
+                Toggle("自动亮度", isOn: awtrixDisplayBinding(deviceID, \.autoBrightness))
+                if config.autoBrightness {
+                    Stepper("自动亮度下限：\(config.autoBrightnessMinimum)",
+                            value: awtrixDisplayBinding(deviceID, \.autoBrightnessMinimum), in: 1...120)
+                    Stepper("自动亮度上限：\(config.autoBrightnessMaximum)",
+                            value: awtrixDisplayBinding(deviceID, \.autoBrightnessMaximum), in: 1...120)
+                }
+                if let level = snapshot?.device.lightLevel {
+                    LabeledContent("环境亮度") { Text(String(format: "%.1f%%", level)) }
+                }
+            }
+            Section("切换效果") {
+                Picker("切换动画", selection: awtrixDisplayBinding(deviceID, \.transitionEffect)) {
+                    ForEach(AWTRIXClient.transitionEffects, id: \.self) { Text($0).tag($0) }
+                }
+                Stepper("动画时长：\(config.transitionDurationMilliseconds) 毫秒",
+                        value: awtrixDisplayBinding(deviceID, \.transitionDurationMilliseconds),
+                        in: 0...5_000, step: 100)
+            }
+        } else {
+            Section { Text("请先在设备管理中添加 AWTRIX NG。").foregroundStyle(.secondary) }
+        }
+    }
+
+    @ViewBuilder
+    private var awtrixCardManagementForm: some View {
+        if let device = model.activeDevice(for: .awtrix) {
+            let config = model.awtrixSettings(for: device.id)
+            let visible = dragAWTRIXApps ?? model.awtrixVisibleCards(for: device.id)
+            let visibleNames = Set(model.awtrixVisibleCards(for: device.id).map(\.name))
+            Section {
+                LabeledContent("正在管理", value: device.name)
+                HStack {
+                    Text(model.awtrixStatuses[device.id] ?? "尚未连接")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("刷新卡片") { Task { await model.refreshAWTRIX(deviceID: device.id) } }
+                }
+            }
+            .task(id: device.id) { await model.refreshAWTRIX(deviceID: device.id) }
+            Section("自动轮播") {
+                Toggle("卡片页面自动轮播", isOn: Binding(
+                    get: { model.awtrixSettings(for: device.id).autoTransition },
+                    set: { enabled in
+                        Task { await model.setAWTRIXAutoRotation(enabled, deviceID: device.id) }
+                    }))
+                Stepper("轮换间隔：\(config.appDurationSeconds) 秒",
+                        value: awtrixDisplayBinding(device.id, \.appDurationSeconds), in: 1...600)
+            }
+            Section {
+                HStack(spacing: 10) {
+                    Text("卡片")
+                    Spacer()
+                    Text("侧栏").frame(width: 44)
+                    Text("轮换").frame(width: 44)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                if visible.isEmpty {
+                    Text("尚未添加卡片，从下方“添加到侧栏”选择。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    reorderList(items: visible,
+                                dragged: $draggedAWTRIXApp,
+                                dragItems: $dragAWTRIXApps,
+                                commit: { cards in
+                                    model.setAWTRIXSidebarOrder(cards.map(\.name), deviceID: device.id)
+                                }) { app in
+                        awtrixCardManagementRow(app, deviceID: device.id, visible: true)
+                    }
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("卡片（拖拽排序）")
+                    HelpIcon(text: "侧栏开关决定卡片是否显示在软件侧栏和菜单栏；轮换开关决定是否加入这台设备的自动轮播。两项分别保存。")
+                }
+            }
+            let hidden = model.awtrixCards(for: device.id).filter { !visibleNames.contains($0.name) }
+            if !hidden.isEmpty {
+                Section("添加到侧栏") {
+                    ForEach(hidden) { app in
+                        awtrixCardManagementRow(app, deviceID: device.id, visible: false)
+                    }
+                }
+            }
+        } else {
+            Section { Text("请先在设备管理中添加 AWTRIX NG。").foregroundStyle(.secondary) }
+        }
+    }
+
+    private func awtrixDisplayBinding<Value>(_ deviceID: UUID,
+                                             _ keyPath: WritableKeyPath<AWTRIXSettings, Value>) -> Binding<Value> {
+        Binding(get: { model.awtrixSettings(for: deviceID)[keyPath: keyPath] },
+                set: { value in
+                    model.updateAWTRIXDisplaySettings(deviceID: deviceID) { $0[keyPath: keyPath] = value }
+                })
+    }
+
+    private func awtrixDisplayDoubleBinding(_ deviceID: UUID,
+                                            _ keyPath: WritableKeyPath<AWTRIXSettings, Int>) -> Binding<Double> {
+        Binding(get: { Double(model.awtrixSettings(for: deviceID)[keyPath: keyPath]) },
+                set: { value in
+                    model.updateAWTRIXDisplaySettings(deviceID: deviceID) {
+                        $0[keyPath: keyPath] = Int(value.rounded())
+                    }
+                })
+    }
+
+    /// AWTRIX 脚本应用详情：动态 schema 设置 + 设备真实 32×8 实时屏幕。
+    /// 所有读写都显式使用 route.deviceID，同名应用不会在多台设备间串扰。
+    @ViewBuilder
+    private func awtrixAppDetailForm(_ route: AWTRIXAppRoute) -> some View {
+        if let device = model.settings.devices.first(where: {
+            $0.id == route.deviceID && $0.type == .awtrix
+        }) {
+            let app = model.awtrixAppInfo(deviceID: route.deviceID, name: route.appName)
+            let card = model.awtrixCards(for: route.deviceID).first { $0.name == route.appName }
+            let currentApp = model.awtrixSnapshots[route.deviceID]?.device.currentApp
+            let isBusy = model.awtrixAppIsBusy(deviceID: route.deviceID, name: route.appName)
+
+            Group {
+                // 设备真实画面优先放在详情页顶部，进入应用后立即可见。
+                awtrixLivePreviewSection(route, currentApp: currentApp)
+
+                Section {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: card?.symbol ?? "app")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(currentApp == route.appName ? Color.green
+                                                                         : Color.accentColor)
+                            .frame(width: 28, height: 28)
+                        HStack(spacing: 4) {
+                            Text(awtrixAppDisplayTitle(route))
+                                .font(.headline)
+                            if let description = app?.meta?.desc,
+                               !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                HelpIcon(text: description)
+                            }
+                        }
+                        Spacer()
+                        if currentApp == route.appName {
+                            Text("正在显示")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.green)
+                        }
+                    }
+                    LabeledContent("所属设备") { Text(device.name) }
+                    HStack {
+                        Button("立即显示") {
+                            Task {
+                                await model.showAWTRIXCard(route.appName, deviceID: route.deviceID)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        if model.awtrixBusyIDs.contains(route.deviceID) {
+                            ProgressView().controlSize(.small)
+                        }
+                        Spacer()
+                        Button("刷新状态") {
+                            Task { await model.refreshAWTRIX(deviceID: route.deviceID) }
+                        }
+                        .disabled(model.awtrixBusyIDs.contains(route.deviceID))
+                    }
+                }
+                .task(id: route.key) {
+                    // 任务只挂在唯一的应用 Section，避免透明 Group 把 modifier
+                    // 下发给多个 Section，导致多条 250ms 轮询循环。
+                    await runAWTRIXAppDetailTask(route)
+                }
+
+                if route.isBuiltInText {
+                    awtrixTextEditorSection(route)
+                } else if route.isHomeAssistant {
+                    awtrixHomeAssistantSections(route)
+                }
+
+                if (!route.isBuiltInText && !route.isHomeAssistant) || app?.config == true {
+                    Section("应用设置") {
+                    if app?.config == true {
+                        if let configuration = model.awtrixAppConfiguration(
+                            deviceID: route.deviceID, name: route.appName) {
+                            ForEach(configuration.warnings, id: \.self) { warning in
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.orange)
+                            }
+                            if configuration.fields.isEmpty {
+                                Text("该应用当前没有可调整的设置。")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(configuration.fields) { field in
+                                    awtrixConfigFieldRow(field, route: route)
+                                }
+                            }
+                            HStack {
+                                Button("恢复默认值") {
+                                    model.restoreAWTRIXAppConfigurationDefaults(
+                                        route.appName, deviceID: route.deviceID)
+                                    model.scheduleAWTRIXAppConfigurationSave(
+                                        route.appName, deviceID: route.deviceID)
+                                }
+                                .disabled(isBusy || !configuration.fields.contains {
+                                    $0.defaultValue != nil
+                                })
+                                Spacer()
+                                Button("重新读取") {
+                                    Task {
+                                        await model.loadAWTRIXAppConfiguration(
+                                            route.appName, deviceID: route.deviceID, force: true)
+                                    }
+                                }
+                                .disabled(isBusy)
+                                Button("重试保存") {
+                                    Task {
+                                        await model.saveAWTRIXAppConfiguration(
+                                            route.appName, deviceID: route.deviceID)
+                                    }
+                                }
+                                .disabled(isBusy || !model.awtrixAppHasChanges(
+                                    deviceID: route.deviceID, name: route.appName))
+                            }
+                        } else if isBusy {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在读取设备提供的设置…")
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text(model.awtrixAppStatus(deviceID: route.deviceID,
+                                                       name: route.appName).isEmpty
+                                 ? "尚未读取应用设置。"
+                                 : model.awtrixAppStatus(deviceID: route.deviceID,
+                                                         name: route.appName))
+                                .foregroundStyle(.secondary)
+                            Button("读取设置") {
+                                Task {
+                                    await model.loadAWTRIXAppConfiguration(
+                                        route.appName, deviceID: route.deviceID, force: true)
+                                }
+                            }
+                        }
+                        let configurationStatus = model.awtrixAppStatus(
+                            deviceID: route.deviceID, name: route.appName)
+                        if !configurationStatus.isEmpty,
+                           model.awtrixAppConfiguration(deviceID: route.deviceID,
+                                                        name: route.appName) != nil {
+                            Text(configurationStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Text("该应用未向 AWTRIX NG 声明可编辑设置。")
+                            .foregroundStyle(.secondary)
+                    }
+                    }
+                }
+
+            }
+        } else {
+            Section("应用不可用") {
+                Text("所属 AWTRIX NG 设备已被移除。")
+                    .foregroundStyle(.secondary)
+                Button("返回卡片管理") {
+                    awtrixAppRoute = nil
+                    selected = .awtrixCardManagement
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func awtrixLivePreviewSection(_ route: AWTRIXAppRoute,
+                                          currentApp: String?) -> some View {
+        Section("设备实时预览") {
+            VStack(alignment: .leading, spacing: 9) {
+                AWTRIXPixelMatrixPreview(
+                    image: model.awtrixLivePreviewImages[route.deviceID],
+                    maximumWidth: 512,
+                    waitingText: "正在等待设备画面")
+                .accessibilityLabel("AWTRIX NG 32 乘 8 实时屏幕预览")
+
+                let previewStatus = model.awtrixLivePreviewStatuses[route.deviceID]
+                    ?? "正在连接设备实时画面…"
+                HStack(spacing: 6) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .foregroundStyle(previewStatus.hasPrefix("设备实时画面")
+                                         ? Color.green : Color.orange)
+                    Text(previewStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("刷新预览") {
+                        Task {
+                            await model.refreshAWTRIXLivePreview(deviceID: route.deviceID)
+                        }
+                    }
+                    .controlSize(.small)
+                }
+                if let currentApp, currentApp != route.appName {
+                    HStack(spacing: 4) {
+                        Text("当前画面：\(currentApp)")
+                        HelpIcon(text: "这里显示设备实时画面。点击“立即显示”可以切换到当前卡片；自动轮播开启时设备会继续轮换。")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func runAWTRIXAppDetailTask(_ route: AWTRIXAppRoute) async {
+        // 实时帧与较慢的完整设备刷新并行；路由变化时 SwiftUI
+        // 会取消整个结构化 Task，不在后台留下高频轮询。
+        async let previewPolling: Void = model.pollAWTRIXLivePreview(deviceID: route.deviceID)
+        await model.refreshAWTRIX(deviceID: route.deviceID)
+        if model.awtrixAppInfo(deviceID: route.deviceID, name: route.appName)?.config == true {
+            await model.loadAWTRIXAppConfiguration(route.appName, deviceID: route.deviceID)
+        }
+        _ = await previewPolling
+    }
+
+    /// 内置「灵犀文字」的内容与视觉设置。它与设备返回的同名 pushed app
+    /// 共用一个详情页，但不依赖 snapshot 中已存在该 app，因此首次使用也能编辑。
+    @ViewBuilder
+    private func awtrixTextEditorSection(_ route: AWTRIXAppRoute) -> some View {
+        let config = model.awtrixSettings(for: route.deviceID)
+        Section {
+            TextField("输入要显示的文字",
+                      text: awtrixRouteBinding(route, \.text), axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                ColorPicker("文字颜色",
+                            selection: awtrixRouteColorBinding(route, \.foregroundHex),
+                            supportsOpacity: false)
+                ColorPicker("背景颜色",
+                            selection: awtrixRouteColorBinding(route, \.backgroundHex),
+                            supportsOpacity: false)
+            }
+            Picker("调色板", selection: awtrixRoutePaletteBinding(route)) {
+                ForEach(awtrixPaletteNames(for: route.deviceID), id: \.self) { palette in
+                    Text(palette).tag(palette)
+                }
+            }
+            if config.palette != "Solid" {
+                Toggle("平滑混合调色板",
+                       isOn: awtrixRouteBinding(route, \.paletteBlend))
+                Stepper("调色板跨度：\(config.paletteSpan)",
+                        value: awtrixRouteBinding(route, \.paletteSpan), in: 0...1_024)
+                HStack {
+                    Text("调色板速度")
+                    Slider(value: awtrixRouteBinding(route, \.paletteSpeed),
+                           in: 0...10, step: 0.1)
+                    Text(config.paletteSpeed.formatted(
+                        .number.precision(.fractionLength(1))))
+                        .monospacedDigit()
+                        .frame(width: 32)
+                }
+            }
+            Picker("灯光预设", selection: awtrixRouteBinding(route, \.effect)) {
+                Text("关闭").tag("")
+                ForEach(model.awtrixSnapshots[route.deviceID]?.capabilities.effects ?? [],
+                        id: \.self) { effect in
+                    Text(effect).tag(effect)
+                }
+            }
+            if !config.effect.isEmpty {
+                HStack {
+                    Text("效果速度")
+                    Slider(value: awtrixRouteBinding(route, \.effectSpeed),
+                           in: 0.1...10, step: 0.1)
+                    Text(config.effectSpeed.formatted(
+                        .number.precision(.fractionLength(1))))
+                        .monospacedDigit()
+                        .frame(width: 32)
+                }
+            }
+            Stepper("显示时长：\(config.durationSeconds) 秒",
+                    value: awtrixRouteBinding(route, \.durationSeconds), in: 1...3_600)
+            Stepper("滚动帧间隔：\(config.scrollSpeedMilliseconds) 毫秒",
+                    value: awtrixRouteBinding(route, \.scrollSpeedMilliseconds),
+                    in: 40...500, step: 10)
+
+            Button("从设备中移除") {
+                Task { await clearAWTRIXText(route) }
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("灵犀文字")
+                HelpIcon(text: "内容修改后自动保存并推送。英文使用设备原生文字，中文使用内置 8px 点阵字库；长文字自动滚动。灯光预设和调色板会按设备支持的方式应用。")
+            }
+        }
+    }
+
+    private func awtrixRouteBinding<Value>(_ route: AWTRIXAppRoute,
+                                            _ keyPath: WritableKeyPath<AWTRIXSettings, Value>)
+        -> Binding<Value> {
+        Binding(get: {
+            model.awtrixSettings(for: route.deviceID)[keyPath: keyPath]
+        }, set: { value in
+            model.updateAWTRIXText(deviceID: route.deviceID) { config in
+                config[keyPath: keyPath] = value
+            }
+        })
+    }
+
+    private func awtrixPaletteNames(for deviceID: UUID) -> [String] {
+        let snapshot = model.awtrixSnapshots[deviceID]
+        let builtIn = snapshot?.capabilities.palettes ?? []
+        let custom = snapshot.map { Array($0.paletteDefinitions.keys) } ?? []
+        return Array(Set(["Solid"] + builtIn + custom)).sorted { lhs, rhs in
+            if lhs == "Solid" { return true }
+            if rhs == "Solid" { return false }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+    }
+
+    private func awtrixRoutePaletteBinding(_ route: AWTRIXAppRoute) -> Binding<String> {
+        Binding(get: {
+            model.awtrixSettings(for: route.deviceID).palette
+        }, set: { name in
+            let entries = model.awtrixSnapshots[route.deviceID]?.paletteDefinitions[name] ?? []
+            model.updateAWTRIXText(deviceID: route.deviceID) { config in
+                config.palette = name
+                config.paletteEntries = entries
+            }
+        })
+    }
+
+    private func awtrixRouteColorBinding(
+        _ route: AWTRIXAppRoute,
+        _ keyPath: WritableKeyPath<AWTRIXSettings, String>) -> Binding<Color> {
+        Binding(get: {
+            let hex = model.awtrixSettings(for: route.deviceID)[keyPath: keyPath]
+            guard let rgb = HexColor.parse(hex) else { return .white }
+            return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+        }, set: { color in
+            let nsColor = NSColor(color).usingColorSpace(.sRGB) ?? .white
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            nsColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            model.updateAWTRIXText(deviceID: route.deviceID) { config in
+                config[keyPath: keyPath] = HexColor.string(from: red, green, blue)
+            }
+        })
+    }
+
+    private func clearAWTRIXText(_ route: AWTRIXAppRoute) async {
+        await model.clearAWTRIXText(deviceID: route.deviceID)
+    }
+
+    @ViewBuilder
+    private func awtrixHomeAssistantSections(_ route: AWTRIXAppRoute) -> some View {
+        let config = model.awtrixSettings(for: route.deviceID).homeAssistant
+        Section {
+            let refs = dragAWTRIXHAEntities ?? config.entityIDs.map(HAEntityRef.init)
+            if refs.isEmpty {
+                Text("尚未添加实体")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                reorderList(items: refs,
+                            dragged: $draggedAWTRIXHAEntity,
+                            dragItems: $dragAWTRIXHAEntities,
+                            commit: { refs in
+                                model.updateAWTRIXHomeAssistant(deviceID: route.deviceID) {
+                                    $0.entityIDs = refs.map(\.id)
+                                }
+                            }) { ref in
+                    awtrixHAEntityRow(ref, route: route)
+                }
+            }
+            if config.entityIDs.count < 8 {
+                AWTRIXHAEntityAdder(alreadyAdded: Set(config.entityIDs),
+                                    loadEntities: { model.haEntityCatalog }) { ids in
+                    dragAWTRIXHAEntities = nil
+                    model.updateAWTRIXHomeAssistant(deviceID: route.deviceID) { settings in
+                        let existing = Set(settings.entityIDs)
+                        settings.entityIDs = Array((settings.entityIDs + ids.filter {
+                            !existing.contains($0)
+                        }).prefix(8))
+                    }
+                }
+            }
+            HStack {
+                Text("已选择 \(config.entityIDs.count) / 8 个实体")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("刷新实体") { Task { await model.refreshHA(includePictures: false) } }
+            }
+            if let error = model.haSnapshot.errorText {
+                Text(error).font(.caption).foregroundStyle(.red)
+            } else if model.settings.haServerURL.isEmpty {
+                Button("前往设备管理配置 Home Assistant") { selected = .devices }
+            }
+        } header: {
+            HStack(spacing: 4) {
+                Text("这台像素屏显示的实体")
+                HelpIcon(text: "每台 AWTRIX 分别保存自己的实体列表，最多 8 个，按顺序滚动显示名称、状态和单位。复用设备管理中的 Home Assistant 服务器，只读取实体状态；32×8 像素屏暂不支持 camera 与 image 图片实体。")
+            }
+        }
+        .task(id: route.deviceID) {
+            if model.haEntityCatalog.isEmpty && !model.settings.haServerURL.isEmpty {
+                await model.refreshHA(includePictures: false)
+            }
+        }
+        Section("显示与更新") {
+            Toggle("显示实体名称", isOn: awtrixHABinding(route, \.showName))
+            ColorPicker("文字颜色", selection: Binding(
+                get: {
+                    let hex = model.awtrixSettings(for: route.deviceID).homeAssistant.foregroundHex
+                    guard let rgb = HexColor.parse(hex) else { return Color.white }
+                    return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+                }, set: { color in
+                    let value = NSColor(color).usingColorSpace(.sRGB) ?? .white
+                    model.updateAWTRIXHomeAssistant(deviceID: route.deviceID) {
+                        $0.foregroundHex = HexColor.string(from: value.redComponent,
+                                                          value.greenComponent,
+                                                          value.blueComponent)
+                    }
+                }), supportsOpacity: false)
+            Toggle("自动更新到设备", isOn: awtrixHABinding(route, \.autoPush))
+            if config.autoPush {
+                Stepper("刷新间隔：\(config.refreshSeconds) 秒",
+                        value: awtrixHABinding(route, \.refreshSeconds), in: 5...3_600, step: 5)
+            }
+            HStack {
+                Text(model.awtrixStatuses[route.deviceID] ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("刷新并显示") {
+                    Task { await model.showAWTRIXHomeAssistant(deviceID: route.deviceID) }
+                }
+                .disabled(config.entityIDs.isEmpty)
+            }
+        }
+    }
+
+    private func awtrixHAEntityRow(_ ref: HAEntityRef, route: AWTRIXAppRoute) -> some View {
+        let entity = model.awtrixHAEntity(deviceID: route.deviceID, entityID: ref.id)
+        return HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .onDrag {
+                    draggedAWTRIXHAEntity = ref
+                    if dragAWTRIXHAEntities == nil {
+                        dragAWTRIXHAEntities = model.awtrixSettings(for: route.deviceID)
+                            .homeAssistant.entityIDs.map(HAEntityRef.init)
+                    }
+                    return NSItemProvider(object: ref.id as NSString)
+                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entity?.displayName ?? ref.id).lineLimit(1)
+                Text(ref.id).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Text(entity?.displayValue ?? "暂不可用")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button {
+                dragAWTRIXHAEntities = nil
+                model.updateAWTRIXHomeAssistant(deviceID: route.deviceID) {
+                    $0.entityIDs.removeAll { $0 == ref.id }
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("移除实体")
+        }
+    }
+
+    private func awtrixHABinding<Value>(_ route: AWTRIXAppRoute,
+                                        _ keyPath: WritableKeyPath<AWTRIXHomeAssistantSettings, Value>) -> Binding<Value> {
+        Binding(get: { model.awtrixSettings(for: route.deviceID).homeAssistant[keyPath: keyPath] },
+                set: { value in
+                    model.updateAWTRIXHomeAssistant(deviceID: route.deviceID) {
+                        $0[keyPath: keyPath] = value
+                    }
+                })
+    }
+
+    @ViewBuilder
+    private func awtrixConfigFieldRow(_ field: AWTRIXConfigField,
+                                      route: AWTRIXAppRoute) -> some View {
+        switch field.kind {
+        case .text:
+            HStack(spacing: 10) {
+                awtrixConfigFieldLabel(field)
+                Spacer()
+                TextField(field.displayLabel,
+                          text: awtrixConfigStringBinding(field, route: route))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 180, maxWidth: 280)
+            }
+        case .number:
+            HStack(spacing: 10) {
+                awtrixConfigFieldLabel(field)
+                Spacer()
+                TextField(field.displayLabel,
+                          value: awtrixConfigNumberBinding(field, route: route),
+                          format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 120)
+                if let unit = field.unit, !unit.isEmpty {
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+        case .slider:
+            HStack(spacing: 10) {
+                awtrixConfigFieldLabel(field)
+                    .frame(minWidth: 110, alignment: .leading)
+                Slider(value: awtrixConfigNumberBinding(field, route: route),
+                       in: awtrixConfigSliderRange(field),
+                       step: max(field.step ?? 1, 0.000_001))
+                Text(awtrixConfigNumberText(field, route: route))
+                    .monospacedDigit()
+                    .frame(minWidth: 54, alignment: .trailing)
+                if let unit = field.unit, !unit.isEmpty {
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+        case .bool:
+            Toggle(isOn: awtrixConfigBoolBinding(field, route: route)) {
+                awtrixConfigFieldLabel(field)
+            }
+        case .color:
+            ColorPicker(selection: awtrixConfigColorBinding(field, route: route),
+                        supportsOpacity: false) {
+                awtrixConfigFieldLabel(field)
+            }
+        case .select:
+            if field.options.isEmpty {
+                LabeledContent {
+                    Text(awtrixConfigValueText(
+                        model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                                  name: route.appName, field: field)))
+                        .foregroundStyle(.secondary)
+                } label: {
+                    awtrixConfigFieldLabel(field)
+                }
+            } else {
+                Picker(selection: awtrixConfigSelectionBinding(field, route: route)) {
+                    ForEach(Array(field.options.enumerated()), id: \.offset) { index, option in
+                        Text(awtrixConfigValueText(option)).tag(index)
+                    }
+                } label: {
+                    awtrixConfigFieldLabel(field)
+                }
+            }
+        case .unsupported(let type):
+            LabeledContent {
+                Text(awtrixConfigValueText(
+                    model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                              name: route.appName, field: field)))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            } label: {
+                HStack(spacing: 4) {
+                    awtrixConfigFieldLabel(field)
+                    HelpIcon(text: "当前版本尚不支持编辑 AWTRIX 字段类型“\(type)”，已以只读方式保留其值。")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func awtrixConfigFieldLabel(_ field: AWTRIXConfigField) -> some View {
+        HStack(spacing: 4) {
+            Text(field.displayLabel)
+            if let help = field.help,
+               !help.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HelpIcon(text: help)
+            }
+        }
+    }
+
+    private func awtrixConfigStringBinding(_ field: AWTRIXConfigField,
+                                           route: AWTRIXAppRoute) -> Binding<String> {
+        Binding(get: {
+            model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                      name: route.appName, field: field)?.stringValue ?? ""
+        }, set: { value in
+            model.setAWTRIXAppDraftValue(.string(value), deviceID: route.deviceID,
+                                         name: route.appName, fieldKey: field.key)
+            model.scheduleAWTRIXAppConfigurationSave(route.appName, deviceID: route.deviceID)
+        })
+    }
+
+    private func awtrixConfigNumberBinding(_ field: AWTRIXConfigField,
+                                           route: AWTRIXAppRoute) -> Binding<Double> {
+        Binding(get: {
+            model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                      name: route.appName, field: field)?.numberValue ?? 0
+        }, set: { value in
+            // schema 的 step 才决定是否允许小数；当前值即使恰好是整数，也不能据此
+            // 把经纬度等 step=0.01 的字段强制取整。JSON number 可同时表达两者。
+            model.setAWTRIXAppDraftValue(.number(value), deviceID: route.deviceID,
+                                         name: route.appName, fieldKey: field.key)
+            model.scheduleAWTRIXAppConfigurationSave(route.appName, deviceID: route.deviceID)
+        })
+    }
+
+    private func awtrixConfigBoolBinding(_ field: AWTRIXConfigField,
+                                         route: AWTRIXAppRoute) -> Binding<Bool> {
+        Binding(get: {
+            model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                      name: route.appName, field: field)?.boolValue ?? false
+        }, set: { value in
+            model.setAWTRIXAppDraftValue(.bool(value), deviceID: route.deviceID,
+                                         name: route.appName, fieldKey: field.key)
+            model.scheduleAWTRIXAppConfigurationSave(route.appName, deviceID: route.deviceID)
+        })
+    }
+
+    private func awtrixConfigColorBinding(_ field: AWTRIXConfigField,
+                                          route: AWTRIXAppRoute) -> Binding<Color> {
+        Binding(get: {
+            let stored = model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                                    name: route.appName, field: field)
+            let value: String
+            if let text = stored?.stringValue {
+                value = text
+            } else if let packed = stored?.numberValue,
+                      (0...Double(0xFF_FF_FF)).contains(packed) {
+                value = String(format: "#%06X", Int(packed.rounded()))
+            } else {
+                value = "#FFFFFF"
+            }
+            guard let rgb = HexColor.parse(value) else { return .white }
+            return Color(red: rgb.0, green: rgb.1, blue: rgb.2)
+        }, set: { color in
+            let nsColor = NSColor(color).usingColorSpace(.sRGB) ?? .white
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            nsColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            model.setAWTRIXAppDraftValue(.string(HexColor.string(from: red, green, blue)),
+                                         deviceID: route.deviceID, name: route.appName,
+                                         fieldKey: field.key)
+            model.scheduleAWTRIXAppConfigurationSave(route.appName, deviceID: route.deviceID)
+        })
+    }
+
+    private func awtrixConfigSelectionBinding(_ field: AWTRIXConfigField,
+                                              route: AWTRIXAppRoute) -> Binding<Int> {
+        Binding(get: {
+            let value = model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                                   name: route.appName, field: field)
+            return field.options.firstIndex { $0 == value } ?? 0
+        }, set: { index in
+            guard field.options.indices.contains(index) else { return }
+            model.setAWTRIXAppDraftValue(field.options[index], deviceID: route.deviceID,
+                                         name: route.appName, fieldKey: field.key)
+            model.scheduleAWTRIXAppConfigurationSave(route.appName, deviceID: route.deviceID)
+        })
+    }
+
+    private func awtrixConfigSliderRange(_ field: AWTRIXConfigField) -> ClosedRange<Double> {
+        let lower = field.min ?? 0
+        let upper = field.max ?? max(lower + 100, 100)
+        return lower...max(upper, lower + max(field.step ?? 1, 0.000_001))
+    }
+
+    private func awtrixConfigNumberText(_ field: AWTRIXConfigField,
+                                        route: AWTRIXAppRoute) -> String {
+        let value = model.awtrixAppDraftValue(deviceID: route.deviceID,
+                                               name: route.appName, field: field)?.numberValue ?? 0
+        if value.rounded() == value { return String(Int(value)) }
+        return value.formatted(.number.precision(.fractionLength(0...3)))
+    }
+
+    private func awtrixConfigValueText(_ value: AWTRIXJSONValue?) -> String {
+        guard let value else { return "—" }
+        switch value {
+        case .string(let text): return text
+        case .integer(let number): return String(number)
+        case .number(let number): return number.formatted(.number.precision(.fractionLength(0...4)))
+        case .bool(let enabled): return enabled ? "开" : "关"
+        case .array(let values): return values.map { awtrixConfigValueText($0) }.joined(separator: ", ")
+        case .object(let values):
+            return values.keys.sorted().map {
+                "\($0): \(awtrixConfigValueText(values[$0]))"
+            }.joined(separator: ", ")
+        case .null: return "null"
+        }
+    }
+
+    private func awtrixCardManagementRow(_ app: AWTRIXCardDescriptor,
+                                         deviceID: UUID, visible: Bool) -> some View {
+        HStack(spacing: 10) {
+            if visible {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.secondary)
+                    .onDrag {
+                        draggedAWTRIXApp = app
+                        if dragAWTRIXApps == nil {
+                            dragAWTRIXApps = model.awtrixVisibleCards(for: deviceID)
+                        }
+                        return NSItemProvider(object: app.name as NSString)
+                    }
+            }
+            Button {
+                let config = model.awtrixSettings(for: deviceID)
+                awtrixAppRoute = AWTRIXAppRoute(
+                    deviceID: deviceID, appName: app.name,
+                    isBuiltInText: app.name.caseInsensitiveCompare(config.appName) == .orderedSame)
+                selected = .awtrix
+                Task { await model.showAWTRIXCard(app.name, deviceID: deviceID) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: app.symbol).frame(width: 18)
+                    Text(app.title).lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("打开并显示“\(app.title)”")
+            Spacer()
+            if visible {
+                Toggle("在侧栏显示 \(app.title)", isOn: Binding(
+                    get: { model.awtrixVisibleCards(for: deviceID).contains { $0.name == app.name } },
+                    set: { enabled in
+                        dragAWTRIXApps = nil
+                        model.setAWTRIXCardVisible(app.name, visible: enabled, deviceID: deviceID)
+                    }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 44)
+            } else {
+                Button {
+                    dragAWTRIXApps = nil
+                    model.setAWTRIXCardVisible(app.name, visible: true, deviceID: deviceID)
+                } label: {
+                    Image(systemName: "plus.circle").foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 44)
+                .help("将“\(app.title)”添加到侧栏")
+            }
+            Toggle("轮换 \(app.title)", isOn: Binding(
+                get: { model.awtrixCards(for: deviceID).first { $0.name == app.name }?.isInLoop ?? false },
+                set: { enabled in
+                    Task { await model.setAWTRIXCard(app.name, inLoop: enabled, deviceID: deviceID) }
+                }))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 44)
+                .help("将“\(app.title)”加入设备自动轮播")
         }
     }
 
@@ -5523,12 +7742,50 @@ struct SettingsView: View {
         }
     }
 
+    /// StickS3 动作发送模拟按键而非注册系统热键，因此允许方向键、Esc 等无修饰按键。
+    private func startM5ShortcutRecording(_ shortcutID: String, controllerID: UUID) {
+        cancelShortcutRecording()
+        recordingM5ShortcutID = shortcutID
+        recordingM5ControllerID = controllerID
+        let accept: (GlobalShortcut) -> Void = { shortcut in
+            let items = self.model.m5MacShortcuts(controllerID: controllerID)
+            if let conflict = items.first(where: {
+                $0.id != shortcutID && $0.isEnabled && $0.shortcut == shortcut
+            }) {
+                self.shortcutConflictText = "「\(conflict.name)」已使用 \(shortcut.displayString)。请更换组合，或先停用该动作。"
+                self.showShortcutConflict = true
+                self.cancelShortcutRecording()
+                return
+            }
+            self.model.setM5MacShortcut(shortcut, shortcutID: shortcutID,
+                                        controllerID: controllerID)
+            self.cancelShortcutRecording()
+        }
+        // 优先使用会拦截本次 keyDown 的低层录制，避免系统听写或第三方语音输入法
+        // 先占用组合键，导致 AppKit 本地监听收不到事件。权限不足时回退原监听。
+        let capture = ShortcutCaptureMonitor()
+        capture.onCapture = accept
+        if capture.start() {
+            shortcutCaptureMonitor = capture
+            return
+        }
+        capture.startLocalCapture()
+        shortcutCaptureMonitor = capture
+        recordingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            capture.handleLocalEvent(event) ? nil : event
+        }
+    }
+
     private func cancelShortcutRecording() {
         if let monitor = recordingMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        shortcutCaptureMonitor?.stop()
+        shortcutCaptureMonitor = nil
         recordingMonitor = nil
         recordingShortcutAction = nil
+        recordingM5ShortcutID = nil
+        recordingM5ControllerID = nil
     }
 
     private func shortcutActionTitle(_ action: GlobalHotkeyManager.Action) -> String {
@@ -5538,6 +7795,32 @@ struct SettingsView: View {
         case .resetPomodoro: return "重置"
         case .keyboardPageUp: return "上一页"
         case .keyboardPageDown: return "下一页"
+        }
+    }
+
+    @ViewBuilder
+    private func aiMacSystemForm(deviceID: UUID) -> some View {
+        Section {
+            Stepper("推送周期 \(model.aiMacScreenSettings(for: deviceID).pushIntervalSeconds) 秒",
+                    value: model.aiMacScreenIntervalBinding(for: deviceID), in: 1...60)
+            Toggle("显示 CPU", isOn: model.aiMacSystemMonitorBinding(for: deviceID, \.showCpu))
+            Toggle("显示内存", isOn: model.aiMacSystemMonitorBinding(for: deviceID, \.showMemory))
+            Toggle("显示磁盘", isOn: model.aiMacSystemMonitorBinding(for: deviceID, \.showDisk))
+            Toggle("显示网络", isOn: model.aiMacSystemMonitorBinding(for: deviceID, \.showNetwork))
+            Toggle("显示运行时间", isOn: model.aiMacSystemMonitorBinding(for: deviceID, \.showUptime))
+            if model.aiMacSystemMonitorModules(for: deviceID).isEmpty {
+                Text("尚未选择显示项目，请开启上方的监控内容。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(model.systemStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } header: {
+            HStack(spacing: 4) {
+                Text("显示内容")
+                HelpIcon(text: "只调整这台小屏幕；关闭的内容会释放画面空间，不影响其他小屏幕或灵犀68 键盘。推送周期与这台设备的屏幕控制设置保持一致。")
+            }
         }
     }
 
@@ -5838,6 +8121,8 @@ struct HelpIcon: View {
         }
         .buttonStyle(.plain)
         .help(text)
+        .accessibilityLabel("查看说明")
+        .accessibilityHint(text)
         .onHover { hovering in
             showPopover = hovering
         }
@@ -5856,6 +8141,7 @@ struct HelpIcon: View {
 
 struct Sidebar: View {
     @Binding var selection: Panel
+    @Binding var awtrixAppRoute: AWTRIXAppRoute?
     @ObservedObject var model: AppModel
 
     /// 用户手动展开的设备分组（默认全部收起；只记录被展开的 ID）
@@ -5976,16 +8262,39 @@ struct Sidebar: View {
                                                    ? "尚未添加卡片，去卡片管理添加" : nil,
                                                aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id),
                                                aiMacCardModes: model.aiMacCardList(for: device.id)))
+        case .awtrix:
+            return AnyView(deviceInstanceGroup(icon: "rectangle.grid.1x2", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id,
+                                                                                 refreshAWTRIX: true),
+                                               panels: [.awtrixCardManagement, .awtrix],
+                                               switchType: .awtrix, deviceID: device.id,
+                                               emptyHint: model.awtrixVisibleCards(for: device.id).isEmpty
+                                                   ? "尚未添加卡片，去卡片管理添加" : nil,
+                                               awtrixApps: model.awtrixVisibleCards(for: device.id)))
+        case .m5Controller:
+            return AnyView(deviceInstanceGroup(
+                icon: "gamecontroller",
+                title: device.name,
+                isExpanded: deviceExpandedBinding(device.id),
+                panels: [.m5Controller],
+                switchType: .m5Controller,
+                deviceID: device.id,
+                emptyHint: model.m5ControllerSettings(for: device.id).pairedPeripheralID == nil
+                    ? "尚未配对，去设备管理扫描配对" : nil))
         }
     }
 
     /// 设备分组展开状态（默认全部收起；展开某台设备时自动收起其他所有设备 = 手风琴效果）
-    private func deviceExpandedBinding(_ id: UUID) -> Binding<Bool> {
+    private func deviceExpandedBinding(_ id: UUID,
+                                       refreshAWTRIX: Bool = false) -> Binding<Bool> {
         Binding(get: { expandedDeviceIDs.contains(id) },
                 set: { isExpanded in
                     if isExpanded {
                         // 手风琴：同一时刻只展开一台设备
                         expandedDeviceIDs = [id]
+                        if refreshAWTRIX {
+                            Task { await model.refreshAWTRIX(deviceID: id) }
+                        }
                     } else {
                         expandedDeviceIDs.remove(id)
                     }
@@ -6001,7 +8310,8 @@ struct Sidebar: View {
                                      oracleBoards: [OracleCanvasBoard] = [],
                                      excerptBoards: [ExcerptCanvasBoard] = [],
                                      aiMacBoards: [AIMacCanvasBoard] = [],
-                                     aiMacCardModes: [DisplayMode] = []) -> some View {
+                                     aiMacCardModes: [DisplayMode] = [],
+                                     awtrixApps: [AWTRIXCardDescriptor] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
@@ -6022,6 +8332,10 @@ struct Sidebar: View {
                 } else if panel == .aiMacCardManagement,
                           switchType == .aiMacScreen, let deviceID {
                     aiMacCardManagementSidebarRow(deviceID)
+                        .padding(.leading, Self.submenuIndent)
+                } else if panel == .awtrixCardManagement,
+                          switchType == .awtrix, let deviceID {
+                    awtrixCardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else {
                     sidebarRow(panel, switchingTo: switchType, deviceID: deviceID)
@@ -6050,6 +8364,12 @@ struct Sidebar: View {
                         aiMacCardSidebarRow(mode, deviceID: deviceID)
                             // 功能卡片与「卡片管理」同属设备下的第二级，排列层级和
                             // 灵犀键盘一致；不再额外缩进成难以辨认的第三级。
+                            .padding(.leading, Self.submenuIndent)
+                    }
+                }
+                if panel == .awtrixCardManagement, switchType == .awtrix, let deviceID {
+                    ForEach(awtrixApps) { app in
+                        awtrixAppSidebarRow(app, deviceID: deviceID)
                             .padding(.leading, Self.submenuIndent)
                     }
                 }
@@ -6384,6 +8704,92 @@ struct Sidebar: View {
         .help("在这台 AI Mac 小屏幕显示“\(title)”")
     }
 
+    private func awtrixCardManagementSidebarRow(_ deviceID: UUID) -> some View {
+        let rotationOn = model.awtrixSettings(for: deviceID).autoTransition
+        let isSelected = selection == .awtrixCardManagement
+            && model.activeDeviceID(for: .awtrix) == deviceID
+        return HStack(spacing: 8) {
+            Button {
+                model.switchDevice(type: .awtrix, to: deviceID)
+                awtrixAppRoute = nil
+                selection = .awtrixCardManagement
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: Panel.awtrixCardManagement.icon)
+                        .frame(width: 18, height: 18)
+                    Text(Panel.awtrixCardManagement.title).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rotationOn ? Color.accentColor : Color.secondary)
+            Toggle("自动轮播", isOn: Binding(
+                get: { model.awtrixSettings(for: deviceID).autoTransition },
+                set: { enabled in
+                    Task { await model.setAWTRIXAutoRotation(enabled, deviceID: deviceID) }
+                }))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("该设备的自动轮播开关（间隔与内容在“卡片管理”中调整）")
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.clear))
+    }
+
+    private func awtrixAppSidebarRow(_ app: AWTRIXCardDescriptor, deviceID: UUID) -> some View {
+        let textAppName = model.awtrixSettings(for: deviceID).appName
+        let route = AWTRIXAppRoute(deviceID: deviceID, appName: app.name,
+                                   isBuiltInText: app.name.caseInsensitiveCompare(textAppName) == .orderedSame)
+        let isSelected = selection == .awtrix && awtrixAppRoute == route
+        let isCurrent = model.awtrixSnapshots[deviceID]?.device.currentApp == app.name
+        return Button {
+            if model.activeDeviceID(for: .awtrix) != deviceID {
+                model.switchDevice(type: .awtrix, to: deviceID)
+            }
+            awtrixAppRoute = route
+            selection = .awtrix
+            // 路由立即响应；实机应用切换在独立任务中执行。
+            Task {
+                await model.showAWTRIXCard(app.name, deviceID: deviceID)
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: app.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 18, height: 18)
+                    .overlay(alignment: .bottomTrailing) {
+                        if isCurrent {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(width: 5, height: 5)
+                                .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor),
+                                                         lineWidth: 1))
+                        }
+                    }
+                Text(app.title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 12))
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected || isCurrent ? Color.accentColor : Color.primary)
+        .help("打开 \(app.title) 的详情、设置与实时预览")
+    }
+
     /// 「卡片轮换」行：左侧打开轮换设置页，右侧是该键盘设备的自动轮播开关
     private func cardRotationRow(_ deviceID: UUID) -> some View {
         let rotationOn = model.settings.devices.first(where: { $0.id == deviceID })?
@@ -6507,7 +8913,9 @@ struct Sidebar: View {
     /// 侧栏行：设备分组内的功能项点击时先把操作设备切到所属设备再打开页面
     private func sidebarRow(_ panel: Panel, switchingTo type: DeviceType? = nil,
                             deviceID: UUID? = nil) -> some View {
-        Button {
+        let isSelected = selection == panel && !(panel == .awtrix && awtrixAppRoute != nil)
+        return Button {
+            if panel == .awtrix { awtrixAppRoute = nil }
             if let type, let deviceID {
                 model.switchDevice(type: type, to: deviceID)
                 if type == .aiMacScreen {
@@ -6547,18 +8955,19 @@ struct Sidebar: View {
             .padding(.horizontal, 8)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(selection == panel ? Color.accentColor.opacity(0.25) : Color.clear)
+                    .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selection == panel ? Color.accentColor : Color.primary)
+        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
     }
 }
 
 /// 收起态迷你导航栏：保留最窄一条图标栏——选项卡图标快速切换 + 正在播放专辑封面（点击跳转）
 struct MiniSidebar: View {
     @Binding var selection: Panel
+    @Binding var awtrixAppRoute: AWTRIXAppRoute?
     @ObservedObject var model: AppModel
 
     var body: some View {
@@ -6576,6 +8985,9 @@ struct MiniSidebar: View {
             }
             if !model.enabledDevices(for: .aiMacScreen).isEmpty {
                 deviceIconButton(icon: "display", title: "AI Mac 小屏幕", panel: .aiMacBoardManagement)
+            }
+            if !model.enabledDevices(for: .awtrix).isEmpty {
+                deviceIconButton(icon: "rectangle.grid.1x2", title: "AWTRIX NG", panel: .awtrix)
             }
             Spacer(minLength: 0)
             // 正在播放：专辑封面（点击跳转到正在播放页）
@@ -6636,6 +9048,7 @@ struct MiniSidebar: View {
     private func deviceIconButton(icon: String, title: String, panel: Panel) -> some View {
         let isSelected = selection == panel
         return Button {
+            if panel == .awtrix { awtrixAppRoute = nil }
             selection = panel
         } label: {
             // 图标大小与展开模式设备分组图标一致（15pt semibold / 22×22 视觉）
@@ -6690,11 +9103,8 @@ struct PreviewPanel: View {
     private static let screenRect = CGRect(x: 0.19362, y: 0.33124, width: 0.61386, height: 0.60259)
     /// 显示区圆角（相对图宽实测 49/909；素材圆角为正圆弧，故用 .circular 匹配）
     private static let screenRadiusRatio: CGFloat = 0.05391
-    /// 渲染画布与卡片几何（与 ScreenRenderer 保持一致）
-    private static let canvasWidth: CGFloat = 142
-    private static let canvasHeight: CGFloat = 428
-    private static let cardInsetX: CGFloat = ScreenRenderer.cardInset
-    private static let cardRadiusCanvas: CGFloat = ScreenRenderer.cardRadius
+    /// 键盘实际像素宽高比；预览必须保持方形像素，不跟随外观素材的测量误差拉伸。
+    private static let screenPixelRatio: CGFloat = 142.0 / 428.0
     /// 叠加层向外微扩（相对图宽），盖住抗锯齿留下的绿边
     private static let screenBleedRatio: CGFloat = 0.005
     /// 设备外观留白：上下左各 10pt，右侧贴住窗口右缘不留缝隙
@@ -6767,31 +9177,30 @@ struct PreviewPanel: View {
         let originY = Self.panelPadding
         let screen = Self.screenRect
         let bleed = max(fitted.width * Self.screenBleedRatio, 0.5)
-        // 叠加时以「渲染卡片」而非整张画布对齐显示区：卡片左右边缘铺满绿色区，
-        // 画布四周的深色留白被裁到显示区之外，圆角也改用卡片自身半径，
-        // 避免出现「设备黑框 + 画面圆角」双层圆角与四角黑楔
-        let viewportW = fitted.width * screen.width + bleed * 2
-        let viewportH = fitted.height * screen.height + bleed * 2
-        let unit = viewportW / (Self.canvasWidth - Self.cardInsetX * 2)
-        let imageW = Self.canvasWidth * unit
-        let imageH = Self.canvasHeight * unit
-        let radius = Self.cardRadiusCanvas * unit + bleed
-        let cardShiftY = -ScreenRenderer.cardCenterOffsetY(safeArea: model.settings.safeAreaHeight) * unit
+        // 完整映射键盘真正接收的 142×428 JPEG。不可再把内部 124px 卡片放大后
+        // 裁切安全区与画布边缘，否则软件里的布局、玻璃光效都会和实屏不同。
+        let screenW = fitted.width * screen.width + bleed * 2
+        let screenH = fitted.height * screen.height + bleed * 2
+        let viewport = Self.fitSize(ratio: Self.screenPixelRatio,
+                                    in: CGSize(width: screenW, height: screenH))
+        let radius = fitted.width * Self.screenRadiusRatio + bleed
         return ZStack {
             Image(nsImage: frame)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: fitted.width, height: fitted.height)
                 .position(x: originX + fitted.width / 2, y: originY + fitted.height / 2)
-            Image(nsImage: image)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFill()
-                .frame(width: imageW, height: imageH)
-                .offset(y: cardShiftY)
-                .frame(width: viewportW, height: viewportH)
-                .clipped()
-                .background(Color.black)
+            ZStack {
+                // 素材中量出的绿色开窗比 142:428 横向宽约 4%；黑底覆盖误差，
+                // 最终 JPEG 在其中严格等比居中，不以拉伸换取“铺满”。
+                RoundedRectangle(cornerRadius: radius, style: .circular).fill(.black)
+                Image(nsImage: image)
+                    .resizable()
+                    // 不再进行额外平滑；保留最终 JPEG 在实屏上的像素边缘。
+                    .interpolation(.none)
+                    .frame(width: viewport.width, height: viewport.height)
+            }
+                .frame(width: screenW, height: screenH)
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .circular))
                 .overlay {
                     // 与设备黑色边框衔接，压住抗锯齿边缘
@@ -6804,7 +9213,7 @@ struct PreviewPanel: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .overlay(alignment: .bottom) {
             VStack(spacing: 1) {
-                Text("实时预览 · \(model.menuTitle(for: model.settings.displayMode))")
+                Text("推送同源预览 · \(model.menuTitle(for: model.settings.displayMode))")
                 Text("142 × 428 · JPEG")
             }
             .font(.caption2)
@@ -7404,12 +9813,15 @@ private struct PrinterAlertPreviewSheet: View {
 
     private func alertCard(_ printer: BambuLabCardSettings, index: Int) -> some View {
         VStack(spacing: 6) {
-            if let render = try? ScreenRenderer.renderHAAlert(
-                title: printer.name.isEmpty ? "打印机 \(index + 1)" : printer.name,
-                message: "07FE-4500-0002-0003",
-                settings: model.settings) {
-                Image(nsImage: NSImage(cgImage: render.image,
-                                       size: NSSize(width: 142, height: 428)))
+            if let render = try? LiquidGlassCardRenderer.renderKeyboard(settings: model.settings, render: {
+                try ScreenRenderer.renderHAAlert(
+                    title: printer.name.isEmpty ? "打印机 \(index + 1)" : printer.name,
+                    message: "07FE-4500-0002-0003",
+                    settings: model.settings)
+            }) {
+                let uploadedPreview = NSImage(data: render.data)
+                    ?? NSImage(cgImage: render.image, size: NSSize(width: 142, height: 428))
+                Image(nsImage: uploadedPreview)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
@@ -7466,6 +9878,10 @@ extension AppModel {
 
     var appearanceBinding: Binding<AppearanceMode> {
         Binding(get: { self.settings.appearanceMode }, set: { self.settings.appearanceMode = $0 })
+    }
+
+    var cardRenderingModeBinding: Binding<CardRenderingMode> {
+        Binding(get: { self.settings.cardRenderingMode }, set: { self.setCardRenderingMode($0) })
     }
 
     var backgroundToneBinding: Binding<BackgroundTone> {

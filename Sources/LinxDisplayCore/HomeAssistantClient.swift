@@ -470,6 +470,54 @@ public enum HomeAssistantClient {
         return try parseState(data: data)
     }
 
+    /// 通过现有 Mac 端令牌代发实体控制。StickS3 只发送动作事件，从不接触令牌。
+    public static func callService(serverURL: String, token: String,
+                                   command: HAServiceCommand,
+                                   timeout: TimeInterval = 8) async throws {
+        guard let request = makeServiceRequest(server: serverURL, token: token,
+                                               command: command, timeout: timeout) else {
+            throw HAError.invalidURL
+        }
+        let response: URLResponse
+        do {
+            (_, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            throw error.code == .timedOut ? HAError.timedOut : HAError.cannotConnect
+        } catch {
+            throw HAError.cannotConnect
+        }
+        guard let http = response as? HTTPURLResponse else { throw HAError.invalidResponse }
+        switch http.statusCode {
+        case 200..<300: return
+        case 401: throw HAError.unauthorized
+        case 403: throw HAError.forbidden
+        default: throw HAError.serverError(status: http.statusCode)
+        }
+    }
+
+    public static func makeServiceRequest(server: String, token: String,
+                                          command: HAServiceCommand,
+                                          timeout: TimeInterval = 8) -> URLRequest? {
+        guard let states = statesURL(server: server),
+              !command.domain.isEmpty, !command.service.isEmpty,
+              !command.entityID.isEmpty else { return nil }
+        let url = states.deletingLastPathComponent()
+            .appendingPathComponent("services")
+            .appendingPathComponent(command.domain)
+            .appendingPathComponent(command.service)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["entity_id": command.entityID]
+        if let position = command.position {
+            body["position"] = position
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
     /// 连接参数本地校验：返回给用户的原因（nil = 参数看起来可用）
     public static func validate(serverURL: String, token: String) -> String? {
         let trimmed = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -78,9 +78,23 @@ public struct FormlabsDeviceInfo: Codable, Equatable, Identifiable {
         self.readyToPrintNow = readyToPrintNow
         self.estimatedPrintTimeRemainingMS = estimatedPrintTimeRemainingMS
     }
+
+    /// Dashboard 某些响应不带 `is_connected`。只有明确的离线状态才据此推断断开；
+    /// `unknown` 可能只是新固件状态，仍应让智能轮播保守展示。API 明确返回的布尔值
+    /// 始终优先，尤其不能让 `status=printing` 覆盖显式的 `false`。
+    public static func resolvedIsConnected(explicit: Bool?, status: String) -> Bool {
+        if let explicit { return explicit }
+        let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        return !["off", "offline", "disconnected", "unavailable"].contains(normalized)
+    }
 }
 
 public struct FormlabsPrintInfo: Codable, Equatable {
+    /// Dashboard 当前 print run 的稳定标识。旧缓存或部分机型可能没有此字段；此时
+    /// 身份策略会使用名称/缩略图作保守回退，而不会把“无法确认”误当成新任务。
+    public var runID: String?
     public var name: String
     public var status: String
     public var currentLayer: Int?
@@ -93,11 +107,12 @@ public struct FormlabsPrintInfo: Codable, Equatable {
     public var message: String
     public var thumbnailURL: String
 
-    public init(name: String = "", status: String = "", currentLayer: Int? = nil,
+    public init(runID: String? = nil, name: String = "", status: String = "", currentLayer: Int? = nil,
                 layerCount: Int? = nil, elapsedDurationMS: Double? = nil,
                 estimatedDurationMS: Double? = nil, estimatedTimeRemainingMS: Double? = nil,
                 materialName: String = "", layerThicknessMM: Double? = nil,
                 message: String = "", thumbnailURL: String = "") {
+        self.runID = runID
         self.name = name
         self.status = status
         self.currentLayer = currentLayer
@@ -161,15 +176,19 @@ public struct FormlabsSnapshot: Codable, Equatable {
     public var thumbnail: Data?
     public var sampledAt: Date?
     public var cloudError: String?
+    /// App 在一次可信的活动→成功完成转换中写入的绝对时间。持久化该原始时间，
+    /// 重启后只恢复剩余宽限，不会因重复刷新或加载 finished 缓存重新计时。
+    public var completionObservedAt: Date?
 
     public init(device: FormlabsDeviceInfo? = nil, print: FormlabsPrintInfo? = nil,
                 thumbnail: Data? = nil, sampledAt: Date? = nil,
-                cloudError: String? = nil) {
+                cloudError: String? = nil, completionObservedAt: Date? = nil) {
         self.device = device
         self.print = print
         self.thumbnail = thumbnail
         self.sampledAt = sampledAt
         self.cloudError = cloudError
+        self.completionObservedAt = completionObservedAt
     }
 
     public static let empty = FormlabsSnapshot()
@@ -179,27 +198,65 @@ public struct FormlabsSnapshot: Codable, Equatable {
 /// Formlabs Dashboard 在任务结束后可能立即把 `current_print_run` 置空。
 /// 卡片只保留一份最近任务：空闲响应沿用它，新任务出现时立即整体替换。
 public enum FormlabsTaskCachePolicy {
-    public static func taskIdentity(_ print: FormlabsPrintInfo) -> String {
+    private static func normalizedRunID(_ print: FormlabsPrintInfo) -> String {
+        print.runID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private static func normalizedName(_ print: FormlabsPrintInfo) -> String {
+        print.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedThumbnailPath(_ print: FormlabsPrintInfo) -> String {
         let thumbnail = print.thumbnailURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = print.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty {
-            // 材料字段可能在打印开始后才由 Dashboard 补齐，也可能短暂回落为“未分配”。
-            // 它不是任务身份的一部分，否则同一任务会被误判为新任务并丢失缓存封面。
-            return "\(name.lowercased())|\(print.layerCount ?? -1)|\(Int(print.estimatedDurationMS ?? -1))"
-        }
-        // 缩略图常是会更新签名参数的对象存储 URL；只用不含 query 的路径识别，
-        // 避免同一任务每次刷新都被误判成新任务。
+        guard !thumbnail.isEmpty else { return "" }
         if let components = URLComponents(string: thumbnail) {
-            return "\(components.host?.lowercased() ?? "")\(components.path.lowercased())"
+            let value = "\(components.host?.lowercased() ?? "")\(components.path.lowercased())"
+            if !value.isEmpty { return value }
         }
         return thumbnail.lowercased()
     }
 
+    public static func taskIdentity(_ print: FormlabsPrintInfo) -> String {
+        let runID = normalizedRunID(print)
+        if !runID.isEmpty { return "run:\(runID)" }
+        let name = normalizedName(print)
+        if !name.isEmpty { return "name:\(name)" }
+        // 缩略图常是会更新签名参数的对象存储 URL；只用不含 query 的路径识别，
+        // 避免同一任务每次刷新都被误判成新任务。
+        let thumbnail = normalizedThumbnailPath(print)
+        return thumbnail.isEmpty ? "" : "thumbnail:\(thumbnail)"
+    }
+
     public static func isSameTask(_ lhs: FormlabsPrintInfo?, _ rhs: FormlabsPrintInfo?) -> Bool {
         guard let lhs, let rhs else { return lhs == nil && rhs == nil }
-        let left = taskIdentity(lhs)
-        let right = taskIdentity(rhs)
-        return !left.isEmpty && left == right
+        let leftRunID = normalizedRunID(lhs)
+        let rightRunID = normalizedRunID(rhs)
+        if !leftRunID.isEmpty, !rightRunID.isEmpty { return leftRunID == rightRunID }
+        let leftName = normalizedName(lhs)
+        let rightName = normalizedName(rhs)
+        if !leftName.isEmpty, !rightName.isEmpty { return leftName == rightName }
+        let leftThumbnail = normalizedThumbnailPath(lhs)
+        let rightThumbnail = normalizedThumbnailPath(rhs)
+        return !leftThumbnail.isEmpty && leftThumbnail == rightThumbnail
+    }
+
+    /// 只有双方都有可比较的稳定证据且证据不同时，才确认这是新任务。
+    /// 无名称/无缩略图、或某一轮元数据尚未补齐，都属于“未知”，不能据此清除
+    /// 正在进行的完成宽限计时。
+    public static func isDefinitelyDifferentTask(
+        _ lhs: FormlabsPrintInfo?, _ rhs: FormlabsPrintInfo?
+    ) -> Bool {
+        guard let lhs, let rhs else { return (lhs == nil) != (rhs == nil) }
+        let leftRunID = normalizedRunID(lhs)
+        let rightRunID = normalizedRunID(rhs)
+        if !leftRunID.isEmpty, !rightRunID.isEmpty { return leftRunID != rightRunID }
+        let leftName = normalizedName(lhs)
+        let rightName = normalizedName(rhs)
+        if !leftName.isEmpty, !rightName.isEmpty { return leftName != rightName }
+        let leftThumbnail = normalizedThumbnailPath(lhs)
+        let rightThumbnail = normalizedThumbnailPath(rhs)
+        return !leftThumbnail.isEmpty && !rightThumbnail.isEmpty
+            && leftThumbnail != rightThumbnail
     }
 
     /// 云端不再返回当前任务时，把最后一次活动快照固化为已完成；失败、取消等
@@ -307,12 +364,17 @@ public actor FormlabsClient {
             let cloud = try await cloudPrinter(settings: settings)
             result.device = cloud.device
             let previousPrint = previous.print
-            let sameTask = FormlabsTaskCachePolicy.isSameTask(previousPrint, cloud.print)
+            let definitelyNewTask = FormlabsTaskCachePolicy.isDefinitelyDifferentTask(
+                previousPrint, cloud.print)
             result.print = FormlabsTaskCachePolicy.retainedPrint(previous: previousPrint,
                                                                  latest: cloud.print)
             result.cloudError = nil
-            // 新任务先丢弃上一任务封面；同一任务下载失败则沿用最近有效缩略图。
-            if cloud.print != nil, !sameTask { result.thumbnail = nil }
+            // 只有确认的新任务才丢弃上一任务封面/完成时间；身份字段短暂缺失属于
+            // 未知，下载失败时继续沿用最近有效数据。
+            if cloud.print != nil, definitelyNewTask {
+                result.thumbnail = nil
+                result.completionObservedAt = nil
+            }
             if settings.showThumbnail, let current = cloud.print,
                let request = thumbnailRequest(urlString: current.thumbnailURL,
                                               token: cloud.token) {
@@ -494,8 +556,8 @@ public actor FormlabsClient {
             ?? "unknown"
         let run = statusObject?["current_print_run"] as? [String: Any]
             ?? object["current_print_run"] as? [String: Any]
-        let online = bool(object["is_connected"])
-            ?? !["offline", "disconnected", "unknown"].contains(rawStatus.lowercased())
+        let online = FormlabsDeviceInfo.resolvedIsConnected(
+            explicit: bool(object["is_connected"]), status: rawStatus)
         return FormlabsDeviceInfo(
             id: id,
             productName: string(object["name"])
@@ -524,6 +586,10 @@ public actor FormlabsClient {
             printSettingsName: string(object["print_settings_name"]),
             printerMaterial: printerMaterial)
         return FormlabsPrintInfo(
+            runID: string(object["print_run_id"])
+                ?? string(object["run_id"])
+                ?? string(object["uuid"])
+                ?? string(object["id"]),
             name: string(object["name"]) ?? string(object["print_name"]) ?? "",
             status: string(object["status"]) ?? "",
             currentLayer: integer(object["currently_printing_layer"]),

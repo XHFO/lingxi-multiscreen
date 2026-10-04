@@ -41,6 +41,10 @@ extension AppSettings {
             return "最多支持 5 台 Formlabs 打印机（对应 5 张独立卡片位）。"
         case .aiMacScreen:
             return "最多支持 5 台 AI Mac 小屏幕。"
+        case .awtrix:
+            return "最多支持 5 台 AWTRIX NG。"
+        case .m5Controller:
+            return "只允许配对一个 M5 StickS3 控制器（蓝牙会话全局唯一）。"
         default:
             return nil
         }
@@ -66,6 +70,8 @@ extension AppSettings {
         case .bambuLab: return activeBambuLabDeviceID
         case .formlabs: return activeFormlabsDeviceID
         case .aiMacScreen: return activeAIMacScreenDeviceID
+        case .awtrix: return activeAWTRIXDeviceID
+        case .m5Controller: return activeM5ControllerDeviceID
         }
     }
 
@@ -79,6 +85,8 @@ extension AppSettings {
         case .bambuLab: activeBambuLabDeviceID = id
         case .formlabs: activeFormlabsDeviceID = id
         case .aiMacScreen: activeAIMacScreenDeviceID = id
+        case .awtrix: activeAWTRIXDeviceID = id
+        case .m5Controller: activeM5ControllerDeviceID = id
         }
     }
 
@@ -97,8 +105,14 @@ extension AppSettings {
             guard let device = activeDevice(for: type),
                   let index = devices.firstIndex(where: { $0.id == device.id }) else { continue }
             // Formlabs 没有全局镜像：连接配置在设备快照里直接编辑，不能用空 capture 覆盖。
-            if type == .formlabs || type == .aiMacScreen { continue }
-            devices[index].settings = DeviceSettings.capture(from: self, type: type)
+            if type == .formlabs || type == .aiMacScreen || type == .m5Controller { continue }
+            let smartRotationReturn = devices[index].settings.smartRotationReturnDisplayMode
+            let smartRotationPrinterID = devices[index].settings.smartRotationReturnPrinterDeviceID
+            var captured = DeviceSettings.capture(from: self, type: type)
+            // 临时返回目标没有全局镜像；普通设置自动捕获时必须原样保留。
+            captured.smartRotationReturnDisplayMode = smartRotationReturn
+            captured.smartRotationReturnPrinterDeviceID = smartRotationPrinterID
+            devices[index].settings = captured
         }
     }
 

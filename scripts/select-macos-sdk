@@ -1,0 +1,59 @@
+#!/bin/zsh
+# 选择用于构建的 macOS SDK。优先当前 xcrun 选中的最新 SDK；只在
+# SDK 27 已引用 SwiftUIMacros、但当前 Command Line Tools 未附带该插件时，
+# 回退到已安装的 26.5 SDK。这个判断在编译前完成，不会把普通源码
+# 编译错误误当成 SDK 问题。
+set -eu
+
+selected_sdk="$(xcrun --sdk macosx --show-sdk-path)"
+selected_version="$(xcrun --sdk macosx --show-sdk-version)"
+swiftc_path="$(xcrun --find swiftc)"
+toolchain_usr="${swiftc_path:h:h}"
+
+swiftui_interface="$(find \
+  "$selected_sdk/System/Library/Frameworks/SwiftUICore.framework" \
+  -name '*-apple-macos.swiftinterface' -print -quit 2>/dev/null || true)"
+requires_swiftui_macros=false
+if [[ -n "$swiftui_interface" ]] && grep -q 'public macro State' "$swiftui_interface"; then
+  requires_swiftui_macros=true
+fi
+
+swiftui_macro_plugin="$(find "$toolchain_usr/lib/swift/host" \
+  -name '*SwiftUIMacros*' -print -quit 2>/dev/null || true)"
+
+if [[ "$requires_swiftui_macros" == true && -z "$swiftui_macro_plugin" ]]; then
+  fallback_sdk="$(xcrun --sdk macosx26.5 --show-sdk-path 2>/dev/null || true)"
+  # 完整 Xcode 27 不会把 CLT 随附的 26.5 SDK 注册给 xcrun，但 SDK 本身仍可
+  # 作为绝对 SDKROOT 使用。按明确路径寻找，避免因为切换了 Xcode 而丢失回退能力。
+  if [[ -z "$fallback_sdk" ]]; then
+    for candidate in \
+      /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+      /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk; do
+      if [[ -d "$candidate" ]]; then
+        fallback_sdk="$candidate"
+        break
+      fi
+    done
+  fi
+  fallback_interface=""
+  if [[ -n "$fallback_sdk" && -d "$fallback_sdk" ]]; then
+    fallback_interface="$(find \
+      "$fallback_sdk/System/Library/Frameworks/SwiftUICore.framework" \
+      -name '*-apple-macos.swiftinterface' -print -quit 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$fallback_interface" ]] || grep -q 'public macro State' "$fallback_interface"; then
+    print -u2 "错误：macOS SDK $selected_version 需要 SwiftUIMacros，但当前工具链未包含该插件。"
+    print -u2 "      请安装包含 SwiftUIMacros 的 Xcode/CLT 27，或安装 macOS 26.5 SDK。"
+    exit 1
+  fi
+
+  fallback_version="$(plutil -extract Version raw "$fallback_sdk/SDKSettings.plist" 2>/dev/null || print 26.5)"
+  print -u2 "==> SDK $selected_version 需要 SwiftUIMacros，当前工具链未提供；回退到 SDK $fallback_version"
+  print -u2 "    产物最低版本仍为 macOS 26.0，可在 macOS 27 运行。"
+  print -r -- "$fallback_sdk"
+  exit 0
+fi
+
+print -u2 "==> 使用 macOS SDK $selected_version"
+print -r -- "$selected_sdk"

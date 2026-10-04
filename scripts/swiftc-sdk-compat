@@ -1,5 +1,25 @@
 #!/bin/zsh
-# 当前 CLT 的 Swift 6.3.3 比随 macOS 26.5 SDK 写入接口的 6.3.2 新一个补丁版本。
-# 告诉编译器按 SDK 的接口版本解析，避免错误拒绝同一 6.3 系列的系统模块。
-exec /Library/Developer/CommandLineTools/usr/bin/swiftc \
-  -Xfrontend -interface-compiler-version -Xfrontend 6.3.2 "$@"
+# Apple 偶尔会在同一套 CLT 中附带补丁号略有差异的 Swift 编译器和 SDK。
+# 比如 macOS 26.5 SDK 的接口版本是 6.3，macOS 27 SDK 则是 6.4。从已选
+# SDK 的 Swift 接口文件读取版本，避免将 6.3.2 写死后无法解析 SDK 27。
+set -eu
+
+swiftc_path="$(xcrun --find swiftc)"
+sdk_path="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+swift_module_dir="$sdk_path/usr/lib/swift/Swift.swiftmodule"
+swift_interface="$(find "$swift_module_dir" -name '*-apple-macos.swiftinterface' -print -quit 2>/dev/null || true)"
+interface_version=""
+
+if [[ -n "$swift_interface" ]]; then
+  interface_version="$(sed -nE \
+    's#^// swift-compiler-version: Apple Swift version ([0-9]+\.[0-9]+).*#\1#p' \
+    "$swift_interface" | head -n 1)"
+fi
+
+if [[ -n "$interface_version" ]]; then
+  exec "$swiftc_path" \
+    -Xfrontend -interface-compiler-version -Xfrontend "$interface_version" "$@"
+fi
+
+# 非 Apple SDK 或接口布局变化时不猜测版本，交给编译器自身处理。
+exec "$swiftc_path" "$@"

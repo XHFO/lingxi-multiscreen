@@ -396,6 +396,497 @@ func testRand0SessionLifecycle() async {
 
 // MARK: - 设置与工具
 
+func testCardRenderingSettings() throws {
+    let settings = AppSettings()
+    checkEqual(settings.cardRenderingMode, .classic, "新用户默认保留经典卡片渲染")
+    let oldSettings = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+    checkEqual(oldSettings.cardRenderingMode, .classic, "升级旧配置缺少渲染方式时保留经典模式")
+    let futureSettings = try JSONDecoder().decode(AppSettings.self,
+        from: Data(#"{"cardRenderingMode":"futureRenderer","canvasText":"保留用户设置"}"#.utf8))
+    checkEqual(futureSettings.cardRenderingMode, .classic, "未知渲染方式安全回退经典模式")
+    checkEqual(futureSettings.canvasText, "保留用户设置", "未知渲染方式不影响其他用户配置恢复")
+    for mode in CardRenderingMode.allCases {
+        settings.cardRenderingMode = mode
+        let encoded = try JSONEncoder().encode(settings)
+        let raw = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        checkEqual(raw?["cardRenderingMode"] as? String, mode.rawValue,
+                   "卡片渲染方式以稳定字符串保存-\(mode.title)")
+        let restored = try JSONDecoder().decode(AppSettings.self, from: encoded)
+        checkEqual(restored.cardRenderingMode, mode, "卡片渲染方式重启后保留-\(mode.title)")
+    }
+
+    let expectedColorDevices: Set<DeviceType> = [.keyboard, .aiMacScreen]
+    for type in DeviceType.allCases {
+        checkEqual(CardRenderingMode.supports(type), expectedColorDevices.contains(type),
+                   "卡片渲染模式仅应用于彩色屏幕-\(type.title)")
+        // 捕获时选经典，再改全局模式并恢复快照，模拟切换到先前保存的另一台设备。
+        settings.cardRenderingMode = .classic
+        let classicDevice = DeviceSettings.capture(from: settings, type: type)
+        let encodedDevice = try JSONEncoder().encode(classicDevice)
+        let restoredDevice = try JSONDecoder().decode(DeviceSettings.self, from: encodedDevice)
+        settings.cardRenderingMode = .liquidGlass
+        restoredDevice.apply(to: settings, type: type)
+        checkEqual(settings.cardRenderingMode, .liquidGlass,
+                   "切换或恢复设备不会覆盖全局 Liquid Glass 选择-\(type.title)")
+        let glassDevice = DeviceSettings.capture(from: settings, type: type)
+        settings.cardRenderingMode = .classic
+        glassDevice.apply(to: settings, type: type)
+        checkEqual(settings.cardRenderingMode, .classic,
+                   "设备快照不会恢复已关闭的 Liquid Glass 选择-\(type.title)")
+    }
+    print("  卡片渲染设置与彩屏范围通过")
+}
+
+@MainActor
+func testLiquidGlassRendering() throws {
+    _ = NSApplication.shared
+    LiquidGlassCardRenderer.clearCache()
+    defer { LiquidGlassCardRenderer.clearCache() }
+    let fixedDate = Date(timeIntervalSince1970: 1_789_200_000)
+    let settings = AppSettings()
+
+    func rgba(_ image: CGImage) -> Data {
+        let context = CGContext(data: nil, width: image.width, height: image.height,
+                                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                                    | CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return Data(bytes: context.data!, count: image.width * image.height * 4)
+    }
+
+    func hasVisibleDetail(_ image: CGImage) -> Bool {
+        let pixels = [UInt8](rgba(image))
+        var colors = Set<UInt32>()
+        for i in stride(from: 0, to: pixels.count, by: 4) where pixels[i + 3] > 0 {
+            colors.insert(UInt32(pixels[i]) << 16 | UInt32(pixels[i + 1]) << 8 | UInt32(pixels[i + 2]))
+            if colors.count > 16 { return true }
+        }
+        return false
+    }
+
+    let previewDirectory = ProcessInfo.processInfo.environment["LINGXI_GLASS_PREVIEW_DIR"]
+        .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+    if let previewDirectory {
+        try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+    }
+    func png(_ image: CGImage) throws -> Data {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil) else { throw RenderError.encodeFailed }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw RenderError.encodeFailed }
+        return data as Data
+    }
+    func export(_ image: CGImage, named name: String) throws {
+        guard let previewDirectory else { return }
+        try png(image).write(to: previewDirectory.appendingPathComponent(name + ".png"), options: .atomic)
+    }
+
+    // 测试样本只存在于测试目标中：使用实际卡片布局与固定数据，避免时间漂移干扰比较。
+    let artworkContext = CGContext(data: nil, width: 160, height: 160,
+        bitsPerComponent: 8, bytesPerRow: 160 * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    artworkContext.setFillColor(CGColor(red: 0.10, green: 0.20, blue: 0.39, alpha: 1))
+    artworkContext.fill(CGRect(x: 0, y: 0, width: 160, height: 160))
+    artworkContext.setFillColor(CGColor(red: 0.96, green: 0.55, blue: 0.24, alpha: 1))
+    artworkContext.fillEllipse(in: CGRect(x: 34, y: 55, width: 86, height: 86))
+    artworkContext.setFillColor(CGColor(red: 0.17, green: 0.46, blue: 0.56, alpha: 1))
+    artworkContext.fill(CGRect(x: 0, y: 0, width: 160, height: 45))
+    let artwork = artworkContext.makeImage()!
+    let artworkData = try png(artwork)
+    let song = NowPlayingInfo(title: "Midnight Echoes", artist: "Glass Study",
+        album: "夜航 · 渲染测试", duration: 244, elapsedTime: 89, playbackRate: 0,
+        artwork: artworkData, sampledAt: fixedDate)
+    let system = SystemSnapshot(cpuPercent: 26, memoryPercent: 58,
+        usedMemoryBytes: 9_000_000_000, totalMemoryBytes: 16_000_000_000,
+        downloadBytesPerSecond: 1_280_000, uploadBytesPerSecond: 256_000,
+        uptime: 27_000, sampledAt: fixedDate)
+    let pomodoro = PomodoroSnapshot(phase: .focus, effectivePhase: .focus,
+        taskName: "设计画板", remaining: 900, duration: 1500, completedFocusSessions: 2)
+    let printer = BambuLabCardSettings(name: "工作室 X2D",
+        statusEntityID: "sensor.glass_print_status", progressEntityID: "sensor.glass_progress",
+        taskEntityID: "sensor.glass_task", nozzleTempEntityID: "sensor.glass_nozzle",
+        bedTempEntityID: "sensor.glass_bed", remainingEntityID: "sensor.glass_remaining",
+        imageEntityID: "camera.glass", taskImageEntityID: "image.glass_cover")
+    let printerEntities = [
+        HAEntity(entityId: printer.statusEntityID, friendlyName: "打印状态", state: "printing", unitOfMeasurement: nil),
+        HAEntity(entityId: printer.progressEntityID, friendlyName: "打印进度", state: "42", unitOfMeasurement: "%"),
+        HAEntity(entityId: printer.taskEntityID, friendlyName: "打印任务", state: "Luna 头饰与底座", unitOfMeasurement: nil),
+        HAEntity(entityId: printer.nozzleTempEntityID, friendlyName: "喷嘴", state: "220", unitOfMeasurement: "°C"),
+        HAEntity(entityId: printer.bedTempEntityID, friendlyName: "热床", state: "55", unitOfMeasurement: "°C"),
+        HAEntity(entityId: printer.remainingEntityID, friendlyName: "剩余", state: "42", unitOfMeasurement: "min")
+    ]
+    let roomEntities = [
+        HAEntity(entityId: "sensor.glass_temperature", friendlyName: "工作室温度", state: "23.6", unitOfMeasurement: "°C", icon: "mdi:thermometer"),
+        HAEntity(entityId: "sensor.glass_humidity", friendlyName: "空气湿度", state: "48", unitOfMeasurement: "%", icon: "mdi:water-percent"),
+        HAEntity(entityId: "light.glass_desk", friendlyName: "桌面照明", state: "on", unitOfMeasurement: nil, icon: "mdi:desk-lamp"),
+        HAEntity(entityId: "sensor.glass_air", friendlyName: "空气质量", state: "优", unitOfMeasurement: nil, icon: "mdi:air-filter")
+    ]
+    let ha = HASnapshot(entities: roomEntities, selectedEntities: roomEntities, sampledAt: fixedDate)
+    settings.canvasHAEntityIDs = roomEntities.map(\.entityId)
+    settings.canvasNowPlayingSmartBg = false
+
+    // 直接解码最终传输字节，不借用编码前 result.image。两种风格与质量端点都
+    // 必须生成完整 JPEG，覆盖“预览原图正常，但实际发送数据无效/尺寸错误”的回归。
+    for mode in CardRenderingMode.allCases {
+        settings.cardRenderingMode = mode
+        var encodedByQuality: [Int: Data] = [:]
+        for quality in [50, 100] {
+            settings.jpegQuality = quality
+            let result = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+                try ScreenRenderer.renderBambuLab(printer, entities: printerEntities,
+                    image: artworkData, settings: settings, now: fixedDate, dataUpdatedAt: fixedDate)
+            }
+            let label = "\(mode.title)/质量\(quality)"
+            encodedByQuality[quality] = result.data
+            check(!result.data.isEmpty && result.data.count <= ScreenRenderer.maximumFileSize,
+                  "最终推送 JPEG 非空且满足设备大小限制-\(label)")
+            let source = CGImageSourceCreateWithData(result.data as CFData, nil)
+            check(source != nil, "最终推送字节可被独立图像解码器识别-\(label)")
+            if let source {
+                checkEqual(CGImageSourceGetType(source) as String?, UTType.jpeg.identifier,
+                           "最终推送字节确为 JPEG 格式-\(label)")
+                checkEqual(CGImageSourceGetCount(source), 1, "最终推送 JPEG 只包含一帧-\(label)")
+                let decoded = CGImageSourceCreateImageAtIndex(source, 0,
+                    [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                check(decoded != nil, "最终推送 JPEG 可完整解码-\(label)")
+                checkEqual(CGImageSourceGetStatus(source), .statusComplete,
+                           "最终推送 JPEG 数据完整而非截断-\(label)")
+                checkEqual(decoded?.width, 142, "最终推送 JPEG 独立解码宽度为142-\(label)")
+                checkEqual(decoded?.height, 428, "最终推送 JPEG 独立解码高度为428-\(label)")
+                if let decoded {
+                    check(hasVisibleDetail(decoded), "最终推送 JPEG 解码后仍有可见卡片内容-\(label)")
+                }
+            }
+        }
+        check(encodedByQuality[50] != encodedByQuality[100],
+              "改变质量会重新编码最终 JPEG，不复用旧质量数据-\(mode.title)")
+    }
+    settings.jpegQuality = 100
+
+    for tone in [BackgroundTone.light, .dark] {
+        settings.backgroundTone = tone
+        settings.cardRenderingMode = .classic
+        let original = try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+        var classicRenderCount = 0
+        let classic = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            classicRenderCount += 1
+            return original
+        }
+        checkEqual(classicRenderCount, 1, "经典模式只执行一次原渲染-\(tone.title)")
+        check(classic.image === original.image, "经典模式保留原图而不增加截图处理-\(tone.title)")
+        checkEqual(classic.data, original.data, "经典模式推送编码保持逐字节一致-\(tone.title)")
+
+        settings.cardRenderingMode = .liquidGlass
+        let glass = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+        }
+        checkEqual(glass.image.width, 142, "Liquid Glass 键盘保持实际像素宽度-\(tone.title)")
+        checkEqual(glass.image.height, 428, "Liquid Glass 键盘保持实际像素高度-\(tone.title)")
+        check(hasVisibleDetail(glass.image), "Liquid Glass 离屏渲染保留可见内容-\(tone.title)")
+        check(rgba(glass.image) != rgba(original.image), "启用 Liquid Glass 确实改变卡片外观-\(tone.title)")
+        let encodedSource = CGImageSourceCreateWithData(glass.data as CFData, nil)
+        let encodedImage = encodedSource.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+        checkEqual(encodedImage?.width, 142, "Liquid Glass 键盘推送数据可正常解码-\(tone.title)")
+        checkEqual(encodedImage?.height, 428, "Liquid Glass 编码保持完整画面高度-\(tone.title)")
+        check(glass.data.count <= ScreenRenderer.maximumFileSize,
+              "Liquid Glass 推送数据不超过键盘大小限制-\(tone.title)")
+        let repeated = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+        }
+        checkEqual(rgba(repeated.image), rgba(glass.image),
+                   "固定内容重复渲染保持像素一致以支持推送去重-\(tone.title)")
+
+        let palette = settings.resolvedPalette
+        let makeSquare = {
+            ScreenRenderer.renderAIMacBambuCard(BambuLabCardSettings(name: "彩屏测试打印机"),
+                entities: [], settings: settings, sampledAt: fixedDate, palette: palette)
+        }
+        let originalSquare = makeSquare()
+        let classicSquare = try LiquidGlassCardRenderer.renderImage(
+            for: .aiMacScreen, mode: .classic, palette: palette) { originalSquare }
+        check(classicSquare === originalSquare, "AI Mac 经典模式保留原始图像-\(tone.title)")
+        let glassSquare = try LiquidGlassCardRenderer.renderImage(
+            for: .aiMacScreen, mode: .liquidGlass, palette: palette, render: makeSquare)
+        checkEqual(glassSquare.width, 240, "Liquid Glass AI Mac 保持方屏宽度-\(tone.title)")
+        checkEqual(glassSquare.height, 240, "Liquid Glass AI Mac 保持方屏高度-\(tone.title)")
+        check(hasVisibleDetail(glassSquare), "Liquid Glass AI Mac 保留打印机文字和图形-\(tone.title)")
+        check(rgba(glassSquare) != rgba(originalSquare), "Liquid Glass 应用于 AI Mac 打印机卡片-\(tone.title)")
+        let rgb565 = try AIMacScreenSupport.encodeRGB565(glassSquare)
+        checkEqual(rgb565.count, 240 * 240 * 2, "Liquid Glass 可编码为固件支持的 RGB565 帧-\(tone.title)")
+    }
+
+    for tone in [BackgroundTone.light, .dark] {
+        settings.backgroundTone = tone
+        let themeName = tone == .light ? "light" : "dark"
+        let palette = settings.resolvedPalette
+        let keyboardCases: [(String, () throws -> RenderResult)] = [
+            ("bambu", {
+                try ScreenRenderer.renderBambuLab(printer, entities: printerEntities,
+                    image: artworkData, settings: settings, now: fixedDate, dataUpdatedAt: fixedDate)
+            }),
+            ("now-playing", { try ScreenRenderer.renderNowPlaying(song, settings: settings, now: fixedDate) }),
+            ("home-assistant", {
+                try ScreenRenderer.renderHA(roomEntities, errorText: nil, settings: settings, now: fixedDate)
+            }),
+            ("canvas", {
+                try ScreenRenderer.renderCanvas(modules: [.clock, .nowPlaying, .cpu, .memory],
+                    system: system, nowPlaying: song, pomodoro: pomodoro,
+                    customText: "", settings: settings, now: fixedDate)
+            })
+        ]
+        for (name, draw) in keyboardCases {
+            settings.cardRenderingMode = .classic
+            let classic = try LiquidGlassCardRenderer.renderKeyboard(settings: settings, render: draw)
+            settings.cardRenderingMode = .liquidGlass
+            let glass = try LiquidGlassCardRenderer.renderKeyboard(settings: settings, render: draw)
+            checkEqual(glass.image.width, 142, "真实布局玻璃键盘宽度-\(themeName)/\(name)")
+            checkEqual(glass.image.height, 428, "真实布局玻璃键盘高度-\(themeName)/\(name)")
+            check(hasVisibleDetail(glass.image), "真实布局玻璃键盘内容非空-\(themeName)/\(name)")
+            check(rgba(glass.image) != rgba(classic.image), "真实布局玻璃键盘风格生效-\(themeName)/\(name)")
+            try export(classic.image, named: "\(themeName)-keyboard-\(name)-classic")
+            try export(glass.image, named: "\(themeName)-keyboard-\(name)-glass")
+        }
+
+        func squareCanvas(_ modules: [CanvasModule]) -> CGImage {
+            ScreenRenderer.renderDeviceCanvas(modules: modules, system: system,
+                nowPlaying: song, pomodoro: pomodoro, customText: "彩色工作台",
+                settings: settings, ha: ha, now: fixedDate, width: 240, height: 240,
+                palette: palette, optimizeForEInk: false)
+        }
+        let squareCases: [(String, () throws -> CGImage)] = [
+            ("bambu", {
+                ScreenRenderer.renderAIMacBambuCard(printer, entities: printerEntities,
+                    cameraImage: artworkData, taskCoverImage: artworkData, settings: settings,
+                    sampledAt: fixedDate, palette: palette)
+            }),
+            ("now-playing", { squareCanvas([.nowPlaying]) }),
+            ("home-assistant", { squareCanvas([.homeAssistant]) }),
+            ("canvas", { squareCanvas([.clock, .cpu, .memory, .text]) })
+        ]
+        for (name, draw) in squareCases {
+            let classic = try LiquidGlassCardRenderer.renderImage(
+                for: .aiMacScreen, mode: .classic, palette: palette, render: draw)
+            let glass = try LiquidGlassCardRenderer.renderImage(
+                for: .aiMacScreen, mode: .liquidGlass, palette: palette, render: draw)
+            checkEqual(glass.width, 240, "真实布局玻璃方屏宽度-\(themeName)/\(name)")
+            checkEqual(glass.height, 240, "真实布局玻璃方屏高度-\(themeName)/\(name)")
+            check(hasVisibleDetail(glass), "真实布局玻璃方屏内容非空-\(themeName)/\(name)")
+            check(rgba(glass) != rgba(classic), "真实布局玻璃方屏风格生效-\(themeName)/\(name)")
+            try export(classic, named: "\(themeName)-ai-mac-\(name)-classic")
+            try export(glass, named: "\(themeName)-ai-mac-\(name)-glass")
+        }
+    }
+
+    // Emoji 壁纸在两类彩屏中必须完全绕过玻璃，不仅轮廓相似，而是逐像素一致。
+    let originalDisplayMode = settings.displayMode
+    settings.displayMode = .emojiWallpaper
+    settings.emojiWallpaperText = "🌿🍊✨"
+    for tone in [BackgroundTone.light, .dark] {
+        settings.backgroundTone = tone
+        for layout in [EmojiWallpaperLayout.grid, .mixedSize, .spiral] {
+            settings.emojiWallpaperLayout = layout
+            settings.cardRenderingMode = .classic
+            let classicKeyboard = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+                try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: fixedDate)
+            }
+            settings.cardRenderingMode = .liquidGlass
+            let glassKeyboard = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+                try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: fixedDate)
+            }
+            checkEqual(rgba(glassKeyboard.image), rgba(classicKeyboard.image),
+                       "键盘 Emoji 不受玻璃影响-\(tone.title)/\(layout.rawValue)")
+            checkEqual(glassKeyboard.data, classicKeyboard.data,
+                       "键盘 Emoji 最终 JPEG 保持一致-\(tone.title)/\(layout.rawValue)")
+            let classicSquare = try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
+            let glassSquare = try LiquidGlassCardRenderer.renderImage(
+                for: .aiMacScreen, mode: .liquidGlass, palette: settings.resolvedPalette) {
+                    try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
+                }
+            checkEqual(rgba(glassSquare), rgba(classicSquare),
+                       "AI Mac Emoji 不受玻璃影响-\(tone.title)/\(layout.rawValue)")
+        }
+    }
+    settings.displayMode = originalDisplayMode
+
+    let mediaEntities = [
+        HAEntity(entityId: "camera.glass_room", friendlyName: "工作室摄像头", state: "idle", unitOfMeasurement: nil),
+        HAEntity(entityId: "image.glass_room", friendlyName: "打印任务图片", state: "available", unitOfMeasurement: nil)
+    ]
+    let recommendedArticles = [
+        SspaiArticle(id: 1, title: "把小屏幕变成专属工作台", author: "少数派编辑部", recommendTime: fixedDate),
+        SspaiArticle(id: 2, title: "一套适合长时间工作的桌面设置", author: "桌面研究室", recommendTime: fixedDate),
+        SspaiArticle(id: 3, title: "让设备状态与正在播放的信息触手可及", author: "效率实验室", recommendTime: fixedDate)
+    ]
+    func orangePixels(_ image: CGImage, topRows: Int? = nil) -> Int {
+        let sampled = topRows.flatMap {
+            image.cropping(to: CGRect(x: 0, y: 0, width: image.width, height: $0))
+        } ?? image
+        let bytes = [UInt8](rgba(sampled))
+        // 原始测试图片的橙色圆形；该色不在默认 HA 调色板中，可确认真实图片面积。
+        let pixelCount = sampled.width * sampled.height
+        return (0..<pixelCount).filter { pixel in
+            let offset = pixel * 4
+            return bytes[offset] > 200 && bytes[offset + 1] > 90
+                && bytes[offset + 1] < 190 && bytes[offset + 2] < 120
+        }.count
+    }
+    for tone in [BackgroundTone.light, .dark] {
+        settings.backgroundTone = tone
+        let themeName = tone == .light ? "light" : "dark"
+        let palette = settings.resolvedPalette
+        let branded = ScreenRenderer.sspaiPalette(palette)
+        check(branded.accent.0 > branded.accent.1 && branded.accent.1 > branded.accent.2,
+              "方屏少数派与键盘共用红橙主题-\(themeName)")
+        for mode in CardRenderingMode.allCases {
+            for count in 1...2 {
+                let entities = Array(mediaEntities.prefix(count))
+                let media = HASnapshot(entities: entities, selectedEntities: entities,
+                    sampledAt: fixedDate,
+                    images: Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, artworkData) }))
+                let image = try LiquidGlassCardRenderer.renderImage(
+                    for: .aiMacScreen, mode: mode, palette: palette) {
+                        ScreenRenderer.renderDeviceCanvas(modules: [.homeAssistant], system: system,
+                            nowPlaying: song, pomodoro: pomodoro, customText: "", settings: settings,
+                            ha: media, now: fixedDate, width: 240, height: 240, palette: palette,
+                            optimizeForEInk: false)
+                    }
+                check(orangePixels(image) > 600,
+                      "AI Mac HA真实静态帧占据可辨认面积-\(themeName)/\(mode.title)/\(count)")
+                checkEqual(orangePixels(image, topRows: 40), 0,
+                           "HA图片不会侵入顶部标头安全区-\(themeName)/\(mode.title)/\(count)")
+                try export(image, named: "\(themeName)-ai-mac-ha-media-\(count)-\(mode.rawValue)")
+            }
+            let recommended = try LiquidGlassCardRenderer.renderImage(
+                for: .aiMacScreen, mode: mode, palette: palette) {
+                    ScreenRenderer.renderDeviceCanvas(modules: [.sspai], system: system,
+                        nowPlaying: song, pomodoro: pomodoro, customText: "", settings: settings,
+                        sspaiArticles: recommendedArticles, now: fixedDate,
+                        width: 240, height: 240, palette: palette, optimizeForEInk: false)
+                }
+            check(hasVisibleDetail(recommended), "方屏少数派保留标头与正文-\(themeName)/\(mode.title)")
+            try export(recommended, named: "\(themeName)-ai-mac-sspai-\(mode.rawValue)")
+        }
+    }
+
+    // 240×72 的设备画布扣除上下 8px 后，HA 模块恰好只有 56px 高。
+    // 此时只显示实体数量摘要：数值变化不能挤进摘要/更多行，四周安全区保持完整。
+    let compactEntities = (1...4).map { index in
+        HAEntity(entityId: "sensor.compact_\(index)", friendlyName: "紧凑实体 \(index)",
+                 state: "8888", unitOfMeasurement: nil)
+    }
+    let changedCompactEntities = compactEntities.map { entity in
+        HAEntity(entityId: entity.entityId, friendlyName: entity.friendlyName,
+                 state: "1111", unitOfMeasurement: nil)
+    }
+    for tone in [BackgroundTone.light, .dark] {
+        settings.backgroundTone = tone
+        let palette = settings.resolvedPalette
+        for mode in CardRenderingMode.allCases {
+            func compactFrame(_ entities: [HAEntity], modules: [CanvasModule] = [.homeAssistant]) throws -> CGImage {
+                let snapshot = HASnapshot(entities: entities, selectedEntities: entities, sampledAt: fixedDate)
+                return try LiquidGlassCardRenderer.renderImage(for: .aiMacScreen, mode: mode,
+                                                               palette: palette) {
+                    ScreenRenderer.renderDeviceCanvas(modules: modules, system: system,
+                        nowPlaying: song, pomodoro: pomodoro, customText: "", settings: settings,
+                        ha: snapshot, now: fixedDate, width: 240, height: 72,
+                        palette: palette, optimizeForEInk: false)
+                }
+            }
+            let compact = try compactFrame(compactEntities)
+            let changed = try compactFrame(changedCompactEntities)
+            let empty = try compactFrame([], modules: [])
+            checkEqual(compact.width, 240, "紧凑 HA 保持画布宽度-\(tone.title)/\(mode.title)")
+            checkEqual(compact.height, 72, "紧凑 HA 不通过撑高画布侵入相邻模块-\(tone.title)/\(mode.title)")
+            checkEqual(rgba(compact), rgba(changed),
+                       "56px HA 多实体仅显示计数摘要，不把数值压进更多行-\(tone.title)/\(mode.title)")
+            check(rgba(compact) != rgba(empty),
+                  "紧凑 HA 仍保留标头及实体数量，而非空白-\(tone.title)/\(mode.title)")
+            for y in [0, 64] {
+                let bounds = CGRect(x: 0, y: y, width: 240, height: 8)
+                checkEqual(rgba(compact.cropping(to: bounds)!), rgba(empty.cropping(to: bounds)!),
+                           "紧凑 HA 内容不侵入上下安全区 \(y)-\(tone.title)/\(mode.title)")
+            }
+        }
+    }
+
+    // 改背景时不能命中旧主题缓存；清空缓存后，同一内容仍应得到确定的像素。
+    settings.backgroundTone = .custom
+    settings.cardRenderingMode = .liquidGlass
+    settings.customBackgroundHex = "#163044"
+    let firstPalette = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+        try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    }
+    settings.customBackgroundHex = "#472533"
+    let otherPalette = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+        try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    }
+    check(rgba(firstPalette.image) != rgba(otherPalette.image), "背景调色板改变后不复用旧玻璃画面")
+    settings.customBackgroundHex = "#163044"
+    let restoredPalette = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+        try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    }
+    checkEqual(rgba(restoredPalette.image), rgba(firstPalette.image), "切回原调色板后恢复对应玻璃画面")
+    LiquidGlassCardRenderer.clearCache()
+    let uncached = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+        try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    }
+    checkEqual(rgba(uncached.image), rgba(firstPalette.image), "清空缓存后玻璃重绘结果仍确定")
+
+    // 模拟采集到一部分绘制层后失败，后续经典绘制必须恢复完整背景和内容。
+    enum ProbeError: Error { case deliberate }
+    let beforeFailure = try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    do {
+        _ = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            _ = try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+            throw ProbeError.deliberate
+        }
+        check(false, "玻璃渲染闭包错误应正常传出")
+    } catch ProbeError.deliberate {
+        check(true, "玻璃渲染闭包错误应正常传出")
+    }
+    let afterFailure = try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    checkEqual(rgba(afterFailure.image), rgba(beforeFailure.image), "抛错后不残留捕获作用域影响下一张卡片")
+    let recovered = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+        try ScreenRenderer.renderUsage(.empty, settings: settings, now: fixedDate)
+    }
+    checkEqual(rgba(recovered.image), rgba(uncached.image), "抛错后可继续正常生成玻璃卡片")
+
+    let timingStart = Date.timeIntervalSinceReferenceDate
+    var changingFrames: [Data] = []
+    for index in 0..<5 {
+        let usage = UsageSnapshot(remainingPercent: 60 + index,
+            resetDate: fixedDate.addingTimeInterval(3_600), windowMinutes: 300,
+            availableResetCount: 1, planType: "test")
+        let frame = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            try ScreenRenderer.renderUsage(usage, settings: settings, now: fixedDate)
+        }
+        changingFrames.append(frame.data)
+    }
+    let milliseconds = (Date.timeIntervalSinceReferenceDate - timingStart) * 1_000
+    checkEqual(Set(changingFrames).count, 5, "连续内容变化不会误用同一张玻璃缓存")
+    print(String(format: "  Liquid Glass 5 张变化卡片：总计 %.1f ms，平均 %.1f ms/张", milliseconds, milliseconds / 5))
+    if let previewDirectory { print("  Liquid Glass 32 张原生分辨率测试预览：\(previewDirectory.path)") }
+
+    // 墨水屏即使全局选择了玻璃风格，也必须完整绕过 SwiftUI 截图及像素变化。
+    let inkPomodoro = PomodoroSnapshot(phase: .idle, effectivePhase: .idle,
+                                      taskName: "", remaining: 0, duration: 0,
+                                      completedFocusSessions: 0)
+    for type in [DeviceType.oracle, .excerpt] {
+        let size = type.capabilityProfile!.screenSize!
+        let ink = ScreenRenderer.renderDeviceCanvas(modules: [.clock, .text],
+            system: .empty, nowPlaying: NowPlayingInfo.sample, pomodoro: inkPomodoro,
+            customText: "墨水屏保留高对比", settings: settings, now: fixedDate,
+            width: size.width, height: size.height, palette: settings.resolvedPalette)
+        let unchanged = try LiquidGlassCardRenderer.renderImage(
+            for: type, mode: .liquidGlass, palette: settings.resolvedPalette) { ink }
+        check(unchanged === ink, "墨水屏在玻璃模式下直接返回原图-\(type.title)")
+        checkEqual(rgba(unchanged), rgba(ink), "墨水屏最终像素不受玻璃模式影响-\(type.title)")
+    }
+    print("  Liquid Glass 离屏图像、编码与墨水屏隔离通过")
+}
+
 func testSettingsAndUtilities() {
     let unknownMode = try? JSONDecoder().decode(DisplayMode.self, from: Data("999".utf8))
     checkEqual(unknownMode, .systemMonitor, "未知实验卡片编号只回退显示页，不破坏整份设置")
@@ -1167,9 +1658,59 @@ func testNowPlaying() throws {
     check(abs((parsed?.duration ?? 0) - 240) < 0.001, "正在播放时长")
     check(abs((parsed?.progress ?? 0) - 0.25) < 0.001, "正在播放进度")
 
+    let smallArtworkDigest = Data(repeating: 0x11, count: 32)
+    let alternateArtwork = Data(repeating: 0x22, count: 512)
+    let largerArtwork = Data(repeating: 0x33, count: 1_024)
+    let artworkFields: [String: Any] = [
+        NowPlayingClient.Keys.artworkData: smallArtworkDigest,
+        "kMRMediaRemoteNowPlayingInfoArtworkDataPNG": alternateArtwork,
+        "thirdPartyArtworkPayload": largerArtwork
+    ]
+    check(NowPlayingClient.artworkData(in: artworkFields) == largerArtwork,
+          "非标准 Artwork 字段应选择最大的有效封面并忽略摘要数据")
+    let parsedAlternateArtwork = NowPlayingClient.parseInfo([
+        NowPlayingClient.Keys.title: "兼容封面歌曲",
+        "playerArtworkImageData": alternateArtwork
+    ])
+    check(parsedAlternateArtwork?.artwork == alternateArtwork,
+          "正在播放解析应兼容非标准封面 Data 字段")
+
     // 无媒体 → nil
     check(NowPlayingClient.parseInfo([:]) == nil, "空数据应返回 nil")
     check(NowPlayingClient.parseInfo(["kMRMediaRemoteNowPlayingInfoTitle": ""]) == nil, "空标题应返回 nil")
+
+    // probe 回传必须区分“权威的未在播放”与解释器/MediaRemote 故障。
+    let probePlaying = Data(#"{"playing":true,"title":"probe 歌曲","artist":"probe 歌手","playbackRate":1}"#.utf8)
+    checkEqual(try NowPlayingClient.parseProbeOutput(probePlaying).title, "probe 歌曲",
+               "probe 合法播放结果应解析成功")
+    do {
+        _ = try NowPlayingClient.parseProbeOutput(Data(#"{"playing":false}"#.utf8))
+        check(false, "probe 明确未播放应抛出 notPlaying")
+    } catch NowPlayingError.notPlaying {
+        check(true, "probe 明确未播放应抛出 notPlaying")
+    } catch {
+        check(false, "probe 明确未播放不应被当作损坏数据：\(error)")
+    }
+    let brokenProbeOutputs = [
+        Data(),
+        Data("not-json".utf8),
+        Data("{}".utf8),
+        Data(#"{"playing":true}"#.utf8),
+        Data(#"{"playing":"false"}"#.utf8),
+        Data(#"{"playing":0}"#.utf8)
+    ]
+    for (index, output) in brokenProbeOutputs.enumerated() {
+        do {
+            _ = try NowPlayingClient.parseProbeOutput(output)
+            check(false, "probe 损坏输出应触发回退-\(index)")
+        } catch NowPlayingError.notPlaying {
+            check(false, "probe 损坏输出不能误报未在播放-\(index)")
+        } catch NowPlayingError.invalidResponse {
+            check(true, "probe 损坏输出保留直接 MediaRemote 回退-\(index)")
+        } catch {
+            check(false, "probe 损坏输出应统一为 invalidResponse-\(index)：\(error)")
+        }
+    }
 
     // 渲染（无封面 → 占位）
     let settings = AppSettings()
@@ -1428,9 +1969,12 @@ func testNowPlaying() throws {
     let stale = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
                                duration: 240, elapsedTime: 60, playbackRate: 1)
     let progressed = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
-                                    duration: 240, elapsedTime: 72, playbackRate: 1)
+                                    duration: 240, elapsedTime: 72, playbackRate: 1,
+                                    artwork: largerArtwork)
     checkEqual(stale.mergedWithProgressed(current: progressed).elapsedTime, 72,
                "同曲停滞值应保留本地推进")
+    check(stale.mergedWithProgressed(current: progressed).artwork == largerArtwork,
+          "同一首歌后续采样暂缺封面时应保留已取得的封面")
     let priorRemote = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
                                      duration: 240, elapsedTime: 60, playbackRate: 1,
                                      sampledAt: progressed.sampledAt.addingTimeInterval(-12))
@@ -1441,6 +1985,8 @@ func testNowPlaying() throws {
         current: progressed, previousRemote: priorRemote)
     check(!frozenMerge.didSeek && frozenMerge.info.elapsedTime >= 72,
           "MediaRemote 重复旧值时继续使用本地播放时钟")
+    check(frozenMerge.info.artwork == largerArtwork,
+          "进度校准时同曲空封面不得清除已经显示的封面")
     let backwardSeek = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
                                       duration: 240, elapsedTime: 30, playbackRate: 1,
                                       sampledAt: progressed.sampledAt)
@@ -1455,12 +2001,174 @@ func testNowPlaying() throws {
                                   duration: 200, elapsedTime: 5, playbackRate: 1)
     checkEqual(switched.mergedWithProgressed(current: progressed).elapsedTime, 5,
                "换曲应采用新值")
+    check(switched.mergedWithProgressed(current: progressed).artwork == nil,
+          "换曲且新封面尚未就绪时不得沿用上一首封面")
     let pausedCurrent = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
                                        duration: 240, elapsedTime: 72, playbackRate: 0)
     checkEqual(stale.mergedWithProgressed(current: pausedCurrent).elapsedTime, 60,
                "暂停状态应采用拉取值")
 
     print("  正在播放解析与渲染通过")
+}
+
+/// 系统读取可能被 tick、播放器事件、手动刷新同时请求；它们必须共用一次
+/// 昂贵取样，而请求结束后不能把缓存结果当作下一次播放器状态。
+func testNowPlayingRequestCoordination() async throws {
+    actor Probe {
+        var calls = 0
+        func read(fail: Bool = false) async throws -> NowPlayingInfo {
+            calls += 1
+            let value = calls
+            try await Task.sleep(nanoseconds: 80_000_000)
+            if fail { throw NowPlayingError.timeout }
+            return NowPlayingInfo(title: "第 \(value) 次取样", playbackRate: 0)
+        }
+    }
+    let probe = Probe()
+    let coordinator = NowPlayingRequestCoordinator()
+    let results = try await withThrowingTaskGroup(of: NowPlayingInfo.self) { group in
+        for _ in 0..<6 {
+            group.addTask { try await coordinator.fetch { try await probe.read() } }
+        }
+        var values: [NowPlayingInfo] = []
+        for try await value in group { values.append(value) }
+        return values
+    }
+    checkEqual(await probe.calls, 1, "并发媒体事件、tick 和手动刷新仅触发一次取样")
+    checkEqual(results.count, 6, "所有媒体刷新请求都获得共享结果")
+    check(results.allSatisfy { $0.title == "第 1 次取样" }, "共享媒体取样结果一致")
+    let fresh = try await coordinator.fetch { try await probe.read() }
+    checkEqual(fresh.title, "第 2 次取样", "已完成的媒体结果不冒充下一次最新状态")
+    do {
+        _ = try await coordinator.fetch { try await probe.read(fail: true) }
+        check(false, "媒体取样失败应传回调用者")
+    } catch NowPlayingError.timeout {
+        check(true, "媒体取样失败应传回调用者")
+    }
+    let recovered = try await coordinator.fetch { try await probe.read() }
+    checkEqual(recovered.title, "第 4 次取样", "一次媒体读取失败不阻塞后续重新取样")
+
+    actor CancellationProbe {
+        var calls = 0
+        var completed = 0
+        var cancelled = 0
+        func read() async throws -> NowPlayingInfo {
+            calls += 1
+            do { try await Task.sleep(nanoseconds: 400_000_000) }
+            catch {
+                cancelled += 1
+                throw error
+            }
+            completed += 1
+            return NowPlayingInfo(title: "共享请求", playbackRate: 0)
+        }
+    }
+    let cancellationProbe = CancellationProbe()
+    let shared = NowPlayingRequestCoordinator()
+    let first = Task { try await shared.fetch { try await cancellationProbe.read() } }
+    // 让第二个等待者加入同一次仍在执行的取样。
+    try await Task.sleep(nanoseconds: 20_000_000)
+    let second = Task { try await shared.fetch { try await cancellationProbe.read() } }
+    try await Task.sleep(nanoseconds: 20_000_000)
+    first.cancel()
+    do {
+        _ = try await first.value
+        check(false, "取消单个媒体等待者应返回取消错误")
+    } catch is CancellationError {
+        checkEqual(await cancellationProbe.completed, 0, "已取消等待者不必等待共享取样完成")
+    }
+    checkEqual(try await second.value.title, "共享请求", "取消一个等待者不影响其余等待者")
+    checkEqual(await cancellationProbe.calls, 1, "取消单个等待者不重复启动共享取样")
+    checkEqual(await cancellationProbe.cancelled, 0, "仍有等待者时底层取样继续执行")
+
+    let last = Task { try await shared.fetch { try await cancellationProbe.read() } }
+    try await Task.sleep(nanoseconds: 20_000_000)
+    last.cancel()
+    do {
+        _ = try await last.value
+        check(false, "取消最后一个媒体等待者应返回取消错误")
+    } catch is CancellationError {}
+    // 取消消息先解除等待者，底层任务随后获得取消信号。
+    try await Task.sleep(nanoseconds: 20_000_000)
+    checkEqual(await cancellationProbe.cancelled, 1, "最后一个等待者离开时停止底层取样")
+    let afterCancellation = try await shared.fetch { try await cancellationProbe.read() }
+    checkEqual(afterCancellation.title, "共享请求", "全部取消之后可以重新发起取样")
+    checkEqual(await cancellationProbe.calls, 3, "全部取消后新请求不会加入旧任务")
+
+    // 在进入协调器前已经取消的调用不得启动昂贵的系统读取。
+    let alreadyCancelled = Task {
+        do { try await Task.sleep(nanoseconds: 50_000_000) } catch {}
+        return try await shared.fetch { try await cancellationProbe.read() }
+    }
+    alreadyCancelled.cancel()
+    do {
+        _ = try await alreadyCancelled.value
+        check(false, "预先取消的媒体请求应立即返回取消错误")
+    } catch is CancellationError {}
+    checkEqual(await cancellationProbe.calls, 3, "预先取消的请求不启动系统读取")
+    print("  正在播放并发取样合并与错误恢复通过")
+}
+
+func testNowPlayingEventThrottleAndKeyboardTargets() {
+    let start = Date(timeIntervalSince1970: 1_000)
+    var throttle = NowPlayingEventRefreshThrottle()
+    throttle.notify(hasDemand: false)
+    check(!throttle.hasPendingRefresh, "没有媒体显示需求时不响应播放器事件")
+    throttle.notify(hasDemand: true)
+    checkEqual(throttle.delay(at: start), 0.09, "首次播放器事件仅等待短暂合并窗口")
+    check(throttle.beginRefresh(at: start, hasDemand: true), "首次媒体事件触发取样")
+    for _ in 0..<100 { throttle.notify(hasDemand: true) }
+    check(!throttle.beginRefresh(at: start.addingTimeInterval(0.5), hasDemand: true),
+          "高频播放器通知不能突破一秒最小取样间隔")
+    check(throttle.hasPendingRefresh, "限流期间保留尾随刷新需求")
+    check(throttle.beginRefresh(at: start.addingTimeInterval(1), hasDemand: true),
+          "事件风暴在间隔到达后仅执行一次尾随取样")
+    check(!throttle.beginRefresh(at: start.addingTimeInterval(2), hasDemand: true),
+          "同一批播放器事件不重复执行尾随取样")
+    throttle.notify(hasDemand: true)
+    check(!throttle.beginRefresh(at: start.addingTimeInterval(2), hasDemand: false),
+          "等待时取消媒体显示需求便不再执行取样")
+    check(!throttle.hasPendingRefresh, "取消显示需求清除待刷新状态")
+
+    let source = AppSettings()
+    var firstSettings = DeviceSettings()
+    firstSettings.endpoint = "http://192.0.2.10/image/upload"
+    firstSettings.displayMode = .nowPlaying
+    firstSettings.nowPlayingTitleSize = 11
+    var secondSettings = DeviceSettings()
+    secondSettings.endpoint = "http://192.0.2.11/image/upload"
+    secondSettings.displayMode = .nowPlaying
+    secondSettings.nowPlayingTitleSize = 20
+    let first = ManagedDevice(type: .keyboard, name: "键盘 A", settings: firstSettings)
+    let second = ManagedDevice(type: .keyboard, name: "键盘 B", settings: secondSettings)
+    source.devices = [first, second]
+    source.activeKeyboardDeviceID = first.id
+    firstSettings.apply(to: source, type: .keyboard)
+    source.cardRenderingMode = .liquidGlass
+    guard let target = NowPlayingKeyboardRenderTarget(deviceID: first.id, source: source) else {
+        check(false, "已启用的歌词键盘应有渲染目标")
+        return
+    }
+    check(target.ownsActivePreview(in: source), "活动键盘拥有自己的成功上传预览")
+    source.switchActiveDevice(of: .keyboard, to: second.id)
+    check(target.isValid(in: source), "切换键盘后原歌词上传仍绑定原设备")
+    check(!target.ownsActivePreview(in: source), "原键盘上传完成不能覆盖新键盘预览")
+    checkEqual(target.renderSettings.nowPlayingTitleSize, 11, "已捕获渲染快照不随活动键盘切换")
+    let recaptured = NowPlayingKeyboardRenderTarget(deviceID: first.id, source: source)
+    checkEqual(recaptured?.renderSettings.nowPlayingTitleSize, 11,
+               "忙碌等待后重新读取非活动键盘仍使用其自身布局")
+    checkEqual(recaptured?.endpoint, firstSettings.endpoint, "非活动键盘使用自己的上传地址")
+    checkEqual(recaptured?.renderSettings.cardRenderingMode, .liquidGlass, "独立歌词快照保留全局玻璃渲染模式")
+    let current = NowPlayingKeyboardRenderTarget(deviceID: second.id, source: source)
+    checkEqual(current?.renderSettings.nowPlayingTitleSize, 20, "活动键盘使用其最新全局布局")
+    source.displayMode = .systemMonitor
+    check(current?.isValid(in: source) == false, "上传中离开正在播放页面后拒绝旧成功结果")
+    source.displayMode = .nowPlaying
+    source.endpoint = "http://192.0.2.12/image/upload"
+    check(current?.isValid(in: source) == false, "上传中更改设备地址后拒绝旧成功结果")
+    source.devices[0].isEnabled = false
+    check(!target.isValid(in: source), "上传中禁用键盘后拒绝旧成功结果")
+    print("  正在播放事件限流与跨键盘歌词目标隔离通过")
 }
 
 /// 从本机系统拉取真实正在播放状态（无媒体时跳过，不视为失败）
@@ -1560,6 +2268,70 @@ func testArtworkColorExtraction() throws {
     let darkPalette = ScreenRenderer.artworkPalette(baseColor: ScreenRenderer.dominantColor(of: dark),
                                                     themeAccent: (0, 0.48, 1))
     check(darkPalette.primaryText.0 > 0.6, "深色封面应配浅色文字")
+
+    let splitContext = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8,
+                                 bytesPerRow: 64 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    splitContext.setFillColor(CGColor(red: 0.90, green: 0.12, blue: 0.18, alpha: 1))
+    splitContext.fill(CGRect(x: 0, y: 0, width: 38, height: 64))
+    splitContext.setFillColor(CGColor(red: 0.08, green: 0.42, blue: 0.92, alpha: 1))
+    splitContext.fill(CGRect(x: 38, y: 0, width: 26, height: 64))
+    let splitCover = splitContext.makeImage()!
+    let glassAccents = ScreenRenderer.artworkGlassAccents(of: splitCover)
+    let accentDistance = abs(glassAccents.primary.0 - glassAccents.secondary.0)
+        + abs(glassAccents.primary.1 - glassAccents.secondary.1)
+        + abs(glassAccents.primary.2 - glassAccents.secondary.2)
+    check(accentDistance > 0.12, "Liquid Glass 两道强调色应从多色封面提取并保持区分")
+    let splitPalette = ScreenRenderer.artworkPalette(of: splitCover, themeAccent: (0, 1, 0))
+    check(splitPalette.accent != (0, 1, 0), "封面存在时主强调色不应回退主题色")
+    check(splitPalette.secondaryAccent != (0, 1, 0), "封面存在时次强调色不应回退主题色")
+    let themePalette = ScreenThemes.get(.deepSpace)
+    let accentedTheme = ScreenRenderer.applyingArtworkAccents(to: themePalette,
+                                                               artwork: splitCover)
+    func sameRGB(_ lhs: (CGFloat, CGFloat, CGFloat),
+                 _ rhs: (CGFloat, CGFloat, CGFloat)) -> Bool {
+        lhs.0 == rhs.0 && lhs.1 == rhs.1 && lhs.2 == rhs.2
+    }
+    check(sameRGB(accentedTheme.background, themePalette.background),
+          "画板封面强调色不改变用户主题背景")
+    check(sameRGB(accentedTheme.card, themePalette.card),
+          "画板封面强调色不改变用户卡片颜色")
+    check(sameRGB(accentedTheme.primaryText, themePalette.primaryText),
+          "画板封面强调色不改变文字颜色")
+    check(sameRGB(accentedTheme.accent, glassAccents.primary),
+          "彩屏画板主强调色跟随封面")
+    check(sameRGB(accentedTheme.secondaryAccent, glassAccents.secondary),
+          "彩屏画板次强调色跟随封面")
+
+    // 截图同类的极深青绿封面：页脚必须自动取浅色，两道玻璃色
+    // 不能只是同一青灰色的不同明度。
+    let deepTeal = solidImage(0.015, 0.12, 0.13)
+    let deepTealPalette = ScreenRenderer.artworkPalette(of: deepTeal,
+                                                        themeAccent: (0.2, 0.5, 1))
+    let footerAccent = ScreenRenderer.artworkReadableAccent(
+        background: deepTealPalette.card, seed: deepTealPalette.accent)
+    func linear(_ value: CGFloat) -> CGFloat {
+        value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    func luminance(_ value: (CGFloat, CGFloat, CGFloat)) -> CGFloat {
+        0.2126 * linear(value.0) + 0.7152 * linear(value.1) + 0.0722 * linear(value.2)
+    }
+    func contrast(_ lhs: (CGFloat, CGFloat, CGFloat),
+                  _ rhs: (CGFloat, CGFloat, CGFloat)) -> CGFloat {
+        let light = max(luminance(lhs), luminance(rhs))
+        let dark = min(luminance(lhs), luminance(rhs))
+        return (light + 0.05) / (dark + 0.05)
+    }
+    check(luminance(footerAccent) > luminance(deepTealPalette.card),
+          "深色封面的底部时间与日期自动取浅色")
+    check(contrast(footerAccent, deepTealPalette.card) >= 4.5,
+          "底部时间与日期对比度达到小文字可读标准")
+    let tealAccents = ScreenRenderer.artworkGlassAccents(of: deepTeal)
+    let tealAccentDistance = abs(tealAccents.primary.0 - tealAccents.secondary.0)
+        + abs(tealAccents.primary.1 - tealAccents.secondary.1)
+        + abs(tealAccents.primary.2 - tealAccents.secondary.2)
+    check(tealAccentDistance >= 0.28,
+          "单一深青色封面也生成有碰撞感的次强调色")
 
     // 带封面渲染
     let info = NowPlayingInfo(title: "测试歌曲", artist: "测试歌手", album: "测试专辑",
@@ -3954,6 +4726,212 @@ func testCardRotation() throws {
     s2.cardRotationModes = modes
     check(!s2.cardRotationModeList.contains(.customImage), "移除的卡片不应进入轮换")
     checkEqual(s2.cardRotationModeList.count, DisplayMode.allCases.count - 1, "移除后数量减一")
+
+    // 智能轮播：换歌只在播放中且用户已把正在播放加入轮播池时抢占。
+    let smartModes: [DisplayMode] = [.systemMonitor, .nowPlaying, .bambuLab, .formlabs]
+    check(SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+        songChanged: true, isPlaying: true, rotationEnabled: true,
+        rotationModes: smartModes, currentMode: .systemMonitor),
+          "新歌播放时优先切到轮播池中的正在播放")
+    check(!SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+        songChanged: false, isPlaying: true, rotationEnabled: true,
+        rotationModes: smartModes, currentMode: .systemMonitor),
+          "seek 或同一首歌状态变化不应触发抢占")
+    check(!SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+        songChanged: true, isPlaying: false, rotationEnabled: true,
+        rotationModes: smartModes, currentMode: .systemMonitor),
+          "暂停状态不应触发正在播放抢占")
+    check(!SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+        songChanged: true, isPlaying: true, rotationEnabled: true,
+        rotationModes: [.systemMonitor, .bambuLab], currentMode: .systemMonitor),
+          "未加入轮播池的正在播放不能抢占")
+    check(!SmartCardRotationPolicy.hasValidNowPlayingTitle("  "),
+          "空标题不应占用正在播放轮播权重")
+    check(!SmartCardRotationPolicy.hasValidNowPlayingTitle("未在播放"),
+          "明确未在播放不应进入自动轮播")
+    check(SmartCardRotationPolicy.hasValidNowPlayingTitle("暂停中的歌曲"),
+          "暂停但仍有有效曲目信息应保留轮播资格")
+    let takeover = SmartCardRotationPolicy.beginAutomaticTakeover(
+        from: DisplayMode.bambuLab3, presenting: DisplayMode.nowPlaying)!
+    checkEqual(SmartCardRotationPolicy.releaseAutomaticTakeover(
+        takeover, current: .nowPlaying), .bambuLab3,
+               "媒体结束且仍停在自动呈现页时恢复抢占前目标")
+    checkEqual(SmartCardRotationPolicy.releaseAutomaticTakeover(
+        takeover, current: .systemMonitor), nil,
+               "用户中途切走后旧抢占不得覆盖新选择")
+
+    let skippedIdleBambu = SmartCardRotationPolicy.nextMode(
+        after: .systemMonitor, in: smartModes,
+        isEligible: { $0 != .bambuLab })
+    checkEqual(skippedIdleBambu, .nowPlaying, "普通轮播保持原顺序选择下一张可用卡")
+    let skippedTwoPrinters = SmartCardRotationPolicy.nextMode(
+        after: .nowPlaying, in: smartModes,
+        isEligible: { $0.bambuSlotIndex == nil && $0.formlabsSlotIndex == nil })
+    checkEqual(skippedTwoPrinters, .systemMonitor,
+               "空闲 Bambu 与 Formlabs 卡片应一起跳过并循环到普通卡")
+    let leftIdlePrinter = SmartCardRotationPolicy.nextMode(
+        after: .bambuLab, in: [.systemMonitor, .bambuLab],
+        isEligible: { $0 != .bambuLab })
+    checkEqual(leftIdlePrinter, .systemMonitor, "当前打印机空闲后应在下一轮离开该卡")
+    let skippedConsecutiveIdle = SmartCardRotationPolicy.nextMode(
+        after: .systemMonitor, in: [.systemMonitor, .bambuLab, .bambuLab2, .nowPlaying],
+        isEligible: { $0.bambuSlotIndex == nil })
+    checkEqual(skippedConsecutiveIdle, .nowPlaying, "连续多张空闲打印机卡应一次跳过")
+    let allIdle = SmartCardRotationPolicy.nextMode(
+        after: .bambuLab, in: [.bambuLab, .formlabs], isEligible: { _ in false })
+    checkEqual(allIdle, nil, "轮播池全部为空闲打印机时不应切换")
+
+    // 三台打印机按各自 UUID 隔离：两台工作、一台空闲，必须依序遍历两台工作设备。
+    let printerIDs = [UUID(), UUID(), UUID()]
+    let printerModes: [DisplayMode] = [.bambuLab, .formlabs, .bambuLab2]
+    let modeToPrinter = Dictionary(uniqueKeysWithValues: zip(printerModes, printerIDs))
+    let baseTime = Date(timeIntervalSince1970: 1_800_000_000)
+    var isolatedStates: [UUID: SmartCardRotationPolicy.PrinterRotationState] = [:]
+    isolatedStates[printerIDs[0]] = SmartCardRotationPolicy.observePrinterActivity(
+        .active, at: baseTime).state
+    isolatedStates[printerIDs[1]] = SmartCardRotationPolicy.observePrinterActivity(
+        .active, at: baseTime).state
+    isolatedStates[printerIDs[2]] = SmartCardRotationPolicy.observePrinterActivity(
+        .idle, at: baseTime).state
+    let eligiblePrinter: (DisplayMode) -> Bool = { mode in
+        guard let id = modeToPrinter[mode], let state = isolatedStates[id] else { return false }
+        return SmartCardRotationPolicy.printerParticipatesInRotation(
+            activity: state.lastActivity ?? .unknown, state: state, at: baseTime)
+    }
+    checkEqual(SmartCardRotationPolicy.nextMode(
+        after: .bambuLab, in: printerModes, isEligible: eligiblePrinter), .formlabs,
+               "多打印机轮播应从第一台工作设备切到第二台")
+    checkEqual(SmartCardRotationPolicy.nextMode(
+        after: .formlabs, in: printerModes, isEligible: eligiblePrinter), .bambuLab,
+               "多打印机轮播应跳过空闲第三台并回到第一台")
+    checkEqual(SmartCardRotationPolicy.nextMode(
+        after: .bambuLab2, in: printerModes, isEligible: eligiblePrinter), .bambuLab,
+               "从空闲槽离开时仍按池顺序进入第一台工作设备")
+
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "printing"), .active,
+               "打印中属于工作状态")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "paused_user"), .active,
+               "暂停中的打印任务仍参与轮播")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "failed"), .attention,
+               "打印失败属于需保留展示的注意状态")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "error"), .attention,
+               "打印机报错不能被智能轮播静默隐藏")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "completed"), .completed,
+               "成功完成状态需要进入有时限的独立分类")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "idle"), .idle,
+               "普通空闲状态自身不参与轮播")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "offline"), .inactive,
+               "离线打印机应退出自动轮播")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "aborted"), .inactive,
+               "取消任务不得被错误状态规则保留")
+    checkEqual(SmartCardRotationPolicy.printerActivity(state: "unknown"), .unknown,
+               "打印机原始 unknown 状态应保留而非视为空闲")
+    let futureState = SmartCardRotationPolicy.printerActivity(state: "laser_alignment_v2")
+    checkEqual(futureState, .unknown, "新固件未知状态保持前向兼容")
+    check(futureState.participatesInRotation, "未知新状态不能被静默隐藏")
+    checkEqual(SmartCardRotationPolicy.printerActivity(states: ["finished", "idle"]), .completed,
+               "Formlabs 完成任务缓存与 idle 设备状态应保留原完成窗口")
+    checkEqual(SmartCardRotationPolicy.printerActivity(states: ["finished", "offline"]), .inactive,
+               "Formlabs 离线应压过完成缓存并立即退出轮播")
+    checkEqual(SmartCardRotationPolicy.printerActivity(states: ["finished", "failed"]), .attention,
+               "Formlabs 完成缓存旁出现故障时仍应保留卡片")
+    check(SmartCardRotationPolicy.printerActivity(state: "failed").participatesInRotation,
+          "注意状态应继续参与轮播")
+    check(SmartCardRotationPolicy.printerActivity(state: "unknown").participatesInRotation,
+          "未知状态应继续参与轮播")
+
+    // 完成宽限只由可信转换建立，重复刷新与 idle 都沿用第一次绝对时间。
+    var completion = SmartCardRotationPolicy.observePrinterActivity(.active, at: baseTime).state
+    completion = SmartCardRotationPolicy.observePrinterActivity(
+        .completed, previous: completion, at: baseTime.addingTimeInterval(10)).state
+    let originalCompletedAt = completion.completedAt
+    check(SmartCardRotationPolicy.printerParticipatesInRotation(
+        activity: .completed, state: completion,
+        at: baseTime.addingTimeInterval(10 + 1_799)),
+          "完成后 1799 秒仍参与轮播")
+    check(!SmartCardRotationPolicy.printerParticipatesInRotation(
+        activity: .completed, state: completion,
+        at: baseTime.addingTimeInterval(10 + 1_800)),
+          "完成后恰到 30 分钟应释放权重")
+    completion = SmartCardRotationPolicy.observePrinterActivity(
+        .completed, previous: completion, at: baseTime.addingTimeInterval(1_000)).state
+    checkEqual(completion.completedAt, originalCompletedAt,
+               "重复 completed 刷新不得续期")
+    completion = SmartCardRotationPolicy.observePrinterActivity(
+        .idle, previous: completion, at: baseTime.addingTimeInterval(1_100)).state
+    checkEqual(completion.completedAt, originalCompletedAt,
+               "completed 转 idle 后沿用原完成时间")
+    check(SmartCardRotationPolicy.printerParticipatesInRotation(
+        activity: .idle, state: completion, at: baseTime.addingTimeInterval(1_200)),
+          "完成宽限内进入 idle 仍保留剩余时间")
+    let offline = SmartCardRotationPolicy.observePrinterActivity(
+        .inactive, previous: completion, at: baseTime.addingTimeInterval(1_300)).state
+    checkEqual(offline.completedAt, nil, "offline/取消应立即清除完成窗口")
+
+    let firstCompleted = SmartCardRotationPolicy.observePrinterActivity(
+        .completed, at: baseTime)
+    check(!firstCompleted.participatesInRotation,
+          "重启后首次读到无时间证据的 completed 不得重开 30 分钟")
+    let evidenceAt = baseTime.addingTimeInterval(-600)
+    let evidenced = SmartCardRotationPolicy.observePrinterActivity(
+        .completed, at: baseTime, completionEvidenceAt: evidenceAt)
+    checkEqual(evidenced.state.completedAt, evidenceAt,
+               "Bambu last_changed 应恢复原完成绝对时间")
+    let staleEvidence = SmartCardRotationPolicy.observePrinterActivity(
+        .completed,
+        previous: SmartCardRotationPolicy.observePrinterActivity(
+            .active, at: baseTime.addingTimeInterval(-4_000)).state,
+        at: baseTime,
+        completionEvidenceAt: baseTime.addingTimeInterval(-1_801))
+    check(!staleEvidence.participatesInRotation && staleEvidence.state.completedAt == nil,
+          "过期 last_changed 不得回退为 now 并重新赠送 30 分钟")
+
+    var keyboardReturn = DeviceSettings()
+    keyboardReturn.smartRotationReturnDisplayMode = .bambuLab3
+    keyboardReturn.smartRotationReturnPrinterDeviceID = printerIDs[2]
+    let keyboardReturnRoundTrip = try JSONDecoder().decode(
+        DeviceSettings.self, from: JSONEncoder().encode(keyboardReturn))
+    checkEqual(keyboardReturnRoundTrip.smartRotationReturnDisplayMode, .bambuLab3,
+               "键盘抢占返回页应按设备快照持久化")
+    checkEqual(keyboardReturnRoundTrip.smartRotationReturnPrinterDeviceID, printerIDs[2],
+               "键盘打印机返回点应持久化稳定 UUID")
+    var firstKeyboardSettings = DeviceSettings()
+    firstKeyboardSettings.displayMode = .nowPlaying
+    firstKeyboardSettings.smartRotationReturnDisplayMode = .bambuLab3
+    firstKeyboardSettings.smartRotationReturnPrinterDeviceID = printerIDs[2]
+    let firstKeyboard = ManagedDevice(
+        type: .keyboard, name: "智能轮播键盘一", settings: firstKeyboardSettings)
+    var secondKeyboardSettings = DeviceSettings()
+    secondKeyboardSettings.displayMode = .nowPlaying
+    secondKeyboardSettings.smartRotationReturnDisplayMode = .systemMonitor
+    let secondKeyboard = ManagedDevice(
+        type: .keyboard, name: "智能轮播键盘二", settings: secondKeyboardSettings)
+    let takeoverSettings = AppSettings()
+    takeoverSettings.devices = [firstKeyboard, secondKeyboard]
+    takeoverSettings.activeKeyboardDeviceID = firstKeyboard.id
+    takeoverSettings.displayMode = .nowPlaying
+    takeoverSettings.captureActiveDeviceSnapshots()
+    checkEqual(takeoverSettings.devices[0].settings.smartRotationReturnDisplayMode, .bambuLab3,
+               "普通设置捕获不得覆盖活动键盘的智能返回页")
+    checkEqual(takeoverSettings.devices[0].settings.smartRotationReturnPrinterDeviceID,
+               printerIDs[2], "普通设置捕获不得丢失活动键盘的返回打印机 UUID")
+    takeoverSettings.switchActiveDevice(of: .keyboard, to: secondKeyboard.id)
+    takeoverSettings.switchActiveDevice(of: .keyboard, to: firstKeyboard.id)
+    checkEqual(takeoverSettings.devices[0].settings.smartRotationReturnDisplayMode, .bambuLab3,
+               "键盘往返切换后第一台返回点应保持独立")
+    checkEqual(takeoverSettings.devices[1].settings.smartRotationReturnDisplayMode, .systemMonitor,
+               "键盘往返切换不得把第一台返回点串到第二台")
+    let aiReturn = AIMacScreenDeviceSettings(
+        mode: .card, cardModeRawValue: DisplayMode.nowPlaying.rawValue,
+        smartRotationReturnContentMode: .canvas,
+        smartRotationReturnCardModeRawValue: DisplayMode.bambuLab.rawValue,
+        smartRotationReturnPrinterDeviceID: printerIDs[0])
+    let aiReturnRoundTrip = try JSONDecoder().decode(
+        AIMacScreenDeviceSettings.self, from: JSONEncoder().encode(aiReturn))
+    checkEqual(aiReturnRoundTrip.smartRotationReturnContentMode, .canvas,
+               "AI Mac 抢占返回内容模式应跨重启保留")
+    checkEqual(aiReturnRoundTrip.smartRotationReturnPrinterDeviceID, printerIDs[0],
+               "AI Mac 返回打印机应按稳定 UUID 隔离")
     print("  卡片轮换通过")
 }
 
@@ -4137,13 +5115,267 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 7, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 9, "设备类型数量")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
     checkEqual(DeviceType.homeAssistant.title, "Home Assistant", "设备类型标题-HA")
     checkEqual(DeviceType.bambuLab.title, "Bambu Lab 打印机", "设备类型标题-Bambu")
     checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "设备类型标题-AI Mac")
+    checkEqual(DeviceType.awtrix.title, "AWTRIX NG", "设备类型标题-AWTRIX")
+    checkEqual(DeviceType.m5Controller.title, "M5 StickS3 控制器", "设备类型标题-StickS3")
+    check(DeviceType.m5Controller.isBeta, "StickS3 设备类型标记 Beta")
+    check(!DeviceType.keyboard.isBeta, "稳定设备类型不标记 Beta")
+
+    // M5Stack StickS3：BLE 协议、设置隔离与能力目录。
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"shake\",\"dir\":-1}"),
+               .shake(direction: -1), "StickS3 事件解析-摇晃")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"b\"}"),
+               .button(key: "b"), "StickS3 事件解析-按键")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"b\",\"press\":\"long\"}"),
+               .buttonLong(key: "b"), "StickS3 事件解析-长按")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"a\",\"press\":\"up\"}"),
+               .buttonUp(key: "a"), "StickS3 事件解析-长按松开")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"a\",\"press\":\"hid-long\"}"),
+               .buttonLongHandledByHID(key: "a"), "StickS3 事件解析-HID 按下")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"a\",\"press\":\"hid-up\"}"),
+               .buttonUpHandledByHID(key: "a"), "StickS3 事件解析-HID 松开")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"input\",\"action\":\"clear\",\"source\":\"hid\"}"),
+               .clearInput(handledByHID: true), "StickS3 事件解析-HID 摇晃清空")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"input\",\"action\":\"clear\"}"),
+               .clearInput(handledByHID: false), "StickS3 事件解析-摇晃清空回退")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"media\",\"dir\":-1,\"source\":\"hid\"}"),
+               .mediaGesture(direction: -1, handledByHID: true),
+               "StickS3 事件解析-HID 多媒体左摇")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"mouse\",\"action\":\"recenter\"}"),
+               .pointerRecenter, "StickS3 事件解析-飞鼠重新居中")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"mouse\",\"action\":\"unknown\"}"), nil,
+               "StickS3 事件解析-忽略未知鼠标动作")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"hid\",\"ready\":true,\"secured\":true}"),
+               .hidState(ready: true, secured: true), "StickS3 事件解析-HID 就绪状态")
+    checkEqual(M5ControllerEvent.parse("{\"type\":\"button\",\"key\":\"x\"}"), nil,
+               "StickS3 事件解析-非法按键忽略")
+    checkEqual(M5ControllerEvent.parse("not json"), nil, "StickS3 事件解析-损坏帧忽略")
+    let m5Info = M5ControllerInfo(active: 1, devices: [
+        .init(name: "灵犀68 键盘 1", detail: "正在播放", available: true),
+        .init(name: "AI Mac 小屏幕 1", detail: "系统监控", available: true)
+    ], title: "Home Assistant", footer: "A/B选择 长A执行 长B返回", buzzer: false,
+       hidModifiers: 0x01, hidKey: 0x04, hidHold: true, clearInputOnShake: true,
+       consumerUsage: M5MediaControlAction.playPause.rawValue,
+       consumerUsageLeft: M5MediaControlAction.previousTrack.rawValue,
+       consumerUsageRight: M5MediaControlAction.nextTrack.rawValue,
+       gyroMouseActive: true, gyroMouseSensitivity: 1.35,
+       gyroMouseDeadZone: 1.8, gyroMouseSmoothing: 0.62,
+       gyroMouseInvertX: true, gyroMouseInvertY: false,
+       gyroMouseClutchEnabled: true, gyroMouseRecenterToken: 42,
+       mainMenuMask: 0x0F, shortcutMenuMask: 0x07,
+       targetDeviceCount: 2, homeAssistantEntityCount: 3,
+       vibeActionCount: 2, presentationActionCount: 3, customActionCount: 0)
+    if let data = m5Info.encoded(),
+       let decoded = try? JSONDecoder().decode(M5ControllerInfo.self, from: data) {
+        checkEqual(decoded, m5Info, "StickS3 信息载荷 JSON 往返")
+        checkEqual(decoded.clearInputOnShake, true, "StickS3 信息-摇晃清空")
+        checkEqual(decoded.hidKey, 0x04, "StickS3 信息-HID 普通按键")
+        checkEqual(decoded.hidHold, true, "StickS3 信息-HID 按住动作")
+        checkEqual(decoded.consumerUsage, 0x00CD, "StickS3 信息-多媒体 Consumer Usage")
+        checkEqual(decoded.consumerUsageLeft, 0x00B6, "StickS3 信息-多媒体左摇 Usage")
+        checkEqual(decoded.consumerUsageRight, 0x00B5, "StickS3 信息-多媒体右摇 Usage")
+        checkEqual(decoded.gyroMouseActive, true, "StickS3 信息-启用陀螺仪鼠标")
+        checkEqual(decoded.gyroMouseSensitivity, 1.35, "StickS3 信息-鼠标灵敏度")
+        checkEqual(decoded.gyroMouseDeadZone, 1.8, "StickS3 信息-鼠标死区")
+        checkEqual(decoded.gyroMouseSmoothing, 0.62, "StickS3 信息-鼠标平滑")
+        checkEqual(decoded.gyroMouseInvertX, true, "StickS3 信息-鼠标 X 轴反转")
+        checkEqual(decoded.gyroMouseInvertY, false, "StickS3 信息-鼠标 Y 轴保持")
+        checkEqual(decoded.gyroMouseClutchEnabled, true, "StickS3 信息-B 键临时脱开")
+        checkEqual(decoded.gyroMouseRecenterToken, 42, "StickS3 信息-重新居中请求")
+        checkEqual(decoded.mainMenuMask, 0x0F, "StickS3 信息-主菜单勾选清单")
+        checkEqual(decoded.shortcutMenuMask, 0x07, "StickS3 信息-本地功能勾选清单")
+        checkEqual(decoded.targetDeviceCount, 2, "StickS3 信息-被控设备数")
+        checkEqual(decoded.homeAssistantEntityCount, 3, "StickS3 信息-HA 实体数")
+        let chunks = M5ControllerInfoTransport.chunks(
+            payload: data, maximumWriteLength: 64, transferID: 0x1234)
+        check(chunks.count > 1, "StickS3 长信息载荷按 BLE 写入上限分片")
+        check(chunks.allSatisfy { $0.count <= 64 }, "StickS3 每个 BLE 分片不越界")
+        check(chunks.allSatisfy {
+            Array($0.prefix(4)) == M5ControllerInfoTransport.magic
+        }, "StickS3 每个 BLE 分片包含协议标识")
+        let reconstructed = chunks.reduce(into: Data()) {
+            $0.append($1.dropFirst(M5ControllerInfoTransport.headerSize))
+        }
+        checkEqual(reconstructed, data, "StickS3 BLE 分片可以无损重组")
+    } else {
+        check(false, "StickS3 信息载荷 JSON 编码")
+    }
+    if let clearedData = M5ControllerInfo.clearedPairing.encoded(),
+       let cleared = try? JSONDecoder().decode(M5ControllerInfo.self, from: clearedData) {
+        checkEqual(cleared.devices, [], "StickS3 删除配对时清空设备卡片")
+        checkEqual(cleared.active, 0, "StickS3 删除配对时重置活动目标")
+        checkEqual(cleared.footer, "等待软件重新连接", "StickS3 删除配对后显示等待状态")
+        checkEqual(cleared.resetHIDBond, true, "StickS3 明确解除配对时请求清理设备端密钥")
+        checkEqual(cleared.mainMenuMask, 0, "StickS3 解除配对时清空本地主菜单")
+        checkEqual(cleared.shortcutMenuMask, 0, "StickS3 解除配对时清空本地功能")
+    } else {
+        check(false, "StickS3 清除配对载荷 JSON 编码")
+    }
+    checkEqual(M5ControllerInfo.displaySafeText("⌃⌥→ · 执行… 🔋"),
+               "Ctrl Option 右 执行...",
+               "StickS3 不支持的快捷键符号与 Emoji 转换为稳定文本")
+    var m5Config = M5ControllerDeviceSettings()
+    m5Config.pairedPeripheralID = UUID().uuidString
+    m5Config.pairedName = "Lingxi-Controller-TEST"
+    m5Config.targetDeviceIDs = [UUID().uuidString, UUID().uuidString]
+    m5Config.homeAssistantEntityIDs = [" light.desk ", "", "light.desk", "cover.curtain"]
+    m5Config.activeTargetIndex = 5
+    m5Config.clamp()
+    checkEqual(m5Config.activeTargetIndex, 1, "StickS3 设置钳制目标下标")
+    checkEqual(m5Config.homeAssistantEntityIDs, ["light.desk", "cover.curtain"],
+               "StickS3 HA 实体设置去空并去重")
+    check(m5Config.resolvedBuzzerEnabled, "StickS3 新设备默认启用蜂鸣器反馈")
+    check(m5Config.resolvedMediaControlsEnabled, "StickS3 新设备默认显示多媒体控制")
+    check(m5Config.resolvedGyroMouseEnabled, "StickS3 新设备默认允许陀螺仪鼠标")
+    check(!m5Config.resolvedGyroMouseClutchEnabled,
+          "StickS3 新设备默认保留 B 键右键，临时脱开由用户开启")
+    checkEqual(m5Config.resolvedGyroMouseSensitivity, 1.0, "StickS3 鼠标默认灵敏度")
+    checkEqual(m5Config.resolvedGyroMouseDeadZone, 1.4, "StickS3 鼠标默认死区")
+    checkEqual(m5Config.resolvedGyroMouseSmoothing, 0.58, "StickS3 鼠标默认平滑程度")
+    var clampedMouseConfig = M5ControllerDeviceSettings(
+        gyroMouseSensitivity: 99, gyroMouseDeadZone: -3, gyroMouseSmoothing: 4,
+        gyroMouseClutchEnabled: true)
+    clampedMouseConfig.clamp()
+    checkEqual(clampedMouseConfig.resolvedGyroMouseSensitivity, 2.5,
+               "StickS3 鼠标灵敏度上界钳制")
+    checkEqual(clampedMouseConfig.resolvedGyroMouseDeadZone, 0.4,
+               "StickS3 鼠标死区下界钳制")
+    checkEqual(clampedMouseConfig.resolvedGyroMouseSmoothing, 0.85,
+               "StickS3 鼠标平滑程度上界钳制")
+    check(clampedMouseConfig.resolvedGyroMouseClutchEnabled,
+          "StickS3 鼠标临时脱开选项往返")
+    checkEqual(m5Config.resolvedMacShortcuts.filter { $0.group == .presentation }.count, 3,
+               "StickS3 默认包含三项演示控制")
+    checkEqual(m5Config.resolvedMacShortcuts.filter { $0.group == .vibeCoding }.count, 3,
+               "StickS3 默认包含三项 Vibe Coding 控制")
+    checkEqual(M5MacShortcutGroup.allCases.map(\.title),
+               ["Vibe Coding", "演示翻页器", "自定义快捷键"],
+               "StickS3 Mac 快捷键二级菜单顺序稳定")
+    checkEqual(M5MediaControlAction.allCases.map(\.title),
+               ["播放 / 暂停", "上一曲", "下一曲", "音量减", "音量加", "静音"],
+               "StickS3 多媒体动作顺序稳定")
+    checkEqual(M5MediaControlAction.mute.rawValue, 0x00E2,
+               "StickS3 多媒体动作使用标准 HID Consumer Usage")
+    checkEqual(M5MediaControlCard.allCases.map(\.title), ["播放控制", "音量控制"],
+               "StickS3 多媒体页合并为两张组合卡片")
+    checkEqual(M5MediaControlCard.playback.leftAction, .previousTrack,
+               "StickS3 播放卡左摇为上一曲")
+    checkEqual(M5MediaControlCard.playback.rightAction, .nextTrack,
+               "StickS3 播放卡右摇为下一曲")
+    checkEqual(M5MediaControlCard.playback.holdAction, .playPause,
+               "StickS3 播放卡长按为播放暂停")
+    checkEqual(M5MediaControlCard.volume.leftAction, .volumeDown,
+               "StickS3 音量卡左摇为音量减")
+    checkEqual(M5MediaControlCard.volume.rightAction, .volumeUp,
+               "StickS3 音量卡右摇为音量加")
+    checkEqual(M5MediaControlCard.volume.holdAction, .mute,
+               "StickS3 音量卡长按为静音")
+    let legacyM5 = try JSONDecoder().decode(M5ControllerDeviceSettings.self,
+        from: Data("{\"targetDeviceIDs\":[],\"activeTargetIndex\":0}".utf8))
+    checkEqual(legacyM5.homeAssistantEntityIDs, nil, "StickS3 旧设置缺 HA 字段仍可解码")
+    check(legacyM5.resolvedBuzzerEnabled, "StickS3 旧设置默认保持蜂鸣器开启")
+    check(legacyM5.resolvedMediaControlsEnabled,
+          "StickS3 旧设置缺字段时保持多媒体卡片")
+    checkEqual(legacyM5.resolvedMacShortcuts.count, 6,
+               "StickS3 旧设置自动获得默认快捷键卡片")
+    check(legacyM5.resolvedGyroMouseEnabled,
+          "StickS3 旧设置缺鼠标字段时仍可使用新功能")
+    checkEqual(legacyM5.resolvedGyroMouseSensitivity, 1.0,
+               "StickS3 旧设置使用安全的鼠标灵敏度")
+    checkEqual(legacyM5.resolvedGyroMouseDeadZone, 1.4,
+               "StickS3 旧设置使用安全的鼠标死区")
+    checkEqual(legacyM5.resolvedGyroMouseSmoothing, 0.58,
+               "StickS3 旧设置使用安全的鼠标平滑参数")
+    check(!legacyM5.resolvedGyroMouseClutchEnabled,
+          "StickS3 旧设置继续保留 B 键右键行为")
+
+    let lightOn = HAEntity(entityId: "light.desk", friendlyName: "桌灯", state: "on",
+                           unitOfMeasurement: nil)
+    let coverClosed = HAEntity(entityId: "cover.curtain", friendlyName: "窗帘", state: "closed",
+                               unitOfMeasurement: nil)
+    let scene = HAEntity(entityId: "scene.movie", friendlyName: "观影", state: "scening",
+                         unitOfMeasurement: nil)
+    let sensor = HAEntity(entityId: "sensor.temp", friendlyName: "温度", state: "23",
+                          unitOfMeasurement: nil)
+    checkEqual(M5HAControlPolicy.primaryCommand(for: lightOn),
+               HAServiceCommand(domain: "light", service: "turn_off", entityID: "light.desk"),
+               "StickS3 HA 主操作按当前状态切换灯")
+    checkEqual(M5HAControlPolicy.primaryCommand(for: coverClosed),
+               HAServiceCommand(domain: "cover", service: "set_cover_position",
+                                entityID: "cover.curtain", position: 100),
+               "StickS3 HA 主操作以 100% 打开关闭状态的窗帘")
+    checkEqual(M5HAControlPolicy.directionalCommand(for: coverClosed, direction: 1),
+               HAServiceCommand(domain: "cover", service: "set_cover_position",
+                                entityID: "cover.curtain", position: 100),
+               "StickS3 HA 正方向把窗帘设为 100%")
+    checkEqual(M5HAControlPolicy.directionalCommand(for: coverClosed, direction: -1),
+               HAServiceCommand(domain: "cover", service: "set_cover_position",
+                                entityID: "cover.curtain", position: 0),
+               "StickS3 HA 负方向把窗帘设为 0%")
+    checkEqual(M5HAControlPolicy.directionalCommand(for: scene, direction: 1), nil,
+               "StickS3 HA 场景不接受摇晃操作")
+    checkEqual(M5HAControlPolicy.isControllable(sensor), false,
+               "StickS3 HA 传感器保持只读")
+
+    let requestCommand = HAServiceCommand(domain: "light", service: "turn_on",
+                                          entityID: "light.desk")
+    if let request = HomeAssistantClient.makeServiceRequest(
+        server: "http://ha.local:8123", token: "secret", command: requestCommand) {
+        checkEqual(request.url?.absoluteString, "http://ha.local:8123/api/services/light/turn_on",
+                   "StickS3 HA 服务调用地址")
+        checkEqual(request.httpMethod, "POST", "StickS3 HA 服务调用使用 POST")
+        checkEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret",
+                   "StickS3 HA 服务调用带 Mac 端令牌")
+        let body = request.httpBody.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        }
+        checkEqual(body?["entity_id"] as? String, "light.desk", "StickS3 HA 服务调用实体参数")
+    } else {
+        check(false, "StickS3 HA 服务调用请求生成")
+    }
+    let coverRequestCommand = HAServiceCommand(
+        domain: "cover", service: "set_cover_position",
+        entityID: "cover.curtain", position: 100)
+    if let request = HomeAssistantClient.makeServiceRequest(
+        server: "http://ha.local:8123", token: "secret", command: coverRequestCommand),
+       let body = request.httpBody.flatMap({
+           try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+       }) {
+        checkEqual(body["entity_id"] as? String, "cover.curtain",
+                   "StickS3 HA 窗帘位置请求包含实体")
+        checkEqual((body["position"] as? NSNumber)?.intValue, 100,
+                   "StickS3 HA 窗帘位置请求包含 100%")
+    } else {
+        check(false, "StickS3 HA 窗帘位置请求生成")
+    }
+    var m5Fields = DeviceSettings()
+    m5Fields.m5Controller = m5Config
+    let m5Managed = ManagedDevice(type: .m5Controller,
+                                  name: "M5 StickS3 控制器 1", settings: m5Fields)
+    if let data = try? JSONEncoder().encode(m5Managed),
+       let decoded = try? JSONDecoder().decode(ManagedDevice.self, from: data) {
+        checkEqual(decoded.settings.m5Controller, m5Config, "StickS3 设备设置 JSON 往返")
+    } else {
+        check(false, "StickS3 设备 JSON 编码")
+    }
+    let m5Profile = DeviceCapabilityRegistry.profile(for: .m5Controller)
+    checkEqual(m5Profile?.transport, .bluetoothControl, "StickS3 使用蓝牙控制传输")
+    checkEqual(m5Profile?.screenSize, DisplayPixelSize(width: 135, height: 240),
+               "StickS3 屏幕规格为 135×240")
+    checkEqual(AppSettings.deviceLimits[.m5Controller], 1, "StickS3 最多配对一个")
+    let m5ActiveID = UUID()
+    let m5Persistence = AppSettings()
+    m5Persistence.activeM5ControllerDeviceID = m5ActiveID
+    let m5Restored = try JSONDecoder().decode(
+        AppSettings.self, from: JSONEncoder().encode(m5Persistence))
+    checkEqual(m5Restored.activeM5ControllerDeviceID, m5ActiveID,
+               "StickS3 活动设备 ID 持久化")
 
     // 设置快照 捕获→套用 往返
     let source = AppSettings()
@@ -4692,6 +5924,43 @@ func testSidebarSettings() throws {
     print("  侧边栏设置通过")
 }
 
+// MARK: - 系统菜单栏设备命名
+
+func testMenuBarNamingPolicy() {
+    let keyboard = ManagedDevice(type: .keyboard, name: "主键盘", settings: DeviceSettings())
+    checkEqual(MenuBarNamingPolicy.deviceScopedTitle(device: keyboard, childTitle: "正在播放"),
+               "主键盘 · 正在播放", "键盘二级项应始终带用户设备名")
+
+    let blankKeyboard = ManagedDevice(type: .keyboard, name: "  \n", settings: DeviceSettings())
+    checkEqual(MenuBarNamingPolicy.deviceScopedTitle(device: blankKeyboard, childTitle: "系统监控"),
+               "\(DeviceType.keyboard.title) · 系统监控", "空白设备名仅做显示回退")
+
+    var disabledBambu = ManagedDevice(type: .bambuLab, name: "已停用 P1S", settings: DeviceSettings())
+    disabledBambu.isEnabled = false
+    let bambu1 = ManagedDevice(type: .bambuLab, name: "工作室 X2D", settings: DeviceSettings())
+    let bambu2 = ManagedDevice(type: .bambuLab, name: "桌面 A1", settings: DeviceSettings())
+    let form1 = ManagedDevice(type: .formlabs, name: "Form 4L", settings: DeviceSettings())
+    let form2 = ManagedDevice(type: .formlabs, name: "Form 3+", settings: DeviceSettings())
+    let devices = [disabledBambu, bambu1, form1, bambu2, form2]
+
+    checkEqual(MenuBarNamingPolicy.printerCardTitle(for: .bambuLab, devices: devices),
+               "工作室 X2D", "Bambu 第一槽应跳过停用设备")
+    checkEqual(MenuBarNamingPolicy.printerCardTitle(for: .bambuLab2, devices: devices),
+               "桌面 A1", "Bambu 第二槽应使用用户设备名")
+    checkEqual(MenuBarNamingPolicy.printerCardTitle(for: .formlabs, devices: devices),
+               "Form 4L", "Formlabs 第一槽应使用用户设备名")
+    checkEqual(MenuBarNamingPolicy.printerCardTitle(for: .formlabs2, devices: devices),
+               "Form 3+", "Formlabs 第二槽应使用用户设备名")
+    checkEqual(MenuBarNamingPolicy.printerCardTitle(for: .nowPlaying, devices: devices),
+               DisplayMode.nowPlaying.title, "非打印机卡片应保持原名称")
+
+    let aiMac = ManagedDevice(type: .aiMacScreen, name: "桌面彩屏", settings: DeviceSettings())
+    let printerTitle = MenuBarNamingPolicy.printerCardTitle(for: .bambuLab, devices: devices)
+    checkEqual(MenuBarNamingPolicy.deviceScopedTitle(device: aiMac, childTitle: printerTitle),
+               "桌面彩屏 · 工作室 X2D", "AI Mac 打印机卡片应同时显示屏幕名与打印机名")
+    print("  系统菜单栏设备命名通过")
+}
+
 // MARK: - 用量数据统一调取（Codex 用量 + 千问办公额度一次并行拉取）
 
 func testUsageDataAggregator() async {
@@ -4731,6 +6000,383 @@ func testUsageDataAggregator() async {
     print("  用量统一调取通过")
 }
 
+// MARK: - AWTRIX NG 独立控制与中文点阵
+
+func testAWTRIXStandalone() throws {
+    var sanitized = AWTRIXSettings()
+    checkEqual(sanitized.baseURL, "", "新 AWTRIX 设备不得硬编码用户局域网地址")
+    sanitized.brightness = 255
+    sanitized.autoBrightnessMinimum = 230
+    sanitized.autoBrightnessMaximum = 255
+    sanitized.durationSeconds = 0
+    sanitized.scrollSpeedMilliseconds = 900
+    sanitized.sanitize()
+    checkEqual(sanitized.brightness, AWTRIXClient.safeBrightnessLimit,
+               "AWTRIX 手动亮度应限制在稳定上限")
+    checkEqual(sanitized.autoBrightnessMinimum, AWTRIXClient.safeBrightnessLimit,
+               "AWTRIX 自动亮度下限应限制在稳定上限")
+    checkEqual(sanitized.autoBrightnessMaximum, AWTRIXClient.safeBrightnessLimit,
+               "AWTRIX 自动亮度上限应限制在稳定上限")
+    checkEqual(sanitized.durationSeconds, 1, "AWTRIX 显示时长应有安全下限")
+    checkEqual(sanitized.scrollSpeedMilliseconds, 500, "AWTRIX 滚动间隔应限制范围")
+
+    checkEqual(AWTRIXClient.validatedAppName(" lingxi_text-1 "), "lingxi_text-1",
+               "AWTRIX 应用名应去除首尾空白")
+    check(AWTRIXClient.validatedAppName("中文应用") == nil,
+          "AWTRIX 应用名应拒绝设备不支持的字符")
+    check(AWTRIXClient.validatedAppName(String(repeating: "a", count: 33)) == nil,
+          "AWTRIX 应用名应限制为 32 个字符")
+
+    let renderer = try AWTRIXBitmapRenderer()
+    let chinese = try renderer.renderGIF(text: "黄悦博",
+                                         foregroundHex: "#FFFFFF",
+                                         backgroundHex: "#000000",
+                                         paletteName: "Solid",
+                                         scrollSpeedMilliseconds: 90)
+    guard let chineseSource = CGImageSourceCreateWithData(chinese as CFData, nil),
+          let chineseFrame = CGImageSourceCreateImageAtIndex(chineseSource, 0, nil) else {
+        throw AWTRIXError.gifEncodingFailed
+    }
+    check(chinese.starts(with: Data("GIF".utf8)), "AWTRIX 中文输出应为 GIF")
+    checkEqual(chineseFrame.width, 32, "AWTRIX GIF 首帧宽度")
+    checkEqual(chineseFrame.height, 8, "AWTRIX GIF 首帧高度")
+    checkEqual(CGImageSourceGetCount(chineseSource), 1, "三个中文字应在单帧中完整显示")
+
+    let scrolling = try renderer.renderGIF(text: "欢迎使用多屏灵犀控制 AWTRIX NG",
+                                           foregroundHex: "#FFFFFF",
+                                           backgroundHex: "#000000",
+                                           paletteName: "Rainbow",
+                                           scrollSpeedMilliseconds: 80)
+    guard let scrollingSource = CGImageSourceCreateWithData(scrolling as CFData, nil),
+          let scrollingFrame = CGImageSourceCreateImageAtIndex(scrollingSource, 0, nil) else {
+        throw AWTRIXError.gifEncodingFailed
+    }
+    check(CGImageSourceGetCount(scrollingSource) > 1, "AWTRIX 长文本应生成滚动动画")
+    checkEqual(scrollingFrame.width, 32, "AWTRIX 滚动 GIF 首帧宽度")
+    checkEqual(scrollingFrame.height, 8, "AWTRIX 滚动 GIF 首帧高度")
+
+    let pixels = try renderer.renderDrawCommands(text: "黄悦博",
+                                                  foregroundHex: "#FFFFFF",
+                                                  paletteName: "Cloud")
+    check(!pixels.isEmpty, "单屏中文应生成可叠加灯光预设的 draw.pixels 指令")
+    check(renderer.fitsOnPanel("黄悦博"), "三个中文字应可放入 32×8 单屏")
+    check(!renderer.fitsOnPanel("欢迎使用多屏灵犀"), "长中文应继续使用滚动 GIF")
+
+    let legacyAWTRIX = try JSONDecoder().decode(
+        AWTRIXSettings.self,
+        from: Data(#"{"baseURL":"192.168.1.20","palette":"Ocean","brightness":80}"#.utf8))
+    checkEqual(legacyAWTRIX.paletteEntries, [], "旧 AWTRIX 配置缺新调色板字段仍可解码")
+    checkEqual(legacyAWTRIX.effect, "", "旧 AWTRIX 配置缺灯光效果字段时默认关闭")
+    checkEqual(AWTRIXSettings().sidebarAppNames, [],
+               "新 AWTRIX 设备以空卡片列表开始，与原设备添加卡片流程一致")
+    check(legacyAWTRIX.sidebarAppNames == nil,
+          "旧 AWTRIX 配置无卡片选择字段时保留已发现入口")
+    checkEqual(legacyAWTRIX.homeAssistant, AWTRIXHomeAssistantSettings(),
+               "旧 AWTRIX 配置补齐 HA 展示默认值")
+    let oldHARender = try JSONDecoder().decode(AWTRIXHomeAssistantSettings.self,
+                                              from: Data(#"{"entityIDs":["sensor.temperature"]}"#.utf8))
+    checkEqual(oldHARender.refreshSeconds, 30, "HA 显示缺刷新频率时默认每 30 秒更新")
+    check(oldHARender.autoPush && oldHARender.showName,
+          "HA 显示缺可选字段时默认自动更新并显示名称")
+    checkEqual(oldHARender.foregroundHex, "#FFFFFF", "HA 显示默认白色文字")
+    var boundedHA = AWTRIXHomeAssistantSettings(
+        entityIDs: [" sensor.one ", "sensor.one", "", "  "] + (2...10).map { "sensor.\($0)" },
+        refreshSeconds: 0, foregroundHex: "invalid")
+    checkEqual(boundedHA.entityIDs, ["sensor.one"] + (2...8).map { "sensor.\($0)" },
+               "HA 实体选择去重、去空白并保留前八项顺序")
+    checkEqual(boundedHA.refreshSeconds, 5, "HA 自动更新间隔下限为 5 秒")
+    checkEqual(boundedHA.foregroundHex, "#FFFFFF", "HA 无效文字色回退白色")
+    boundedHA.refreshSeconds = 5_000
+    boundedHA.sanitize()
+    checkEqual(boundedHA.refreshSeconds, 3_600, "HA 自动更新间隔上限为 3600 秒")
+
+    let haEntities = [
+        HAEntity(entityId: "sensor.temperature", friendlyName: "室温", state: "23.5", unitOfMeasurement: "°C"),
+        HAEntity(entityId: "light.office", friendlyName: "书房灯", state: "off", unitOfMeasurement: nil),
+        HAEntity(entityId: "sensor.offline", friendlyName: "湿度", state: "unavailable", unitOfMeasurement: "%"),
+        HAEntity(entityId: "sensor.unknown", friendlyName: "电量", state: "unknown", unitOfMeasurement: "%")
+    ]
+    var haDisplay = AWTRIXHomeAssistantSettings(entityIDs: ["light.office", "sensor.temperature", "sensor.missing"])
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: haEntities, settings: haDisplay),
+               "书房灯：关  |  室温：23.5 °C  |  sensor.missing：不可用",
+               "HA 像素内容遵循用户选择顺序、中文状态和单位，并明确标记缺失实体")
+    haDisplay.showName = false
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: haEntities, settings: haDisplay),
+               "关  |  23.5 °C  |  不可用", "HA 像素内容可隐藏名称且保留状态顺序")
+    haDisplay.entityIDs = ["sensor.offline", "sensor.unknown"]
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: haEntities, settings: haDisplay),
+               "不可用  |  未知", "不可用或未知状态不应附加数值单位")
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: haEntities, settings: AWTRIXHomeAssistantSettings()),
+               "", "未选实体时不生成误导性的默认 HA 内容")
+    var latestTemperature = haEntities[0]
+    latestTemperature.state = "24"
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: haEntities + [latestTemperature],
+                                             settings: AWTRIXHomeAssistantSettings(entityIDs: [latestTemperature.entityId])),
+               "室温：24 °C", "HA 缓存临时重复实体时采用最后状态而不会崩溃")
+    let verboseEntities = (1...8).map { index in
+        HAEntity(entityId: "sensor.long_\(index)", friendlyName: String(repeating: "长名称", count: 30),
+                 state: "\(index)" + String(repeating: "0123456789", count: 20), unitOfMeasurement: nil)
+    }
+    let boundedText = AWTRIXHomeAssistantContent.text(
+        entities: verboseEntities,
+        settings: AWTRIXHomeAssistantSettings(entityIDs: verboseEntities.map(\.entityId)))
+    check(boundedText.count <= AWTRIXHomeAssistantContent.maxTextLength,
+          "HA 大量长实体内容应限制在 160 字内以控制滚动 GIF 资源")
+    let boundedItems = boundedText.components(separatedBy: "  |  ")
+    checkEqual(boundedItems.count, 8, "HA 长内容应为每个已选实体分配空间，不丢弃末尾实体")
+    check(boundedItems.enumerated().allSatisfy { index, item in item.contains("：\(index + 1)") },
+          "HA 长名称不能挤掉各实体的状态值")
+    let multilineEntity = HAEntity(entityId: "sensor.lines", friendlyName: " 第一行\n第二行 ",
+                                    state: " 10\n20 ", unitOfMeasurement: " kWh\n ")
+    checkEqual(AWTRIXHomeAssistantContent.text(entities: [multilineEntity],
+                                             settings: AWTRIXHomeAssistantSettings(entityIDs: [multilineEntity.entityId])),
+               "第一行 第二行：10 20 kWh", "HA 像素展示折叠换行以生成一条连续滚动文本")
+
+    var latestDisplayPolicy = AWTRIXLatestDisplayRequestPolicy()
+    let queueDeviceA = UUID()
+    let queueDeviceB = UUID()
+    let firstA = latestDisplayPolicy.issue(for: queueDeviceA)
+    let firstB = latestDisplayPolicy.issue(for: queueDeviceB)
+    let latestA = latestDisplayPolicy.issue(for: queueDeviceA)
+    check(!latestDisplayPolicy.isCurrent(firstA, for: queueDeviceA),
+          "AWTRIX 同设备 A→B 连续选择后旧目标应失效")
+    check(latestDisplayPolicy.isCurrent(latestA, for: queueDeviceA),
+          "AWTRIX 同设备 A→B 连续选择后最后目标应胜出")
+    check(latestDisplayPolicy.isCurrent(firstB, for: queueDeviceB),
+          "AWTRIX 一台设备的新选择不得使另一台设备目标失效")
+    latestDisplayPolicy.remove(queueDeviceA)
+    check(!latestDisplayPolicy.isCurrent(latestA, for: queueDeviceA),
+          "删除 AWTRIX 设备后其排队中的显示目标应立即失效")
+
+    let capabilities = try JSONDecoder().decode(
+        AWTRIXCapabilities.self,
+        from: Data(#"{"effects":["PlasmaCloud"],"palettes":["Cloud"],"paletteEffects":[],"overlays":[],"transitions":["Fade"]}"#.utf8))
+    checkEqual(capabilities.effects, ["PlasmaCloud"], "AWTRIX capabilities 灯光效果解码")
+    let apps = try JSONDecoder().decode(
+        [AWTRIXAppInfo].self,
+        from: Data(#"[{"name":"Time","enabled":true,"inLoop":true,"slot":0,"origin":"builtin"},{"name":"Date","enabled":false,"inLoop":false,"slot":1,"origin":"script"}]"#.utf8))
+    checkEqual(apps.map(\.name), ["Time", "Date"], "AWTRIX 应用列表按设备顺序解码")
+    checkEqual(apps.filter { $0.inLoop == true }.map(\.name), ["Time"], "AWTRIX 轮换成员解码")
+
+    let sidebarSource = try JSONDecoder().decode(
+        [AWTRIXAppInfo].self,
+        from: Data(#"[{"name":"Time","enabled":true,"present":true,"origin":"builtin","slot":0},{"name":"Time","enabled":true,"present":true,"origin":"builtin","slot":2},{"name":"Weather","enabled":false,"present":true,"origin":"script"},{"name":"Worker","enabled":true,"present":true,"origin":"module"},{"name":"Background","enabled":true,"present":true,"origin":"script","headless":true},{"name":"Removed","enabled":false,"present":false,"origin":"script"}]"#.utf8))
+    checkEqual(AWTRIXAppInfo.sidebarApps(from: sidebarSource).map(\.name), ["Time", "Weather"],
+               "AWTRIX 侧边栏应用应去重并过滤模块、后台和已移除项")
+
+    let lingxiTextSource = try JSONDecoder().decode(
+        [AWTRIXAppInfo].self,
+        from: Data(#"[{"name":"lingxi_text","enabled":true,"present":true,"origin":"custom","slot":3,"meta":{"name":"中文点阵文字"}},{"name":"lingxi_text","enabled":true,"present":true,"origin":"custom","slot":8},{"name":"Weather","enabled":true,"present":true,"origin":"script","slot":9,"meta":{"name":"天气"}}]"#.utf8))
+    let lingxiTextSidebarApps = AWTRIXAppInfo.sidebarApps(from: lingxiTextSource)
+    checkEqual(lingxiTextSidebarApps.filter { $0.name == "lingxi_text" }.count, 1,
+               "灵犀文字在同一 AWTRIX 设备的侧边栏只能出现一个入口")
+    checkEqual(lingxiTextSidebarApps.first?.title, "灵犀文字",
+               "AWTRIX 的 lingxi_text 应覆盖旧元数据并统一命名为“灵犀文字”")
+    checkEqual(lingxiTextSidebarApps.map(\.name), ["lingxi_text", "Weather"],
+               "合并灵犀文字入口不得改变其他 AWTRIX 应用的顺序")
+    checkEqual(lingxiTextSidebarApps.last?.title, "天气",
+               "灵犀文字特殊映射不得覆盖其他 AWTRIX 应用的元数据标题")
+
+    let allCards = AWTRIXCardPolicy.cards(apps: sidebarSource, settings: legacyAWTRIX)
+    checkEqual(allCards.map(\.name), ["lingxi_text", "lingxi_home", "Time", "Weather"],
+               "AWTRIX 卡片库包含文字、HA 与可展示的设备应用，去重并过滤后台模块")
+    checkEqual(AWTRIXCardPolicy.visibleCards(apps: sidebarSource, settings: legacyAWTRIX).map(\.name),
+               ["lingxi_text", "Time", "Weather"], "旧 AWTRIX 设备保留原入口且不强制增加未配置 HA")
+    checkEqual(AWTRIXCardPolicy.visibleCards(apps: sidebarSource, settings: AWTRIXSettings()), [],
+               "新 AWTRIX 不因设备已有内置应用而自动添加卡片")
+    var selectedCards = AWTRIXSettings()
+    selectedCards.sidebarAppNames = ["Weather", "lingxi_home", "Time", "Weather", "PreviouslyInstalled"]
+    selectedCards.sanitize()
+    let visibleCards = AWTRIXCardPolicy.visibleCards(apps: sidebarSource, settings: selectedCards)
+    checkEqual(visibleCards.map(\.name), ["Weather", "lingxi_home", "Time", "PreviouslyInstalled"],
+               "AWTRIX 主窗口与菜单栏按同一用户选择顺序展示卡片")
+    checkEqual(visibleCards.map(\.symbol), ["cloud.sun.fill", "house.fill", "clock.fill", "app"],
+               "AWTRIX 卡片语义图标在侧边栏与菜单栏共享")
+    check(visibleCards[0].isInstalled && !visibleCards[0].isInLoop,
+          "AWTRIX 已安装且停用的应用仍可作为卡片管理")
+    check(!visibleCards[1].isInstalled && !visibleCards[3].isInstalled,
+          "AWTRIX 未推送的 HA 与已缺失应用明确标记为未安装")
+    checkEqual(AWTRIXCardPolicy.visibleCards(apps: [], settings: selectedCards).map(\.name),
+               visibleCards.map(\.name), "AWTRIX 暂时离线时仍保留用户添加的卡片和排序")
+    var customTextSettings = AWTRIXSettings()
+    customTextSettings.appName = "my_text"
+    customTextSettings.sidebarAppNames = ["my_text"]
+    checkEqual(AWTRIXCardPolicy.visibleCards(apps: [], settings: customTextSettings).first?.title,
+               "灵犀文字", "AWTRIX 自定义文字应用名仍对应唯一的灵犀文字卡片")
+
+    // “灵犀文字”编辑器属于设备返回的独立应用页，不应继续同时出现在 AWTRIX
+    // 设备设置总页。限定检查 awtrixForm 函数体，允许独立应用页继续包含相同控件。
+    let projectRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let viewsURL = projectRoot.appendingPathComponent("Sources/LinxDisplayApp/Views.swift")
+    let viewsSource = try String(contentsOf: viewsURL, encoding: .utf8)
+    let swiftDeclarationBody: (String) -> Substring? = { marker in
+        guard let declaration = viewsSource.range(of: marker),
+              let openingBrace = viewsSource[declaration.upperBound...].firstIndex(of: "{") else {
+            return nil
+        }
+        var depth = 0
+        var cursor = openingBrace
+        while cursor < viewsSource.endIndex {
+            switch viewsSource[cursor] {
+            case "{": depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 { return viewsSource[declaration.lowerBound...cursor] }
+            default: break
+            }
+            cursor = viewsSource.index(after: cursor)
+        }
+        return nil
+    }
+    if let settingsForm = swiftDeclarationBody("private var awtrixForm: some View") {
+        check(!settingsForm.contains("Section(\"中文点阵文字\")"),
+              "AWTRIX 设备设置页不应再显示独立的中文点阵文字分区")
+        check(!settingsForm.contains("showAWTRIXText()") && !settingsForm.contains("clearAWTRIXText()"),
+              "AWTRIX 设备设置页不应再保留灵犀文字的发送或移除操作")
+    } else {
+        check(false, "应能定位 AWTRIX 设备设置表单以验证灵犀文字已移出")
+    }
+
+    if let textEditor = swiftDeclarationBody(
+        "private func awtrixTextEditorSection(_ route: AWTRIXAppRoute)") {
+        check(!textEditor.contains("awtrixPreviewImages"),
+              "灵犀文字页面不应继续引用可能与设备不一致的本地预览缓存")
+        check(!textEditor.contains("本地文字预览"),
+              "灵犀文字页面只保留设备实时画面，不再显示本地文字预览")
+    } else {
+        check(false, "应能定位灵犀文字编辑区以验证预览来源")
+    }
+
+    let awtrixModelURL = projectRoot
+        .appendingPathComponent("Sources/LinxDisplayApp/AWTRIXAppModel.swift")
+    let awtrixModelSource = try String(contentsOf: awtrixModelURL, encoding: .utf8)
+    let compactAWTRIXModel = awtrixModelSource
+        .components(separatedBy: .whitespacesAndNewlines).joined()
+    check(compactAWTRIXModel.contains(
+        "awtrixDisplayRequestTasks[deviceID]?.cancel()"),
+        "AWTRIX 连续点击应取消同一设备的旧激活目标")
+    check(compactAWTRIXModel.contains(
+        "whileawtrixBusyIDs.contains(deviceID)"),
+        "AWTRIX 刷新或保存期间的应用点击应排队等待而不是丢弃")
+    check(compactAWTRIXModel.contains(
+        "awtrixDisplayRequestPolicy.isCurrent(generation,for:deviceID)"),
+        "AWTRIX 应用激活应以每设备 generation 保证最后一次点击胜出")
+    check(compactAWTRIXModel.contains(
+        "showAWTRIXText(deviceID:UUID)async{awaitenqueueAWTRIXDisplayRequest(.text,deviceID:deviceID)"),
+        "首次点击灵犀文字也应进入同一条 latest-wins 显示队列")
+    check(compactAWTRIXModel.contains(
+        "case.text:awaitperformQueuedAWTRIXTextDisplay"),
+        "AWTRIX 显示队列应实际执行首次灵犀文字生成与推送")
+
+    let awtrixManagementSource = try String(contentsOf: projectRoot
+        .appendingPathComponent("Sources/LinxDisplayApp/AWTRIXCardManagement.swift"), encoding: .utf8)
+    let awtrixMoveSource = awtrixManagementSource
+        .components(separatedBy: "public func moveAWTRIXApp(next:").last?
+        .components(separatedBy: "/// 轮换目标").first ?? ""
+    let compactAWTRIXMove = awtrixMoveSource.components(separatedBy: .whitespacesAndNewlines).joined()
+    check(compactAWTRIXMove.contains("awtrixContentSaveTasks.removeValue(forKey:deviceID)?.cancel()"),
+          "AWTRIX 翻页取消自动保存时应移除任务，不能永久阻止 HA 后台同步")
+    check(compactAWTRIXMove.contains("awtrixDisplayRequestTasks.removeValue(forKey:deviceID)?.cancel()")
+          && compactAWTRIXMove.contains("awtrixDisplayRequestPolicy.issue(for:deviceID)")
+          && compactAWTRIXMove.contains("awtrixDisplayRequestPolicy.isCurrent(generation,for:deviceID)"),
+          "AWTRIX 翻页应使旧显示目标失效，等待期间也遵循最后一次操作")
+
+    let appConfiguration = try JSONDecoder().decode(
+        AWTRIXAppConfiguration.self,
+        from: Data(#"{"name":"Custom-Text","fields":[{"key":"message","type":"text","label":"Text","default":"Hello","value":"你好"},{"key":"speed","type":"slider","label":"Speed","unit":"px/s","min":1,"max":100,"step":0.5,"default":21,"value":15.5},{"key":"enabled","type":"bool","label":"Enabled","default":true,"value":false},{"key":"theme","type":"select","options":["Cloud","Ocean"],"default":"Cloud","value":"Ocean"},{"key":"future","type":"future-control","value":{"mode":"safe","levels":[1,2]}}],"warnings":["示例警告"]}"#.utf8))
+    checkEqual(appConfiguration.name, "Custom-Text", "AWTRIX 应用设置名称解码")
+    checkEqual(appConfiguration.fields.count, 5, "AWTRIX 应用设置字段完整解码")
+    checkEqual(appConfiguration.fields[0].value?.stringValue, "你好", "AWTRIX 文本设置值解码")
+    checkEqual(appConfiguration.fields[1].kind, .slider, "AWTRIX 滑杆字段类型解码")
+    checkEqual(appConfiguration.fields[1].value?.numberValue, 15.5, "AWTRIX 小数设置值解码")
+    checkEqual(appConfiguration.fields[2].value?.boolValue, false, "AWTRIX 布尔设置值解码")
+    checkEqual(AWTRIXJSONValue.integer(15), .number(15.0),
+               "AWTRIX 整数值经滑杆以 Double 回写后不应产生伪修改")
+    checkEqual(appConfiguration.fields[3].options,
+               [.string("Cloud"), .string("Ocean")], "AWTRIX 下拉选项解码")
+    checkEqual(appConfiguration.fields[4].kind, .unsupported("future-control"),
+               "AWTRIX 未知字段类型安全保留")
+    checkEqual(appConfiguration.warnings, ["示例警告"], "AWTRIX 应用配置警告解码")
+
+    let appConfigurationWithoutOptionalArrays = try JSONDecoder().decode(
+        AWTRIXAppConfiguration.self,
+        from: Data(#"{"name":"Simple","fields":[{"key":"title","type":"text","value":"A"}]}"#.utf8))
+    checkEqual(appConfigurationWithoutOptionalArrays.warnings, [],
+               "AWTRIX 旧脚本缺少 warnings 时仍可解码")
+    checkEqual(appConfigurationWithoutOptionalArrays.fields.first?.options, [],
+               "AWTRIX 普通字段缺少 options 时仍可解码")
+
+    let displayFrame = try JSONDecoder().decode(
+        AWTRIXDisplayFrame.self,
+        from: Data(#"{"width":2,"height":2,"pixels":[16711680,65280,255,0]}"#.utf8))
+    check(displayFrame.isValid, "AWTRIX 实时预览帧应校验通过")
+    checkEqual(displayFrame.pixel(x: 0, y: 0), 0xFF0000, "AWTRIX 实时预览 RGB 像素读取")
+    checkEqual(displayFrame.makeImage()?.width, 2, "AWTRIX 实时预览可生成 CGImage")
+    let malformedFrame = try JSONDecoder().decode(
+        AWTRIXDisplayFrame.self,
+        from: Data(#"{"width":32,"height":8,"pixels":[0]}"#.utf8))
+    check(!malformedFrame.isValid && malformedFrame.makeImage() == nil,
+          "AWTRIX 像素数量异常时不生成越界预览")
+
+    let settings = AppSettings()
+    var persisted = AWTRIXSettings()
+    persisted.baseURL = "http://192.168.100.144"
+    persisted.appName = "lingxi_text"
+    persisted.text = "黄悦博"
+    persisted.palette = "Ocean"
+    persisted.brightness = 88
+    persisted.autoBrightness = true
+    persisted.autoBrightnessMinimum = 6
+    persisted.autoBrightnessMaximum = 100
+    persisted.sidebarAppNames = ["Weather", AWTRIXCardPolicy.homeAssistantAppName, "lingxi_text"]
+    persisted.homeAssistant = AWTRIXHomeAssistantSettings(entityIDs: ["sensor.temperature", "light.office"],
+                                                          refreshSeconds: 60, showName: false,
+                                                          foregroundHex: "#12ABCD", autoPush: false,
+                                                          lastUploadedIcon: "lingxi_zh_saved")
+    settings.awtrix = persisted
+    let encoded = try JSONEncoder().encode(settings)
+    let restored = try JSONDecoder().decode(AppSettings.self, from: encoded)
+    checkEqual(restored.awtrix, persisted, "设置 JSON 往返应完整保留 AWTRIX 配置")
+    let legacyRoundTrip = try JSONDecoder().decode(AWTRIXSettings.self,
+                                                  from: JSONEncoder().encode(legacyAWTRIX))
+    check(legacyRoundTrip.sidebarAppNames == nil, "旧设备自动发现卡片策略经过保存后仍保留")
+    let emptyRoundTrip = try JSONDecoder().decode(AWTRIXSettings.self,
+                                                 from: JSONEncoder().encode(AWTRIXSettings()))
+    checkEqual(emptyRoundTrip.sidebarAppNames, [], "用户清空卡片后的空数组不得恢复成自动发现")
+    checkEqual(restored.devices(for: .awtrix).count, 1,
+               "旧版全局 AWTRIX 地址应自动迁移为第一台受管设备")
+    checkEqual(restored.devices(for: .awtrix).first?.settings.awtrix?.baseURL,
+               persisted.baseURL, "迁移后的 AWTRIX 设备应保留原地址")
+    checkEqual(restored.activeAWTRIXDeviceID, restored.devices(for: .awtrix).first?.id,
+               "迁移后第一台 AWTRIX 应成为活动设备")
+
+    let multi = AppSettings()
+    var firstConfig = AWTRIXSettings()
+    firstConfig.baseURL = "192.168.1.21"
+    firstConfig.text = "一号屏"
+    var secondConfig = AWTRIXSettings()
+    secondConfig.baseURL = "192.168.1.22"
+    secondConfig.text = "二号屏"
+    var firstFields = DeviceSettings()
+    firstFields.awtrix = firstConfig
+    var secondFields = DeviceSettings()
+    secondFields.awtrix = secondConfig
+    let first = ManagedDevice(type: .awtrix, name: "AWTRIX 客厅", settings: firstFields)
+    let second = ManagedDevice(type: .awtrix, name: "AWTRIX 书房", settings: secondFields)
+    multi.devices = [first, second]
+    multi.activeAWTRIXDeviceID = first.id
+    first.settings.apply(to: multi, type: .awtrix)
+    _ = multi.switchActiveDevice(of: .awtrix, to: second.id)
+    checkEqual(multi.awtrix.baseURL, "192.168.1.22", "切换 AWTRIX 恢复该设备独立地址")
+    checkEqual(multi.awtrix.text, "二号屏", "切换 AWTRIX 恢复该设备独立文本")
+    checkEqual(multi.devices.first(where: { $0.id == first.id })?.settings.awtrix?.baseURL,
+               "192.168.1.21", "切换 AWTRIX 不污染上一台设备配置")
+    print("  AWTRIX NG 独立控制与中文点阵通过")
+}
+
 // MARK: - 主入口
 
 if CommandLine.arguments.contains("--previews") {
@@ -4755,8 +6401,17 @@ if CommandLine.arguments.contains("--cc-switch-live") {
     dispatchMain()
 }
 
-Task {
+// macOS 27 的 cooperative executor 工作线程默认栈较小，vImage 在大型
+// CoreGraphics 离屏渲染中可能触发栈保护页。渲染回归测试固定在主线程运行，
+// 也与 AppKit/SwiftUI 的线程约束保持一致。
+Task { @MainActor in
     do {
+        if CommandLine.arguments.contains("--liquid-glass-only") {
+            try await testLiquidGlassRendering()
+            failures.forEach { print("失败：\($0)") }
+            print("Liquid Glass：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         testThemes()
         try testRenderAllModesAndThemes()
         try testRenderCustomImage()
@@ -4767,6 +6422,8 @@ Task {
         testSystemMonitor()
         await testRand0SessionLifecycle()
         testSettingsAndUtilities()
+        try testCardRenderingSettings()
+        try await testLiquidGlassRendering()
         try testMigration()
         try testQuotaParse()
         await testQuotaLiveFetch()
@@ -4794,13 +6451,20 @@ Task {
         try testDeviceManagement()
         try testPraiseAndTaskFont()
         try testSidebarSettings()
+        testMenuBarNamingPolicy()
         try testPomodoroCentering()
         try testGlobalShortcuts()
+        try testAWTRIXStandalone()
+        try await testAWTRIXTextRendering()
+        try testAWTRIXArrangementRecovery()
+        try await testAWTRIXNetworking()
         try testHomeAssistant()
         try testFormlabs()
         try testAIMacScreen()
         await testUsageDataAggregator()
         try testNowPlaying()
+        try await testNowPlayingRequestCoordination()
+        testNowPlayingEventThrottleAndKeyboardTargets()
         await testNowPlayingLiveFetch()
     } catch {
         failures.append("测试执行抛出异常：\(error)")
@@ -4843,6 +6507,7 @@ func testAIMacScreen() throws {
                "新 AI Mac 小屏幕默认不展示全部侧栏卡片")
     checkEqual(AIMacScreenDeviceSettings().cardRotationModes, [],
                "新 AI Mac 小屏幕默认不启用任何卡片轮换")
+    try testAIMacColorCalibration()
 
     checkEqual(EmbeddedAIMacFirmware.version, "0.8.6-native-now-playing",
                "内置小屏幕固件版本稳定")
@@ -4859,6 +6524,32 @@ func testAIMacScreen() throws {
     let bundledFirmware = try Data(contentsOf: bundledFirmwareURL)
     check(EmbeddedAIMacFirmware.validate(bundledFirmware),
           "实际打包的小屏幕固件必须与应用内的版本和 SHA-256 一致")
+    checkEqual(EmbeddedM5StickS3Firmware.version, "1.5.5-scheme-18",
+               "内置 StickS3 固件版本稳定")
+    checkEqual(EmbeddedM5StickS3Firmware.flashAddress, "0x0",
+               "StickS3 完整镜像从 0x0 写入")
+    checkEqual(EmbeddedM5StickS3Firmware.helperName, EmbeddedAIMacFirmware.helperName,
+               "AI Mac 与 StickS3 共用新版离线刷机助手")
+    check(!EmbeddedM5StickS3Firmware.validate(Data()),
+          "空数据不能通过 StickS3 固件完整性校验")
+    let bundledM5FirmwareURL = repositoryRoot
+        .appendingPathComponent("Resources/Firmware", isDirectory: true)
+        .appendingPathComponent(EmbeddedM5StickS3Firmware.fileName)
+    let bundledM5Firmware = try Data(contentsOf: bundledM5FirmwareURL)
+    check(EmbeddedM5StickS3Firmware.validate(bundledM5Firmware),
+          "实际打包的 StickS3 完整镜像必须通过 SHA-256 校验")
+    checkEqual(bundledM5Firmware.first, 0xE9,
+               "StickS3 完整镜像包含 ESP32-S3 bootloader 头")
+    checkEqual(bundledM5Firmware[0x8000], 0xAA,
+               "StickS3 完整镜像包含分区表 magic 首字节")
+    checkEqual(bundledM5Firmware[0x8001], 0x50,
+               "StickS3 完整镜像包含分区表 magic 次字节")
+    checkEqual(bundledM5Firmware[0x10000], 0xE9,
+               "StickS3 完整镜像在应用分区包含 ESP image 头")
+    var applicationOnlyImage = Data(repeating: 0xFF, count: 0x10001)
+    applicationOnlyImage[0] = 0xE9
+    check(!EmbeddedM5StickS3Firmware.validate(applicationOnlyImage),
+          "仅应用分区镜像不得通过完整固件校验")
     let provisionImage = try AIMacWiFiProvisioning.makeImage(
         ssid: "Lingxi-2.4G", password: "test-only-password")
     checkEqual(provisionImage.count, 4096, "Wi-Fi 配网区固定为一个 4KB 扇区")
@@ -4923,6 +6614,13 @@ func testAIMacScreen() throws {
         "/dev/cu.SLAB_USBtoUART", "/dev/cu.usbmodem2101",
         "/dev/cu.CH341", "/dev/cu.cp210-test"
     ]), "刷机串口只保留支持的 USB 设备")
+    let m5Ports = ESP8266FirmwareFlasher.m5StickS3SerialPorts(in: [
+        "cu.usbmodem2101", "cu.usbmodem-StickS3", "cu.usbserial-11440",
+        "cu.wchusbserial1420", "cu.Bluetooth-Incoming-Port"
+    ])
+    checkEqual(Set(m5Ports.map(\.path)), Set([
+        "/dev/cu.usbmodem2101", "/dev/cu.usbmodem-StickS3"
+    ]), "StickS3 一键刷机只展示原生 USB CDC 串口")
 
     checkEqual(AIMacScreenSupport.normalizedHost(" http://192.168.1.66/path "),
                "192.168.1.66", "小屏幕地址去协议与路径")
@@ -4930,8 +6628,9 @@ func testAIMacScreen() throws {
                "screen.local", "小屏幕域名地址标准化")
 
     let rgbInfo = """
-    {"device":"esp8266-ai-screen","screen":{"width":240,"height":240},
+    {"device":"esp8266-ai-screen","mode":"external","screen":{"width":240,"height":240},
      "brightness":73,
+     "image_api":{"path":"/image/upload","frame_rev":42},
      "rgb565_api":{"path":"/frame/rgb565","content_type":"application/x-rgb565",
      "byte_order":"big-endian","bytes":115200},
      "native_clock_api":{"path":"/api/clock","device_rendered":true,"tick_ms":1000},
@@ -4945,6 +6644,24 @@ func testAIMacScreen() throws {
                "能力接口使用固件声明的 RGB565 路径")
     check(rgbCapabilities.supportsBrightnessControl, "0.8.1 能力接口识别背光控制")
     checkEqual(rgbCapabilities.brightnessLevel, 73, "读取小屏幕当前亮度")
+    checkEqual(rgbCapabilities.activeMode, "external", "读取小屏幕当前实际显示模式")
+    checkEqual(rgbCapabilities.frameRevision, 42, "读取小屏幕本次启动的外部画面代次")
+    check(!AIMacScreenSupport.requiresPrimeFrame(
+        activeMode: rgbCapabilities.activeMode,
+        frameRevision: rgbCapabilities.frameRevision, expectedMode: "external"),
+        "设备仍保存外部画面时沿用内容哈希去重")
+    check(AIMacScreenSupport.requiresPrimeFrame(
+        activeMode: "none", frameRevision: 0, expectedMode: "external"),
+        "小屏幕重启回到空模式后必须补发第一帧")
+    check(AIMacScreenSupport.requiresPrimeFrame(
+        activeMode: "external", frameRevision: 0, expectedMode: "external"),
+        "小屏幕帧代次归零后必须补发第一帧")
+    check(AIMacScreenSupport.requiresPrimeFrame(
+        activeMode: "none", frameRevision: nil, expectedMode: "clock"),
+        "小屏幕重启后必须重新启用设备端时钟")
+    check(!AIMacScreenSupport.requiresPrimeFrame(
+        activeMode: nil, frameRevision: nil, expectedMode: "external"),
+        "旧固件缺少状态字段时保持兼容")
     check(rgbCapabilities.supportsNativeClock, "0.8.5 能力接口识别设备端实时时钟")
     checkEqual(rgbCapabilities.nativeClockURL?.path, "/api/clock",
                "设备端时钟使用固件声明的控制路径")
@@ -5084,6 +6801,56 @@ func testAIMacScreen() throws {
     } else {
         check(false, "系统监控卡片缺少通用模块配方")
     }
+    let allSystemModules: [CanvasModule] = [.cpu, .memory, .disk, .network, .uptime]
+    let oldSystemSettings = try JSONDecoder().decode(DeviceSettings.self, from: Data("{}".utf8))
+    checkEqual(oldSystemSettings.aiMacSystemMonitorModules, allSystemModules,
+               "旧 AI Mac 配置没有系统开关字段时保留全部显示")
+    let systemFields: [(CanvasModule, WritableKeyPath<DeviceSettings, Bool?>)] = [
+        (.cpu, \.showCpu), (.memory, \.showMemory), (.disk, \.showDisk),
+        (.network, \.showNetwork), (.uptime, \.showUptime)
+    ]
+    for (module, keyPath) in systemFields {
+        var hidden = DeviceSettings()
+        hidden[keyPath: keyPath] = false
+        checkEqual(hidden.aiMacSystemMonitorModules, allSystemModules.filter { $0 != module },
+                   "AI Mac 关闭监控项目会移除实际渲染模块-\(module.title)")
+    }
+    var firstSystemSettings = DeviceSettings()
+    for (_, keyPath) in systemFields { firstSystemSettings[keyPath: keyPath] = false }
+    check(firstSystemSettings.aiMacSystemMonitorModules.isEmpty,
+          "AI Mac 全部关闭后不会偷偷回退显示所有监控内容")
+    firstSystemSettings.showCpu = true
+    firstSystemSettings.aiMacScreen = AIMacScreenDeviceSettings(pushIntervalSeconds: 3)
+    let firstSystemDevice = ManagedDevice(type: .aiMacScreen, name: "桌面小屏幕",
+                                         settings: firstSystemSettings)
+    var secondSystemSettings = DeviceSettings()
+    for (_, keyPath) in systemFields { secondSystemSettings[keyPath: keyPath] = false }
+    secondSystemSettings.showMemory = true
+    secondSystemSettings.showNetwork = true
+    secondSystemSettings.aiMacScreen = AIMacScreenDeviceSettings(pushIntervalSeconds: 9)
+    let secondSystemDevice = ManagedDevice(type: .aiMacScreen, name: "床头小屏幕",
+                                          settings: secondSystemSettings)
+    let independentSystems = AppSettings()
+    independentSystems.showCpu = false
+    independentSystems.showDisk = false
+    independentSystems.dynamicUploadSeconds = 17
+    independentSystems.devices = [firstSystemDevice, secondSystemDevice]
+    independentSystems.activeAIMacScreenDeviceID = firstSystemDevice.id
+    independentSystems.switchActiveDevice(of: .aiMacScreen, to: secondSystemDevice.id)
+    independentSystems.captureActiveDeviceSnapshots()
+    independentSystems.switchActiveDevice(of: .aiMacScreen, to: firstSystemDevice.id)
+    let savedSystems = try JSONDecoder().decode(AppSettings.self,
+        from: JSONEncoder().encode(independentSystems))
+    checkEqual(savedSystems.devices[0].settings.aiMacSystemMonitorModules, [.cpu],
+               "切换及重启后第一台小屏幕仍只显示 CPU")
+    checkEqual(savedSystems.devices[1].settings.aiMacSystemMonitorModules, [.memory, .network],
+               "第二台小屏幕系统监控选择不被第一台覆盖")
+    checkEqual(savedSystems.devices[0].settings.aiMacScreen?.pushIntervalSeconds, 3,
+               "第一台小屏幕系统推送周期独立保存")
+    checkEqual(savedSystems.devices[1].settings.aiMacScreen?.pushIntervalSeconds, 9,
+               "第二台小屏幕系统推送周期独立保存")
+    check(!savedSystems.showCpu && !savedSystems.showDisk && savedSystems.dynamicUploadSeconds == 17,
+          "切换小屏幕不会改写键盘系统监控开关与推送周期")
     let sanitizedCards = CardCapabilityRegistry.sanitized(
         [DisplayMode.codex.rawValue, DisplayMode.codex.rawValue, 999,
          DisplayMode.bambuLab2.rawValue], available: squareModes)
@@ -5306,6 +7073,143 @@ func testAIMacScreen() throws {
     print("  AI Mac 240×240 小屏幕通过")
 }
 
+// MARK: - AI Mac 每设备色彩校准
+
+func testAIMacColorCalibration() throws {
+    let defaults = AIMacScreenDeviceSettings()
+    checkEqual(defaults.saturationPercent, 100, "AI Mac 新设备默认饱和度为 100%")
+    checkEqual(defaults.contrastPercent, 100, "AI Mac 新设备默认对比度为 100%")
+    check(!defaults.hasColorCalibration, "AI Mac 默认不启用色彩处理")
+    let legacy = try JSONDecoder().decode(AIMacScreenDeviceSettings.self,
+        from: Data(#"{"mode":"card"}"#.utf8))
+    checkEqual(legacy.saturationPercent, 100, "旧 AI Mac 配置缺饱和度时保持默认颜色")
+    checkEqual(legacy.contrastPercent, 100, "旧 AI Mac 配置缺对比度时保持默认颜色")
+
+    var calibrated = AIMacScreenDeviceSettings(saturationPercent: 165, contrastPercent: 125)
+    let roundTrip = try JSONDecoder().decode(AIMacScreenDeviceSettings.self,
+        from: JSONEncoder().encode(calibrated))
+    checkEqual(roundTrip, calibrated, "AI Mac 色彩校准配置完整编解码往返")
+    check(roundTrip.hasColorCalibration, "非默认色彩参数启用校准")
+    let extremes = AIMacScreenDeviceSettings(saturationPercent: -50, contrastPercent: 999)
+    checkEqual(extremes.saturationPercent, 50, "AI Mac 构造时饱和度钳制到下限")
+    checkEqual(extremes.contrastPercent, 150, "AI Mac 构造时对比度钳制到上限")
+    calibrated.saturationPercent = 250
+    calibrated.contrastPercent = -10
+    calibrated.clamp()
+    checkEqual(calibrated.saturationPercent, 200, "AI Mac 修改后饱和度钳制到上限")
+    checkEqual(calibrated.contrastPercent, 75, "AI Mac 修改后对比度钳制到下限")
+    let malformed = try JSONDecoder().decode(AIMacScreenDeviceSettings.self,
+        from: Data(#"{"saturationPercent":999,"contrastPercent":-999}"#.utf8))
+    checkEqual(malformed.saturationPercent, 200, "AI Mac 解码时钳制饱和度越界值")
+    checkEqual(malformed.contrastPercent, 75, "AI Mac 解码时钳制对比度越界值")
+
+    var firstFields = DeviceSettings()
+    firstFields.aiMacScreen = roundTrip
+    let first = ManagedDevice(type: .aiMacScreen, name: "色彩屏幕一", settings: firstFields)
+    var secondFields = DeviceSettings()
+    secondFields.aiMacScreen = AIMacScreenDeviceSettings(saturationPercent: 75, contrastPercent: 90)
+    let second = ManagedDevice(type: .aiMacScreen, name: "色彩屏幕二", settings: secondFields)
+    let appSettings = AppSettings()
+    appSettings.devices = [first, second]
+    appSettings.activeAIMacScreenDeviceID = first.id
+    appSettings.switchActiveDevice(of: .aiMacScreen, to: second.id)
+    appSettings.captureActiveDeviceSnapshots()
+    appSettings.switchActiveDevice(of: .aiMacScreen, to: first.id)
+    let decodedApp = try JSONDecoder().decode(AppSettings.self,
+        from: JSONEncoder().encode(appSettings))
+    checkEqual(decodedApp.devices[0].settings.aiMacScreen?.saturationPercent, 165,
+               "切换与保存后第一台 AI Mac 保留自身饱和度")
+    checkEqual(decodedApp.devices[0].settings.aiMacScreen?.contrastPercent, 125,
+               "切换与保存后第一台 AI Mac 保留自身对比度")
+    checkEqual(decodedApp.devices[1].settings.aiMacScreen?.saturationPercent, 75,
+               "第二台 AI Mac 饱和度不被当前设备覆盖")
+    checkEqual(decodedApp.devices[1].settings.aiMacScreen?.contrastPercent, 90,
+               "第二台 AI Mac 对比度不被当前设备覆盖")
+
+    func fixture(_ pixels: [UInt8]) -> CGImage {
+        CGImage(width: pixels.count / 4, height: 1, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: pixels.count, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Big.rawValue
+                    | CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: CGDataProvider(data: Data(pixels) as CFData)!,
+                decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    }
+    func pixels(_ image: CGImage) -> [UInt8] {
+        let context = CGContext(data: nil, width: image.width, height: image.height,
+                                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                                    | CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return Array(UnsafeBufferPointer(start: context.data!.assumingMemoryBound(to: UInt8.self),
+                                         count: image.width * image.height * 4))
+    }
+    let originalPixels: [UInt8] = [160, 110, 80, 255, 64, 64, 64, 255,
+                                  192, 192, 192, 255, 40, 60, 80, 128,
+                                  0, 0, 0, 0]
+    let image = fixture(originalPixels)
+    let unchanged = AIMacColorCalibration.apply(to: image, saturationPercent: 100, contrastPercent: 100)
+    check(unchanged === image, "默认色彩处理直接复用 CGImage，不重绘或分配新帧")
+    checkEqual(pixels(unchanged), originalPixels, "默认色彩处理保持全部像素及透明度无损")
+    let muted = pixels(AIMacColorCalibration.apply(to: image, saturationPercent: 50, contrastPercent: 100))
+    let vivid = pixels(AIMacColorCalibration.apply(to: image, saturationPercent: 175, contrastPercent: 100))
+    check(Int(muted[0]) - Int(muted[2]) < 80, "降低饱和度会降低彩色像素通道差值")
+    check(Int(vivid[0]) - Int(vivid[2]) > 80, "提高饱和度会增加彩色像素通道差值")
+    checkEqual(Array(vivid[4...6]), [64, 64, 64], "只调整饱和度不会改变中性灰像素")
+    let highContrastImage = AIMacColorCalibration.apply(to: image,
+        saturationPercent: 100, contrastPercent: 150)
+    let highContrast = pixels(highContrastImage)
+    check(highContrast[4] < 64 && highContrast[8] > 192,
+          "提高对比度会压暗暗部并提亮亮部")
+    checkEqual(highContrastImage.width, image.width, "色彩处理保持画面宽度")
+    checkEqual(highContrastImage.height, image.height, "色彩处理保持画面高度")
+    for offset in stride(from: 0, to: originalPixels.count, by: 4) {
+        checkEqual(vivid[offset + 3], originalPixels[offset + 3], "色彩处理保留 alpha-\(offset / 4)")
+        check((0..<3).allSatisfy { vivid[offset + $0] <= vivid[offset + 3] },
+              "色彩处理保留合法预乘 alpha 通道-\(offset / 4)")
+    }
+    checkEqual(pixels(AIMacColorCalibration.apply(to: image, saturationPercent: -999, contrastPercent: 999)),
+               pixels(AIMacColorCalibration.apply(to: image, saturationPercent: 50, contrastPercent: 150)),
+               "色彩处理器自身也钳制不安全的参数")
+
+    let rgbImage = CGImage(width: 2, height: 1, bitsPerComponent: 8, bitsPerPixel: 24,
+        bytesPerRow: 6, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+        provider: CGDataProvider(data: Data([160, 110, 80, 64, 64, 64]) as CFData)!,
+        decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    let calibratedRGB = pixels(AIMacColorCalibration.apply(to: rgbImage,
+        saturationPercent: 175, contrastPercent: 100))
+    checkEqual(calibratedRGB, Array(vivid.prefix(8)),
+               "无 alpha 的 RGB 图像与等价 RGBA 图像使用同一套校准结果")
+
+    let primary565 = AIMacScreenSupport.decodeRGB565(
+        Data([0xF8, 0x00, 0x07, 0xE0, 0x00, 0x1F]), width: 3, height: 1)
+    check(primary565 != nil, "AI Mac 最终 RGB565 传输帧可反解为预览")
+    if let primary565 {
+        checkEqual(pixels(primary565), [
+            255, 0, 0, 255,
+            0, 255, 0, 255,
+            0, 0, 255, 255
+        ], "RGB565 预览使用位复制扩展并保持完整通道范围")
+    }
+    check(AIMacScreenSupport.decodeRGB565(Data([0x00]), width: 1, height: 1) == nil,
+          "RGB565 字节长度不完整时拒绝生成误导性预览")
+
+    for clockMode in [AIMacScreenContentMode.clock, .card] {
+        let clockSettings = AIMacScreenDeviceSettings(mode: clockMode,
+            saturationPercent: 200, contrastPercent: 150,
+            cardModeRawValue: DisplayMode.aiMacClock.rawValue)
+        check(AIMacColorCalibration.apply(to: image, settings: clockSettings) === image,
+              "原生桌面时钟保持预览与固件一致，不应用软件色彩校准-\(clockMode.rawValue)")
+    }
+    let emojiSettings = AIMacScreenDeviceSettings(mode: .card,
+        saturationPercent: 175, contrastPercent: 100,
+        cardModeRawValue: DisplayMode.emojiWallpaper.rawValue)
+    checkEqual(pixels(AIMacColorCalibration.apply(to: image, settings: emojiSettings)), vivid,
+               "Emoji 画面参与设备色彩校准而不是被时钟绕过规则跳过")
+}
+
 // MARK: - Formlabs 云端模式
 
 func testFormlabs() throws {
@@ -5384,20 +7288,45 @@ func testFormlabs() throws {
     signedB.thumbnailURL = "https://cdn.example/model.png?signature=new"
     check(FormlabsTaskCachePolicy.isSameTask(signedA, signedB),
           "Formlabs 缩略图签名变化不应误判为新任务")
+    var metadataPending = FormlabsPrintInfo(name: "Metadata Drift", status: "printing")
+    var metadataFilled = metadataPending
+    metadataFilled.layerCount = 800
+    metadataFilled.estimatedDurationMS = 7_200_000
+    check(FormlabsTaskCachePolicy.isSameTask(metadataPending, metadataFilled),
+          "Formlabs 同一任务补齐层数和预计时长后仍应保持同一身份")
+    check(!FormlabsTaskCachePolicy.isDefinitelyDifferentTask(metadataPending, metadataFilled),
+          "Formlabs 元数据补齐不得清除完成宽限计时")
+    metadataPending.name = ""
+    metadataFilled.name = ""
+    check(!FormlabsTaskCachePolicy.isSameTask(metadataPending, metadataFilled),
+          "Formlabs 空身份不能伪装成已确认的同一任务")
+    check(!FormlabsTaskCachePolicy.isDefinitelyDifferentTask(metadataPending, metadataFilled),
+          "Formlabs 空身份属于未知而不是已确认的新任务")
+    let repeatedNameOldRun = FormlabsPrintInfo(runID: "run-1", name: "Repeated Model")
+    let repeatedNameNewRun = FormlabsPrintInfo(runID: "run-2", name: "Repeated Model")
+    check(FormlabsTaskCachePolicy.isDefinitelyDifferentTask(repeatedNameOldRun, repeatedNameNewRun),
+          "Formlabs 稳定 run ID 应区分同名的连续任务")
+    check(FormlabsDeviceInfo.resolvedIsConnected(explicit: nil, status: "unknown"),
+          "Formlabs 缺少连接字段的未知新状态应保守参与轮播")
+    check(!FormlabsDeviceInfo.resolvedIsConnected(explicit: false, status: "printing"),
+          "Formlabs API 明确断开时不能被打印状态覆盖")
 
     let cacheBase = FileManager.default.temporaryDirectory
         .appendingPathComponent("linx-formlabs-cache-test-\(UUID().uuidString)")
     let cacheStore = SettingsStore(dataDirectory: cacheBase)
     let cacheID = UUID()
+    let completionMarker = Date(timeIntervalSince1970: 1_790_000_000)
     let cachedSnapshot = FormlabsSnapshot(
         device: FormlabsDeviceInfo(id: "CACHE-PRINTER"),
         print: retainedCompleted, thumbnail: Data([1, 2, 3, 4]), sampledAt: Date(),
-        cloudError: "不应持久化")
+        cloudError: "不应持久化", completionObservedAt: completionMarker)
     cacheStore.saveFormlabsTaskCache([cacheID: cachedSnapshot])
     let restoredCache = cacheStore.loadFormlabsTaskCache()[cacheID]
     checkEqual(restoredCache?.print?.name, "Dental Model", "Formlabs 最近任务缓存可跨启动恢复")
     checkEqual(restoredCache?.thumbnail, Data([1, 2, 3, 4]), "Formlabs 最近任务封面可跨启动恢复")
     checkEqual(restoredCache?.cloudError, nil, "Formlabs 缓存不保留临时云端错误")
+    checkEqual(restoredCache?.completionObservedAt, completionMarker,
+               "Formlabs 完成绝对时间应跨重启保留且不得重置")
 
     var deviceSettings = DeviceSettings()
     deviceSettings.formlabsConnection = FormlabsConnectionSettings(
@@ -5562,6 +7491,31 @@ func testGlobalShortcuts() throws {
                "⌃⌥→", "方向键显示")
     checkEqual(GlobalShortcut(keyCode: 18, modifiers: GlobalShortcut.cmdKey).displayString, "⌘1", "⌘1 显示")
     checkEqual(GlobalShortcut(keyCode: 122, modifiers: 0).displayString, "F1", "功能键显示")
+    checkEqual(GlobalShortcut(keyCode: 59, modifiers: 0).displayString, "左⌃", "左 Control 单键显示")
+    checkEqual(GlobalShortcut(keyCode: 62, modifiers: 0).displayString, "右⌃", "右 Control 单键显示")
+    checkEqual(GlobalShortcut(keyCode: 58, modifiers: 0).displayString, "左⌥", "左 Option 单键显示")
+    checkEqual(GlobalShortcut(keyCode: 54, modifiers: 0).displayString, "右⌘", "右 Command 单键显示")
+    checkEqual(GlobalShortcut(keyCode: 55, modifiers: GlobalShortcut.optionKey).displayString,
+               "⌥左⌘", "Option + 左 Command 修饰键组合显示")
+    check(GlobalShortcut.isModifierKey(61), "右 Option 识别为物理修饰键")
+    checkEqual(GlobalShortcut.modifierMask(for: 62), GlobalShortcut.controlKey,
+               "右 Control 映射到 Control 状态")
+    checkEqual(GlobalShortcut(keyCode: 59, modifiers: 0).hidModifierByte, 0x01,
+               "左 Control 映射到 BLE HID modifier")
+    checkEqual(GlobalShortcut(keyCode: 62, modifiers: 0).hidModifierByte, 0x10,
+               "右 Control 映射到 BLE HID modifier")
+    checkEqual(GlobalShortcut(keyCode: 55, modifiers: GlobalShortcut.optionKey).hidModifierByte,
+               0x0C, "Option + 左 Command 映射到 BLE HID modifier 组合")
+    checkEqual(GlobalShortcut(keyCode: 49, modifiers: GlobalShortcut.controlKey).hidModifierByte,
+               nil, "普通按键组合不误走设备 HID 修饰键路径")
+    checkEqual(GlobalShortcut(keyCode: 49, modifiers: GlobalShortcut.controlKey)
+        .hidKeyboardReport?.modifiers, 0x01, "Control+Space 映射到 HID 修饰键")
+    checkEqual(GlobalShortcut(keyCode: 49, modifiers: GlobalShortcut.controlKey)
+        .hidKeyboardReport?.key, 0x2C, "Control+Space 映射到 HID Space")
+    checkEqual(GlobalShortcut(keyCode: 124, modifiers: 0).hidKeyboardReport?.key,
+               0x4F, "右方向键映射到 HID Usage")
+    checkEqual(GlobalShortcut(keyCode: 54, modifiers: 0).hidKeyboardReport?.modifiers,
+               0x80, "右 Command 保持物理左右位置")
 
     // 设置往返
     let rt = AppSettings()
@@ -8324,4 +10278,6 @@ func testPomodoroCentering() throws {
 
 
 
-dispatchMain()
+// SwiftUI 离屏渲染需要真正的主线程继续服务运行循环；dispatchMain() 会退出
+// 当前主线程，使某些 GeometryReader/AppKit 路径等待不到它而卡住。
+RunLoop.main.run()

@@ -9,7 +9,8 @@ let package = Package(
             name: "LinxDisplayCore",
             path: "Sources/LinxDisplayCore",
             linkerSettings: [
-                .linkedFramework("JavaScriptCore")
+                .linkedFramework("JavaScriptCore"),
+                .linkedFramework("CoreBluetooth")
             ]
         ),
         .executableTarget(

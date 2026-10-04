@@ -14,6 +14,27 @@ public enum EmbeddedAIMacFirmware {
     }
 }
 
+/// 多屏灵犀内置的 M5Stack StickS3 完整刷机镜像。
+/// 镜像已合并 bootloader、分区表、boot_app0 与应用，统一从 0x0 写入。
+public enum EmbeddedM5StickS3Firmware {
+    public static let version = "1.5.5-scheme-18"
+    public static let fileName = "m5-sticks3-1.5.5.bin"
+    public static let helperName = EmbeddedAIMacFirmware.helperName
+    public static let sha256 = "7fe0b7e187076ba2eaa28cd8ae5cb051ff8c3ea301d90b3bc566a45279522697"
+    public static let flashAddress = "0x0"
+
+    public static func validate(_ data: Data) -> Bool {
+        // 一键刷机从 0x0 写入，因此这里必须是完整镜像，而不是 PlatformIO
+        // 默认生成、应写在 0x10000 的单独应用分区。分区表头 AA 50 与
+        // 两个 ESP image magic 能在真正写入硬件前拦住错误产物。
+        guard data.count > 0x10000,
+              data[0] == 0xE9,
+              data[0x8000] == 0xAA, data[0x8001] == 0x50,
+              data[0x10000] == 0xE9 else { return false }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == sha256
+    }
+}
+
 public enum AIMacWiFiProvisioningError: Error, LocalizedError, Equatable {
     case emptySSID
     case ssidTooLong
@@ -157,7 +178,7 @@ public enum ESP8266FlashError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .noPort: return "请选择通过 USB 连接的小屏幕串口。"
+        case .noPort: return "请选择通过 USB 连接的设备串口。"
         case .invalidPort: return "所选串口已经断开，请重新连接设备并刷新列表。"
         case .missingResource(let name): return "应用内置资源缺失：\(name)。"
         case .invalidFirmware: return "内置固件完整性校验失败，已停止刷写。"
@@ -201,6 +222,19 @@ public final class ESP8266FirmwareFlasher {
     public static func discoverSerialPorts() -> [ESPSerialPort] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: "/dev")) ?? []
         return serialPorts(in: names)
+    }
+
+    /// StickS3 使用 ESP32-S3 原生 USB CDC；过滤掉 CH340/CP210x 等其他串口，
+    /// 降低同一台 Mac 上误选、误刷打印机或其他开发板的风险。
+    public static func m5StickS3SerialPorts(in deviceNames: [String]) -> [ESPSerialPort] {
+        serialPorts(in: deviceNames).filter {
+            $0.displayName.lowercased().hasPrefix("cu.usbmodem")
+        }
+    }
+
+    public static func discoverM5StickS3SerialPorts() -> [ESPSerialPort] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: "/dev")) ?? []
+        return m5StickS3SerialPorts(in: names)
     }
 
     public func cancel() {
@@ -323,6 +357,99 @@ public final class ESP8266FirmwareFlasher {
                     continuation.resume(returning: ESP8266FlashResult(
                         macAddress: mac,
                         expectedHostname: mac.flatMap(AIMacWiFiProvisioning.hostname(forMAC:))))
+                } else {
+                    continuation.resume(throwing: ESP8266FlashError.failed(
+                        Self.conciseFailure(from: fullOutput)))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: ESP8266FlashError.helperLaunch(
+                    error.localizedDescription))
+            }
+        }
+    }
+
+    /// 刷入正式版 ESP32-S3 StickS3。固件是从 0x0 开始的完整合并镜像，
+    /// 刷完使用 watchdog reset，避免原生 USB 设备停留在 ROM 下载模式。
+    public func flashM5StickS3(
+        port: ESPSerialPort,
+        helperURL: URL,
+        firmwareURL: URL,
+        progress: @escaping @Sendable (Double) -> Void,
+        log: @escaping @Sendable (String) -> Void
+    ) async throws {
+        guard FileManager.default.fileExists(atPath: port.path) else {
+            throw ESP8266FlashError.invalidPort
+        }
+        guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
+            throw ESP8266FlashError.missingResource(EmbeddedM5StickS3Firmware.helperName)
+        }
+        guard let firmware = try? Data(contentsOf: firmwareURL),
+              EmbeddedM5StickS3Firmware.validate(firmware) else {
+            throw ESP8266FlashError.invalidFirmware
+        }
+
+        let process = Process()
+        let outputPipe = Pipe()
+        process.executableURL = helperURL
+        process.arguments = [
+            "--chip", "esp32s3",
+            "--port", port.path,
+            "--baud", "460800",
+            "--before", "default_reset",
+            "--after", "watchdog_reset",
+            "write_flash",
+            "--flash_mode", "dio",
+            "--flash_freq", "80m",
+            "--flash_size", "8MB",
+            EmbeddedM5StickS3Firmware.flashAddress,
+            firmwareURL.path
+        ]
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+
+        setRunningProcess(process)
+        defer { clearRunningProcess(if: process) }
+
+        final class OutputState: @unchecked Sendable {
+            let lock = NSLock()
+            var text = ""
+        }
+        let state = OutputState()
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+                state.lock.lock()
+                state.text += chunk
+                state.lock.unlock()
+                log(chunk)
+                if let percent = Self.latestPercent(in: chunk) {
+                    progress(Double(percent) / 100.0)
+                }
+            }
+            process.terminationHandler = { finished in
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                let tail = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                if let tailText = String(data: tail, encoding: .utf8), !tailText.isEmpty {
+                    state.lock.lock()
+                    state.text += tailText
+                    state.lock.unlock()
+                    log(tailText)
+                }
+                state.lock.lock()
+                let fullOutput = state.text
+                state.lock.unlock()
+                if finished.terminationReason == .uncaughtSignal {
+                    continuation.resume(throwing: ESP8266FlashError.cancelled)
+                } else if finished.terminationStatus == 0 {
+                    progress(1)
+                    continuation.resume()
                 } else {
                     continuation.resume(throwing: ESP8266FlashError.failed(
                         Self.conciseFailure(from: fullOutput)))

@@ -5,18 +5,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# 始终使用当前 Command Line Tools 的 macOS SDK。不能从调用环境继承旧 SDKROOT：
-# 用 15.x SDK 构建虽然仍能运行在 macOS 26，却会让 SwiftUI 进入旧版兼容外观，
-# NavigationSplitView 侧边栏因此与 03:28 的 SDK 26.5 构建不一致。
-SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+# 优先使用当前工具链的最新 SDK，不从调用环境继承旧 SDKROOT。
+# 当前某些 CLT 27 版本缺少 SDK 27 需要的 SwiftUIMacros，选择器会对这一
+# 个明确条件回退至 26.5；安装完整 Xcode 27 后会自动改用 SDK 27。
+SDKROOT="$("$ROOT/scripts/select-macos-sdk")"
 export SDKROOT
 export SWIFT_EXEC="$ROOT/scripts/swiftc-sdk-compat"
-# 不依赖用户目录缓存权限；同时按 SDK 单独建缓存，防止旧 SDK 模块串入构建。
-export CLANG_MODULE_CACHE_PATH="$ROOT/.build/clang-module-cache-26"
-export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/swiftpm-module-cache-26"
+# 明确保留 macOS 26 作为最低版本：使用 SDK 27 构建不应该让产物变成仅 macOS 27 可用。
+export MACOSX_DEPLOYMENT_TARGET="26.0"
+# 不依赖用户目录缓存权限；同时按 SDK 单独建缓存，防止 26/27 SDK 模块串入。
+SDK_VERSION="$(plutil -extract Version raw "$SDKROOT/SDKSettings.plist" 2>/dev/null \
+  || xcrun --sdk macosx --show-sdk-version)"
+SDK_CACHE_TAG="${SDK_VERSION//./_}"
+export CLANG_MODULE_CACHE_PATH="$ROOT/.build/clang-module-cache-$SDK_CACHE_TAG"
+export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/swiftpm-module-cache-$SDK_CACHE_TAG"
 mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
-echo "==> swift build -c release（SDK $(xcrun --sdk macosx --show-sdk-version)）"
-swift build -c release --product LinxDisplayApp --disable-sandbox
+echo "==> swift build -c release（SDK ${SDK_VERSION}，最低 macOS ${MACOSX_DEPLOYMENT_TARGET}）"
+# 分发包不携带 dSYM；在 Documents / File Provider 目录中生成 dSYM 还可能被系统
+# 扩展属性拦截。使用 SwiftPM 的产品级选项，避免它在编译结束后仍调用 dsymutil。
+swift build -c release --product LinxDisplayApp --disable-sandbox -debug-info-format none
 
 BIN=".build/release/LinxDisplayApp"
 APP_NAME="多屏灵犀"
@@ -49,13 +56,30 @@ fi
 if [ -f "$ROOT/Resources/akko2.png" ]; then
     cp "$ROOT/Resources/akko2.png" "$APP/Contents/Resources/"
 fi
-# AI Mac 小屏幕内置固件与 Apple Silicon 刷机助手。正常运行不会启动助手，
+# M5 StickS3 控制器透明产品图（主屏与按键提示预览）
+if [ -f "$ROOT/Resources/Controller/m5-sticks3-cutout.png" ]; then
+    cp "$ROOT/Resources/Controller/m5-sticks3-cutout.png" "$APP/Contents/Resources/"
+fi
+# AWTRIX NG 独立中文点阵：运行时从应用资源读取，不需要 Home Assistant。
+if [ ! -f "$ROOT/Resources/AWTRIX/font_gb2312.bin" ] || [ ! -f "$ROOT/Resources/AWTRIX/font_ascii.bin" ]; then
+    echo "错误：AWTRIX 中文点阵字库缺失" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Resources/AWTRIX"
+cp "$ROOT/Resources/AWTRIX/font_gb2312.bin" "$APP/Contents/Resources/AWTRIX/"
+cp "$ROOT/Resources/AWTRIX/font_ascii.bin" "$APP/Contents/Resources/AWTRIX/"
+if [ -f "$ROOT/Resources/AWTRIX/FONT_LICENSE.md" ]; then
+    cp "$ROOT/Resources/AWTRIX/FONT_LICENSE.md" "$APP/Contents/Resources/AWTRIX/"
+fi
+# AI Mac 小屏幕、M5 StickS3 内置固件与 Apple Silicon 刷机助手。正常运行不会启动助手，
 # 只有用户在设备管理中二次确认刷写时才会执行。
 FIRMWARE_SOURCE="$ROOT/Resources/Firmware/aimac-screen-0.8.6.bin"
+M5_FIRMWARE_SOURCE="$ROOT/Resources/Firmware/m5-sticks3-1.5.5.bin"
 FLASH_HELPER_SOURCE="$ROOT/Resources/Firmware/lingxi-esptool"
 FIRMWARE_SHA256="55bfe4ca0088b143048d1002b7d9cd81673c8ae48f09c95d9c73791eabca8525"
-if [ ! -f "$FIRMWARE_SOURCE" ] || [ ! -f "$FLASH_HELPER_SOURCE" ]; then
-    echo "错误：AI Mac 小屏幕固件或刷机助手缺失" >&2
+M5_FIRMWARE_SHA256="7fe0b7e187076ba2eaa28cd8ae5cb051ff8c3ea301d90b3bc566a45279522697"
+if [ ! -f "$FIRMWARE_SOURCE" ] || [ ! -f "$M5_FIRMWARE_SOURCE" ] || [ ! -f "$FLASH_HELPER_SOURCE" ]; then
+    echo "错误：AI Mac / StickS3 固件或刷机助手缺失" >&2
     exit 1
 fi
 ACTUAL_FIRMWARE_SHA256="$(shasum -a 256 "$FIRMWARE_SOURCE" | awk '{print $1}')"
@@ -63,8 +87,23 @@ if [ "$ACTUAL_FIRMWARE_SHA256" != "$FIRMWARE_SHA256" ]; then
     echo "错误：AI Mac 小屏幕固件完整性校验失败" >&2
     exit 1
 fi
+ACTUAL_M5_FIRMWARE_SHA256="$(shasum -a 256 "$M5_FIRMWARE_SOURCE" | awk '{print $1}')"
+if [ "$ACTUAL_M5_FIRMWARE_SHA256" != "$M5_FIRMWARE_SHA256" ]; then
+    echo "错误：M5 StickS3 固件完整性校验失败" >&2
+    exit 1
+fi
+# 一键刷机把单文件写到 0x0。除哈希外再验证完整镜像的关键偏移，防止把
+# PlatformIO 默认的应用分区 firmware.bin（应写到 0x10000）误当成完整镜像。
+M5_BOOT_MAGIC="$(xxd -p -l 1 -s 0 "$M5_FIRMWARE_SOURCE")"
+M5_PARTITION_MAGIC="$(xxd -p -l 2 -s 32768 "$M5_FIRMWARE_SOURCE")"
+M5_APP_MAGIC="$(xxd -p -l 1 -s 65536 "$M5_FIRMWARE_SOURCE")"
+if [ "$M5_BOOT_MAGIC" != "e9" ] || [ "$M5_PARTITION_MAGIC" != "aa50" ] || [ "$M5_APP_MAGIC" != "e9" ]; then
+    echo "错误：M5 StickS3 固件不是可从 0x0 写入的完整镜像" >&2
+    exit 1
+fi
 mkdir -p "$APP/Contents/Resources/Firmware"
 cp "$FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
+cp "$M5_FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
 cp "$FLASH_HELPER_SOURCE" "$APP/Contents/Resources/Firmware/"
 chmod 755 "$APP/Contents/Resources/Firmware/lingxi-esptool"
 if [ -f "$ROOT/Resources/Firmware/THIRD_PARTY_NOTICES.txt" ]; then
@@ -89,9 +128,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.4</string>
+	<string>1.5.5</string>
 	<key>CFBundleVersion</key>
-	<string>15</string>
+	<string>12</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>
@@ -101,7 +140,16 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>NSInputMonitoringUsageDescription</key>
 	<string>用于接收灵犀68的 Fn + 旋钮事件，并在用户主动启用时将其转换为手动翻页。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于发现并连接灵犀键盘、口袋先知、摘录和 AI Mac 小屏幕等局域网设备。</string>
+	<string>用于发现并连接灵犀键盘、口袋先知、摘录、AI Mac 小屏幕和 AWTRIX NG 等局域网设备。</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>用于通过蓝牙连接 M5Stack StickS3 控制器，接收摇晃翻页与按键切换设备信号。</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>用于通过蓝牙连接 M5Stack StickS3 控制器，接收摇晃翻页与按键切换设备信号。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_home-assistant._tcp</string>

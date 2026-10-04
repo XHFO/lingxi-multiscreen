@@ -2,6 +2,19 @@ import AppKit
 import LinxDisplayCore
 import SwiftUI
 
+/// 主面板的操作全部位于内容区标题栏，不使用 AppKit 窗口工具栏。
+///
+/// macOS 27 会在 `NavigationSplitView` 收起侧栏时重新安装一个空工具栏；
+/// 即使 SwiftUI 已移除 `.sidebarToggle` 并隐藏 `windowToolbar`，仍可能留下
+/// “更多工具栏项目”的双箭头入口。窗口级拒绝安装工具栏可让展开/收起始终
+/// 只经过内容区的单个按钮，同时保留标准标题栏、红绿灯与窗口拖动行为。
+private final class ToolbarlessMainWindow: NSWindow {
+    override var toolbar: NSToolbar? {
+        get { nil }
+        set { super.toolbar = nil }
+    }
+}
+
 /// 手动 AppKit 引导（SPM 可执行环境下 SwiftUI @main 场景不可靠）：
 /// NSStatusItem 提供菜单栏常驻图标（右键快速切换显示模式、番茄钟子菜单），
 /// NSHostingView 承载 SwiftUI 主面板。
@@ -15,8 +28,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var oracleCanvasSubmenu: NSMenu?
     private var excerptCanvasSubmenu: NSMenu?
     private var aiMacCanvasSubmenu: NSMenu?
+    private var awtrixMenuEntry: NSMenuItem?
+    private var awtrixSubmenu: NSMenu?
     private var workspaceDisplayObservers: [NSObjectProtocol] = []
     private var distributedDisplayObservers: [NSObjectProtocol] = []
+    private var awtrixQuitRestorePending = false
+
+    private enum AWTRIXMenuAction {
+        case showCard(UUID, String)
+        case toggleRotation(UUID)
+        case move(UUID, next: Bool)
+        case refresh(UUID)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
@@ -61,7 +84,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         false // 关闭窗口后继续在菜单栏运行
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.hasAWTRIXManualDisplayToRestore else { return .terminateNow }
+        guard !awtrixQuitRestorePending else { return .terminateLater }
+        awtrixQuitRestorePending = true
+        let restore = Task { @MainActor in await model.restoreAWTRIXManualDisplaysBeforeQuit() }
+        // 不让离线设备阻塞退出；未完成的恢复点留在磁盘，下次启动重试。
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard self?.awtrixQuitRestorePending == true else { return }
+            self?.awtrixQuitRestorePending = false
+            restore.cancel()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        Task { @MainActor [weak self] in
+            await restore.value
+            guard self?.awtrixQuitRestorePending == true else { return }
+            self?.awtrixQuitRestorePending = false
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        model?.prepareForTermination()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceDisplayObservers.forEach(workspaceCenter.removeObserver)
         let distributedCenter = DistributedNotificationCenter.default()
@@ -198,6 +244,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(aiMacEntry)
         self.aiMacCanvasSubmenu = aiMacCanvasSubmenu
 
+        let awtrixSubmenu = NSMenu(title: "AWTRIX NG")
+        awtrixSubmenu.autoenablesItems = false
+        let awtrixEntry = NSMenuItem(title: "AWTRIX NG", action: nil, keyEquivalent: "")
+        awtrixEntry.submenu = awtrixSubmenu
+        awtrixEntry.isHidden = true
+        menu.addItem(awtrixEntry)
+        self.awtrixMenuEntry = awtrixEntry
+        self.awtrixSubmenu = awtrixSubmenu
+
         menu.addItem(.separator())
 
         // 番茄钟控制子菜单：操作与实时状态
@@ -249,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// 每次展开菜单时按当前设备快照重建三个画板子菜单，确保新增、删除、重命名、
+    /// 每次展开菜单时按当前设备快照重建内容子菜单，确保新增、删除、重命名、
     /// 显示/隐藏与设备切换都无需重启即可同步，且不同设备的画板不会串到一起。
     @MainActor
     private func rebuildCanvasSubmenus(model: AppModel) {
@@ -266,7 +321,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let panels = model.keyboardCardList(for: keyboard.id)
             for panel in panels {
                 guard let mode = panel.displayMode else { continue }
-                let item = NSMenuItem(title: model.menuTitle(for: mode),
+                let title = MenuBarNamingPolicy.deviceScopedTitle(
+                    device: keyboard, childTitle: model.menuTitle(for: mode))
+                let item = NSMenuItem(title: title,
                                       action: #selector(switchMode(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = mode.rawValue
@@ -280,7 +337,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let oracleDevices = model.enabledDevices(for: .oracle)
         for device in oracleDevices {
             for board in model.visibleOracleCanvasBoards(for: device.id) {
-                let title = oracleDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let title = MenuBarNamingPolicy.deviceScopedTitle(
+                    device: device, childTitle: board.name)
                 let item = NSMenuItem(title: title,
                                       action: #selector(switchOracleBoard(_:)), keyEquivalent: "")
                 item.target = self
@@ -296,7 +354,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let excerptDevices = model.enabledDevices(for: .excerpt)
         for device in excerptDevices {
             for board in model.visibleExcerptCanvasBoards(for: device.id) {
-                let title = excerptDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let title = MenuBarNamingPolicy.deviceScopedTitle(
+                    device: device, childTitle: board.name)
                 let item = NSMenuItem(title: title,
                                       action: #selector(switchExcerptBoard(_:)), keyEquivalent: "")
                 item.target = self
@@ -313,8 +372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for device in aiMacDevices {
             let cardModes = model.aiMacCardList(for: device.id)
             for mode in cardModes {
-                let cardTitle = aiMacDevices.count > 1
-                    ? "\(device.name) · \(mode.title)" : mode.title
+                let cardTitle = MenuBarNamingPolicy.deviceScopedTitle(
+                    device: device, childTitle: model.menuTitle(for: mode))
                 let item = NSMenuItem(title: cardTitle,
                                       action: #selector(switchAIMacCard(_:)), keyEquivalent: "")
                 item.target = self
@@ -328,7 +387,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 aiMacCanvasSubmenu?.addItem(.separator())
             }
             for board in model.visibleAIMacCanvasBoards(for: device.id) {
-                let title = aiMacDevices.count > 1 ? "\(device.name) · \(board.name)" : board.name
+                let title = MenuBarNamingPolicy.deviceScopedTitle(
+                    device: device, childTitle: board.name)
                 let item = NSMenuItem(title: title,
                                       action: #selector(switchAIMacBoard(_:)), keyEquivalent: "")
                 item.target = self
@@ -340,6 +400,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         addEmptyHintIfNeeded(to: aiMacCanvasSubmenu, title: "尚未添加可见卡片或画板")
+        rebuildAWTRIXSubmenu(model: model)
+    }
+
+    /// 仅使用已加载的设备配置与快照；展开菜单本身不会触发联网。
+    @MainActor
+    private func rebuildAWTRIXSubmenu(model: AppModel) {
+        guard let awtrixSubmenu else { return }
+        awtrixSubmenu.removeAllItems()
+        let devices = model.enabledDevices(for: .awtrix)
+        awtrixMenuEntry?.isHidden = devices.isEmpty
+        for device in devices {
+            let deviceName = MenuBarNamingPolicy.resolvedDeviceName(device)
+            let deviceMenu = NSMenu(title: deviceName)
+            deviceMenu.autoenablesItems = false
+            let deviceEntry = NSMenuItem(title: deviceName, action: nil, keyEquivalent: "")
+            deviceEntry.submenu = deviceMenu
+            awtrixSubmenu.addItem(deviceEntry)
+
+            let snapshot = model.awtrixSnapshots[device.id]
+            for card in model.awtrixVisibleCards(for: device.id) {
+                let item = awtrixMenuItem(title: card.title, action: .showCard(device.id, card.name))
+                item.image = NSImage(systemSymbolName: card.symbol, accessibilityDescription: card.title)
+                item.state = snapshot?.device.currentApp?.caseInsensitiveCompare(card.name) == .orderedSame
+                    ? .on : .off
+                deviceMenu.addItem(item)
+            }
+            addEmptyHintIfNeeded(to: deviceMenu, title: "尚未添加可见卡片")
+            deviceMenu.addItem(.separator())
+
+            let rotation = awtrixMenuItem(title: "自动轮播", action: .toggleRotation(device.id))
+            let isRotating = model.awtrixSettings(for: device.id).autoTransition
+            rotation.state = isRotating ? .on : .off
+            deviceMenu.addItem(rotation)
+            deviceMenu.addItem(awtrixMenuItem(title: "上一张卡片", action: .move(device.id, next: false)))
+            deviceMenu.addItem(awtrixMenuItem(title: "下一张卡片", action: .move(device.id, next: true)))
+            deviceMenu.addItem(.separator())
+            let refresh = awtrixMenuItem(title: "刷新数据", action: .refresh(device.id))
+            refresh.isEnabled = !model.awtrixBusyIDs.contains(device.id)
+            deviceMenu.addItem(refresh)
+        }
+    }
+
+    @MainActor
+    private func awtrixMenuItem(title: String, action: AWTRIXMenuAction) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(performAWTRIXMenuAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = action
+        return item
     }
 
     @MainActor
@@ -362,7 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let hosting = NSHostingView(rootView: SettingsView(model: model))
 
-        let window = NSWindow(
+        let window = ToolbarlessMainWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 660),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
@@ -413,6 +521,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - 菜单动作
+
+    @objc private func performAWTRIXMenuAction(_ sender: NSMenuItem) {
+        guard let action = sender.representedObject as? AWTRIXMenuAction, let model else { return }
+        Task { @MainActor in
+            switch action {
+            case let .showCard(deviceID, name):
+                await model.showAWTRIXCard(name, deviceID: deviceID)
+            case let .toggleRotation(deviceID):
+                let isRotating = model.awtrixSettings(for: deviceID).autoTransition
+                await model.setAWTRIXAutoRotation(!isRotating, deviceID: deviceID)
+            case let .move(deviceID, next):
+                await model.moveAWTRIXApp(next: next, deviceID: deviceID)
+            case let .refresh(deviceID):
+                await model.refreshAWTRIX(deviceID: deviceID)
+            }
+        }
+    }
 
     @objc private func switchMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? Int,

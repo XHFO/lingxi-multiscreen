@@ -5,11 +5,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+SDKROOT="$("$ROOT/scripts/select-macos-sdk")"
 export SDKROOT
 export SWIFT_EXEC="$ROOT/scripts/swiftc-sdk-compat"
-export CLANG_MODULE_CACHE_PATH="$ROOT/.build/aimac-clang-module-cache"
-export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/aimac-swiftpm-module-cache"
+export MACOSX_DEPLOYMENT_TARGET="26.0"
+SDK_VERSION="$(plutil -extract Version raw "$SDKROOT/SDKSettings.plist" 2>/dev/null \
+  || xcrun --sdk macosx --show-sdk-version)"
+SDK_CACHE_TAG="${SDK_VERSION//./_}"
+export CLANG_MODULE_CACHE_PATH="$ROOT/.build/aimac-clang-module-cache-$SDK_CACHE_TAG"
+export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT/.build/aimac-swiftpm-module-cache-$SDK_CACHE_TAG"
 mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
 
 swift build -c release --product AIMacScreenApp --disable-sandbox

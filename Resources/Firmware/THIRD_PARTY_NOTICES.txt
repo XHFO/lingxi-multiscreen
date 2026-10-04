@@ -15,13 +15,14 @@ hardware origin and related community work; they do not imply endorsement.
 
 lingxi-esptool
 --------------
-This application bundles esptool.py 3.0 as an Apple Silicon helper executable.
+This application bundles esptool.py 4.11.0 as an Apple Silicon helper executable.
 Project: https://github.com/espressif/esptool
 Copyright (c) 2014-2020 Fredrik Ahlberg, Angus Gratton, Espressif Systems (Shanghai) PTE LTD, and contributors.
 License: GNU General Public License, version 2 or later.
 
-The helper is used only when the user explicitly starts an ESP8266 firmware
-flash from Device Management. It is not started during normal application use.
+The helper is used only when the user explicitly starts a local USB firmware
+flash from Device Management. It supports both the ESP8266 AI Mac screen and
+the ESP32-S3 M5Stack StickS3 controller. It is not started during normal use.
 
 aimac-screen-0.8.6.bin
 ----------------------
@@ -36,6 +37,16 @@ It also provides a device-rendered real-time desktop clock controlled by the
 host application without continuous image uploads.
 The now-playing progress bar and elapsed/remaining time can also advance on the
 device from a playback anchor, keeping them aligned with linked keyboard lyrics.
+
+m5-sticks3-1.5.5.bin
+--------------------
+M5Stack StickS3 controller firmware maintained under Tools/M5ControllerFirmware.
+The bundled complete ESP32-S3 image combines the bootloader, partition table,
+boot_app0 and application firmware, and is written only after explicit user
+confirmation in Device Management.
+Scheme 5 swaps the A/B interaction roles, uses an idle BLE connection profile,
+lowers CPU frequency while the display is dimmed or off, and adds a standards-
+compliant BLE HID keyboard path for push-to-talk modifier keys.
 
 TFT_eSPI bitmap fonts
 ---------------------

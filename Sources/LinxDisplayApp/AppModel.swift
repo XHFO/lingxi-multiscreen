@@ -44,6 +44,16 @@ private struct BambuCameraZoomRuntime {
     var taskName = ""
 }
 
+private struct AIMacSmartRotationTarget: Equatable {
+    var contentMode: AIMacScreenContentMode
+    var cardMode: DisplayMode
+
+    init(_ settings: AIMacScreenDeviceSettings) {
+        contentMode = settings.mode
+        cardMode = settings.cardMode
+    }
+}
+
 /// 应用总控：每秒时钟驱动渲染与推送，逻辑对齐原版 MainViewModel。
 @MainActor
 public final class AppModel: ObservableObject {
@@ -56,6 +66,7 @@ public final class AppModel: ObservableObject {
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
     private let esp8266Flasher = ESP8266FirmwareFlasher()
+    private let m5FirmwareFlasher = ESP8266FirmwareFlasher()
     private var aiMacDiscoveryTask: Task<String, Error>?
     private let monitor = SystemMonitor()
     private let startup = StartupManager()
@@ -75,6 +86,7 @@ public final class AppModel: ObservableObject {
     private var lastNowPlayingFetch: Date?
     /// 歌词只在换歌时查询；逐行进度在本机计算，并按目标键盘去重推送。
     private var lyricsRequestedSongKey: String?
+    private var lyricsFetchTask: Task<Void, Never>?
     private var linkedLyricsLastLineKeys: [UUID: String] = [:]
     private var linkedLyricsBusyIDs: Set<UUID> = []
     /// 歌词属于强时效画面：每台键盘各自只保留最新帧，互不等待、互不共用延迟。
@@ -86,7 +98,14 @@ public final class AppModel: ObservableObject {
     private var linkedLyricsUploadLatency: [UUID: TimeInterval] = [:]
     private var lastRemoteNowPlaying: NowPlayingInfo?
     private var nowPlayingChangeObservers: [NSObjectProtocol] = []
+    private var playerChangeObservers: [NSObjectProtocol] = []
     private var nowPlayingEventRefreshTask: Task<Void, Never>?
+    private var nowPlayingEventRefreshID: UUID?
+    private var nowPlayingEventRefreshThrottle = NowPlayingEventRefreshThrottle()
+    /// 换歌智能抢占只消费一次歌曲标识；并发的 MediaRemote 通知不会让同一首歌重复切卡。
+    private var lastSmartRotationSongKey: String?
+    /// 播放器可能先公布一首已暂停的新歌，随后才发“开始播放”；暂存该标识以免漏掉真正开播。
+    private var pendingSmartRotationSongKey: String?
     private var lastPreviewRender: Date?
     private var lastImageRotation: Date?
     /// 当前自定义图片的文件修订指纹。即使路径不变，只要内容被替换也会重新取色。
@@ -95,6 +114,10 @@ public final class AppModel: ObservableObject {
     private var aiMacScreenCapabilities: [UUID: AIMacScreenCapabilities] = [:]
     private var aiMacScreenLastHashes: [UUID: String] = [:]
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
+    /// 画板首次出现 HA 图片时使用每台设备一条 latest-only 准备队列；避免每秒 tick
+    /// 对同一缺失静态帧重复发起下载，也保证快速切板只推送最后选择的画板。
+    private var aiMacCanvasPicturePreparationTasks: [UUID: Task<Void, Never>] = [:]
+    private var aiMacCanvasPicturePreparationGenerations: [UUID: UInt64] = [:]
     /// 每台小屏幕的渲染 + 上传耗时，用于让图片内进度指向预计换帧完成时刻。
     private var aiMacScreenUploadLatency: [UUID: TimeInterval] = [:]
     private var aiMacScreenLastBoardRotation: [UUID: Date] = [:]
@@ -107,6 +130,16 @@ public final class AppModel: ObservableObject {
     /// 同一台设备的背光请求严格按事件顺序执行，避免快速锁屏/解锁时旧请求后到覆盖新状态。
     private var aiMacScreenPowerTasks: [UUID: Task<Bool, Never>] = [:]
     private var aiMacScreenPowerGenerations: [UUID: UInt] = [:]
+    /// 色彩滑杆连续变化时只重绘目标小屏幕预览；设置写盘与网络推送按设备合并，
+    /// 避免每个刻度都触发键盘、墨水屏和其他 AI Mac 的全量预览链路。
+    private var aiMacColorCalibrationCommitTasks: [UUID: Task<Void, Never>] = [:]
+    private var aiMacColorCalibrationPreviewTasks: [UUID: Task<Void, Never>] = [:]
+    private var aiMacColorCalibrationPreviewGenerations: [UUID: UInt] = [:]
+    private var aiMacColorCalibrationPendingIDs: Set<UUID> = []
+    /// 已开始的上传不强行中断；下一代设置在它结束后补推，保证滑杆最终值不会
+    /// 因设备短暂 busy 而丢失。
+    private var aiMacColorCalibrationPushTasks: [UUID: Task<Void, Never>] = [:]
+    private var aiMacColorCalibrationPushGenerations: [UUID: UInt] = [:]
     private var aiMacSspaiRandomSelection: [String: [SspaiArticle]] = [:]
     private var lastClockMinute: Int?
     private var lastCardRotation: Date?
@@ -126,6 +159,58 @@ public final class AppModel: ObservableObject {
     private var rand0Session: Rand0DisplaySession?
     private var rand0SessionIP = ""
     private var rand0SessionEndpoint: Rand0Client.Endpoint = .bw
+    /// M5Stack StickS3 蓝牙控制器会话全局唯一；仅有设备或用户主动扫描时才创建。
+    private var m5BLEClient: M5ControllerBLEClient?
+    @Published public var m5ControllerConnected = false
+    @Published public var m5ControllerHIDReady = false
+    @Published public var m5ControllerHIDSecured = false
+    @Published public var m5ControllerScanning = false
+    @Published public var m5DiscoveredControllers: [M5DiscoveredController] = []
+    @Published public var m5BluetoothState: M5ControllerBluetoothState = .unknown
+    public enum M5RepairPhase: Equatable {
+        /// 先让用户从 macOS 蓝牙设置中忽略旧的 HID 记录。
+        case removeSystemRecord
+        /// 旧记录已移除，正在重新发现控制器。
+        case scanning
+        /// 已选中控制器，等待自定义控制通道与系统 HID 配对都就绪。
+        case waitingForSystemPairing
+    }
+    /// 重新配对是一个明确的三阶段流程：清除控制器端密钥、由用户在 macOS
+    /// 蓝牙设置中忽略系统记录、重新连接并等待 HID 输入服务就绪。
+    /// CoreBluetooth 无权代替用户删除系统蓝牙记录。
+    @Published public private(set) var m5RepairingControllerID: UUID?
+    @Published public private(set) var m5RepairingPeripheralName: String?
+    @Published public private(set) var m5RepairPhase: M5RepairPhase?
+    /// 软件详情页直接复用最近一次发给 StickS3 的完整载荷，避免预览与实机菜单漂移。
+    @Published public private(set) var m5ControllerPreviewInfo: M5ControllerInfo?
+    private var lastM5InfoSent: Data?
+    private enum M5ControllerPage {
+        case mainMenu, devices, homeAssistant, mediaControls, gyroMouse, macShortcuts
+        case presentation, vibeCoding, customShortcuts
+    }
+    /// 主菜单顺序同时决定 StickS3 实机与软件预览的第一页内容。
+    /// Vibe Coding 是高频入口，因此直接提升到主菜单第一项。
+    private enum M5MainMenuItem: CaseIterable {
+        case vibeCoding, devices, homeAssistant, macShortcuts
+    }
+    /// “Mac 快捷键”内的功能。多媒体与飞鼠指针均由 StickS3 原生 HID 执行。
+    private enum M5ShortcutMenuItem: CaseIterable {
+        case mediaControls, gyroMouse, presentation, custom
+    }
+    private var m5ControllerPage: M5ControllerPage = .mainMenu
+    private var m5MainSelectionIndex = 0
+    private var m5DeviceSelectionIndex = 0
+    private var m5ShortcutMenuSelectionIndex = 0
+    private var m5ShortcutActionSelectionIndex = 0
+    private var m5MediaSelectionIndex = 0
+    private var m5HASelectionIndex = 0
+    /// 每台控制器独立的重新居中请求序号；避免多设备之间误触发校准。
+    private var m5GyroRecenterTokens: [UUID: UInt32] = [:]
+    private var m5HAActionInFlight = false
+    private var m5HAActionMessage: String?
+    private var m5ShortcutActionMessage: String?
+    /// “语音输入”是按住执行：记录已发送 keyDown、尚未发送 keyUp 的动作。
+    private var m5HeldShortcut: M5MacShortcut?
     /// 口袋先知显示模式连接状态（供界面显示）
     @Published public var rand0SessionConnected = false
     /// 摘录语录：手动切换的语录下标（nil = 按分钟自动轮换）
@@ -194,6 +279,9 @@ public final class AppModel: ObservableObject {
     private var printSuccessUntil: Date?
     /// 各打印机最近一次状态（用于检测「非完成 → 完成」的跳变，只在跳变时推送庆祝）
     private var lastPrinterStatuses: [UUID: String] = [:]
+    /// 完成宽限按 ManagedDevice UUID 隔离。这里只保存成功网络观察产生的状态；
+    /// 槽位、当前显示设备和磁盘里的旧任务缓存都不能互相借用时间窗口。
+    private var printerRotationStates: [UUID: SmartCardRotationPolicy.PrinterRotationState] = [:]
     private var cachedArtwork: (data: Data, image: CGImage)?
     private var busy = false
     /// 用量统一调取进行中（防止长耗时拉取重叠）
@@ -207,6 +295,8 @@ public final class AppModel: ObservableObject {
     /// 关闭功能或切换到任务封面时可以立即恢复原图。
     private var bambuAutoZoomImages: [String: Data] = [:]
     private var bambuCameraZoomRuntime: [String: BambuCameraZoomRuntime] = [:]
+    /// 同一图片实体的并发请求以“后启动的一轮”为准，避免慢旧帧覆盖新帧。
+    private var haPictureRequestGenerations: [String: UInt64] = [:]
     /// 两个独立画板定时推送的上次推送时间（初始化为启动时刻，避免启动即推送）
     private var lastOracleAutoPush: Date?
     private var lastOracleBoardRotation: Date?
@@ -218,6 +308,8 @@ public final class AppModel: ObservableObject {
     /// Rand/0 每次首次连接或断线重连后都要主动发送一帧，设备才会完整进入
     /// 显示模式并开始稳定回传按键；不能再依赖用户手动点一次“推送”。
     private var rand0SessionNeedsPrime = true
+    /// 首帧补发只允许一条任务运行；断线/重连回调可能在发送 await 期间交错。
+    private var rand0SessionPrimeInFlight = false
     /// 两个独立画板内容变化检查节流时间
     private var lastOracleContentCheck: Date?
     private var lastExcerptContentCheck: Date?
@@ -256,6 +348,65 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacScreenLastPushText: [UUID: String] = [:]
     @Published public var aiMacScreenLosslessIDs: Set<UUID> = []
     @Published public var aiMacScreenBusyIDs: Set<UUID> = []
+    /// AWTRIX NG 独立控制状态（按受管设备隔离，不依赖 Home Assistant）。
+    @Published public var awtrixSnapshots: [UUID: AWTRIXSnapshot] = [:]
+    @Published public var awtrixStatuses: [UUID: String] = [:]
+    @Published public var awtrixBusyIDs: Set<UUID> = []
+    /// 每台设备独立的 latest-wins 应用激活任务。展开设备触发的刷新或上一项
+    /// 激活尚未结束时，新点击不会被丢弃；同一设备只保留最后一次选择。
+    var awtrixDisplayRequestTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixDisplayRequestPolicy = AWTRIXLatestDisplayRequestPolicy()
+    var awtrixSettingsSaveTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixContentSaveTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixConfigSaveTasks: [String: Task<Void, Never>] = [:]
+    var awtrixHASyncTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixHALastAttempt: [UUID: Date] = [:]
+    var awtrixHALastContent: [UUID: String] = [:]
+    var awtrixHAEntities: [UUID: [HAEntity]] = [:]
+    var awtrixLoopSaveTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixDesiredLoopOrders: [UUID: [String]] = [:]
+    var awtrixRequestedCardNames: [UUID: String] = [:]
+    var awtrixManualDisplayActiveIDs: Set<UUID> = []
+    var awtrixManualDisplayReturnTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixManualDisplayEpochs: [UUID: UUID] = [:]
+    var awtrixPreparingForQuit = false
+    /// AWTRIX 独立应用详情按「设备 ID + 应用名」隔离，避免多设备同名脚本串扰。
+    @Published public var awtrixAppConfigurations: [UUID: [String: AWTRIXAppConfiguration]] = [:]
+    @Published public var awtrixAppConfigDrafts: [UUID: [String: [String: AWTRIXJSONValue]]] = [:]
+    @Published public var awtrixAppStatuses: [UUID: [String: String]] = [:]
+    @Published public var awtrixAppBusyKeys: Set<String> = []
+    /// 设备真实 32×8 屏幕帧，直接来自 AWTRIX 的屏幕 API。
+    @Published public var awtrixLivePreviewImages: [UUID: NSImage] = [:]
+    @Published public var awtrixLivePreviewStatuses: [UUID: String] = [:]
+    /// 实时预览拥有独立的请求互斥，不与完整设备刷新共用 busy 状态；否则一次较慢的
+    /// `/device + /apps + /settings` 刷新会让 250ms 画面轮询长期停顿。
+    public var awtrixLivePreviewBusyIDs: Set<UUID> = []
+    /// 仅当设备像素真正变化时才重建 NSImage / 发布视图更新，降低常驻预览的 CPU 占用。
+    public var awtrixLivePreviewFrames: [UUID: AWTRIXDisplayFrame] = [:]
+    public var awtrixSnapshot: AWTRIXSnapshot? {
+        get { activeDeviceID(for: .awtrix).flatMap { awtrixSnapshots[$0] } }
+        set {
+            guard let id = activeDeviceID(for: .awtrix) else { return }
+            awtrixSnapshots[id] = newValue
+        }
+    }
+    public var awtrixStatus: String {
+        get {
+            guard let id = activeDeviceID(for: .awtrix) else { return "尚未添加 AWTRIX NG" }
+            return awtrixStatuses[id] ?? "尚未连接 AWTRIX"
+        }
+        set {
+            guard let id = activeDeviceID(for: .awtrix) else { return }
+            awtrixStatuses[id] = newValue
+        }
+    }
+    public var awtrixBusy: Bool {
+        get { activeDeviceID(for: .awtrix).map { awtrixBusyIDs.contains($0) } ?? false }
+        set {
+            guard let id = activeDeviceID(for: .awtrix) else { return }
+            if newValue { awtrixBusyIDs.insert(id) } else { awtrixBusyIDs.remove(id) }
+        }
+    }
     @Published public var aiMacDiscoveredDevices: [AIMacDiscoveredDevice] = []
     @Published public var aiMacNetworkScanBusy = false
     @Published public var aiMacNetworkScanStatus = ""
@@ -276,6 +427,12 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacFlashStatus = "连接小屏幕 USB 数据线后刷新串口列表"
     @Published public var aiMacFlashLog = ""
     @Published public var aiMacFlashBusy = false
+    @Published public var m5FlashPorts: [ESPSerialPort] = []
+    @Published public var selectedM5FlashPort = ""
+    @Published public var m5FlashProgress = 0.0
+    @Published public var m5FlashStatus = "连接 StickS3 USB 数据线后刷新串口列表"
+    @Published public var m5FlashLog = ""
+    @Published public var m5FlashBusy = false
     /// 设备管理页自动发现每类只主动运行一次；用户仍可点“重新扫描”。
     private var didAutoScanLingxi68 = false
     private var didAutoScanHomeAssistant = false
@@ -400,6 +557,8 @@ public final class AppModel: ObservableObject {
             case .bambuLab: activeID = loaded.activeBambuLabDeviceID
             case .formlabs: activeID = loaded.activeFormlabsDeviceID
             case .aiMacScreen: activeID = loaded.activeAIMacScreenDeviceID
+            case .awtrix: activeID = loaded.activeAWTRIXDeviceID
+            case .m5Controller: activeID = loaded.activeM5ControllerDeviceID
             }
             if let device = list.first(where: { $0.id == activeID }) ?? list.first {
                 device.settings.apply(to: loaded, type: type)
@@ -418,8 +577,13 @@ public final class AppModel: ObservableObject {
             startLyricsTimer()
             startNowPlayingNotifications()
             Task { await activateMode() }
+            for device in enabledDevices(for: .awtrix) {
+                Task { await refreshAWTRIX(deviceID: device.id) }
+            }
             // 启动即建立先知显示模式会话（自动重连由会话内部负责），按键随时可用
             ensureRand0Session()
+            // 已配对的 StickS3 在应用启动后自动恢复蓝牙连接。
+            ensureM5ControllerSession()
             // 启动后自动检查 GitHub 更新（6 小时节流，静默失败）
             Task { await checkForUpdate() }
         }
@@ -466,6 +630,7 @@ public final class AppModel: ObservableObject {
         printSuccessImage = nil
         printSuccessUntil = nil
         lastPrinterStatuses = [:]
+        printerRotationStates = [:]
         haAlertCooldownUntil = nil
         haAlertedCode = nil
         lastQuotaRefresh = nil
@@ -475,21 +640,73 @@ public final class AppModel: ObservableObject {
         aiMacScreenCapabilities = [:]
         aiMacScreenLastHashes = [:]
         aiMacScreenLastPushAt = [:]
+        aiMacCanvasPicturePreparationTasks.values.forEach { $0.cancel() }
+        aiMacCanvasPicturePreparationTasks = [:]
+        aiMacCanvasPicturePreparationGenerations = [:]
         aiMacScreenUploadLatency = [:]
         aiMacScreenSavedBrightness = [:]
+        awtrixSnapshots = [:]
+        awtrixStatuses = [:]
+        awtrixBusyIDs = []
+        awtrixDisplayRequestTasks.values.forEach { $0.cancel() }
+        awtrixDisplayRequestTasks = [:]
+        awtrixDisplayRequestPolicy = AWTRIXLatestDisplayRequestPolicy()
+        cancelAWTRIXBackgroundWork()
+        awtrixAppConfigurations = [:]
+        awtrixAppConfigDrafts = [:]
+        awtrixAppStatuses = [:]
+        awtrixAppBusyKeys = []
+        awtrixLivePreviewImages = [:]
+        awtrixLivePreviewStatuses = [:]
+        awtrixLivePreviewBusyIDs = []
+        awtrixLivePreviewFrames = [:]
         aiMacScreenPowerTasks.values.forEach { $0.cancel() }
         aiMacScreenPowerTasks = [:]
         aiMacScreenPowerGenerations = [:]
+        aiMacColorCalibrationCommitTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationCommitTasks = [:]
+        aiMacColorCalibrationPreviewTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationPreviewTasks = [:]
+        aiMacColorCalibrationPreviewGenerations = [:]
+        aiMacColorCalibrationPendingIDs = []
+        aiMacColorCalibrationPushTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationPushTasks = [:]
+        aiMacColorCalibrationPushGenerations = [:]
         aiMacScreensSystemSleeping = false
         lastOraclePushedHash = nil
         lastExcerptPushedHash = nil
         rand0SessionNeedsPrime = true
+        rand0SessionPrimeInFlight = false
+        releaseM5HeldShortcut()
+        m5BLEClient?.disconnect()
+        m5BLEClient = nil
+        m5ControllerConnected = false
+        m5ControllerScanning = false
+        m5DiscoveredControllers = []
+        m5BluetoothState = .unknown
+        m5RepairingControllerID = nil
+        m5RepairingPeripheralName = nil
+        m5RepairPhase = nil
+        lastM5InfoSent = nil
+        m5ControllerPage = .mainMenu
+        m5HASelectionIndex = 0
+        m5HAActionInFlight = false
+        m5HAActionMessage = nil
         lastNowPlayingFetch = nil
+        nowPlayingEventRefreshTask?.cancel()
+        nowPlayingEventRefreshTask = nil
+        nowPlayingEventRefreshID = nil
+        nowPlayingEventRefreshThrottle = NowPlayingEventRefreshThrottle()
+        lastSmartRotationSongKey = nil
+        pendingSmartRotationSongKey = nil
+        lyricsFetchTask?.cancel()
+        lyricsFetchTask = nil
         lyricsRequestedSongKey = nil
         linkedLyricsLastLineKeys = [:]
         linkedLyricsBusyIDs = []
         resetLinkedLyricsScheduling()
         linkedLyricsUploadLatency = [:]
+        haPictureRequestGenerations = [:]
         lastRemoteNowPlaying = nil
         nowPlayingLyrics = nil
         lastImageRotation = nil
@@ -506,6 +723,7 @@ public final class AppModel: ObservableObject {
         // 4. 对齐系统状态、断开旧设备会话、持久化全新默认设置并刷新界面
         applyStartupState()
         ensureRand0Session()
+        ensureM5ControllerSession()
         persistSettings()
         objectWillChange.send()
         renderPreview()
@@ -542,6 +760,8 @@ public final class AppModel: ObservableObject {
                 self?.scheduleCardSettingsPush()
                 // 先知 IP/显示模式变化时重连按键会话（目标未变则幂等返回）
                 self?.ensureRand0Session()
+                self?.ensureM5ControllerSession()
+                self?.sendM5ControllerInfo()
             }
         }
     }
@@ -597,7 +817,12 @@ public final class AppModel: ObservableObject {
     private func captureActiveDeviceSnapshot(of type: DeviceType) {
         guard let activeID = activeDeviceID(for: type),
               let index = settings.devices.firstIndex(where: { $0.id == activeID && $0.type == type }) else { return }
-        settings.devices[index].settings = DeviceSettings.capture(from: settings, type: type)
+        let smartRotationReturn = settings.devices[index].settings.smartRotationReturnDisplayMode
+        let smartRotationPrinterID = settings.devices[index].settings.smartRotationReturnPrinterDeviceID
+        var captured = DeviceSettings.capture(from: settings, type: type)
+        captured.smartRotationReturnDisplayMode = smartRotationReturn
+        captured.smartRotationReturnPrinterDeviceID = smartRotationPrinterID
+        settings.devices[index].settings = captured
     }
 
     /// 某类型设备列表（含被禁用的；设备管理页需要显示以便重新启用）
@@ -620,6 +845,15 @@ public final class AppModel: ObservableObject {
         guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return }
         guard settings.devices[index].isEnabled != enabled else { return }
         settings.devices[index].isEnabled = enabled
+        if settings.devices[index].type == .awtrix {
+            if enabled {
+                Task { await refreshAWTRIX(deviceID: id) }
+            } else {
+                cancelAWTRIXBackgroundWork(deviceID: id)
+                awtrixDisplayRequestTasks[id]?.cancel()
+                awtrixDisplayRequestPolicy.remove(id)
+            }
+        }
         if !enabled {
             let type = settings.devices[index].type
             if activeDeviceID(for: type) == id {
@@ -665,6 +899,15 @@ public final class AppModel: ObservableObject {
             self.activeDevice(for: .aiMacScreen)?.id ?? UUID()
         }, set: { id in
             self.switchDevice(type: .aiMacScreen, to: id)
+        })
+    }
+
+    /// 当前 AWTRIX NG 控制页正在操作的设备。
+    public var activeAWTRIXBinding: Binding<UUID> {
+        Binding(get: {
+            self.activeDevice(for: .awtrix)?.id ?? UUID()
+        }, set: { id in
+            self.switchDevice(type: .awtrix, to: id)
         })
     }
 
@@ -785,6 +1028,8 @@ public final class AppModel: ObservableObject {
             // 新键盘从「灵犀画板」开始，不沿用别的键盘当前显示的卡片与轮换池
             settings.displayMode = .canvas
             settings.devices[index].settings.displayMode = .canvas
+            settings.devices[index].settings.smartRotationReturnDisplayMode = nil
+            settings.devices[index].settings.smartRotationReturnPrinterDeviceID = nil
             settings.cardRotationModes = []
             settings.devices[index].settings.cardRotationModes = []
             // 新键盘的 Home Assistant 卡片也从空开始（不继承别的键盘的实体选择）
@@ -883,6 +1128,12 @@ public final class AppModel: ObservableObject {
             settings.devices[index].settings.formlabsConnection = fresh
         case .aiMacScreen:
             settings.devices[index].settings.aiMacScreen = AIMacScreenDeviceSettings()
+        case .awtrix:
+            let fresh = AWTRIXSettings()
+            settings.awtrix = fresh
+            settings.devices[index].settings.awtrix = fresh
+        case .m5Controller:
+            settings.devices[index].settings.m5Controller = M5ControllerDeviceSettings()
         }
         setActiveDeviceID(type, device.id)
         if type == .oracle {
@@ -905,6 +1156,12 @@ public final class AppModel: ObservableObject {
             aiMacScreenStatuses[device.id] = "等待连接小屏幕"
             refreshAIMacScreenPreview(deviceID: device.id)
         }
+        if type == .awtrix {
+            awtrixStatuses[device.id] = "尚未连接 AWTRIX"
+        }
+        if type == .m5Controller {
+            ensureM5ControllerSession()
+        }
         if type == .keyboard {
             reconcileBambuCards()
             reconcileFormlabsCards()
@@ -921,6 +1178,11 @@ public final class AppModel: ObservableObject {
         guard let device = settings.devices.first(where: { $0.id == id }) else { return }
         let type = device.type
         let removingActiveDevice = activeDeviceID(for: type) == id
+        // StickS3 的设备卡片保存在控制器 RAM 中。删除档案前先写入空列表，
+        // 等 BLE 写入确认后再断开，否则控制器仍会显示并控制已经删除的旧目标。
+        if type == .m5Controller {
+            clearM5ControllerInfoAndDisconnect()
+        }
         guard settings.removeManagedDevice(id: id) != nil else { return }
         if removingActiveDevice {
             if type == .oracle {
@@ -935,9 +1197,11 @@ public final class AppModel: ObservableObject {
             }
         }
         if type == .bambuLab {
+            printerRotationStates[id] = nil
             removeBambuPrinterCard()
         }
         if type == .formlabs {
+            printerRotationStates[id] = nil
             formlabsSnapshots[id] = nil
             formlabsDiscoveredDevices[id] = nil
             formlabsConnectionStatus[id] = nil
@@ -956,6 +1220,15 @@ public final class AppModel: ObservableObject {
             aiMacScreenPowerTasks[id]?.cancel()
             aiMacScreenPowerTasks[id] = nil
             aiMacScreenPowerGenerations[id] = nil
+            aiMacColorCalibrationCommitTasks[id]?.cancel()
+            aiMacColorCalibrationCommitTasks[id] = nil
+            aiMacColorCalibrationPreviewTasks[id]?.cancel()
+            aiMacColorCalibrationPreviewTasks[id] = nil
+            aiMacColorCalibrationPreviewGenerations[id] = nil
+            aiMacColorCalibrationPendingIDs.remove(id)
+            aiMacColorCalibrationPushTasks[id]?.cancel()
+            aiMacColorCalibrationPushTasks[id] = nil
+            aiMacColorCalibrationPushGenerations[id] = nil
             aiMacScreenSavedBrightness[id] = nil
             aiMacSspaiRandomSelection = aiMacSspaiRandomSelection.filter {
                 !$0.key.hasPrefix(id.uuidString + "|")
@@ -966,6 +1239,49 @@ public final class AppModel: ObservableObject {
             aiMacScreenLosslessIDs.remove(id)
             aiMacScreenLastClockSyncAt[id] = nil
             aiMacScreenBusyIDs.remove(id)
+        }
+        if type == .awtrix {
+            cancelAWTRIXBackgroundWork(deviceID: id)
+            awtrixDisplayRequestTasks[id]?.cancel()
+            awtrixDisplayRequestTasks[id] = nil
+            awtrixDisplayRequestPolicy.remove(id)
+            awtrixSnapshots[id] = nil
+            awtrixStatuses[id] = nil
+            awtrixBusyIDs.remove(id)
+            awtrixAppConfigurations[id] = nil
+            awtrixAppConfigDrafts[id] = nil
+            awtrixAppStatuses[id] = nil
+            awtrixAppBusyKeys = awtrixAppBusyKeys.filter {
+                !$0.hasPrefix(id.uuidString + "|")
+            }
+            awtrixLivePreviewImages[id] = nil
+            awtrixLivePreviewStatuses[id] = nil
+            awtrixLivePreviewBusyIDs.remove(id)
+            awtrixLivePreviewFrames[id] = nil
+        }
+        if type == .m5Controller {
+            if m5RepairingControllerID == id {
+                m5RepairingControllerID = nil
+                m5RepairingPeripheralName = nil
+                m5RepairPhase = nil
+            }
+            m5ControllerConnected = false
+            m5DiscoveredControllers = []
+            lastM5InfoSent = nil
+            m5ControllerPage = .mainMenu
+            m5HASelectionIndex = 0
+            m5HAActionInFlight = false
+            m5HAActionMessage = nil
+            status = "已删除 M5 StickS3；重新配对前请在系统蓝牙中手动忽略原设备"
+        }
+        // 删除任何显示设备时，同时清理控制器中保存的失效目标。
+        for index in settings.devices.indices where settings.devices[index].type == .m5Controller {
+            if var config = settings.devices[index].settings.m5Controller,
+               config.targetDeviceIDs.contains(id.uuidString) {
+                config.targetDeviceIDs.removeAll { $0 == id.uuidString }
+                config.clamp()
+                settings.devices[index].settings.m5Controller = config
+            }
         }
         if type == .keyboard {
             linkedLyricsLastLineKeys[id] = nil
@@ -1159,6 +1475,51 @@ public final class AppModel: ObservableObject {
                                 liveSync: { self.settings.rand0IP = $0 })
     }
 
+    /// 某台 AWTRIX NG 的完整独立配置；旧快照缺字段时使用安全默认值。
+    public func awtrixSettings(for id: UUID) -> AWTRIXSettings {
+        settings.devices.first(where: { $0.id == id && $0.type == .awtrix })?
+            .settings.awtrix ?? AWTRIXSettings()
+    }
+
+    public func mutateAWTRIXSettings(_ id: UUID,
+                                     _ update: (inout AWTRIXSettings) -> Void) {
+        guard let index = settings.devices.firstIndex(where: { $0.id == id && $0.type == .awtrix }) else {
+            return
+        }
+        var value = settings.devices[index].settings.awtrix ?? AWTRIXSettings()
+        update(&value)
+        value.sanitize()
+        guard value != settings.devices[index].settings.awtrix else { return }
+        // AWTRIX 设置只更新目标设备，避免每次编辑都重绘键盘和所有画板。
+        let wasSyncing = settings.deviceSyncInFlight
+        settings.deviceSyncInFlight = true
+        settings.devices[index].settings.awtrix = value
+        if activeDeviceID(for: .awtrix) == id {
+            settings.awtrix = value
+        }
+        settings.deviceSyncInFlight = wasSyncing
+        objectWillChange.send()
+        persistSettings()
+    }
+
+    public func awtrixBaseURLBinding(for id: UUID) -> Binding<String> {
+        Binding(get: { self.awtrixSettings(for: id).baseURL }, set: { value in
+            self.mutateAWTRIXSettings(id) { $0.baseURL = value }
+        })
+    }
+
+    public func awtrixUsernameBinding(for id: UUID) -> Binding<String> {
+        Binding(get: { self.awtrixSettings(for: id).username }, set: { value in
+            self.mutateAWTRIXSettings(id) { $0.username = value }
+        })
+    }
+
+    public func awtrixPasswordBinding(for id: UUID) -> Binding<String> {
+        Binding(get: { self.awtrixSettings(for: id).password }, set: { value in
+            self.mutateAWTRIXSettings(id) { $0.password = value }
+        })
+    }
+
     /// 摘录设备 API Key 绑定
     public func deviceDotApiKeyBinding(for id: UUID) -> Binding<String> {
         deviceConnectionBinding(for: id,
@@ -1219,9 +1580,11 @@ public final class AppModel: ObservableObject {
         }
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
-            applyHASnapshot(entities: entities, errorText: nil)
-            lastHARefresh = Date()
+            let sampledAt = Date()
+            applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
+            lastHARefresh = sampledAt
             let result = reconcileBambuPrinters(entities: entities)
+            observeBambuPrinterRotationStates(entities: entities, now: sampledAt)
             bambuAutoDiscoveryStatus = result
             return "连接成功：读到 \(entities.count) 个实体；\(result)"
         } catch let error as HAError {
@@ -1319,6 +1682,7 @@ public final class AppModel: ObservableObject {
         settings.deviceSyncInFlight = false
         lastHARefresh = nil
         if changedServer {
+            for device in devices(for: .bambuLab) { printerRotationStates[device.id] = nil }
             applyHASnapshot(entities: [], errorText: nil)
             bambuAutoDiscoveryStatus = "服务器已更换，请填写长期访问令牌后连接"
         }
@@ -1345,9 +1709,11 @@ public final class AppModel: ObservableObject {
         defer { bambuAutoDiscoveryBusy = false }
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
-            applyHASnapshot(entities: entities, errorText: nil)
-            lastHARefresh = Date()
+            let sampledAt = Date()
+            applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
+            lastHARefresh = sampledAt
             bambuAutoDiscoveryStatus = reconcileBambuPrinters(entities: entities)
+            observeBambuPrinterRotationStates(entities: entities, now: sampledAt)
         } catch let error as HAError {
             bambuAutoDiscoveryStatus = error.errorDescription ?? "无法读取 Home Assistant 设备"
         } catch {
@@ -1465,6 +1831,7 @@ public final class AppModel: ObservableObject {
         settings.devices[index].settings.formlabsConnection = value
         if value.printerSerial != previousSerial {
             // 改绑另一台实体打印机时，旧打印机的最近任务不能串到新设备上。
+            printerRotationStates[id] = nil
             formlabsSnapshots[id] = nil
             store.saveFormlabsTaskCache(formlabsSnapshots)
         }
@@ -1776,6 +2143,14 @@ public final class AppModel: ObservableObject {
         var value = settings.devices[index].settings.aiMacScreen ?? AIMacScreenDeviceSettings()
         let previousHost = AIMacScreenSupport.normalizedHost(value.host)
         body(&value)
+        if value.smartRotationReturnContentMode != nil,
+           (value.mode != .card || value.cardMode != .nowPlaying) {
+            // 只要页面已离开本次智能抢占目标（手动或普通轮播均可），返回令牌就失效；
+            // 后续“未在播放”不能覆盖用户/轮播已经作出的新选择。
+            value.smartRotationReturnContentMode = nil
+            value.smartRotationReturnCardModeRawValue = nil
+            value.smartRotationReturnPrinterDeviceID = nil
+        }
         value.clamp()
         settings.devices[index].settings.aiMacScreen = value
         if AIMacScreenSupport.normalizedHost(value.host) != previousHost {
@@ -1802,7 +2177,12 @@ public final class AppModel: ObservableObject {
 
     public func aiMacScreenModeBinding(for id: UUID) -> Binding<AIMacScreenContentMode> {
         Binding(get: { self.aiMacScreenSettings(for: id).mode }, set: { value in
-            self.mutateAIMacScreenSettings(id, pushImmediately: true) { $0.mode = value }
+            self.mutateAIMacScreenSettings(id, pushImmediately: true) {
+                $0.smartRotationReturnContentMode = nil
+                $0.smartRotationReturnCardModeRawValue = nil
+                $0.smartRotationReturnPrinterDeviceID = nil
+                $0.mode = value
+            }
         })
     }
 
@@ -1810,6 +2190,9 @@ public final class AppModel: ObservableObject {
                                         deviceID: UUID) {
         let current = aiMacScreenSettings(for: deviceID).mode
         mutateAIMacScreenSettings(deviceID, pushImmediately: current != mode) {
+            $0.smartRotationReturnContentMode = nil
+            $0.smartRotationReturnCardModeRawValue = nil
+            $0.smartRotationReturnPrinterDeviceID = nil
             $0.mode = mode
         }
     }
@@ -1892,6 +2275,147 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    public func aiMacScreenSaturationBinding(for id: UUID) -> Binding<Double> {
+        aiMacScreenColorCalibrationBinding(for: id, \.saturationPercent)
+    }
+
+    public func aiMacScreenContrastBinding(for id: UUID) -> Binding<Double> {
+        aiMacScreenColorCalibrationBinding(for: id, \.contrastPercent)
+    }
+
+    private func aiMacScreenColorCalibrationBinding(
+        for id: UUID, _ keyPath: WritableKeyPath<AIMacScreenDeviceSettings, Int>
+    ) -> Binding<Double> {
+        Binding(get: {
+            Double(self.aiMacScreenSettings(for: id)[keyPath: keyPath])
+        }, set: { value in
+            guard value.isFinite, (0...1_000).contains(value),
+                  self.settings.devices.contains(where: { $0.id == id && $0.type == .aiMacScreen }) else { return }
+            var config = self.aiMacScreenSettings(for: id)
+            let previous = config
+            config[keyPath: keyPath] = Int(value.rounded())
+            config.clamp()
+            guard config != previous else { return }
+            self.updateAIMacScreenColorCalibration(config, deviceID: id)
+        })
+    }
+
+    public func resetAIMacScreenColorCalibration(deviceID: UUID) {
+        guard settings.devices.contains(where: { $0.id == deviceID && $0.type == .aiMacScreen }) else { return }
+        var config = aiMacScreenSettings(for: deviceID)
+        guard config.hasColorCalibration else { return }
+        config.saturationPercent = 100
+        config.contrastPercent = 100
+        updateAIMacScreenColorCalibration(config, deviceID: deviceID)
+        commitAIMacScreenColorCalibration(deviceID: deviceID)
+    }
+
+    /// 滑杆每个刻度只修改目标设备并即时重绘它自己的 240×240 预览。
+    /// AppSettings 的通用 onChange 在这里被暂时旁路，避免无关设备随拖动重复渲染。
+    private func updateAIMacScreenColorCalibration(
+        _ config: AIMacScreenDeviceSettings, deviceID: UUID
+    ) {
+        guard let index = settings.devices.firstIndex(where: {
+            $0.id == deviceID && $0.type == .aiMacScreen
+        }) else { return }
+        settings.deviceSyncInFlight = true
+        var devices = settings.devices
+        devices[index].settings.aiMacScreen = config
+        settings.devices = devices
+        settings.deviceSyncInFlight = false
+        aiMacColorCalibrationPendingIDs.insert(deviceID)
+        scheduleAIMacScreenColorCalibrationPreview(deviceID: deviceID)
+        scheduleAIMacScreenColorCalibrationCommit(deviceID: deviceID)
+    }
+
+    /// 最多约 30 fps 更新当前设备预览。鼠标事件再密集也不会同步堵住主线程，
+    /// 每次执行时读取最新参数，因此不会显示过期的中间刻度。
+    private func scheduleAIMacScreenColorCalibrationPreview(deviceID: UUID) {
+        guard aiMacColorCalibrationPreviewTasks[deviceID] == nil else { return }
+        let generation = (aiMacColorCalibrationPreviewGenerations[deviceID] ?? 0) &+ 1
+        aiMacColorCalibrationPreviewGenerations[deviceID] = generation
+        aiMacColorCalibrationPreviewTasks[deviceID] = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 33_000_000) } catch { return }
+            guard let self, !Task.isCancelled,
+                  self.aiMacColorCalibrationPreviewGenerations[deviceID] == generation else { return }
+            self.aiMacColorCalibrationPreviewTasks[deviceID] = nil
+            self.refreshAIMacScreenPreview(deviceID: deviceID)
+        }
+    }
+
+    private func scheduleAIMacScreenColorCalibrationCommit(deviceID: UUID) {
+        aiMacColorCalibrationCommitTasks[deviceID]?.cancel()
+        aiMacColorCalibrationCommitTasks[deviceID] = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 180_000_000) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.commitAIMacScreenColorCalibration(deviceID: deviceID)
+        }
+    }
+
+    /// 拖动结束时立即提交；同时保留 180ms 尾随提交，兼容键盘微调等不触发
+    /// Slider 编辑结束回调的交互方式。
+    public func finishAIMacScreenColorCalibrationAdjustment(deviceID: UUID) {
+        aiMacColorCalibrationPreviewTasks[deviceID]?.cancel()
+        aiMacColorCalibrationPreviewTasks[deviceID] = nil
+        aiMacColorCalibrationPreviewGenerations[deviceID] =
+            (aiMacColorCalibrationPreviewGenerations[deviceID] ?? 0) &+ 1
+        commitAIMacScreenColorCalibration(deviceID: deviceID)
+    }
+
+    private func commitAIMacScreenColorCalibration(deviceID: UUID) {
+        aiMacColorCalibrationCommitTasks[deviceID]?.cancel()
+        aiMacColorCalibrationCommitTasks[deviceID] = nil
+        guard aiMacColorCalibrationPendingIDs.remove(deviceID) != nil else { return }
+        guard settings.devices.contains(where: {
+            $0.id == deviceID && $0.type == .aiMacScreen
+        }) else { return }
+        persistSettings()
+        // 最终刻度只做一次真实传输格式模拟；拖动中的约 30 fps 预览保留轻量
+        // 32-bit 渲染，避免旧 JPEG 固件在每个鼠标事件上反复编解码。
+        refreshAIMacScreenPreview(deviceID: deviceID, simulateTransport: true)
+        let config = aiMacScreenSettings(for: deviceID)
+        let isNativeClock = config.mode == .clock
+            || (config.mode == .card && config.cardMode == .aiMacClock)
+        guard backgroundServicesEnabled, config.autoPush, !isNativeClock else { return }
+        enqueueAIMacScreenColorCalibrationPush(deviceID: deviceID)
+    }
+
+    private func enqueueAIMacScreenColorCalibrationPush(deviceID: UUID) {
+        let previous = aiMacColorCalibrationPushTasks[deviceID]
+        let generation = (aiMacColorCalibrationPushGenerations[deviceID] ?? 0) &+ 1
+        aiMacColorCalibrationPushGenerations[deviceID] = generation
+        aiMacColorCalibrationPushTasks[deviceID] = Task { @MainActor [weak self] in
+            _ = await previous?.value
+            guard let self, !Task.isCancelled,
+                  self.aiMacColorCalibrationPushGenerations[deviceID] == generation else { return }
+            while self.aiMacScreenBusyIDs.contains(deviceID) {
+                do { try await Task.sleep(nanoseconds: 25_000_000) } catch { return }
+                guard self.aiMacColorCalibrationPushGenerations[deviceID] == generation,
+                      self.settings.devices.contains(where: {
+                          $0.id == deviceID && $0.type == .aiMacScreen
+                      }) else { return }
+            }
+            let latest = self.aiMacScreenSettings(for: deviceID)
+            let isNativeClock = latest.mode == .clock
+                || (latest.mode == .card && latest.cardMode == .aiMacClock)
+            guard latest.autoPush, !isNativeClock else { return }
+            await self.pushAIMacScreen(deviceID: deviceID, force: false)
+            if self.aiMacColorCalibrationPushGenerations[deviceID] == generation {
+                self.aiMacColorCalibrationPushTasks[deviceID] = nil
+            }
+        }
+    }
+
+    /// App 退出前把不足 180ms 的最后一次滑杆修改写盘；终止期间不再发网络请求。
+    public func prepareForTermination() {
+        cancelAWTRIXBackgroundWork()
+        aiMacColorCalibrationCommitTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationCommitTasks = [:]
+        guard !aiMacColorCalibrationPendingIDs.isEmpty else { return }
+        aiMacColorCalibrationPendingIDs = []
+        persistSettings()
+    }
+
     // MARK: AI Mac 通用卡片能力
 
     /// 统一目录根据现有打印机设备动态裁剪可用卡片；AI Mac 自己的多画板有独立入口，
@@ -1911,6 +2435,28 @@ public final class AppModel: ObservableObject {
         return CardCapabilityRegistry.sanitized(stored, available: availableAIMacCardModes)
     }
 
+    public func aiMacSystemMonitorModules(for deviceID: UUID) -> [CanvasModule] {
+        let deviceSettings = settings.devices.first {
+            $0.id == deviceID && $0.type == .aiMacScreen
+        }?.settings ?? DeviceSettings()
+        return deviceSettings.aiMacSystemMonitorModules
+    }
+
+    public func aiMacSystemMonitorBinding(
+        for deviceID: UUID, _ keyPath: WritableKeyPath<DeviceSettings, Bool?>
+    ) -> Binding<Bool> {
+        Binding(get: {
+            self.settings.devices.first { $0.id == deviceID && $0.type == .aiMacScreen }?
+                .settings[keyPath: keyPath] ?? true
+        }, set: { visible in
+            guard let device = self.settings.devices.first(where: {
+                $0.id == deviceID && $0.type == .aiMacScreen
+            }), device.settings[keyPath: keyPath] != visible else { return }
+            // 正常设置监听器负责保存、刷新预览及防抖推送；不写键盘的全局 show 字段。
+            self.mutateDeviceSettings(deviceID) { $0[keyPath: keyPath] = visible }
+        })
+    }
+
     public func aiMacHiddenCardList(for deviceID: UUID) -> [DisplayMode] {
         let visible = Set(aiMacCardList(for: deviceID))
         return availableAIMacCardModes.filter { !visible.contains($0) }
@@ -1924,6 +2470,11 @@ public final class AppModel: ObservableObject {
     public func activateAIMacCard(_ mode: DisplayMode, deviceID: UUID) {
         guard availableAIMacCardModes.contains(mode) else { return }
         mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
+            // 明确点选（包括再次点“正在播放”）取得页面所有权，不再让旧自动抢占
+            // 在媒体结束时把用户带回更早的页面。
+            config.smartRotationReturnContentMode = nil
+            config.smartRotationReturnCardModeRawValue = nil
+            config.smartRotationReturnPrinterDeviceID = nil
             config.mode = .card
             config.cardMode = mode
         }
@@ -2069,14 +2620,16 @@ public final class AppModel: ObservableObject {
            let printer = formlabsDevice(for: mode) {
             await refreshFormlabs(deviceID: printer.id, force: true, pushIfVisible: false)
         }
-        await pushAIMacScreen(deviceID: deviceID, force: true)
         if mode == .homeAssistant {
             let ids = HAEntityPicker.pictureEntityIDs(
                 in: aiMacHAEntityIDs(for: deviceID))
-            if await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: ids) {
-                await pushAIMacScreen(deviceID: deviceID, force: false)
-            }
-        } else if mode.bambuSlotIndex != nil {
+            // 先完成所选静态帧，再一次性推送最终画面；保留失败时的上一帧缓存，
+            // 不先发无图卡片再补图，避免低帧率摄像头切入时闪烁。
+            _ = await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: ids)
+        }
+        guard isCurrentAIMacCard(deviceID: deviceID, mode: mode) else { return }
+        await pushAIMacScreen(deviceID: deviceID, force: true)
+        if mode.bambuSlotIndex != nil {
             let config = bambuConfig(for: mode)
             // AI Mac 的独立打印机卡同时显示实况与任务封面。两张图合并为一次
             // 图片刷新流程，仍沿用内容哈希去重，不增加新的轮询定时器。
@@ -2124,14 +2677,20 @@ public final class AppModel: ObservableObject {
 
     private func mutateCurrentAIMacCanvasBoard(
         pushImmediately: Bool = true,
+        schedulePush: Bool = true,
         _ body: (inout AIMacCanvasBoard) -> Void
     ) {
         guard let id = activeDeviceID(for: .aiMacScreen) else { return }
-        mutateAIMacScreenSettings(id, pushImmediately: pushImmediately) { config in
+        mutateAIMacScreenSettings(id, pushImmediately: pushImmediately,
+                                  schedulePush: false) { config in
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return }
             body(&config.canvasBoards[config.canvasBoardIndex])
             config.canvasBoards[config.canvasBoardIndex].clamp()
             config.mode = .canvas
+        }
+        let config = aiMacScreenSettings(for: id)
+        if schedulePush && (pushImmediately || config.autoPush) {
+            scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: id)
         }
     }
 
@@ -2150,12 +2709,13 @@ public final class AppModel: ObservableObject {
         if activeDeviceID(for: .aiMacScreen) != deviceID {
             switchDevice(type: .aiMacScreen, to: deviceID)
         }
-        mutateAIMacScreenSettings(deviceID, pushImmediately: true) { config in
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoardIndex = index
             config.mode = .canvas
         }
         aiMacScreenLastBoardRotation[deviceID] = Date()
+        scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: deviceID)
     }
 
     @discardableResult
@@ -2173,13 +2733,70 @@ public final class AppModel: ObservableObject {
             ?? (direction >= 0 ? eligible.count - 1 : 0)
         let position = ((anchor + direction) % eligible.count + eligible.count) % eligible.count
         let nextIndex = eligible[position]
-        mutateAIMacScreenSettings(deviceID, pushImmediately: !automaticRotation,
-                                  schedulePush: !automaticRotation) { value in
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { value in
             value.canvasBoardIndex = nextIndex
             value.mode = .canvas
         }
         aiMacScreenLastBoardRotation[deviceID] = Date()
+        if !automaticRotation {
+            scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: deviceID)
+        }
         return true
+    }
+
+    /// 当前 AI Mac 画板如果包含 Home Assistant 图片/摄像头，先补齐缺失静态帧，
+    /// 再确认画板与实体选择没有在等待期间变化。这样首次添加、手动切板和自动轮换
+    /// 都不会先推一张“等待画面”的过渡帧；已有缓存时不会额外访问网络。
+    @discardableResult
+    private func prepareCurrentAIMacCanvasPictures(deviceID: UUID) async -> Bool {
+        let config = aiMacScreenSettings(for: deviceID)
+        guard config.mode == .canvas,
+              config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
+        let board = config.canvasBoards[config.canvasBoardIndex]
+        let expectedBoardID = board.id
+        let expectedEntityIDs = board.haEntityIDs
+        if board.moduleList.contains(.homeAssistant) {
+            let pictureIDs = HAEntityPicker.pictureEntityIDs(in: expectedEntityIDs)
+            let missing = pictureIDs.filter { haSnapshot.picture(for: $0) == nil }
+            if !missing.isEmpty {
+                _ = await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: missing)
+            }
+        }
+        let current = aiMacScreenSettings(for: deviceID)
+        guard current.mode == .canvas,
+              current.canvasBoards.indices.contains(current.canvasBoardIndex) else { return false }
+        let currentBoard = current.canvasBoards[current.canvasBoardIndex]
+        return currentBoard.id == expectedBoardID
+            && currentBoard.haEntityIDs == expectedEntityIDs
+    }
+
+    /// 每台设备只保留最后一次画板准备请求。设置连续变化或切板时取消旧任务；
+    /// 若设备正上传，则等待完成后再校验当前画板并补推，避免修改永久丢失。
+    private func scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: UUID) {
+        aiMacCanvasPicturePreparationTasks[deviceID]?.cancel()
+        let generation = (aiMacCanvasPicturePreparationGenerations[deviceID] ?? 0) &+ 1
+        aiMacCanvasPicturePreparationGenerations[deviceID] = generation
+        aiMacCanvasPicturePreparationTasks[deviceID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.aiMacCanvasPicturePreparationGenerations[deviceID] == generation {
+                    self.aiMacCanvasPicturePreparationTasks[deviceID] = nil
+                }
+            }
+            guard await self.prepareCurrentAIMacCanvasPictures(deviceID: deviceID),
+                  !Task.isCancelled,
+                  self.aiMacCanvasPicturePreparationGenerations[deviceID] == generation else { return }
+            while self.aiMacScreenBusyIDs.contains(deviceID) {
+                do { try await Task.sleep(nanoseconds: 50_000_000) } catch { return }
+                guard self.aiMacCanvasPicturePreparationGenerations[deviceID] == generation else { return }
+            }
+            // 上传等待期间仍可能切到原生时钟或另一张卡片；再核验一次，且缓存
+            // 已齐时不会重复下载。
+            guard await self.prepareCurrentAIMacCanvasPictures(deviceID: deviceID),
+                  !Task.isCancelled,
+                  self.aiMacCanvasPicturePreparationGenerations[deviceID] == generation else { return }
+            await self.pushAIMacScreen(deviceID: deviceID, force: true)
+        }
     }
 
     public func renameAIMacCanvasBoard(id boardID: UUID, to name: String) {
@@ -2301,6 +2918,43 @@ public final class AppModel: ObservableObject {
                                    system snapshot: SystemSnapshot,
                                    nowPlayingOverride: NowPlayingInfo? = nil,
                                    now: Date = Date()) throws -> CGImage {
+        let isNativeClock = config.mode == .clock
+            || (config.mode == .card && config.cardMode == .aiMacClock)
+        let isEmojiWallpaper = config.mode == .card && config.cardMode == .emojiWallpaper
+        let dark: Bool
+        if config.mode == .canvas {
+            let board = config.canvasBoards.indices.contains(config.canvasBoardIndex)
+                ? config.canvasBoards[config.canvasBoardIndex] : AIMacCanvasBoard()
+            dark = board.backgroundMode == .dark
+        } else {
+            dark = settings.softwareIsDark
+        }
+        let palette = ScreenThemes.resolved(
+            theme: settings.cardTheme,
+            backgroundTone: dark ? .dark : .light,
+            customBackgroundHex: nil,
+            accentTone: settings.accentTone,
+            customAccentHex: settings.customAccentHex,
+            softwareIsDark: dark)
+        // 设备端桌面时钟保留固件实际样式；其他彩色卡片的预览和推送共享同一张成图。
+        let image = try LiquidGlassCardRenderer.renderImage(
+            for: .aiMacScreen, mode: (isNativeClock || isEmojiWallpaper) ? .classic : settings.cardRenderingMode,
+            palette: palette) {
+                try self.renderAIMacScreenClassic(
+                    deviceID: deviceID, config: config, system: snapshot,
+                    nowPlayingOverride: nowPlayingOverride, now: now)
+            }
+        // 校准在玻璃合成之后统一执行，Emoji 也只校准颜色、不增加玻璃。
+        // 桌面时钟由固件自行渲染，预览不能添加固件不会显示的色彩处理。
+        guard !isNativeClock else { return image }
+        return AIMacColorCalibration.apply(to: image, settings: config)
+    }
+
+    private func renderAIMacScreenClassic(deviceID: UUID,
+                                          config: AIMacScreenDeviceSettings,
+                                          system snapshot: SystemSnapshot,
+                                          nowPlayingOverride: NowPlayingInfo? = nil,
+                                          now: Date = Date()) throws -> CGImage {
         let playbackInfo = nowPlayingOverride ?? nowPlaying
         if config.mode == .card {
             return try renderAIMacCard(deviceID: deviceID, mode: config.cardMode,
@@ -2366,6 +3020,8 @@ public final class AppModel: ObservableObject {
             // AI Mac 的设备画板走上层 canvas 分支；通用卡片列表不会暴露这一配方。
             throw AIMacScreenSupportError.encodeFailed
         case .modules(let modules):
+            let visibleModules = mode == .systemMonitor
+                ? aiMacSystemMonitorModules(for: deviceID) : modules
             let dark = settings.softwareIsDark
             let palette = ScreenThemes.resolved(
                 theme: settings.cardTheme,
@@ -2402,7 +3058,7 @@ public final class AppModel: ObservableObject {
                 fields[module.rawValue] = settings.canvasPrinterFields(for: module)
             }
             return ScreenRenderer.renderDeviceCanvas(
-                modules: modules, system: snapshot,
+                modules: visibleModules, system: snapshot,
                 nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
                 customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
                 settings: settings, codex: usage, qwenQuota: qwenQuota,
@@ -2421,17 +3077,41 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func refreshAIMacScreenPreview(deviceID: UUID) {
+    public func refreshAIMacScreenPreview(deviceID: UUID,
+                                          simulateTransport: Bool = false) {
         let config = aiMacScreenSettings(for: deviceID)
         do {
             let image = try renderAIMacScreen(deviceID: deviceID, config: config,
                                               system: system)
+            let previewImage = simulateTransport
+                ? aiMacScreenTransportPreview(image, deviceID: deviceID, config: config)
+                : image
             aiMacScreenPreviews[deviceID] = NSImage(
-                cgImage: image, size: NSSize(width: 240, height: 240))
+                cgImage: previewImage, size: NSSize(width: 240, height: 240))
         } catch {
             aiMacScreenPreviews[deviceID] = nil
             aiMacScreenStatuses[deviceID] = error.localizedDescription
         }
+    }
+
+    /// 已知设备能力时把最终 RGB565/JPEG 字节反解回来，预览因此包含与实机
+    /// 相同的通道量化或 JPEG 压缩；未连接过的设备只能显示原始渲染近似值。
+    private func aiMacScreenTransportPreview(
+        _ image: CGImage, deviceID: UUID, config: AIMacScreenDeviceSettings
+    ) -> CGImage {
+        guard let capabilities = aiMacScreenCapabilities[deviceID] else { return image }
+        if capabilities.supportsLosslessRGB565,
+           let data = try? AIMacScreenSupport.encodeRGB565(image),
+           let decoded = AIMacScreenSupport.decodeRGB565(data) {
+            return decoded
+        }
+        guard let data = try? AIMacScreenSupport.encodeJPEG(
+            image, preferredQuality: config.jpegQuality),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let decoded = CGImageSourceCreateImageAtIndex(source, 0, [
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else { return image }
+        return decoded
     }
 
     private func fetchAIMacScreenCapabilities(
@@ -2486,6 +3166,13 @@ public final class AppModel: ObservableObject {
                 aiMacScreenLosslessIDs.remove(deviceID)
                 aiMacScreenStatuses[deviceID] = "地址可用 · JPEG 兼容模式"
             }
+            if aiMacScreenSettings(for: deviceID).autoPush {
+                // “连接测试”也代表一次明确的重新上线。把自动推送节拍提前到
+                // 下一秒执行，用户无需再手动点一次推送才能看到首帧。
+                aiMacScreenLastHashes[deviceID] = nil
+                aiMacScreenLastPushAt[deviceID] = nil
+            }
+            refreshAIMacScreenPreview(deviceID: deviceID, simulateTransport: true)
         } catch {
             aiMacScreenStatuses[deviceID] = "连接失败：\(error.localizedDescription)"
         }
@@ -2653,7 +3340,8 @@ public final class AppModel: ObservableObject {
         }
         aiMacScreenBusyIDs.insert(deviceID)
         aiMacScreenLastPushAt[deviceID] = Date()
-        let isNativeClock = config.mode == .card && config.cardMode == .aiMacClock
+        let isNativeClock = config.mode == .clock
+            || (config.mode == .card && config.cardMode == .aiMacClock)
         aiMacScreenStatuses[deviceID] = isNativeClock
             ? "正在同步设备端时钟…" : "正在生成并推送画面…"
         defer { aiMacScreenBusyIDs.remove(deviceID) }
@@ -2661,15 +3349,31 @@ public final class AppModel: ObservableObject {
             if isNativeClock {
                 // 普通自动推送节拍不会再产生时钟图片。仅每 30 分钟低频校时，
                 // 手动切入、自动轮播切入以及系统唤醒都会强制立即同步一次。
+                var probedCapabilities: AIMacScreenCapabilities?
                 if !force, let last = aiMacScreenLastClockSyncAt[deviceID],
                    Date().timeIntervalSince(last) < 30 * 60 {
-                    aiMacScreenStatuses[deviceID] = "设备端时钟正在实时运行"
-                    return
+                    // 本地记住“已校时”不代表重启后的设备仍在时钟模式。
+                    // 读取固件 mode，只有设备真的还在 clock 才跳过本次命令。
+                    let current = try await fetchAIMacScreenCapabilities(
+                        deviceID: deviceID, force: true, allowJPEGFallback: false)
+                    if !AIMacScreenSupport.requiresPrimeFrame(
+                        activeMode: current.activeMode,
+                        frameRevision: current.frameRevision,
+                        expectedMode: "clock") {
+                        aiMacScreenStatuses[deviceID] = "设备端时钟正在实时运行"
+                        return
+                    }
+                    probedCapabilities = current
                 }
                 // 用户可能刚用本应用从旧固件刷到 0.8.5；强制重读能力，不能沿用
                 // 刷写前缓存的“无设备端时钟”结果。
-                let capabilities = try await fetchAIMacScreenCapabilities(
-                    deviceID: deviceID, force: true, allowJPEGFallback: false)
+                let capabilities: AIMacScreenCapabilities
+                if let probedCapabilities {
+                    capabilities = probedCapabilities
+                } else {
+                    capabilities = try await fetchAIMacScreenCapabilities(
+                        deviceID: deviceID, force: true, allowJPEGFallback: false)
+                }
                 guard let url = capabilities.nativeClockURL,
                       let request = AIMacScreenSupport.nativeClockRequest(
                         url: url, now: Date(), timeZone: .current) else {
@@ -2698,10 +3402,34 @@ public final class AppModel: ObservableObject {
             if sampleDashboard && (config.mode == .dashboard || canvasNeedsSystem || cardNeedsSystem) {
                 system = monitor.sample(now: Date())
             }
-            let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
+            // 自动推送前轻量读取一次设备真实状态。设备重启会清空画面，但电脑端
+            // 的上一帧 hash 仍存在；仅依靠 hash 会把应补发的首帧错误跳过。
+            // 已确认是新固件后，探测失败必须作为离线处理，不能再静默伪装成旧版
+            // JPEG 固件，否则仍会在下面命中旧 hash 并跳过首帧。
+            let cachedCapabilities = aiMacScreenCapabilities[deviceID]
+            let knownModernFirmware = cachedCapabilities?.activeMode != nil
+                || cachedCapabilities?.supportsLosslessRGB565 == true
+            // 自动节拍始终重试 /api/info：刚开机时 Web 服务常晚于图片端点就绪，
+            // 首次失败产生的 JPEG 兼容结果不能永久阻止后续识别新固件重启状态。
+            let shouldProbeDeviceState = !force
+            let capabilities: AIMacScreenCapabilities
+            if shouldProbeDeviceState {
+                capabilities = try await fetchAIMacScreenCapabilities(
+                    deviceID: deviceID, force: true,
+                    allowJPEGFallback: !knownModernFirmware)
+            } else {
+                capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID)
+            }
             let usesNativeNowPlaying = config.mode == .card
                 && config.cardMode == .nowPlaying
                 && capabilities.supportsNativeNowPlaying
+                && settings.cardRenderingMode == .classic
+                && !config.hasColorCalibration
+            let expectedDeviceMode = usesNativeNowPlaying ? "now_playing" : "external"
+            let deviceNeedsPrime = AIMacScreenSupport.requiresPrimeFrame(
+                activeMode: capabilities.activeMode,
+                frameRevision: capabilities.frameRevision,
+                expectedMode: expectedDeviceMode)
             let estimatedLatency = min(max(aiMacScreenUploadLatency[deviceID] ?? 0.18,
                                            0.05), 1.5)
             let presentationTime = Date().addingTimeInterval(estimatedLatency)
@@ -2710,8 +3438,6 @@ public final class AppModel: ObservableObject {
             let image = try renderAIMacScreen(
                 deviceID: deviceID, config: config, system: system,
                 nowPlayingOverride: projectedPlayback, now: presentationTime)
-            aiMacScreenPreviews[deviceID] = NSImage(
-                cgImage: image, size: NSSize(width: 240, height: 240))
             let bytes: Data
             let endpoint: URL
             let modeText: String
@@ -2727,10 +3453,22 @@ public final class AppModel: ObservableObject {
                 modeText = "JPEG 兼容"
                 aiMacScreenLosslessIDs.remove(deviceID)
             }
+            let encodedPreview: CGImage?
+            if capabilities.supportsLosslessRGB565 {
+                encodedPreview = AIMacScreenSupport.decodeRGB565(bytes)
+            } else if let source = CGImageSourceCreateWithData(bytes as CFData, nil) {
+                encodedPreview = CGImageSourceCreateImageAtIndex(source, 0, [
+                    kCGImageSourceShouldCacheImmediately: true
+                ] as CFDictionary)
+            } else {
+                encodedPreview = nil
+            }
+            aiMacScreenPreviews[deviceID] = NSImage(
+                cgImage: encodedPreview ?? image, size: NSSize(width: 240, height: 240))
             let frameHash = SHA256.hash(data: bytes).map {
                 String(format: "%02x", $0)
             }.joined()
-            if !force, aiMacScreenLastHashes[deviceID] == frameHash {
+            if !force, !deviceNeedsPrime, aiMacScreenLastHashes[deviceID] == frameHash {
                 if usesNativeNowPlaying {
                     try await syncAIMacNativeNowPlaying(
                         deviceID: deviceID, capabilities: capabilities, info: nowPlaying)
@@ -2767,6 +3505,10 @@ public final class AppModel: ObservableObject {
                 ? "推送成功 · \(modeText) · 设备端实时进度"
                 : "推送成功 · \(modeText)"
         } catch {
+            // 失败可能正是设备重启的离线窗口。清掉电脑端基线，设备重新上线后
+            // 下一次自动节拍必须实际上传，不能继续被旧 hash 短路。
+            aiMacScreenLastHashes[deviceID] = nil
+            aiMacScreenCapabilities[deviceID] = nil
             aiMacScreenStatuses[deviceID] = "推送失败：\(error.localizedDescription)"
         }
     }
@@ -2775,6 +3517,10 @@ public final class AppModel: ObservableObject {
         deviceID: UUID, capabilities: AIMacScreenCapabilities,
         info: NowPlayingInfo
     ) async throws {
+        // 请求等待期间也可能切换外观或色彩校准；这两种情况下不能让固件用
+        // 未校准的纯色进度区域覆盖最终成图。
+        guard settings.cardRenderingMode == .classic,
+              !aiMacScreenSettings(for: deviceID).hasColorCalibration else { return }
         guard let url = capabilities.nativeNowPlayingURL else { return }
         let basePalette = ScreenThemes.resolved(
             theme: settings.cardTheme,
@@ -2786,10 +3532,9 @@ public final class AppModel: ObservableObject {
         let palette: ScreenPalette
         let accent: (CGFloat, CGFloat, CGFloat)
         if let artwork = cachedArtworkImage(for: info.artwork) {
-            let dominant = ScreenRenderer.dominantColor(of: artwork)
             palette = ScreenRenderer.artworkPalette(
-                baseColor: dominant, themeAccent: basePalette.accent)
-            accent = ScreenRenderer.coverProgressAccent(dominant)
+                of: artwork, themeAccent: basePalette.accent)
+            accent = palette.accent
         } else {
             palette = basePalette
             accent = basePalette.accent
@@ -2814,7 +3559,9 @@ public final class AppModel: ObservableObject {
             guard config.autoPush,
                   !(aiMacScreensSystemSleeping && config.followSystemSleep),
                   !AIMacScreenSupport.normalizedHost(config.host).isEmpty,
-                  !aiMacScreenBusyIDs.contains(device.id) else { return false }
+                  !aiMacScreenBusyIDs.contains(device.id),
+                  !aiMacColorCalibrationPendingIDs.contains(device.id),
+                  aiMacCanvasPicturePreparationTasks[device.id] == nil else { return false }
             let interval = TimeInterval(max(1, config.pushIntervalSeconds))
             if let last = aiMacScreenLastPushAt[device.id], now.timeIntervalSince(last) < interval {
                 return false
@@ -2837,6 +3584,8 @@ public final class AppModel: ObservableObject {
         }) {
             system = monitor.sample(now: now)
         }
+        var rotatedCanvasDeviceIDs = Set<UUID>()
+        var rotatedCardModes: [UUID: DisplayMode] = [:]
         for device in dueDevices {
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard config.mode == .canvas, config.boardRotationEnabled,
@@ -2848,14 +3597,18 @@ public final class AppModel: ObservableObject {
             if aiMacScreenLastBoardRotation[device.id] == nil {
                 aiMacScreenLastBoardRotation[device.id] = now
             } else if now.timeIntervalSince(last) >= interval {
-                _ = cycleAIMacCanvasBoard(deviceID: device.id, direction: 1,
-                                          automaticRotation: true)
+                if cycleAIMacCanvasBoard(deviceID: device.id, direction: 1,
+                                         automaticRotation: true) {
+                    rotatedCanvasDeviceIDs.insert(device.id)
+                }
                 aiMacScreenLastBoardRotation[device.id] = now
             }
         }
         for device in dueDevices {
             let config = aiMacScreenSettings(for: device.id)
-            guard config.cardRotationEnabled else { continue }
+            // 画板与卡片各自只运行自己的轮播器；两者同时开启时不能在同一拍先切画板、
+            // 又立刻被卡片轮播覆盖。
+            guard config.mode == .card, config.cardRotationEnabled else { continue }
             let modes = aiMacCardRotationList(for: device.id)
             guard modes.count > 1 else { continue }
             let last = aiMacScreenLastCardRotation[device.id] ?? now
@@ -2866,15 +3619,33 @@ public final class AppModel: ObservableObject {
             guard now.timeIntervalSince(last) >= TimeInterval(config.cardRotationMinutes * 60) else {
                 continue
             }
-            let current = modes.firstIndex(of: config.cardMode) ?? -1
-            let next = modes[(current + 1 + modes.count) % modes.count]
+            aiMacScreenLastCardRotation[device.id] = now
+            guard let next = SmartCardRotationPolicy.nextMode(
+                after: config.cardMode, in: modes,
+                isEligible: { self.isAutomaticRotationModeEligible($0, now: now) }
+            ) else { continue }
             mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
                 value.mode = .card
                 value.cardMode = next
             }
-            aiMacScreenLastCardRotation[device.id] = now
+            rotatedCardModes[device.id] = next
+        }
+        // 自动切到带图片的画板只安排一条 latest-only 任务；后续 tick 会看到
+        // preparationTasks 并跳过，避免慢摄像头产生并发下载和空图闪帧。
+        for deviceID in rotatedCanvasDeviceIDs {
+            let current = aiMacScreenSettings(for: deviceID)
+            if current.mode == .canvas {
+                scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: deviceID)
+            }
+        }
+        // 自动切卡和手动切卡走同一份依赖刷新：打印机状态、HA 图片、额度与媒体
+        // 都先更新再推送，避免轮播刚切入时显示上一轮缓存。
+        for (deviceID, mode) in rotatedCardModes {
+            await refreshAIMacCardDataAndPush(mode: mode, deviceID: deviceID)
         }
         for device in dueDevices {
+            if aiMacCanvasPicturePreparationTasks[device.id] != nil
+                || rotatedCardModes[device.id] != nil { continue }
             await pushAIMacScreen(deviceID: device.id, force: false, sampleDashboard: false)
         }
     }
@@ -2903,6 +3674,10 @@ public final class AppModel: ObservableObject {
             // 先写全局镜像再写设备快照，防止 onChange→syncActiveDeviceSettings 用旧全局值覆盖回写
             self.syncBambuGlobalMirror(id, keyPath: keyPath, value: v)
             self.mutateDeviceSettings(id) { $0[keyPath: keyPath] = v }
+            if keyPath == \.bambuStatusEntityID {
+                // 换绑实体等同换了一台状态来源；旧打印机的完成窗口不能串给新实体。
+                self.printerRotationStates[id] = nil
+            }
             if keyPath == \.bambuImageEntityID || keyPath == \.bambuTaskImageEntityID {
                 self.refreshDisplayedBambuPictureAfterSettingChange(deviceID: id)
             }
@@ -3247,15 +4022,7 @@ public final class AppModel: ObservableObject {
 
     /// 菜单栏用的显示模式标题：Bambu 卡片位显示所绑定打印机的设备名
     public func menuTitle(for mode: DisplayMode) -> String {
-        let type: DeviceType
-        let slot: Int
-        if let value = mode.bambuSlotIndex { type = .bambuLab; slot = value }
-        else if let value = mode.formlabsSlotIndex { type = .formlabs; slot = value }
-        else { return mode.title }
-        let printers = enabledDevices(for: type)
-        guard printers.indices.contains(slot) else { return mode.title }
-        let name = printers[slot].name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? mode.title : name
+        MenuBarNamingPolicy.printerCardTitle(for: mode, devices: settings.devices)
     }
 
     /// Bambu 卡片位绑定的打印机设备（用于详情页；非 Bambu 面板返回 nil）
@@ -3301,8 +4068,10 @@ public final class AppModel: ObservableObject {
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: settings.haServerURL,
                                                                      token: settings.haToken)
-            applyHASnapshot(entities: entities, errorText: nil)
-            lastHARefresh = Date()
+            let sampledAt = Date()
+            applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
+            observeBambuPrinterRotationStates(entities: entities, now: sampledAt)
+            lastHARefresh = sampledAt
             return "连接成功：读到 \(entities.count) 个实体"
         } catch let error as HAError {
             return error.errorDescription ?? "连接失败"
@@ -3337,6 +4106,7 @@ public final class AppModel: ObservableObject {
         settings.haToken = ""
         haSnapshot = .empty
         lastHARefresh = nil
+        for device in devices(for: .bambuLab) { printerRotationStates[device.id] = nil }
         clearHAAlert(cooldown: false)
         persistSettings()
         renderPreview()
@@ -3483,7 +4253,13 @@ public final class AppModel: ObservableObject {
         lyricsTimer?.invalidate()
         linkedLyricsPushTasks.values.forEach { $0.cancel() }
         nowPlayingEventRefreshTask?.cancel()
+        lyricsFetchTask?.cancel()
+        aiMacCanvasPicturePreparationTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationCommitTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationPreviewTasks.values.forEach { $0.cancel() }
+        aiMacColorCalibrationPushTasks.values.forEach { $0.cancel() }
         nowPlayingChangeObservers.forEach(NotificationCenter.default.removeObserver)
+        playerChangeObservers.forEach(DistributedNotificationCenter.default().removeObserver)
         rand0Session?.disconnect()
     }
 
@@ -3520,21 +4296,65 @@ public final class AppModel: ObservableObject {
                 Task { @MainActor in self?.scheduleNowPlayingEventRefresh() }
             }
         }
+        playerChangeObservers = NowPlayingClient.playerChangeNotifications.map { name in
+            DistributedNotificationCenter.default().addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.scheduleNowPlayingEventRefresh() }
+            }
+        }
     }
 
-    /// 一次播放器操作通常会连续发出多个通知；轻量防抖后只启动一次探测子进程。
+    private var smartRotationNeedsLiveNowPlaying: Bool {
+        let keyboardRotationNeedsMedia = activeDevice(for: .keyboard) != nil
+            && settings.cardRotationEnabled && keyboardRotationList.contains(.nowPlaying)
+        let aiMacRotationNeedsMedia = enabledDevices(for: .aiMacScreen).contains { device in
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            return config.autoPush && config.cardRotationEnabled
+                && aiMacCardRotationList(for: device.id).contains(.nowPlaying)
+        }
+        return keyboardRotationNeedsMedia || aiMacRotationNeedsMedia
+    }
+
+    private var needsNowPlayingEventRefresh: Bool {
+        guard backgroundServicesEnabled else { return false }
+        let keyboardNeedsMedia = activeDevice(for: .keyboard) != nil
+            && (settings.displayMode == .nowPlaying
+                || (settings.displayMode == .canvas && settings.canvasModuleList.contains(.nowPlaying)))
+        return keyboardNeedsMedia || deviceCanvasNeedsLiveNowPlaying
+            || smartRotationNeedsLiveNowPlaying
+            || !linkedLyricsKeyboardIDs.isEmpty || NSApp.isActive
+    }
+
+    /// 初次事件轻量防抖；连续通知至多每秒取样一次。取样中的新事件保留一次
+    /// 尾随刷新，无设备媒体需求且窗口不活跃时继续使用侧栏的低频刷新。
     private func scheduleNowPlayingEventRefresh() {
-        guard deviceCanvasNeedsLiveNowPlaying || !linkedLyricsKeyboardIDs.isEmpty else { return }
-        nowPlayingEventRefreshTask?.cancel()
+        nowPlayingEventRefreshThrottle.notify(hasDemand: needsNowPlayingEventRefresh)
+        guard nowPlayingEventRefreshThrottle.hasPendingRefresh else { return }
+        guard nowPlayingEventRefreshTask == nil else { return }
+        let requestID = UUID()
+        nowPlayingEventRefreshID = requestID
         nowPlayingEventRefreshTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            await self.refreshNowPlaying(now: Date(), forceRemote: true)
+            guard let self else { return }
+            defer {
+                if self.nowPlayingEventRefreshID == requestID {
+                    self.nowPlayingEventRefreshTask = nil
+                    self.nowPlayingEventRefreshID = nil
+                }
+            }
+            while self.nowPlayingEventRefreshThrottle.hasPendingRefresh, !Task.isCancelled {
+                let delay = self.nowPlayingEventRefreshThrottle.delay(at: Date())
+                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { return }
+                guard self.nowPlayingEventRefreshThrottle.beginRefresh(
+                    at: Date(), hasDemand: self.needsNowPlayingEventRefresh) else { continue }
+                await self.refreshNowPlaying(now: Date(), forceRemote: true)
+            }
         }
     }
 
     private func tick() async {
         let now = Date()
+        scheduleAWTRIXHomeAssistantSync(now: now)
         // 设备端时钟每秒重绘，软件效果图也只在应用处于前台时跟随同一秒刷新；
         // 这里仅更新 240×240 本地预览，不触发图片上传或设备网络请求。
         refreshActiveAIMacClockPreview(now: now)
@@ -3542,7 +4362,8 @@ public final class AppModel: ObservableObject {
         updateSoftwareDarkState()
         // 设备画板含「正在播放」模块且开启自动推送时：按 6 秒节流刷新播放状态，
         // 实时捕获专辑封面变化（否则要等 30 秒的侧栏低频刷新）
-        if deviceCanvasNeedsLiveNowPlaying || !linkedLyricsKeyboardIDs.isEmpty {
+        if deviceCanvasNeedsLiveNowPlaying || smartRotationNeedsLiveNowPlaying
+            || !linkedLyricsKeyboardIDs.isEmpty {
             await refreshNowPlaying(now: now)
         }
         // Home Assistant 定时刷新（按设置间隔节流；未配置服务器地址时自动跳过）
@@ -3750,16 +4571,9 @@ public final class AppModel: ObservableObject {
     /// 低频刷新正在播放状态（仅供侧栏常驻封面/歌曲信息，不推送、不影响当前卡片）
     private func refreshSidebarNowPlaying(now: Date) async {
         if let last = lastNowPlayingFetch, now.timeIntervalSince(last) < 30 { return }
-        lastNowPlayingFetch = now
-        do {
-            nowPlaying = try await nowPlayingClient.fetch()
-        } catch {
-            if nowPlaying.title.isEmpty || nowPlaying.title == "未在播放" {
-                nowPlaying = .placeholder
-            }
-        }
-        updateSidebarArtwork()
-        await refreshLyricsIfNeeded()
+        // 统一走完整媒体刷新链，确保低频兜底同样能识别换歌并触发智能轮播；
+        // 不再维护一条会绕过换歌判定的侧栏专用赋值路径。
+        await refreshNowPlaying(now: now, forceRemote: true)
     }
 
     /// 最近图片定时轮换：到点后按顺序/随机切换到下一张历史图片并推送
@@ -4093,11 +4907,261 @@ public func setClockTimeFormat(_ format: String) {
         }
         guard now.timeIntervalSince(last) >= TimeInterval(settings.cardRotationMinutes) * 60 else { return false }
         lastCardRotation = now
-        cardRotationIndex = (cardRotationIndex + 1) % modes.count
-        let nextMode = modes[cardRotationIndex]
-        guard nextMode != settings.displayMode else { return false }
+        guard let nextMode = SmartCardRotationPolicy.nextMode(
+            after: settings.displayMode, in: modes,
+            isEligible: { self.isAutomaticRotationModeEligible($0, now: now) }
+        ) else { return false }
+        cardRotationIndex = modes.firstIndex(of: nextMode) ?? 0
         setMode(nextMode)
         return true
+    }
+
+    /// 自动轮播只跳过能够明确判定为未工作的打印机；手动点选卡片不经过此判定。
+    /// 未收录的新固件状态继续显示，错误/失败也保留，确保重要故障不会被静默隐藏。
+    private func isAutomaticRotationModeEligible(_ mode: DisplayMode, now: Date) -> Bool {
+        if mode == .nowPlaying {
+            return SmartCardRotationPolicy.hasValidNowPlayingTitle(nowPlaying.title)
+        }
+        if mode.bambuSlotIndex != nil {
+            guard let device = bambuDevice(for: mode) else { return false }
+            let config = BambuLabCardSettings.from(device)
+            let statusID = config.statusEntityID
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !statusID.isEmpty else { return false }
+            guard let state = haSnapshot.entities.first(where: {
+                $0.entityId == statusID
+            })?.state else {
+                // 已绑定但尚未取得首份 HA 快照时不武断隐藏；刷新后会按真实状态过滤。
+                return true
+            }
+            let activity = SmartCardRotationPolicy.printerActivity(state: state)
+            return SmartCardRotationPolicy.printerParticipatesInRotation(
+                activity: activity,
+                state: printerRotationStates[device.id] ?? .init(),
+                at: now)
+        }
+        if mode.formlabsSlotIndex != nil {
+            guard let device = formlabsDevice(for: mode) else { return false }
+            let connection = device.settings.formlabsConnection ?? FormlabsConnectionSettings()
+            guard !connection.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !connection.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !connection.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return false }
+            guard let snapshot = formlabsSnapshots[device.id] else {
+                // 配置完整但第一次云端刷新尚未返回，暂时保留卡片以兼容新状态。
+                return true
+            }
+            let states = [snapshot.print?.status, snapshot.device?.status]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let activity: SmartCardRotationPolicy.PrinterActivity =
+                snapshot.device?.isConnected == false
+                ? .inactive : SmartCardRotationPolicy.printerActivity(states: states)
+            let persistedState = snapshot.completionObservedAt.map {
+                SmartCardRotationPolicy.PrinterRotationState(
+                    lastActivity: activity == .idle ? .idle : .completed,
+                    completedAt: $0)
+            }
+            return SmartCardRotationPolicy.printerParticipatesInRotation(
+                activity: activity,
+                state: printerRotationStates[device.id] ?? persistedState ?? .init(),
+                at: now)
+        }
+        return true
+    }
+
+    /// 只在 Home Assistant 请求成功后调用。失败路径会沿用旧实体快照，绝不能把那份
+    /// 缓存当成新的状态跳变；last_changed 则允许重启后恢复尚未耗尽的完成窗口。
+    private func observeBambuPrinterRotationStates(
+        entities: [HAEntity],
+        now: Date,
+        deviceIDs: Set<UUID>? = nil
+    ) {
+        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        for device in enabledDevices(for: .bambuLab)
+            where deviceIDs?.contains(device.id) ?? true {
+            let config = BambuLabCardSettings.from(device)
+            let statusID = config.statusEntityID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !statusID.isEmpty, let entity = byID[statusID] else { continue }
+            let decision = SmartCardRotationPolicy.observePrinterActivity(
+                SmartCardRotationPolicy.printerActivity(state: entity.state),
+                previous: printerRotationStates[device.id] ?? .init(),
+                at: now,
+                completionEvidenceAt: entity.lastChanged)
+            printerRotationStates[device.id] = decision.state
+        }
+    }
+
+    /// Formlabs 的磁盘任务缓存只提供画面连续性，不能作为一次可信“之前仍在打印”。
+    /// 只有本进程成功观察到的转换才能首次写 completionObservedAt；一旦写入，该绝对
+    /// 时间随任务缓存持久化，重复 completed/idle 刷新只沿用而不会续期。
+    private func applyingFormlabsPrinterRotationState(
+        to snapshot: FormlabsSnapshot,
+        deviceID: UUID,
+        now: Date
+    ) -> FormlabsSnapshot {
+        var updated = snapshot
+        let states = [snapshot.print?.status, snapshot.device?.status]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let activity: SmartCardRotationPolicy.PrinterActivity =
+            snapshot.device?.isConnected == false
+            ? .inactive : SmartCardRotationPolicy.printerActivity(states: states)
+        let persisted = snapshot.completionObservedAt.map {
+            SmartCardRotationPolicy.PrinterRotationState(
+                lastActivity: activity == .idle ? .idle : .completed,
+                completedAt: $0)
+        }
+        let decision = SmartCardRotationPolicy.observePrinterActivity(
+            activity,
+            previous: printerRotationStates[deviceID] ?? persisted ?? .init(),
+            at: now)
+        printerRotationStates[deviceID] = decision.state
+        updated.completionObservedAt = decision.state.completedAt
+        return updated
+    }
+
+    private func printerDeviceID(for mode: DisplayMode) -> UUID? {
+        if let slot = mode.bambuSlotIndex {
+            let printers = enabledDevices(for: .bambuLab)
+            return printers.indices.contains(slot) ? printers[slot].id : nil
+        }
+        if let slot = mode.formlabsSlotIndex {
+            let printers = enabledDevices(for: .formlabs)
+            return printers.indices.contains(slot) ? printers[slot].id : nil
+        }
+        return nil
+    }
+
+    /// 返回点中的槽位只作类型提示；真正按稳定设备 UUID 查找当前槽位，避免播放期间
+    /// 删除/禁用/重排打印机后把页面恢复到另一台机器。
+    private func resolvedSmartRotationReturnMode(
+        _ storedMode: DisplayMode,
+        printerDeviceID: UUID?
+    ) -> DisplayMode? {
+        if storedMode.bambuSlotIndex != nil {
+            guard let printerDeviceID,
+                  let slot = enabledDevices(for: .bambuLab).firstIndex(where: {
+                      $0.id == printerDeviceID
+                  }) else { return nil }
+            return DisplayMode(rawValue: DisplayMode.bambuLab.rawValue + slot)
+        }
+        if storedMode.formlabsSlotIndex != nil {
+            guard let printerDeviceID,
+                  let slot = enabledDevices(for: .formlabs).firstIndex(where: {
+                      $0.id == printerDeviceID
+                  }) else { return nil }
+            return DisplayMode(rawValue: DisplayMode.formlabs.rawValue + slot)
+        }
+        return storedMode
+    }
+
+    /// “未在播放”是智能换歌抢占的释放事件。返回点逐设备持久化；仅当页面仍然
+    /// 停在本次抢占呈现的 nowPlaying 时恢复，中途手动/普通轮播切走只清令牌。
+    private func releaseNowPlayingSmartRotationTakeovers(now: Date) async {
+        let activeKeyboardID = activeDeviceID(for: .keyboard)
+        var activeKeyboardRestore: DisplayMode?
+        var changedKeyboardState = false
+        let previousSyncState = settings.deviceSyncInFlight
+        settings.deviceSyncInFlight = true
+        for index in settings.devices.indices where settings.devices[index].type == .keyboard {
+            let deviceID = settings.devices[index].id
+            guard let stored = settings.devices[index].settings.smartRotationReturnDisplayMode else {
+                continue
+            }
+            let current = deviceID == activeKeyboardID
+                ? settings.displayMode
+                : (settings.devices[index].settings.displayMode ?? .codex)
+            let takeover = SmartCardRotationPolicy.AutomaticTakeover(
+                previousTarget: stored, presentedTarget: DisplayMode.nowPlaying)
+            let requested = SmartCardRotationPolicy.releaseAutomaticTakeover(
+                takeover, current: current)
+            let resolved = requested.flatMap {
+                resolvedSmartRotationReturnMode(
+                    $0,
+                    printerDeviceID: settings.devices[index].settings
+                        .smartRotationReturnPrinterDeviceID)
+            }
+            settings.devices[index].settings.smartRotationReturnDisplayMode = nil
+            settings.devices[index].settings.smartRotationReturnPrinterDeviceID = nil
+            if let resolved {
+                settings.devices[index].settings.displayMode = resolved
+                if deviceID == activeKeyboardID {
+                    settings.displayMode = resolved
+                    activeKeyboardRestore = resolved
+                }
+            }
+            changedKeyboardState = true
+        }
+        settings.deviceSyncInFlight = previousSyncState
+        if changedKeyboardState { persistSettings() }
+
+        var aiMacRestores: [(deviceID: UUID, target: AIMacSmartRotationTarget)] = []
+        let aiMacIDs = settings.devices.compactMap { device in
+            device.type == .aiMacScreen ? device.id : nil
+        }
+        for deviceID in aiMacIDs {
+            let config = aiMacScreenSettings(for: deviceID)
+            guard let returnContentMode = config.smartRotationReturnContentMode else { continue }
+            let storedCardMode = config.smartRotationReturnCardModeRawValue
+                .flatMap(DisplayMode.init(rawValue:)) ?? config.cardMode
+            let previousCardMode: DisplayMode?
+            if returnContentMode == .card {
+                previousCardMode = resolvedSmartRotationReturnMode(
+                    storedCardMode,
+                    printerDeviceID: config.smartRotationReturnPrinterDeviceID)
+            } else {
+                previousCardMode = storedCardMode
+            }
+            let currentTarget = AIMacSmartRotationTarget(config)
+            let presented = AIMacSmartRotationTarget(
+                AIMacScreenDeviceSettings(mode: .card,
+                                          cardModeRawValue: DisplayMode.nowPlaying.rawValue))
+            let requested = previousCardMode.flatMap { cardMode in
+                SmartCardRotationPolicy.releaseAutomaticTakeover(
+                    .init(previousTarget: AIMacSmartRotationTarget(
+                        AIMacScreenDeviceSettings(mode: returnContentMode,
+                                                  cardModeRawValue: cardMode.rawValue)),
+                          presentedTarget: presented),
+                    current: currentTarget)
+            }
+            mutateAIMacScreenSettings(deviceID, schedulePush: false) { value in
+                value.smartRotationReturnContentMode = nil
+                value.smartRotationReturnCardModeRawValue = nil
+                value.smartRotationReturnPrinterDeviceID = nil
+                if let requested {
+                    value.mode = requested.contentMode
+                    value.cardMode = requested.cardMode
+                }
+            }
+            guard let requested,
+                  let device = settings.devices.first(where: {
+                      $0.id == deviceID && $0.type == .aiMacScreen && $0.isEnabled
+                  }) else { continue }
+            let restored = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            guard restored.autoPush,
+                  !(aiMacScreensSystemSleeping && restored.followSystemSleep) else { continue }
+            aiMacScreenLastCardRotation[deviceID] = now
+            aiMacRestores.append((deviceID, requested))
+        }
+
+        // 至此所有设备的旧令牌都已同步消费；下面才允许挂起，避免 await 期间的新歌
+        // 建立新令牌后又被这次旧“未在播放”事件清掉。
+        if let activeKeyboardRestore {
+            lastCardRotation = now
+            cardRotationIndex = keyboardRotationList.firstIndex(of: activeKeyboardRestore) ?? 0
+            await activateMode()
+        }
+        for restore in aiMacRestores {
+            let current = aiMacScreenSettings(for: restore.deviceID)
+            guard AIMacSmartRotationTarget(current) == restore.target else { continue }
+            if restore.target.contentMode == .card {
+                await refreshAIMacCardDataAndPush(
+                    mode: restore.target.cardMode, deviceID: restore.deviceID)
+            } else {
+                await pushAIMacScreen(deviceID: restore.deviceID, force: true)
+            }
+        }
     }
 
     /// 开启/关闭卡片自动轮换（开启时重置轮换时钟与游标）
@@ -4163,7 +5227,11 @@ public func setClockTimeFormat(_ format: String) {
     private func refreshNowPlaying(now: Date, forceRemote: Bool = false) async {
         // 播放中保持 6 秒校准；无媒体/暂停时退避到 30 秒，避免空闲状态频繁启动
         // Swift MediaRemote 探测子进程而拖慢整个系统。检测到播放后自动恢复高频校准。
-        let fetchInterval: TimeInterval = nowPlaying.isPlaying ? 6 : 30
+        let highFrequencyDemand = settings.displayMode == .nowPlaying
+            || deviceCanvasNeedsLiveNowPlaying
+            || smartRotationNeedsLiveNowPlaying
+            || !linkedLyricsKeyboardIDs.isEmpty
+        let fetchInterval: TimeInterval = nowPlaying.isPlaying || highFrequencyDemand ? 6 : 30
         if !forceRemote, let last = lastNowPlayingFetch,
            now.timeIntervalSince(last) < fetchInterval {
             // 使用同一锚点函数推进，歌词判断不再叠加第二套本地计时。
@@ -4174,25 +5242,63 @@ public func setClockTimeFormat(_ format: String) {
         lastNowPlayingFetch = now
         let previousInfo = nowPlaying
         var timelineChanged = false
+        var receivedAuthoritativeState = false
         do {
             let fetched = try await nowPlayingClient.fetch()
+            receivedAuthoritativeState = true
             let merged = fetched.reconciledWithProgressed(
                 current: nowPlaying, previousRemote: lastRemoteNowPlaying)
             lastRemoteNowPlaying = fetched
             nowPlaying = merged.info
             timelineChanged = merged.didSeek
                 || previousInfo.isPlaying != nowPlaying.isPlaying
+                || nowPlayingSongKey(previousInfo) != nowPlayingSongKey(nowPlaying)
         } catch NowPlayingError.notPlaying {
+            receivedAuthoritativeState = true
             nowPlaying = .placeholder
             lastRemoteNowPlaying = nil
             timelineChanged = previousInfo.title != nowPlaying.title
+        } catch is CancellationError {
+            return
         } catch {
             if nowPlaying.title.isEmpty || nowPlaying.title == "未在播放" {
                 nowPlaying = .placeholder
             }
         }
+        let previousSongKey = nowPlayingSongKey(previousInfo)
+        let observedSongKey = nowPlayingSongKey(nowPlaying)
+        var shouldPrioritizeSong = false
+        if let observedSongKey {
+            if observedSongKey != previousSongKey {
+                if nowPlaying.isPlaying, observedSongKey != lastSmartRotationSongKey {
+                    shouldPrioritizeSong = true
+                    lastSmartRotationSongKey = observedSongKey
+                    pendingSmartRotationSongKey = nil
+                } else if !nowPlaying.isPlaying {
+                    // 某些播放器换歌时先发一帧 paused，再发 playing；这不是旧歌的暂停/继续。
+                    pendingSmartRotationSongKey = observedSongKey
+                }
+            } else if nowPlaying.isPlaying,
+                      pendingSmartRotationSongKey == observedSongKey,
+                      lastSmartRotationSongKey != observedSongKey {
+                shouldPrioritizeSong = true
+                lastSmartRotationSongKey = observedSongKey
+                pendingSmartRotationSongKey = nil
+            }
+        } else if receivedAuthoritativeState {
+            // “未在播放”是明确的会话边界；之后重新开始同一首歌也应视为新的播放内容。
+            lastSmartRotationSongKey = nil
+            pendingSmartRotationSongKey = nil
+            await releaseNowPlayingSmartRotationTakeovers(now: now)
+        }
         updateSidebarArtwork()
+        // 这里仅安排后台查询，并同步清掉上一首歌的歌词；不会等待歌词网络。
         await refreshLyricsIfNeeded()
+        // 媒体本身已经读取完成：标题/封面不应等外部歌词服务响应才出现在预览中。
+        if previousInfo.title != nowPlaying.title || previousInfo.artist != nowPlaying.artist
+            || previousInfo.artwork != nowPlaying.artwork || timelineChanged {
+            renderPreview()
+        }
         if timelineChanged {
             resetLinkedLyricsScheduling()
             scheduleLinkedLyricsPush(force: true, now: Date())
@@ -4207,59 +5313,147 @@ public func setClockTimeFormat(_ format: String) {
                 }
             }
         }
+        if shouldPrioritizeSong {
+            await prioritizeNowPlayingForSmartRotation(now: now)
+        }
     }
 
     private func nowPlayingSongKey(_ info: NowPlayingInfo) -> String? {
         let title = info.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, title != "未在播放" else { return nil }
+        guard SmartCardRotationPolicy.hasValidNowPlayingTitle(title) else { return nil }
         return "\(title.lowercased())|\(info.artist.lowercased())|\(Int(info.duration.rounded()))"
+    }
+
+    /// 换歌时把“正在播放”提升为本轮首卡。只有用户已将该卡加入自动轮播池才生效；
+    /// 已经在正在播放页时也重置驻留周期，让新歌获得完整展示时间。
+    private func prioritizeNowPlayingForSmartRotation(now: Date) async {
+        var activateKeyboard = false
+        var pushCurrentKeyboard = false
+        let keyboardModes = keyboardRotationList
+        let keyboardShouldSwitch = SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+            songChanged: true, isPlaying: nowPlaying.isPlaying,
+            rotationEnabled: settings.cardRotationEnabled,
+            rotationModes: keyboardModes, currentMode: settings.displayMode)
+        let keyboardParticipates = keyboardShouldSwitch
+            || (settings.cardRotationEnabled && keyboardModes.contains(.nowPlaying)
+                && settings.displayMode == .nowPlaying)
+        if keyboardParticipates, let keyboardID = activeDeviceID(for: .keyboard) {
+            lastCardRotation = now
+            cardRotationIndex = keyboardModes.firstIndex(of: .nowPlaying) ?? 0
+            if settings.displayMode != .nowPlaying {
+                if let index = settings.devices.firstIndex(where: { $0.id == keyboardID }),
+                   let takeover = SmartCardRotationPolicy.beginAutomaticTakeover(
+                       from: settings.displayMode, presenting: DisplayMode.nowPlaying) {
+                    settings.devices[index].settings.smartRotationReturnDisplayMode =
+                        takeover.previousTarget
+                    settings.devices[index].settings.smartRotationReturnPrinterDeviceID =
+                        printerDeviceID(for: takeover.previousTarget)
+                }
+                settings.displayMode = .nowPlaying
+                persistSettings()
+                activateKeyboard = true
+            } else {
+                // 已停留在正在播放页也要立刻送出新歌，而不是继续受普通动态推送间隔限制。
+                pushCurrentKeyboard = true
+            }
+        }
+
+        var aiMacActions: [(deviceID: UUID, needsRefresh: Bool)] = []
+        for device in enabledDevices(for: .aiMacScreen) {
+            let config = aiMacScreenSettings(for: device.id)
+            let currentCard = config.mode == .card ? config.cardMode : .canvas
+            let modes = aiMacCardRotationList(for: device.id)
+            let shouldSwitch = SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
+                songChanged: true, isPlaying: nowPlaying.isPlaying,
+                rotationEnabled: config.cardRotationEnabled,
+                rotationModes: modes, currentMode: currentCard)
+            let alreadyShowing = config.cardRotationEnabled && modes.contains(.nowPlaying)
+                && config.mode == .card && config.cardMode == .nowPlaying
+            guard config.autoPush,
+                  !(aiMacScreensSystemSleeping && config.followSystemSleep),
+                  shouldSwitch || alreadyShowing
+            else { continue }
+            aiMacScreenLastCardRotation[device.id] = now
+            guard config.mode != .card || config.cardMode != .nowPlaying else {
+                aiMacActions.append((device.id, false))
+                continue
+            }
+            let previousTarget = AIMacSmartRotationTarget(config)
+            mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
+                value.smartRotationReturnContentMode = previousTarget.contentMode
+                value.smartRotationReturnCardModeRawValue = previousTarget.cardMode.rawValue
+                value.smartRotationReturnPrinterDeviceID = previousTarget.contentMode == .card
+                    ? self.printerDeviceID(for: previousTarget.cardMode) : nil
+                value.mode = .card
+                value.cardMode = .nowPlaying
+            }
+            aiMacActions.append((device.id, true))
+        }
+
+        // 所有目标的返回令牌与 nowPlaying 页面先在主 actor 上原子建立；之后才允许
+        // 网络/上传 await，避免期间到达的“未在播放”遗漏尚未抢占的某台小屏。
+        if activateKeyboard {
+            await activateMode()
+        } else if pushCurrentKeyboard {
+            await pushWhenAvailable(force: false, silentIfUnchanged: true)
+        }
+        for action in aiMacActions {
+            guard isCurrentAIMacCard(deviceID: action.deviceID, mode: .nowPlaying) else {
+                continue
+            }
+            if action.needsRefresh {
+                await refreshAIMacCardDataAndPush(mode: .nowPlaying, deviceID: action.deviceID)
+            } else {
+                await pushAIMacScreen(deviceID: action.deviceID, force: false)
+            }
+        }
     }
 
     /// 关联存在时每首歌只查询一次 LRCLIB；失败也缓存到换歌为止，避免网络重试形成负担。
     private func refreshLyricsIfNeeded(force: Bool = false) async {
         guard !linkedLyricsKeyboardIDs.isEmpty,
               let songKey = nowPlayingSongKey(nowPlaying) else {
+            lyricsFetchTask?.cancel()
+            lyricsFetchTask = nil
             lyricsRequestedSongKey = nil
             nowPlayingLyrics = nil
             return
         }
         guard force || lyricsRequestedSongKey != songKey else { return }
+        lyricsFetchTask?.cancel()
         lyricsRequestedSongKey = songKey
         // 换歌查询期间不能继续按新歌曲进度渲染上一首歌的歌词。
         nowPlayingLyrics = nil
         resetLinkedLyricsScheduling()
         let requestedInfo = nowPlaying
-        do {
-            let fetched = try await lyricsClient.fetch(for: requestedInfo)
-            guard lyricsRequestedSongKey == songKey,
-                  nowPlayingSongKey(nowPlaying) == songKey else { return }
-            nowPlayingLyrics = fetched
-        } catch {
-            guard lyricsRequestedSongKey == songKey,
-                  nowPlayingSongKey(nowPlaying) == songKey else { return }
-            nowPlayingLyrics = nil
+        // 查询期间先发送当前曲目的封面页；歌词请求独立运行，不阻塞 tick、
+        // 歌曲识别或用户 seek 的即时校准。换歌/解除关联会取消旧请求。
+        scheduleLinkedLyricsPush(force: true, now: Date())
+        lyricsFetchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let fetched: LyricsTrack?
+            do {
+                fetched = try await self.lyricsClient.fetch(for: requestedInfo)
+            } catch {
+                fetched = nil
+            }
+            guard !Task.isCancelled,
+                  self.lyricsRequestedSongKey == songKey,
+                  self.nowPlayingSongKey(self.nowPlaying) == songKey else { return }
+            self.nowPlayingLyrics = fetched
+            self.lyricsFetchTask = nil
+            self.linkedLyricsLastLineKeys = [:]
+            self.renderPreview()
+            self.scheduleLinkedLyricsPush(force: true, now: Date())
         }
-        linkedLyricsLastLineKeys = [:]
-        renderPreview()
     }
 
-    private func linkedLyricsRenderSettings(for device: ManagedDevice) -> AppSettings {
-        let result = AppSettings()
-        // 外观与时间格式是全局设置；其余正在播放布局由目标键盘自己的快照恢复。
-        result.softwareIsDark = settings.softwareIsDark
-        result.backgroundTone = settings.backgroundTone
-        result.customBackgroundHex = settings.customBackgroundHex
-        result.accentTone = settings.accentTone
-        result.customAccentHex = settings.customAccentHex
-        result.timeFormat = settings.timeFormat
-        result.dateFormat = settings.dateFormat
-        device.settings.apply(to: result, type: .keyboard)
-        return result
-    }
-
-    private func resetLinkedLyricsScheduling(clearDisplayedLines: Bool = true) {
+    private func resetLinkedLyricsScheduling(clearDisplayedLines: Bool = true,
+                                              preserveInFlightTasks: Bool = false) {
         linkedLyricsPushTasks.values.forEach { $0.cancel() }
-        linkedLyricsPushTasks = [:]
+        // 切换渲染方式时，新任务仍需等待旧上传真正退出，不能仅丢掉取消句柄后
+        // 把仍然 busy 的设备当成已经推送成功。停止/解除关联继续使用完整清理。
+        if !preserveInFlightTasks { linkedLyricsPushTasks = [:] }
         linkedLyricsScheduledLineKeys = [:]
         linkedLyricsRetryLineKeys = [:]
         linkedLyricsRetryNotBefore = [:]
@@ -4269,6 +5463,7 @@ public func setClockTimeFormat(_ format: String) {
     private func linkedLyricsPayload(for keyboardID: UUID, force: Bool, now: Date) ->
         (window: LyricsDisplayWindow?, lyricsOnly: Bool, lineKey: String)? {
         let lineKey: String
+        let renderingKey = settings.cardRenderingMode.rawValue
         if let lyrics = nowPlayingLyrics {
             let lead = LyricsTimelinePolicy.presentationLead(
                 observedLatency: linkedLyricsUploadLatency[keyboardID])
@@ -4279,21 +5474,21 @@ public func setClockTimeFormat(_ format: String) {
             let window = lyrics.displayWindow(at: displayElapsed)
             guard !window.lines.isEmpty else { return nil }
             let lineIndex = lyrics.currentLineIndex(at: displayElapsed) ?? -1
-            lineKey = "\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(window.lines.joined(separator: "|"))"
+            lineKey = "\(renderingKey)|\(nowPlayingSongKey(nowPlaying) ?? "")|\(lineIndex)|\(window.lines.joined(separator: "|"))"
             return (window, true, lineKey)
         } else if let songKey = nowPlayingSongKey(nowPlaying) {
             // 查询中或服务没有返回歌词时，保持灵犀 68 的标准正在播放页：
             // 显示专辑封面、歌曲信息与进度，而不是“暂未找到歌词”的空白文字页。
             // 五秒更新一次进度，同时把首次回退帧的耗时用于后续歌词换帧校准。
             let elapsedBucket = Int(nowPlaying.effectiveElapsed(at: now) / 5)
-            lineKey = "cover|\(songKey)|\(nowPlaying.artwork?.count ?? 0)|\(elapsedBucket)"
+            lineKey = "\(renderingKey)|cover|\(songKey)|\(nowPlaying.artwork?.count ?? 0)|\(elapsedBucket)"
             return (nil, false, lineKey)
         } else {
             // 尚无播放内容时保留原有占位页，平时 tick 不重复发送。
             guard force else { return nil }
             let message = nowPlayingSongKey(nowPlaying) == nil ? "暂无播放内容" : "暂未找到歌词"
             let window = LyricsDisplayWindow(lines: [message], currentIndex: 0)
-            lineKey = "placeholder|\(message)"
+            lineKey = "\(renderingKey)|placeholder|\(message)"
             return (window, true, lineKey)
         }
     }
@@ -4359,51 +5554,57 @@ public func setClockTimeFormat(_ format: String) {
                                          window: LyricsDisplayWindow?,
                                          lyricsOnly: Bool,
                                          lineKey: String) async -> Bool {
-        let activeID = activeDeviceID(for: .keyboard)
         guard linkedLyricsLastLineKeys[keyboardID] != lineKey,
               linkedLyricsScheduledLineKeys[keyboardID] == lineKey,
               !Task.isCancelled,
-              !linkedLyricsBusyIDs.contains(keyboardID),
               let device = enabledDevices(for: .keyboard).first(where: { $0.id == keyboardID }) else {
             return true
         }
-        let mode = keyboardID == activeID
+        // 暂时忙碌属于待重试，不能锁定当前行的“已成功”状态。
+        guard !linkedLyricsBusyIDs.contains(keyboardID) else { return false }
+        let mode = keyboardID == activeDeviceID(for: .keyboard)
             ? settings.displayMode : (device.settings.displayMode ?? .codex)
         guard mode == .nowPlaying else { return true }
         linkedLyricsBusyIDs.insert(keyboardID)
         defer { linkedLyricsBusyIDs.remove(keyboardID) }
 
-        let endpoint = keyboardID == activeID
-            ? settings.endpoint : (device.settings.endpoint ?? "")
-        guard !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
         var ownsGlobalPushSlot = false
         do {
-            if keyboardID == activeID {
-                while busy {
-                    try await Task.sleep(nanoseconds: 25_000_000)
-                    guard linkedLyricsScheduledLineKeys[keyboardID] == lineKey else {
-                        throw CancellationError()
-                    }
+            // 每次让出执行权后重新判断活动设备；切到另一把键盘时不能继续借用
+            // 新键盘的全局设置，也不能抢占它的普通推送槽位。
+            while activeDeviceID(for: .keyboard) == keyboardID && busy {
+                try await Task.sleep(nanoseconds: 25_000_000)
+                guard linkedLyricsScheduledLineKeys[keyboardID] == lineKey,
+                      linkedLyricsKeyboardIDs.contains(keyboardID) else {
+                    throw CancellationError()
                 }
+            }
+            guard !Task.isCancelled,
+                  linkedLyricsScheduledLineKeys[keyboardID] == lineKey,
+                  linkedLyricsKeyboardIDs.contains(keyboardID),
+                  let target = NowPlayingKeyboardRenderTarget(deviceID: keyboardID, source: settings) else {
+                return false
+            }
+            if target.ownsActivePreview(in: settings) {
                 busy = true
                 ownsGlobalPushSlot = true
             }
             defer { if ownsGlobalPushSlot { busy = false } }
-            let renderSettings = keyboardID == activeID
-                ? settings : linkedLyricsRenderSettings(for: device)
+            let renderSettings = target.renderSettings
             let uploadStartedAt = Date()
             let artwork = cachedArtworkImage(for: nowPlaying.artwork)
-            let result = try ScreenRenderer.renderNowPlaying(
-                nowPlaying, settings: renderSettings, artworkImage: artwork,
-                lyrics: window, lyricsOnly: lyricsOnly)
+            let result = try LiquidGlassCardRenderer.renderKeyboard(settings: renderSettings) {
+                try ScreenRenderer.renderNowPlaying(
+                    self.nowPlaying, settings: renderSettings, artworkImage: artwork,
+                    lyrics: window, lyricsOnly: lyricsOnly)
+            }
             guard !Task.isCancelled,
                   linkedLyricsScheduledLineKeys[keyboardID] == lineKey else { return true }
             _ = try await imageApi.upload(result.data, contentType: "image/jpeg",
-                                          endpoint: endpoint)
+                                          endpoint: target.endpoint)
             guard !Task.isCancelled,
                   linkedLyricsScheduledLineKeys[keyboardID] == lineKey else { return true }
+            guard target.isValid(in: settings), linkedLyricsKeyboardIDs.contains(keyboardID) else { return false }
             let measuredLatency = min(max(Date().timeIntervalSince(uploadStartedAt), 0), 3)
             if let previous = linkedLyricsUploadLatency[keyboardID] {
                 linkedLyricsUploadLatency[keyboardID] = previous * 0.65 + measuredLatency * 0.35
@@ -4411,7 +5612,10 @@ public func setClockTimeFormat(_ format: String) {
                 linkedLyricsUploadLatency[keyboardID] = measuredLatency
             }
             linkedLyricsLastLineKeys[keyboardID] = lineKey
-            if keyboardID == activeID {
+            if target.ownsActivePreview(in: settings) {
+                // 歌词使用独立的高频推送队列；成功后把实际上传的 JPEG 同步到预览，
+                // 避免软件仍显示另外一次普通渲染生成的旧时间窗或封面页。
+                updateKeyboardPreview(from: result)
                 lastUploadedHash = Self.sha256(result.data)
                 lastPushAttempt = Date()
                 lastPush = "最后推送：\(Self.formatNow())"
@@ -4692,8 +5896,18 @@ public func setClockTimeFormat(_ format: String) {
             + settings.oracleCanvasModuleList
             + settings.excerptCanvasModuleList
             + allAIMacCanvasModules
-        let cardSlots = activeAIMacCardModes.compactMap(\.formlabsSlotIndex)
-        let slots = Set(modules.compactMap(\.formlabsSlotIndex) + cardSlots).sorted()
+        // 自动轮播池里的打印机即使当前没显示，也要保持状态新鲜；否则一张曾经空闲而
+        // 被跳过的卡片永远没有机会发现新任务开始。
+        let currentCardSlots = activeAIMacCardModes.compactMap(\.formlabsSlotIndex)
+        let keyboardRotationSlots = settings.cardRotationEnabled
+            ? keyboardRotationList.compactMap(\.formlabsSlotIndex) : []
+        let aiMacRotationSlots = enabledDevices(for: .aiMacScreen).flatMap { device -> [Int] in
+            let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            guard config.autoPush, config.cardRotationEnabled else { return [] }
+            return aiMacCardRotationList(for: device.id).compactMap(\.formlabsSlotIndex)
+        }
+        let slots = Set(modules.compactMap(\.formlabsSlotIndex)
+                        + currentCardSlots + keyboardRotationSlots + aiMacRotationSlots).sorted()
         guard !slots.isEmpty else { return }
         let printers = enabledDevices(for: .formlabs)
         var refreshed = false
@@ -4734,7 +5948,15 @@ public func setClockTimeFormat(_ format: String) {
         defer { formlabsRefreshing.remove(deviceID) }
         lastFormlabsRefresh[deviceID] = Date()
         let previous = formlabsSnapshots[deviceID] ?? .empty
-        let updated = await formlabsClient.refresh(settings: config, previous: previous)
+        var updated = await formlabsClient.refresh(settings: config, previous: previous)
+        if updated.cloudError == nil {
+            if FormlabsTaskCachePolicy.isDefinitelyDifferentTask(
+                previous.print, updated.print) {
+                printerRotationStates[deviceID] = nil
+            }
+            updated = applyingFormlabsPrinterRotationState(
+                to: updated, deviceID: deviceID, now: updated.sampledAt ?? Date())
+        }
         formlabsSnapshots[deviceID] = updated
         store.saveFormlabsTaskCache(formlabsSnapshots)
         if let cloudError = updated.cloudError {
@@ -4748,6 +5970,12 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     // MARK: - Home Assistant
+
+    private func bambuDevice(for mode: DisplayMode) -> ManagedDevice? {
+        guard let slot = mode.bambuSlotIndex else { return nil }
+        let printers = enabledDevices(for: .bambuLab)
+        return printers.indices.contains(slot) ? printers[slot] : nil
+    }
 
     /// 取 Bambu 打印机配置（按显示模式对应第 1/2/3/4/5 台 Bambu Lab 设备：
     /// bambuLab→第 1 台、bambuLab2→第 2 台…bambuLab5→第 5 台；未配置该位时返回空占位卡）
@@ -4887,6 +6115,7 @@ public func setClockTimeFormat(_ format: String) {
     /// 共享服务器配置变更（地址/令牌）：立即按新配置重拉一次，让所有设备即时生效
     public func reloadHAServer() {
         lastHARefresh = nil
+        for device in devices(for: .bambuLab) { printerRotationStates[device.id] = nil }
         if !haSnapshot.entities.isEmpty {
             applyHASnapshot(entities: haSnapshot.entities, errorText: nil,
                             rebuildBambuCatalog: false, sampledAt: haSnapshot.sampledAt)
@@ -4911,8 +6140,10 @@ public func setClockTimeFormat(_ format: String) {
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: settings.haServerURL,
                                                                      token: settings.haToken)
+            let sampledAt = Date()
             // 一份全局快照：HA 卡片、画板模块、异常监控、打印机映射共用同一数据源
-            applyHASnapshot(entities: entities, errorText: nil)
+            applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
+            observeBambuPrinterRotationStates(entities: entities, now: sampledAt)
             // 仅抓取用户已映射且开启显示的 Bambu image.*/camera.* 实体当前静态帧。
             // 单帧失败时保留上一帧，避免摄像头偶发超时造成卡片闪空。
             if includePictures {
@@ -4953,14 +6184,16 @@ public func setClockTimeFormat(_ format: String) {
             }
             // 打印完成庆祝：状态从「非完成」跳变到「完成」（completed/finish/success/done）时，
             // 推送一次 🎉 打印完成提醒（与番茄钟夸夸卡同模式，短暂占屏；不重复推送）
-            let completedStates: Set<String> = ["completed", "finish", "success", "done"]
             for printerDevice in enabledDevices(for: .bambuLab) {
                 guard let statusID = printerDevice.settings.bambuStatusEntityID, !statusID.isEmpty,
                       let e = entities.first(where: { $0.entityId == statusID }) else { continue }
                 let state = e.state.trimmingCharacters(in: .whitespaces).lowercased()
                 let prev = lastPrinterStatuses[printerDevice.id]
                 lastPrinterStatuses[printerDevice.id] = state
-                guard completedStates.contains(state), let prev, !completedStates.contains(prev) else { continue }
+                guard SmartCardRotationPolicy.printerActivity(state: state) == .completed,
+                      let prev,
+                      SmartCardRotationPolicy.printerActivity(state: prev) != .completed
+                else { continue }
                 // 完成瞬间抓取任务名，让用户知道具体打完的是哪个任务
                 let taskName = printerDevice.settings.bambuTaskEntityID.flatMap { id in
                     entities.first(where: { $0.entityId == id })?.state
@@ -5070,9 +6303,16 @@ public func setClockTimeFormat(_ format: String) {
         }
         for device in enabledDevices(for: .aiMacScreen) {
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
-            guard config.mode == .card, config.cardMode == .homeAssistant else { continue }
-            HAEntityPicker.pictureEntityIDs(
-                in: config.haCardEntityIDs ?? settings.haCardEntityIDs).forEach(add)
+            if config.mode == .card, config.cardMode == .homeAssistant {
+                HAEntityPicker.pictureEntityIDs(
+                    in: config.haCardEntityIDs ?? settings.haCardEntityIDs).forEach(add)
+            } else if config.mode == .canvas,
+                      config.canvasBoards.indices.contains(config.canvasBoardIndex) {
+                let board = config.canvasBoards[config.canvasBoardIndex]
+                if board.moduleList.contains(.homeAssistant) {
+                    HAEntityPicker.pictureEntityIDs(in: board.haEntityIDs).forEach(add)
+                }
+            }
         }
         return ids
     }
@@ -5134,7 +6374,13 @@ public func setClockTimeFormat(_ format: String) {
                 }
             }
             // 状态值更新不会改变设备管理候选目录，不重新做完整筛选与排序。
-            applyHASnapshot(entities: merged, errorText: nil, rebuildBambuCatalog: false)
+            let sampledAt = Date()
+            applyHASnapshot(entities: merged, errorText: nil, rebuildBambuCatalog: false,
+                            sampledAt: sampledAt)
+            if let device = bambuDevice(for: mode) {
+                observeBambuPrinterRotationStates(
+                    entities: merged, now: sampledAt, deviceIDs: [device.id])
+            }
         } catch let error as HAError {
             applyHASnapshot(entities: haSnapshot.entities,
                             errorText: error.errorDescription ?? "无法获取实体状态",
@@ -5279,39 +6525,60 @@ public func setClockTimeFormat(_ format: String) {
     /// 失败的实体保留上一轮画面，避免摄像头偶发超时导致卡片闪空。
     @discardableResult
     private func refreshHAPictures(entities: [HAEntity], wantedIDs: [String]? = nil) async -> Bool {
-        let retained = pictureEntityIDs()
-        let retainedSet = Set(retained)
-        bambuAutoZoomImages = bambuAutoZoomImages.filter { retainedSet.contains($0.key) }
-        bambuCameraZoomRuntime = bambuCameraZoomRuntime.filter { retainedSet.contains($0.key) }
-        let wanted = wantedIDs ?? retained
-        guard !retained.isEmpty else {
+        let retainedAtStart = pictureEntityIDs()
+        let retainedAtStartSet = Set(retainedAtStart)
+        let wanted = (wantedIDs ?? retainedAtStart).filter { retainedAtStartSet.contains($0) }
+        guard !retainedAtStart.isEmpty else {
             let changed = !haSnapshot.images.isEmpty
             if !haSnapshot.images.isEmpty { haSnapshot.images = [:] }
+            bambuAutoZoomImages = [:]
+            bambuCameraZoomRuntime = [:]
+            haPictureRequestGenerations = [:]
             return changed
         }
-        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
-        let requests: [(String, URL)] = wanted.compactMap { id in
-            guard let entity = byID[id],
-                  let url = HomeAssistantClient.imageURL(server: settings.haServerURL,
-                                                         entity: entity,
-                                                         token: settings.haToken) else { return nil }
-            return (id, url)
-        }
+        // URL 和鉴权必须属于同一轮服务器配置；等待期间切换 HA 时，旧请求结果
+        // 不能写回新服务器的同名实体缓存。
+        let serverURL = settings.haServerURL
         let token = settings.haToken
-        let fetched = await withTaskGroup(of: (String, Data?).self) { group in
-            for (id, url) in requests {
+        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        var requests: [(id: String, url: URL, generation: UInt64)] = []
+        for id in wanted {
+            guard let entity = byID[id],
+                  let url = HomeAssistantClient.imageURL(server: serverURL,
+                                                         entity: entity,
+                                                         token: token) else { continue }
+            let generation = (haPictureRequestGenerations[id] ?? 0) &+ 1
+            haPictureRequestGenerations[id] = generation
+            requests.append((id, url, generation))
+        }
+        let fetched = await withTaskGroup(of: (String, UInt64, Data?).self) { group in
+            for request in requests {
                 group.addTask {
-                    (id, try? await HomeAssistantClient.fetchImage(url: url, token: token))
+                    (request.id, request.generation,
+                     try? await HomeAssistantClient.fetchImage(url: request.url, token: token))
                 }
             }
-            var result: [String: Data] = [:]
-            for await (id, data) in group {
-                if let data { result[id] = data }
+            var result: [(String, UInt64, Data)] = []
+            for await (id, generation, data) in group {
+                if let data { result.append((id, generation, data)) }
             }
             return result
         }
-        var images = haSnapshot.images.filter { retained.contains($0.key) }
-        for (id, data) in fetched { images[id] = data }
+        guard !Task.isCancelled,
+              settings.haServerURL == serverURL, settings.haToken == token else { return false }
+        // 两台小屏或快速换板可能并发抓图。完成时重新计算保留集合，并从此刻的
+        // 全局缓存合并，避免较早启动、较晚结束的请求删掉另一台刚写入的帧。
+        let retainedNow = Set(pictureEntityIDs())
+        haPictureRequestGenerations = haPictureRequestGenerations.filter {
+            retainedNow.contains($0.key)
+        }
+        bambuAutoZoomImages = bambuAutoZoomImages.filter { retainedNow.contains($0.key) }
+        bambuCameraZoomRuntime = bambuCameraZoomRuntime.filter { retainedNow.contains($0.key) }
+        var images = haSnapshot.images.filter { retainedNow.contains($0.key) }
+        for (id, generation, data) in fetched
+            where retainedNow.contains(id) && haPictureRequestGenerations[id] == generation {
+            images[id] = data
+        }
         let changed = images != haSnapshot.images
         haSnapshot.images = images
         return changed
@@ -5705,6 +6972,8 @@ public func setClockTimeFormat(_ format: String) {
             $0.id == keyboardID && $0.type == .keyboard && $0.isEnabled
         }) else { return }
         settings.devices[index].settings.cardRotationEnabled = false
+        settings.devices[index].settings.smartRotationReturnDisplayMode = nil
+        settings.devices[index].settings.smartRotationReturnPrinterDeviceID = nil
         settings.devices[index].settings.displayMode = .nowPlaying
         if activeDeviceID(for: .keyboard) == keyboardID {
             settings.cardRotationEnabled = false
@@ -5779,7 +7048,13 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: settings.canvasHAEntityIDs = cleaned
         case .oracle: settings.oracleCanvasHAEntityIDs = cleaned
         case .excerpt: settings.excerptCanvasHAEntityIDs = cleaned
-        case .aiMac: mutateCurrentAIMacCanvasBoard { $0.haEntityIDs = cleaned }
+        case .aiMac:
+            guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+            // 图片实体要先取得静态帧再首次推送，不能让通用设置监听抢先发送空图。
+            mutateCurrentAIMacCanvasBoard(pushImmediately: false, schedulePush: false) {
+                $0.haEntityIDs = cleaned
+            }
+            scheduleCurrentAIMacCanvasPicturesAndPush(deviceID: deviceID)
         }
     }
 
@@ -6221,12 +7496,29 @@ public func setClockTimeFormat(_ format: String) {
                 guard let self, let session, self.rand0Session === session,
                       self.rand0SessionIP == ip, self.rand0SessionEndpoint == endpoint else { return }
                 self.rand0SessionConnected = connected
-                if connected, self.rand0SessionNeedsPrime {
+                if connected, self.rand0SessionNeedsPrime,
+                   !self.rand0SessionPrimeInFlight {
                     // 首次连接与每次自动重连后立即发送当前画板，完成显示模式初始化；
                     // 之后自动推送与设备按键无需再靠一次人工测试推送来“唤醒”。
-                    self.rand0SessionNeedsPrime = false
-                    _ = await self.pushOracleCanvas(preRenderedFrame: nil,
-                                                    skipIfUnchanged: false)
+                    self.rand0SessionPrimeInFlight = true
+                    defer { self.rand0SessionPrimeInFlight = false }
+                    for attempt in 0..<5 {
+                        guard self.rand0Session === session,
+                              self.rand0SessionIP == ip,
+                              self.rand0SessionEndpoint == endpoint,
+                              self.rand0SessionNeedsPrime else { return }
+                        if session.isConnected {
+                            let didPush = await self.pushOracleCanvas(
+                                preRenderedFrame: nil, skipIfUnchanged: false)
+                            // 发送完成时连接仍有效，才算设备真正接收了本次首帧。
+                            if didPush, session.isConnected {
+                                self.rand0SessionNeedsPrime = false
+                                return
+                            }
+                        }
+                        guard attempt < 4 else { break }
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
                 } else if !connected {
                     self.rand0SessionNeedsPrime = true
                 }
@@ -6240,6 +7532,1499 @@ public func setClockTimeFormat(_ format: String) {
             guard self.rand0Session === session,
                   self.rand0SessionIP == ip, self.rand0SessionEndpoint == endpoint else { return }
             self.rand0SessionConnected = session.isConnected
+        }
+    }
+
+    // MARK: - M5 StickS3 蓝牙控制器
+
+    /// 可由控制器切换和翻页的显示设备。AWTRIX 是 1.5.5 主线新增目标。
+    public static let m5ControllableTypes: [DeviceType] = [
+        .keyboard, .oracle, .excerpt, .aiMacScreen, .awtrix
+    ]
+
+    private var embeddedM5FirmwareURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("Firmware", isDirectory: true)
+            .appendingPathComponent(EmbeddedM5StickS3Firmware.fileName)
+    }
+
+    private var embeddedM5FlashHelperURL: URL? {
+        Bundle.main.resourceURL?
+            .appendingPathComponent("Firmware", isDirectory: true)
+            .appendingPathComponent(EmbeddedM5StickS3Firmware.helperName)
+    }
+
+    public private(set) lazy var embeddedM5FirmwareReady: Bool = {
+        guard let firmwareURL = embeddedM5FirmwareURL,
+              let helperURL = embeddedM5FlashHelperURL,
+              let firmware = try? Data(contentsOf: firmwareURL) else { return false }
+        return EmbeddedM5StickS3Firmware.validate(firmware)
+            && FileManager.default.isExecutableFile(atPath: helperURL.path)
+    }()
+
+    /// StickS3 使用 ESP32-S3 原生 USB CDC，只显示 usbmodem 端口，避免用户误刷
+    /// 同时连接的 CH340/CP210x 打印机、键盘或其他串口设备。
+    public func refreshM5FlashPorts() {
+        m5FlashPorts = ESP8266FirmwareFlasher.discoverM5StickS3SerialPorts()
+        if !m5FlashPorts.contains(where: { $0.path == selectedM5FlashPort }) {
+            selectedM5FlashPort = m5FlashPorts.first?.path ?? ""
+        }
+        if m5FlashPorts.isEmpty {
+            m5FlashStatus = "没有发现 StickS3 原生 USB 串口，请检查数据线并让设备进入下载模式"
+        } else if !m5FlashBusy {
+            m5FlashStatus = "已发现 \(m5FlashPorts.count) 个 StickS3 候选串口"
+        }
+    }
+
+    @discardableResult
+    public func flashM5StickS3Firmware() async -> Bool {
+        guard !m5FlashBusy, !aiMacFlashBusy else { return false }
+        guard let port = m5FlashPorts.first(where: { $0.path == selectedM5FlashPort }) else {
+            m5FlashStatus = ESP8266FlashError.noPort.localizedDescription
+            return false
+        }
+        guard let firmwareURL = embeddedM5FirmwareURL,
+              let helperURL = embeddedM5FlashHelperURL else {
+            m5FlashStatus = ESP8266FlashError.missingResource("StickS3 固件").localizedDescription
+            return false
+        }
+
+        m5FlashBusy = true
+        m5FlashProgress = 0
+        m5FlashLog = ""
+        m5FlashStatus = "正在连接 ESP32-S3…"
+        defer { m5FlashBusy = false }
+        do {
+            try await m5FirmwareFlasher.flashM5StickS3(
+                port: port, helperURL: helperURL, firmwareURL: firmwareURL,
+                progress: { [weak self] value in
+                    Task { @MainActor in
+                        self?.m5FlashProgress = value
+                        self?.m5FlashStatus = value > 0
+                            ? "正在刷入 StickS3 固件… \(Int((value * 100).rounded()))%"
+                            : "正在连接 ESP32-S3…"
+                    }
+                },
+                log: { [weak self] text in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.m5FlashLog += text
+                        if self.m5FlashLog.count > 20_000 {
+                            self.m5FlashLog = String(self.m5FlashLog.suffix(20_000))
+                        }
+                    }
+                })
+            m5FlashProgress = 1
+            m5FlashStatus = "刷入成功，StickS3 已自动重启；正在扫描蓝牙控制器…"
+            status = "M5 StickS3 固件刷入成功"
+            refreshM5FlashPorts()
+            m5StartScan()
+            return true
+        } catch {
+            m5FlashStatus = error.localizedDescription
+            status = "M5 StickS3 固件刷入失败"
+            refreshM5FlashPorts()
+            return false
+        }
+    }
+
+    public func cancelM5FirmwareFlash() {
+        m5FirmwareFlasher.cancel()
+        m5FlashStatus = "正在停止刷写…"
+    }
+
+    public func ensureM5ControllerSession() {
+        guard backgroundServicesEnabled else { return }
+        let device = settings.activeDevice(for: .m5Controller)
+        let pairedID: UUID? = {
+            guard let device, device.isEnabled,
+                  let raw = device.settings.m5Controller?.pairedPeripheralID else { return nil }
+            return UUID(uuidString: raw)
+        }()
+        guard let pairedID else {
+            releaseM5HeldShortcut()
+            m5BLEClient?.disconnect()
+            m5ControllerConnected = false
+            return
+        }
+        obtainM5BLEClient().connect(peripheralID: pairedID)
+    }
+
+    private func obtainM5BLEClient() -> M5ControllerBLEClient {
+        if let m5BLEClient { return m5BLEClient }
+        let client = M5ControllerBLEClient()
+        client.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in self?.handleM5ControllerEvent(event) }
+        }
+        client.onConnectionChange = { [weak self] connected in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.m5ControllerConnected = connected
+                if connected {
+                    self.status = self.m5RepairPhase == .waitingForSystemPairing
+                        ? "控制器已连接，正在等待 macOS 完成蓝牙输入设备配对"
+                        : "M5 StickS3 控制器已连接"
+                    self.lastM5InfoSent = nil
+                    self.sendM5ControllerInfo()
+                } else if self.settings.activeDevice(for: .m5Controller)?
+                    .settings.m5Controller?.pairedPeripheralID != nil {
+                    self.releaseM5HeldShortcut()
+                    self.m5ControllerHIDReady = false
+                    self.m5ControllerHIDSecured = false
+                    self.status = "M5 StickS3 控制器已断开，等待重连…"
+                } else if !connected {
+                    self.releaseM5HeldShortcut()
+                    self.m5ControllerHIDReady = false
+                    self.m5ControllerHIDSecured = false
+                }
+            }
+        }
+        client.onDiscovered = { [weak self] list in
+            Task { @MainActor [weak self] in self?.m5DiscoveredControllers = list }
+        }
+        client.onScanStateChange = { [weak self] scanning in
+            Task { @MainActor [weak self] in self?.m5ControllerScanning = scanning }
+        }
+        client.onStateChange = { [weak self] state in
+            Task { @MainActor [weak self] in self?.m5BluetoothState = state }
+        }
+        client.onInfoTransmissionResult = { [weak self] data, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let error {
+                    self.lastM5InfoSent = nil
+                    self.status = "控制器卡片同步失败：\(error.localizedDescription)"
+                } else if self.m5ControllerPreviewInfo?.encoded() == data {
+                    // 只有实机完成重组和解析后才记为已同步；预览更新不再提前
+                    // 吞掉后续重试。
+                    self.lastM5InfoSent = data
+                }
+            }
+        }
+        m5BLEClient = client
+        return client
+    }
+
+    public func m5StartScan() {
+        let client = obtainM5BLEClient()
+        client.clearDiscovered()
+        client.startScan()
+    }
+
+    public func m5StopScan() {
+        m5BLEClient?.stopScan()
+    }
+
+    public func m5PairController(_ discovered: M5DiscoveredController) {
+        let deviceID = m5RepairingControllerID
+            ?? settings.activeDevice(for: .m5Controller)?.id
+            ?? addDevice(type: .m5Controller)
+        // 多控制器场景必须把扫描结果写回发起重新配对的那张设备卡，不能因为
+        // 当前活动设备改变而覆盖另一台控制器的配对信息。
+        if settings.activeDeviceID(for: .m5Controller) != deviceID {
+            switchDevice(type: .m5Controller, to: deviceID)
+        }
+        mutateM5ControllerSettings(deviceID) {
+            $0.pairedPeripheralID = discovered.id.uuidString
+            $0.pairedName = discovered.name
+        }
+        m5ControllerPage = .mainMenu
+        m5HASelectionIndex = 0
+        m5HAActionMessage = nil
+        m5ControllerHIDReady = false
+        m5ControllerHIDSecured = false
+        if m5RepairingControllerID != nil {
+            m5RepairPhase = .waitingForSystemPairing
+            m5RepairingPeripheralName = discovered.name
+        }
+        m5StopScan()
+        m5DiscoveredControllers = []
+        ensureM5ControllerSession()
+        status = "已选择 M5 StickS3「\(discovered.name)」，正在连接并等待系统配对"
+    }
+
+    public func m5UnpairController(deviceID: UUID) {
+        mutateM5ControllerSettings(deviceID) {
+            $0.pairedPeripheralID = nil
+            $0.pairedName = nil
+        }
+        clearM5ControllerInfoAndDisconnect()
+        m5ControllerConnected = false
+        lastM5InfoSent = nil
+        m5ControllerPage = .mainMenu
+        m5HASelectionIndex = 0
+        m5HAActionMessage = nil
+        m5GyroRecenterTokens.removeValue(forKey: deviceID)
+        m5RepairingControllerID = nil
+        m5RepairingPeripheralName = nil
+        m5RepairPhase = nil
+        status = "已解除软件配对；重新配对前请在系统蓝牙中手动忽略原设备"
+    }
+
+    public func m5BeginRepairController(deviceID: UUID) {
+        let config = m5ControllerSettings(for: deviceID)
+        let previousName = config.pairedName ?? "Lingxi-Controller"
+        m5UnpairController(deviceID: deviceID)
+        m5RepairingControllerID = deviceID
+        m5RepairingPeripheralName = previousName
+        m5RepairPhase = .removeSystemRecord
+        m5OpenBluetoothSettings()
+        status = "重新配对第 1 步：请在系统蓝牙中忽略旧的 \(previousName)"
+    }
+
+    public func m5OpenBluetoothSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    public func m5ContinueRepairScan() {
+        guard m5RepairingControllerID != nil else { return }
+        m5RepairPhase = .scanning
+        m5StartScan()
+        status = "重新配对第 2 步：正在扫描已清除旧记录的 StickS3"
+    }
+
+    public func m5ReturnToRepairSystemStep() {
+        guard m5RepairingControllerID != nil else { return }
+        m5StopScan()
+        m5RepairPhase = .removeSystemRecord
+        m5OpenBluetoothSettings()
+        status = "重新配对第 1 步：请先在系统蓝牙中忽略旧的 \(m5RepairingPeripheralName ?? "Lingxi-Controller")"
+    }
+
+    public func m5CancelRepair() {
+        m5RepairingControllerID = nil
+        m5RepairingPeripheralName = nil
+        m5RepairPhase = nil
+        m5StopScan()
+    }
+
+    /// 删除或解除配对时写给 StickS3 的空页面。BLE 客户端会等待带响应写入完成，
+    /// 再真正断开连接；这同时阻止旧按键事件继续控制已删除的目标。
+    private func clearM5ControllerInfoAndDisconnect() {
+        releaseM5HeldShortcut()
+        guard let client = m5BLEClient else { return }
+        if let data = M5ControllerInfo.clearedPairing.encoded() {
+            client.clearInfoAndDisconnect(info: data)
+        } else {
+            client.disconnect()
+        }
+    }
+
+    public func m5ControllerSettings(for id: UUID) -> M5ControllerDeviceSettings {
+        settings.devices.first(where: { $0.id == id && $0.type == .m5Controller })?
+            .settings.m5Controller ?? M5ControllerDeviceSettings()
+    }
+
+    public func m5BuzzerBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedBuzzerEnabled
+        }, set: { enabled in
+            self.mutateM5ControllerSettings(controllerID) { $0.buzzerEnabled = enabled }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5MediaControlsEnabledBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedMediaControlsEnabled
+        }, set: { enabled in
+            self.mutateM5ControllerSettings(controllerID) { $0.mediaControlsEnabled = enabled }
+            if !enabled, self.m5ControllerPage == .mediaControls {
+                self.m5ControllerPage = .macShortcuts
+            }
+            self.m5MainSelectionIndex = 0
+            self.m5ShortcutMenuSelectionIndex = 0
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseEnabledBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseEnabled
+        }, set: { enabled in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseEnabled = enabled }
+            if !enabled, self.m5ControllerPage == .gyroMouse {
+                self.m5ControllerPage = .macShortcuts
+            }
+            self.m5MainSelectionIndex = 0
+            self.m5ShortcutMenuSelectionIndex = 0
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseSensitivityBinding(controllerID: UUID) -> Binding<Double> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseSensitivity
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseSensitivity = value }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseDeadZoneBinding(controllerID: UUID) -> Binding<Double> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseDeadZone
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseDeadZone = value }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseSmoothingBinding(controllerID: UUID) -> Binding<Double> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseSmoothing
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseSmoothing = value }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseInvertXBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseInvertX
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseInvertX = value }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseInvertYBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseInvertY
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) { $0.gyroMouseInvertY = value }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5GyroMouseClutchEnabledBinding(controllerID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID).resolvedGyroMouseClutchEnabled
+        }, set: { value in
+            self.mutateM5ControllerSettings(controllerID) {
+                $0.gyroMouseClutchEnabled = value
+            }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    /// 固件进入飞鼠页时会自动采样静止零偏与自然握姿；此操作用于用户中途
+    /// 换握姿后重新采样。完成后固件会请求 Mac 把指针移到当前显示器中心。
+    /// token 避免 BLE 重发同一载荷时重复进入校准。
+    public func m5RecenterGyroMouse(controllerID: UUID) {
+        var token = (m5GyroRecenterTokens[controllerID] ?? 0) &+ 1
+        if token == 0 { token = 1 }
+        m5GyroRecenterTokens[controllerID] = token
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+        status = m5ControllerConnected
+            ? "StickS3：请保持自然握姿并静止约半秒，正在重新居中飞鼠"
+            : "StickS3 尚未连接；重新进入飞鼠指针时会自动校准"
+    }
+
+    /// CGEvent 的位置与 CGDisplayBounds 使用同一套全局坐标，可直接在多显示器
+    /// 环境中找到当前指针所在屏幕。这里只进行一次置中，不接管后续 HID 移动。
+    private func centerM5AirMousePointer() {
+        let currentLocation = CGEvent(source: nil)?.location
+            ?? CGPoint(x: CGDisplayBounds(CGMainDisplayID()).midX,
+                       y: CGDisplayBounds(CGMainDisplayID()).midY)
+        var displayID = CGMainDisplayID()
+        var displayCount: UInt32 = 0
+        if CGGetDisplaysWithPoint(currentLocation, 1, &displayID, &displayCount) != .success
+            || displayCount == 0 {
+            displayID = CGMainDisplayID()
+        }
+        let bounds = CGDisplayBounds(displayID)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let result = CGWarpMouseCursorPosition(center)
+        if result == .success {
+            _ = CGAssociateMouseAndMouseCursorPosition(1)
+            status = "M5 飞鼠指针已居中：慢移精准，快速扫腕可跨屏"
+        } else {
+            status = "M5 飞鼠校准完成，但 macOS 未能把指针移到屏幕中央"
+        }
+    }
+
+    public func m5MacShortcuts(controllerID: UUID,
+                               group: M5MacShortcutGroup? = nil) -> [M5MacShortcut] {
+        let all = m5ControllerSettings(for: controllerID).resolvedMacShortcuts
+        return group.map { selected in all.filter { $0.group == selected } } ?? all
+    }
+
+    public func m5MacShortcutEnabledBinding(controllerID: UUID,
+                                            shortcutID: String) -> Binding<Bool> {
+        Binding(get: {
+            self.m5MacShortcuts(controllerID: controllerID)
+                .first(where: { $0.id == shortcutID })?.isEnabled ?? false
+        }, set: { enabled in
+            self.mutateM5ControllerSettings(controllerID) { config in
+                if config.macShortcuts == nil { config.macShortcuts = config.resolvedMacShortcuts }
+                guard let index = config.macShortcuts?.firstIndex(where: { $0.id == shortcutID })
+                else { return }
+                config.macShortcuts?[index].isEnabled = enabled
+            }
+            self.m5MainSelectionIndex = 0
+            self.m5ShortcutMenuSelectionIndex = 0
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func m5MacShortcutNameBinding(controllerID: UUID,
+                                         shortcutID: String) -> Binding<String> {
+        Binding(get: {
+            self.m5MacShortcuts(controllerID: controllerID)
+                .first(where: { $0.id == shortcutID })?.name ?? ""
+        }, set: { name in
+            self.mutateM5ControllerSettings(controllerID) { config in
+                if config.macShortcuts == nil { config.macShortcuts = config.resolvedMacShortcuts }
+                guard let index = config.macShortcuts?.firstIndex(where: { $0.id == shortcutID })
+                else { return }
+                config.macShortcuts?[index].name = name
+            }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    public func setM5MacShortcut(_ shortcut: GlobalShortcut,
+                                 shortcutID: String, controllerID: UUID) {
+        mutateM5ControllerSettings(controllerID) { config in
+            if config.macShortcuts == nil { config.macShortcuts = config.resolvedMacShortcuts }
+            guard let index = config.macShortcuts?.firstIndex(where: { $0.id == shortcutID })
+            else { return }
+            config.macShortcuts?[index].shortcut = shortcut
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    public func addM5CustomShortcut(controllerID: UUID) {
+        mutateM5ControllerSettings(controllerID) { config in
+            var shortcuts = config.resolvedMacShortcuts
+            let existing = shortcuts.filter { $0.group == .custom }.count
+            shortcuts.append(.init(group: .custom, name: "自定义快捷键 \(existing + 1)",
+                                   shortcut: .init(keyCode: 122, modifiers: 0)))
+            config.macShortcuts = shortcuts
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    public func removeM5CustomShortcut(_ shortcutID: String, controllerID: UUID) {
+        mutateM5ControllerSettings(controllerID) { config in
+            config.macShortcuts?.removeAll { $0.id == shortcutID && $0.group == .custom }
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func mutateM5ControllerSettings(
+        _ id: UUID,
+        _ body: (inout M5ControllerDeviceSettings) -> Void
+    ) {
+        guard let index = settings.devices.firstIndex(where: {
+            $0.id == id && $0.type == .m5Controller
+        }) else { return }
+        var value = settings.devices[index].settings.m5Controller
+            ?? M5ControllerDeviceSettings()
+        body(&value)
+        value.clamp()
+        settings.devices[index].settings.m5Controller = value
+        persistSettings()
+    }
+
+    public static let m5HAControllableDomains = M5HAControlPolicy.supportedDomains
+
+    public func m5HAEntityCandidates() -> [HAEntity] {
+        haSnapshot.entities.filter(M5HAControlPolicy.isControllable).sorted {
+            if $0.domain != $1.domain { return $0.domain < $1.domain }
+            return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    public func m5HAEntityIDs(for controllerID: UUID) -> [String] {
+        m5ControllerSettings(for: controllerID).homeAssistantEntityIDs ?? []
+    }
+
+    public func addM5HAEntities(_ entityIDs: [String], controllerID: UUID) {
+        let allowed = Set(m5HAEntityCandidates().map(\.entityId))
+        mutateM5ControllerSettings(controllerID) { config in
+            var ids = config.homeAssistantEntityIDs ?? []
+            for id in entityIDs where allowed.contains(id) && !ids.contains(id) { ids.append(id) }
+            config.homeAssistantEntityIDs = ids
+        }
+        m5MainSelectionIndex = 0
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    public func removeM5HAEntity(_ entityID: String, controllerID: UUID) {
+        mutateM5ControllerSettings(controllerID) { config in
+            config.homeAssistantEntityIDs?.removeAll { $0 == entityID }
+        }
+        m5HASelectionIndex = min(m5HASelectionIndex,
+                                 max(0, m5HAEntityIDs(for: controllerID).count - 1))
+        m5MainSelectionIndex = 0
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    public func moveM5HAEntity(_ entityID: String, direction: Int, controllerID: UUID) {
+        mutateM5ControllerSettings(controllerID) { config in
+            var ids = config.homeAssistantEntityIDs ?? []
+            guard let index = ids.firstIndex(of: entityID), ids.count > 1 else { return }
+            let destination = min(max(index + direction, 0), ids.count - 1)
+            guard destination != index else { return }
+            ids.remove(at: index)
+            ids.insert(entityID, at: destination)
+            config.homeAssistantEntityIDs = ids
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    public func m5ControllableDevices() -> [ManagedDevice] {
+        Self.m5ControllableTypes.flatMap { settings.enabledDevices(for: $0) }
+    }
+
+    public func m5TargetToggleBinding(controllerID: UUID,
+                                      targetID: UUID) -> Binding<Bool> {
+        Binding(get: {
+            self.m5ControllerSettings(for: controllerID)
+                .targetDeviceIDs.contains(targetID.uuidString)
+        }, set: { enabled in
+            self.mutateM5ControllerSettings(controllerID) { config in
+                if enabled {
+                    if !config.targetDeviceIDs.contains(targetID.uuidString) {
+                        config.targetDeviceIDs.append(targetID.uuidString)
+                    }
+                } else {
+                    config.targetDeviceIDs.removeAll { $0 == targetID.uuidString }
+                }
+            }
+            self.m5MainSelectionIndex = 0
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        })
+    }
+
+    private func m5ConfiguredTargets(_ config: M5ControllerDeviceSettings) -> [ManagedDevice] {
+        config.targetDeviceIDs.compactMap { raw in
+            guard let id = UUID(uuidString: raw),
+                  let device = settings.devices.first(where: { $0.id == id }),
+                  Self.m5ControllableTypes.contains(device.type) else { return nil }
+            return device
+        }
+    }
+
+    public func m5ResolvedTargets(_ config: M5ControllerDeviceSettings)
+        -> [(type: DeviceType, id: UUID, name: String)] {
+        m5ConfiguredTargets(config).filter(\.isEnabled).map { ($0.type, $0.id, $0.name) }
+    }
+
+    private func m5ShortcutMenuItems(_ config: M5ControllerDeviceSettings)
+        -> [M5ShortcutMenuItem] {
+        var items: [M5ShortcutMenuItem] = []
+        if config.resolvedMediaControlsEnabled { items.append(.mediaControls) }
+        if config.resolvedGyroMouseEnabled { items.append(.gyroMouse) }
+        if config.resolvedMacShortcuts.contains(where: {
+            $0.group == .presentation && $0.isEnabled
+        }) { items.append(.presentation) }
+        if config.resolvedMacShortcuts.contains(where: {
+            $0.group == .custom && $0.isEnabled
+        }) { items.append(.custom) }
+        return items
+    }
+
+    private func m5MainMenuItems(_ config: M5ControllerDeviceSettings) -> [M5MainMenuItem] {
+        var items: [M5MainMenuItem] = []
+        if config.resolvedMacShortcuts.contains(where: {
+            $0.group == .vibeCoding && $0.isEnabled
+        }) { items.append(.vibeCoding) }
+        if !m5ConfiguredTargets(config).isEmpty { items.append(.devices) }
+        if !(config.homeAssistantEntityIDs ?? []).isEmpty { items.append(.homeAssistant) }
+        if !m5ShortcutMenuItems(config).isEmpty { items.append(.macShortcuts) }
+        return items
+    }
+
+    private func normalizeM5Navigation(_ config: M5ControllerDeviceSettings) {
+        let mainItems = m5MainMenuItems(config)
+        let shortcutItems = m5ShortcutMenuItems(config)
+        switch m5ControllerPage {
+        case .mainMenu:
+            m5MainSelectionIndex = min(max(m5MainSelectionIndex, 0), max(0, mainItems.count - 1))
+        case .devices where !mainItems.contains(.devices),
+             .homeAssistant where !mainItems.contains(.homeAssistant),
+             .vibeCoding where !mainItems.contains(.vibeCoding):
+            m5ControllerPage = .mainMenu
+            m5MainSelectionIndex = 0
+        case .macShortcuts where shortcutItems.isEmpty:
+            m5ControllerPage = .mainMenu
+            m5MainSelectionIndex = 0
+        case .mediaControls where !shortcutItems.contains(.mediaControls),
+             .gyroMouse where !shortcutItems.contains(.gyroMouse),
+             .presentation where !shortcutItems.contains(.presentation),
+             .customShortcuts where !shortcutItems.contains(.custom):
+            m5ControllerPage = shortcutItems.isEmpty ? .mainMenu : .macShortcuts
+            m5ShortcutMenuSelectionIndex = 0
+        default:
+            break
+        }
+    }
+
+    private func handleM5ControllerEvent(_ event: M5ControllerEvent) {
+        if case .hidState(let ready, let secured) = event {
+            m5ControllerHIDReady = ready
+            m5ControllerHIDSecured = secured
+            if ready {
+                status = "M5 StickS3 已完成配对，控制与输入功能均可用"
+                if m5RepairPhase == .waitingForSystemPairing {
+                    m5RepairingControllerID = nil
+                    m5RepairingPeripheralName = nil
+                    m5RepairPhase = nil
+                }
+            } else if secured {
+                status = "系统配对已通过，正在启用 StickS3 输入服务…"
+            } else {
+                status = "StickS3 控制已连接，请完成 macOS 蓝牙输入设备配对"
+            }
+            return
+        }
+        if case .pointerRecenter = event {
+            centerM5AirMousePointer()
+            return
+        }
+        guard let controller = settings.activeDevice(for: .m5Controller),
+              let config = controller.settings.m5Controller else { return }
+        switch m5ControllerPage {
+        case .mainMenu:
+            handleM5MainMenuEvent(event, controller: controller, config: config)
+        case .devices:
+            handleM5DeviceMenuEvent(event, controller: controller, config: config)
+        case .homeAssistant:
+            handleM5HomeAssistantEvent(event, controller: controller, config: config)
+        case .mediaControls:
+            handleM5MediaControlEvent(event)
+        case .gyroMouse:
+            handleM5GyroMouseEvent(event)
+        case .macShortcuts:
+            handleM5ShortcutMenuEvent(event, config: config)
+        case .presentation, .vibeCoding, .customShortcuts:
+            handleM5ShortcutActionEvent(event, controller: controller, config: config)
+        }
+    }
+
+    private func m5CycledIndex(_ current: Int, count: Int, key: String) -> Int {
+        guard count > 0 else { return 0 }
+        let delta = key == "a" ? 1 : -1
+        return ((current + delta) % count + count) % count
+    }
+
+    private func handleM5MainMenuEvent(_ event: M5ControllerEvent,
+                                       controller: ManagedDevice,
+                                       config: M5ControllerDeviceSettings) {
+        let items = m5MainMenuItems(config)
+        switch event {
+        case .button(let key):
+            m5MainSelectionIndex = m5CycledIndex(
+                m5MainSelectionIndex, count: items.count, key: key)
+        case .buttonLong(let key), .buttonLongHandledByHID(let key):
+            guard key == "a" else { return }
+            guard items.indices.contains(m5MainSelectionIndex) else { return }
+            switch items[m5MainSelectionIndex] {
+            case .vibeCoding:
+                m5ControllerPage = .vibeCoding
+                m5ShortcutActionSelectionIndex = 0
+                m5ShortcutActionMessage = nil
+            case .devices:
+                m5ControllerPage = .devices
+                m5DeviceSelectionIndex = min(max(config.activeTargetIndex, 0),
+                                             max(0, m5ConfiguredTargets(config).count - 1))
+            case .homeAssistant:
+                m5ControllerPage = .homeAssistant
+                m5HASelectionIndex = 0
+                m5HAActionMessage = nil
+                Task { @MainActor [weak self] in await self?.refreshM5HAControlEntities() }
+            case .macShortcuts:
+                m5ControllerPage = .macShortcuts
+                m5ShortcutMenuSelectionIndex = 0
+            }
+        case .shake, .clearInput, .mediaGesture, .pointerRecenter, .hidState:
+            return
+        case .buttonUp, .buttonUpHandledByHID:
+            return
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func handleM5DeviceMenuEvent(_ event: M5ControllerEvent,
+                                         controller: ManagedDevice,
+                                         config: M5ControllerDeviceSettings) {
+        let targets = m5ConfiguredTargets(config)
+        switch event {
+        case .button(let key):
+            m5DeviceSelectionIndex = m5CycledIndex(m5DeviceSelectionIndex,
+                                                   count: targets.count, key: key)
+            if !targets.isEmpty {
+                mutateM5ControllerSettings(controller.id) {
+                    $0.activeTargetIndex = self.m5DeviceSelectionIndex
+                }
+            }
+        case .buttonLong(let key), .buttonLongHandledByHID(let key):
+            if key == "b" {
+                m5ControllerPage = .mainMenu
+            } else if targets.indices.contains(m5DeviceSelectionIndex),
+                      targets[m5DeviceSelectionIndex].isEnabled {
+                let target = targets[m5DeviceSelectionIndex]
+                switchDevice(type: target.type, to: target.id)
+                status = "M5 控制器：已切换到「\(target.name)」"
+            } else {
+                status = "M5 控制器：所选设备当前不可用"
+            }
+        case .shake(let direction):
+            guard targets.indices.contains(m5DeviceSelectionIndex),
+                  targets[m5DeviceSelectionIndex].isEnabled else { return }
+            m5PageTarget(targets[m5DeviceSelectionIndex], direction: direction)
+            return
+        case .clearInput:
+            return
+        case .mediaGesture:
+            return
+        case .pointerRecenter, .hidState:
+            return
+        case .buttonUp, .buttonUpHandledByHID:
+            return
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func handleM5ShortcutMenuEvent(_ event: M5ControllerEvent,
+                                           config: M5ControllerDeviceSettings) {
+        let items = m5ShortcutMenuItems(config)
+        switch event {
+        case .button(let key):
+            m5ShortcutMenuSelectionIndex = m5CycledIndex(
+                m5ShortcutMenuSelectionIndex, count: items.count, key: key)
+        case .buttonLong(let key), .buttonLongHandledByHID(let key):
+            if key == "b" {
+                m5ControllerPage = .mainMenu
+            } else {
+                guard items.indices.contains(m5ShortcutMenuSelectionIndex) else { return }
+                switch items[m5ShortcutMenuSelectionIndex] {
+                case .mediaControls:
+                    m5ControllerPage = .mediaControls
+                    m5MediaSelectionIndex = 0
+                case .gyroMouse:
+                    guard config.resolvedGyroMouseEnabled else {
+                        status = "请先在 StickS3 设置中启用飞鼠指针"
+                        break
+                    }
+                    m5ControllerPage = .gyroMouse
+                    status = "M5 飞鼠指针：保持自然握姿并静止，随后指针会自动居中"
+                case .presentation:
+                    m5ControllerPage = .presentation
+                case .custom:
+                    m5ControllerPage = .customShortcuts
+                }
+                m5ShortcutActionSelectionIndex = 0
+                m5ShortcutActionMessage = nil
+            }
+        case .shake, .clearInput, .mediaGesture, .pointerRecenter, .hidState:
+            return
+        case .buttonUp, .buttonUpHandledByHID:
+            return
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func handleM5GyroMouseEvent(_ event: M5ControllerEvent) {
+        switch event {
+        case .buttonLong(let key), .buttonLongHandledByHID(let key):
+            if key == "b" {
+                m5ControllerPage = .macShortcuts
+                status = "已退出 M5 飞鼠指针"
+            } else {
+                status = "飞鼠指针需要更新并重新刷入内置 StickS3 固件"
+                return
+            }
+        case .button, .buttonUp, .buttonUpHandledByHID, .shake, .clearInput,
+             .mediaGesture, .pointerRecenter, .hidState:
+            // 新固件直接通过 BLE HID 发送移动与按键；旧固件的回退事件不会在 Mac 注入鼠标。
+            return
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func handleM5MediaControlEvent(_ event: M5ControllerEvent) {
+        let cards = M5MediaControlCard.allCases
+        switch event {
+        case .button(let key):
+            m5MediaSelectionIndex = m5CycledIndex(
+                m5MediaSelectionIndex, count: cards.count, key: key)
+        case .buttonLong(let key):
+            if key == "b" {
+                m5ControllerPage = .macShortcuts
+            } else if key == "a" {
+                status = "M5 多媒体控制需要更新并重新刷入内置 StickS3 固件"
+            }
+        case .buttonLongHandledByHID(let key):
+            guard key == "a", cards.indices.contains(m5MediaSelectionIndex) else { return }
+            status = "M5 多媒体控制：已执行「\(cards[m5MediaSelectionIndex].holdAction.title)」"
+        case .mediaGesture(let direction, let handledByHID):
+            guard cards.indices.contains(m5MediaSelectionIndex) else { return }
+            let card = cards[m5MediaSelectionIndex]
+            let action = direction < 0 ? card.leftAction : card.rightAction
+            status = handledByHID
+                ? "M5 多媒体控制：已执行「\(action.title)」"
+                : "M5 多媒体控制需要更新并重新刷入内置 StickS3 固件"
+        case .shake:
+            status = "M5 多媒体控制需要更新并重新刷入内置 StickS3 固件"
+        case .buttonUp, .buttonUpHandledByHID, .clearInput, .pointerRecenter, .hidState:
+            return
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func m5ShortcutGroup(for page: M5ControllerPage) -> M5MacShortcutGroup? {
+        switch page {
+        case .presentation: return .presentation
+        case .vibeCoding: return .vibeCoding
+        case .customShortcuts: return .custom
+        default: return nil
+        }
+    }
+
+    private func handleM5ShortcutActionEvent(_ event: M5ControllerEvent,
+                                             controller: ManagedDevice,
+                                             config: M5ControllerDeviceSettings) {
+        guard let group = m5ShortcutGroup(for: m5ControllerPage) else { return }
+        let actions = config.resolvedMacShortcuts.filter { $0.group == group && $0.isEnabled }
+        switch event {
+        case .button(let key):
+            m5ShortcutActionSelectionIndex = m5CycledIndex(
+                m5ShortcutActionSelectionIndex, count: actions.count, key: key)
+            m5ShortcutActionMessage = nil
+        case .buttonLong(let key):
+            if key == "b" {
+                releaseM5HeldShortcut()
+                m5ControllerPage = .macShortcuts
+                m5ShortcutActionMessage = nil
+            } else if actions.indices.contains(m5ShortcutActionSelectionIndex) {
+                let action = actions[m5ShortcutActionSelectionIndex]
+                if action.id == "vibe.voice" {
+                    beginM5HeldShortcut(action)
+                } else {
+                    executeM5MacShortcut(action)
+                }
+            }
+        case .buttonLongHandledByHID(let key):
+            guard key == "a",
+                  actions.indices.contains(m5ShortcutActionSelectionIndex) else { return }
+            let action = actions[m5ShortcutActionSelectionIndex]
+            releaseM5HeldShortcut()
+            if action.id == "vibe.voice" {
+                m5ShortcutActionMessage = "按住说话… · 设备键盘"
+                status = "M5 快捷键：StickS3 HID 正在按住「语音输入」"
+            } else {
+                m5ShortcutActionMessage = "已执行 · 设备键盘"
+                status = "M5 快捷键：已通过 StickS3 执行「\(action.name)」"
+            }
+        case .shake:
+            return
+        case .mediaGesture:
+            return
+        case .clearInput(let handledByHID):
+            guard actions.indices.contains(m5ShortcutActionSelectionIndex),
+                  actions[m5ShortcutActionSelectionIndex].id == "vibe.voice" else { return }
+            releaseM5HeldShortcut()
+            if handledByHID {
+                m5ShortcutActionMessage = "已摇一摇清空 · 设备键盘"
+                status = "M5 快捷键：已通过 StickS3 清空当前输入框"
+            } else if clearM5FocusedInput() {
+                m5ShortcutActionMessage = "已摇一摇清空"
+                status = "M5 快捷键：已清空当前输入框"
+            } else {
+                m5ShortcutActionMessage = "清空失败 · 检查辅助功能权限"
+                status = "M5 快捷键：无法清空输入框，请检查辅助功能权限"
+            }
+        case .pointerRecenter, .hidState:
+            return
+        case .buttonUp(let key):
+            guard key == "a" else { return }
+            releaseM5HeldShortcut()
+        case .buttonUpHandledByHID(let key):
+            guard key == "a",
+                  actions.indices.contains(m5ShortcutActionSelectionIndex),
+                  actions[m5ShortcutActionSelectionIndex].id == "vibe.voice" else { return }
+            m5ShortcutActionMessage = "已松开 · 输入结束"
+            status = "M5 快捷键：StickS3 HID 已结束「语音输入」"
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func executeM5MacShortcut(_ action: M5MacShortcut) {
+        guard AXIsProcessTrusted() else {
+            m5ShortcutActionMessage = "需要辅助功能权限"
+            status = "M5 快捷键：请在系统设置中允许多屏灵犀使用辅助功能"
+            return
+        }
+        releaseM5HeldShortcut()
+        guard postM5ShortcutEvent(action.shortcut, keyDown: true),
+              postM5ShortcutEvent(action.shortcut, keyDown: false) else {
+            m5ShortcutActionMessage = "执行失败"
+            return
+        }
+        m5ShortcutActionMessage = "已执行 · \(action.shortcut.displayString)"
+        status = "M5 快捷键：已执行「\(action.name)」"
+    }
+
+    /// 固件尚未成为 macOS HID 键盘时的兼容回退。正常情况下由 StickS3
+    /// 直接发送 Command+A 与 Delete，以免输入法过滤软件合成事件。
+    private func clearM5FocusedInput() -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let selectAll = GlobalShortcut(keyCode: 0, modifiers: GlobalShortcut.cmdKey)
+        let delete = GlobalShortcut(keyCode: 51, modifiers: 0)
+        guard postM5ShortcutEvent(selectAll, keyDown: true),
+              postM5ShortcutEvent(selectAll, keyDown: false) else { return false }
+        usleep(12_000)
+        return postM5ShortcutEvent(delete, keyDown: true)
+            && postM5ShortcutEvent(delete, keyDown: false)
+    }
+
+    private func beginM5HeldShortcut(_ action: M5MacShortcut) {
+        guard AXIsProcessTrusted() else {
+            m5ShortcutActionMessage = "需要辅助功能权限"
+            status = "M5 快捷键：请在系统设置中允许多屏灵犀使用辅助功能"
+            return
+        }
+        releaseM5HeldShortcut()
+        guard postM5ShortcutEvent(action.shortcut, keyDown: true) else {
+            m5ShortcutActionMessage = "启动失败"
+            return
+        }
+        m5HeldShortcut = action
+        m5ShortcutActionMessage = "按住说话…"
+        status = "M5 快捷键：正在按住「\(action.name)」"
+    }
+
+    private func releaseM5HeldShortcut() {
+        guard let action = m5HeldShortcut else { return }
+        _ = postM5ShortcutEvent(action.shortcut, keyDown: false)
+        m5HeldShortcut = nil
+        m5ShortcutActionMessage = "已松开 · 输入结束"
+        status = "M5 快捷键：已结束「\(action.name)」"
+    }
+
+    @discardableResult
+    private func postM5ShortcutEvent(_ shortcut: GlobalShortcut, keyDown: Bool) -> Bool {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let event = CGEvent(keyboardEventSource: source,
+                                  virtualKey: CGKeyCode(shortcut.keyCode), keyDown: keyDown) else {
+            return false
+        }
+        var flags: CGEventFlags = []
+        if shortcut.modifiers & GlobalShortcut.cmdKey != 0 { flags.insert(.maskCommand) }
+        if shortcut.modifiers & GlobalShortcut.shiftKey != 0 { flags.insert(.maskShift) }
+        if shortcut.modifiers & GlobalShortcut.optionKey != 0 { flags.insert(.maskAlternate) }
+        if shortcut.modifiers & GlobalShortcut.controlKey != 0 { flags.insert(.maskControl) }
+        if let physicalModifier = GlobalShortcut.modifierMask(for: shortcut.keyCode) {
+            // 单独修饰键必须在按下事件中带上自己的 flag，松开时则清除；否则
+            // 系统只会看到虚拟键码，却不会改变 Control/Option/Command 的按压状态。
+            if keyDown {
+                if physicalModifier == GlobalShortcut.cmdKey { flags.insert(.maskCommand) }
+                if physicalModifier == GlobalShortcut.shiftKey { flags.insert(.maskShift) }
+                if physicalModifier == GlobalShortcut.optionKey { flags.insert(.maskAlternate) }
+                if physicalModifier == GlobalShortcut.controlKey { flags.insert(.maskControl) }
+            } else {
+                flags = []
+            }
+            // 真实修饰键产生 flagsChanged，而不是普通 keyDown/keyUp。此修正让
+            // 接受合成事件的软件也能按正确时序识别；微信输入法仍优先走设备 HID。
+            event.type = .flagsChanged
+        }
+        event.flags = flags
+        event.post(tap: .cghidEventTap)
+        return true
+    }
+
+    private func handleM5HomeAssistantEvent(_ event: M5ControllerEvent,
+                                            controller: ManagedDevice,
+                                            config: M5ControllerDeviceSettings) {
+        let ids = config.homeAssistantEntityIDs ?? []
+        switch event {
+        case .button(let key):
+            guard !ids.isEmpty else { return }
+            let delta = key == "a" ? 1 : -1
+            m5HASelectionIndex = ((m5HASelectionIndex + delta) % ids.count + ids.count) % ids.count
+            m5HAActionMessage = nil
+            lastM5InfoSent = nil
+            sendM5ControllerInfo()
+        case .buttonLong(let key), .buttonLongHandledByHID(let key):
+            if key == "b" {
+                m5ControllerPage = .mainMenu
+                m5HAActionMessage = nil
+                lastM5InfoSent = nil
+                sendM5ControllerInfo()
+                status = "M5 控制器：已返回设备列表"
+            } else {
+                executeM5HACommand(direction: nil, controller: controller, config: config)
+            }
+        case .shake(let direction):
+            executeM5HACommand(direction: direction, controller: controller, config: config)
+        case .clearInput:
+            return
+        case .mediaGesture:
+            return
+        case .pointerRecenter, .hidState:
+            return
+        case .buttonUp, .buttonUpHandledByHID:
+            return
+        }
+    }
+
+    private func executeM5HACommand(direction: Int?, controller: ManagedDevice,
+                                    config: M5ControllerDeviceSettings) {
+        guard !m5HAActionInFlight else { return }
+        let ids = config.homeAssistantEntityIDs ?? []
+        guard ids.indices.contains(m5HASelectionIndex) else {
+            m5HAActionMessage = "未配置控制实体"
+            lastM5InfoSent = nil
+            sendM5ControllerInfo()
+            return
+        }
+        let entityID = ids[m5HASelectionIndex]
+        guard let entity = haSnapshot.entities.first(where: { $0.entityId == entityID }) else {
+            m5HAActionMessage = "实体离线或尚未刷新"
+            lastM5InfoSent = nil
+            sendM5ControllerInfo()
+            Task { @MainActor [weak self] in await self?.refreshM5HAControlEntities() }
+            return
+        }
+        let command = direction.map { M5HAControlPolicy.directionalCommand(for: entity,
+                                                                            direction: $0) }
+            ?? M5HAControlPolicy.primaryCommand(for: entity)
+        guard let command else {
+            m5HAActionMessage = direction == nil ? "此实体暂不支持控制" : "此实体不支持摇晃操作"
+            lastM5InfoSent = nil
+            sendM5ControllerInfo()
+            return
+        }
+        m5HAActionInFlight = true
+        m5HAActionMessage = "正在执行…"
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.m5HAActionInFlight = false }
+            do {
+                try await HomeAssistantClient.callService(
+                    serverURL: self.settings.haServerURL, token: self.settings.haToken,
+                    command: command)
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let updated = try await HomeAssistantClient.fetchState(
+                    serverURL: self.settings.haServerURL, token: self.settings.haToken,
+                    entityID: entityID)
+                var entities = self.haSnapshot.entities
+                if let index = entities.firstIndex(where: { $0.entityId == entityID }) {
+                    entities[index] = updated
+                } else {
+                    entities.append(updated)
+                }
+                self.applyHASnapshot(entities: entities, errorText: nil, sampledAt: Date())
+                self.m5HAActionMessage = "已执行 · \(updated.displayValue)"
+                self.status = "Home Assistant：已控制「\(updated.displayName)」"
+            } catch {
+                self.m5HAActionMessage = "执行失败"
+                self.status = "Home Assistant 控制失败：\(error.localizedDescription)"
+            }
+            self.lastM5InfoSent = nil
+            self.sendM5ControllerInfo()
+        }
+    }
+
+    private func refreshM5HAControlEntities() async {
+        guard let controller = settings.activeDevice(for: .m5Controller),
+              let config = controller.settings.m5Controller else { return }
+        let ids = config.homeAssistantEntityIDs ?? []
+        guard !ids.isEmpty, !settings.haServerURL.isEmpty else {
+            lastM5InfoSent = nil
+            sendM5ControllerInfo()
+            return
+        }
+        do {
+            let updated = try await HomeAssistantClient.fetchStates(
+                serverURL: settings.haServerURL, token: settings.haToken, entityIDs: ids)
+            var entities = haSnapshot.entities
+            for entity in updated {
+                if let index = entities.firstIndex(where: { $0.entityId == entity.entityId }) {
+                    entities[index] = entity
+                } else {
+                    entities.append(entity)
+                }
+            }
+            applyHASnapshot(entities: entities, errorText: nil, sampledAt: Date())
+            m5HASelectionIndex = min(m5HASelectionIndex, max(0, ids.count - 1))
+            m5HAActionMessage = nil
+        } catch {
+            m5HAActionMessage = "状态刷新失败"
+        }
+        lastM5InfoSent = nil
+        sendM5ControllerInfo()
+    }
+
+    private func m5PageTarget(_ target: ManagedDevice, direction: Int) {
+        let forward = direction > 0
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch target.type {
+            case .keyboard:
+                self.switchDevice(type: .keyboard, to: target.id)
+                self.status = "M5 控制器：键盘\(forward ? "下一张" : "上一张")卡片"
+                self.keyboardPage(direction: direction)
+            case .oracle:
+                self.switchDevice(type: .oracle, to: target.id)
+                self.status = "M5 控制器：口袋先知切换\(forward ? "下一" : "上一")块画板"
+                _ = self.cycleOracleCanvasBoard(direction: direction)
+                await self.pushOracleCanvas()
+            case .excerpt:
+                self.switchDevice(type: .excerpt, to: target.id)
+                if forward {
+                    self.status = "M5 控制器：摘录内容下一条"
+                    await self.dotNextContent()
+                } else {
+                    self.status = "M5 控制器：推送摘录画板"
+                    await self.pushExcerptCanvas()
+                }
+            case .aiMacScreen:
+                self.status = "M5 控制器：AI Mac \(forward ? "下一张" : "上一张")卡片"
+                self.aiMacPageCard(deviceID: target.id, direction: direction)
+            case .awtrix:
+                self.switchDevice(type: .awtrix, to: target.id)
+                self.status = "M5 控制器：AWTRIX \(forward ? "下一" : "上一")个应用"
+                await self.moveAWTRIXApp(next: forward, deviceID: target.id)
+            default:
+                return
+            }
+            self.sendM5ControllerInfo()
+        }
+    }
+
+    public func aiMacPageCard(deviceID: UUID, direction: Int) {
+        let config = aiMacScreenSettings(for: deviceID)
+        let modes = aiMacCardList(for: deviceID)
+        guard !modes.isEmpty else { return }
+        guard config.mode == .card else {
+            mutateAIMacScreenSettings(deviceID, pushImmediately: true) { $0.mode = .card }
+            aiMacScreenLastCardRotation[deviceID] = Date()
+            return
+        }
+        let count = modes.count
+        let current = modes.firstIndex(of: config.cardMode) ?? -1
+        let next = modes[((current + direction) % count + count) % count]
+        mutateAIMacScreenSettings(deviceID, pushImmediately: true) {
+            $0.mode = .card
+            $0.cardMode = next
+        }
+        aiMacScreenLastCardRotation[deviceID] = Date()
+    }
+
+    public func sendM5ControllerInfo() {
+        guard let client = m5BLEClient, client.isConnected,
+              let controller = settings.activeDevice(for: .m5Controller),
+              var config = controller.settings.m5Controller else { return }
+        normalizeM5Navigation(config)
+        switch m5ControllerPage {
+        case .mainMenu:
+            let targets = m5ConfiguredTargets(config)
+            let enabledShortcutCount = config.resolvedMacShortcuts.filter(\.isEnabled).count
+            let vibeCount = config.resolvedMacShortcuts.filter {
+                $0.group == .vibeCoding && $0.isEnabled
+            }.count
+            let menuItems = m5MainMenuItems(config)
+            var cards: [M5ControllerInfo.Device] = menuItems.map { item in
+                switch item {
+                case .vibeCoding:
+                    return .init(name: "Vibe Coding", detail: "\(vibeCount) 个可用动作",
+                                 available: vibeCount > 0)
+                case .devices:
+                    return .init(name: "多屏设备", detail: "\(targets.count) 台已配置",
+                                 available: true)
+                case .homeAssistant:
+                    return .init(name: "Home Assistant",
+                                 detail: "\(config.homeAssistantEntityIDs?.count ?? 0) 个控制实体",
+                                 available: true)
+                case .macShortcuts:
+                    return .init(name: "Mac 快捷键",
+                                 detail: "媒体 + \(enabledShortcutCount - vibeCount) 个动作",
+                                 available: true)
+                }
+            }
+            if cards.isEmpty {
+                cards = [.init(name: "尚未启用功能", detail: "请在 Mac 软件中勾选",
+                               available: false)]
+            }
+            m5MainSelectionIndex = min(max(m5MainSelectionIndex, 0), cards.count - 1)
+            sendM5Payload(client: client, config: config,
+                          active: min(max(m5MainSelectionIndex, 0), cards.count - 1),
+                          cards: cards, title: "灵犀控制器",
+                          footer: "A/B选择 长A进入")
+        case .devices:
+            let targets = m5ConfiguredTargets(config)
+            let liveIDs = targets.map { $0.id.uuidString }
+            if liveIDs != config.targetDeviceIDs {
+                mutateM5ControllerSettings(controller.id) { $0.targetDeviceIDs = liveIDs }
+                config.targetDeviceIDs = liveIDs
+                config.clamp()
+            }
+            var cards = targets.map {
+                M5ControllerInfo.Device(name: String($0.name.prefix(32)),
+                                        detail: String(m5DeviceDetail($0).prefix(32)),
+                                        available: $0.isEnabled)
+            }
+            if cards.isEmpty {
+                cards = [.init(name: "未配置显示设备", detail: "请在 Mac 软件中勾选",
+                               available: false)]
+            }
+            m5DeviceSelectionIndex = min(max(m5DeviceSelectionIndex, 0), cards.count - 1)
+            sendM5Payload(client: client, config: config, active: m5DeviceSelectionIndex,
+                          cards: cards, title: "多屏设备",
+                          footer: "A/B选择 长A确认 长B返回")
+        case .homeAssistant:
+            sendM5HomeAssistantInfo(client: client, config: config)
+        case .mediaControls:
+            let mediaCards = M5MediaControlCard.allCases
+            let cards = mediaCards.map {
+                M5ControllerInfo.Device(name: $0.title, detail: $0.detail, available: true)
+            }
+            m5MediaSelectionIndex = min(max(m5MediaSelectionIndex, 0), cards.count - 1)
+            let selectedCard = mediaCards[m5MediaSelectionIndex]
+            sendM5Payload(client: client, config: config,
+                          active: m5MediaSelectionIndex, cards: cards,
+                          title: "多媒体控制", footer: "左右摇控制 长A执行 长B返回",
+                          consumerUsage: selectedCard.holdAction.rawValue,
+                          consumerUsageLeft: selectedCard.leftAction.rawValue,
+                          consumerUsageRight: selectedCard.rightAction.rawValue)
+        case .macShortcuts:
+            let shortcutItems = m5ShortcutMenuItems(config)
+            let cards = shortcutItems.map { item -> M5ControllerInfo.Device in
+                switch item {
+                case .mediaControls:
+                    return .init(name: "多媒体控制", detail: "2 张组合卡片", available: true)
+                case .gyroMouse:
+                    return .init(name: "飞鼠指针",
+                                 detail: config.resolvedGyroMouseEnabled ? "慢移精准 快甩加速" : "已关闭",
+                                 available: config.resolvedGyroMouseEnabled)
+                case .presentation:
+                    let count = config.resolvedMacShortcuts.filter {
+                        $0.group == .presentation && $0.isEnabled
+                    }.count
+                    return .init(name: M5MacShortcutGroup.presentation.title,
+                                 detail: "\(count) 个动作", available: true)
+                case .custom:
+                    let count = config.resolvedMacShortcuts.filter {
+                        $0.group == .custom && $0.isEnabled
+                    }.count
+                    return .init(name: M5MacShortcutGroup.custom.title,
+                                 detail: "\(count) 个动作", available: true)
+                }
+            }
+            m5ShortcutMenuSelectionIndex = min(max(m5ShortcutMenuSelectionIndex, 0),
+                                               max(0, cards.count - 1))
+            sendM5Payload(client: client, config: config,
+                          active: m5ShortcutMenuSelectionIndex, cards: cards,
+                          title: "Mac 快捷键", footer: "A/B选择 长A进入 长B返回")
+        case .presentation, .vibeCoding, .customShortcuts:
+            sendM5ShortcutActionInfo(client: client, config: config)
+        case .gyroMouse:
+            sendM5Payload(client: client, config: config, active: 0,
+                          cards: [.init(name: "飞鼠指针", detail: "电视飞鼠手感 自动居中",
+                                        available: true)],
+                          title: "飞鼠指针",
+                          footer: config.resolvedGyroMouseClutchEnabled
+                            ? "A点击 B脱开/恢复 长B返回"
+                            : "A左键 B右键 长B返回",
+                          gyroMouseActive: true)
+        }
+    }
+
+    private func sendM5Payload(client: M5ControllerBLEClient,
+                               config: M5ControllerDeviceSettings,
+                               active: Int, cards: [M5ControllerInfo.Device],
+                               title: String, footer: String,
+                               hidModifiers: UInt8? = nil,
+                               hidKey: UInt8? = nil,
+                               hidHold: Bool? = nil,
+                               clearInputOnShake: Bool? = nil,
+                               consumerUsage: UInt16? = nil,
+                               consumerUsageLeft: UInt16? = nil,
+                               consumerUsageRight: UInt16? = nil,
+                               gyroMouseActive: Bool = false) {
+        let mainMenuMask = m5MainMenuItems(config).reduce(UInt8(0)) { mask, item in
+            switch item {
+            case .vibeCoding: return mask | 0x01
+            case .devices: return mask | 0x02
+            case .homeAssistant: return mask | 0x04
+            case .macShortcuts: return mask | 0x08
+            }
+        }
+        let shortcutMenuMask = m5ShortcutMenuItems(config).reduce(UInt8(0)) { mask, item in
+            switch item {
+            case .mediaControls: return mask | 0x01
+            case .gyroMouse: return mask | 0x02
+            case .presentation: return mask | 0x04
+            case .custom: return mask | 0x08
+            }
+        }
+        let shortcuts = config.resolvedMacShortcuts.filter(\.isEnabled)
+        let info = M5ControllerInfo(
+            active: active, devices: cards, title: title, footer: footer,
+            buzzer: config.resolvedBuzzerEnabled, hidModifiers: hidModifiers,
+            hidKey: hidKey, hidHold: hidHold,
+            clearInputOnShake: clearInputOnShake, consumerUsage: consumerUsage,
+            consumerUsageLeft: consumerUsageLeft, consumerUsageRight: consumerUsageRight,
+            gyroMouseActive: gyroMouseActive,
+            gyroMouseSensitivity: config.resolvedGyroMouseSensitivity,
+            gyroMouseDeadZone: config.resolvedGyroMouseDeadZone,
+            gyroMouseSmoothing: config.resolvedGyroMouseSmoothing,
+            gyroMouseInvertX: config.resolvedGyroMouseInvertX,
+            gyroMouseInvertY: config.resolvedGyroMouseInvertY,
+            gyroMouseClutchEnabled: config.resolvedGyroMouseClutchEnabled,
+            gyroMouseRecenterToken: settings.activeDevice(for: .m5Controller)
+                .flatMap { m5GyroRecenterTokens[$0.id] },
+            mainMenuMask: mainMenuMask,
+            shortcutMenuMask: shortcutMenuMask,
+            targetDeviceCount: m5ConfiguredTargets(config).count,
+            homeAssistantEntityCount: config.homeAssistantEntityIDs?.count ?? 0,
+            vibeActionCount: shortcuts.filter { $0.group == .vibeCoding }.count,
+            presentationActionCount: shortcuts.filter { $0.group == .presentation }.count,
+            customActionCount: shortcuts.filter { $0.group == .custom }.count
+        )
+        m5ControllerPreviewInfo = info
+        guard let data = info.encoded(), data != lastM5InfoSent else { return }
+        client.send(info: data)
+    }
+
+    private func sendM5ShortcutActionInfo(client: M5ControllerBLEClient,
+                                          config: M5ControllerDeviceSettings) {
+        guard let group = m5ShortcutGroup(for: m5ControllerPage) else { return }
+        let actions = config.resolvedMacShortcuts.filter { $0.group == group && $0.isEnabled }
+        var cards = actions.map {
+            M5ControllerInfo.Device(name: String($0.name.prefix(32)),
+                                    detail: $0.id == "vibe.voice"
+                                        ? "按住 A · \($0.shortcut.displayString)"
+                                        : $0.shortcut.displayString,
+                                    available: true)
+        }
+        if cards.isEmpty {
+            cards = [.init(name: "没有可用快捷键", detail: "请在 Mac 软件中配置",
+                           available: false)]
+        }
+        m5ShortcutActionSelectionIndex = min(max(m5ShortcutActionSelectionIndex, 0),
+                                             cards.count - 1)
+        if let message = m5ShortcutActionMessage,
+           cards.indices.contains(m5ShortcutActionSelectionIndex) {
+            cards[m5ShortcutActionSelectionIndex].detail = message
+        }
+        let voiceInputSelected = actions.indices.contains(m5ShortcutActionSelectionIndex)
+            && actions[m5ShortcutActionSelectionIndex].id == "vibe.voice"
+        let hidReport = actions.indices.contains(m5ShortcutActionSelectionIndex)
+            ? actions[m5ShortcutActionSelectionIndex].shortcut.hidKeyboardReport : nil
+        sendM5Payload(client: client, config: config,
+                      active: m5ShortcutActionSelectionIndex, cards: cards,
+                      title: group.title,
+                      footer: voiceInputSelected
+                        ? "长按A说话 摇一摇清空 长B返回"
+                        : "A/B选择 长A执行 长B返回",
+                      hidModifiers: hidReport?.modifiers,
+                      hidKey: hidReport?.key,
+                      hidHold: voiceInputSelected,
+                      clearInputOnShake: voiceInputSelected)
+    }
+
+    private func sendM5HomeAssistantInfo(client: M5ControllerBLEClient,
+                                         config: M5ControllerDeviceSettings) {
+        let ids = config.homeAssistantEntityIDs ?? []
+        let byID = Dictionary(uniqueKeysWithValues: haSnapshot.entities.map { ($0.entityId, $0) })
+        var payload = ids.map { id -> M5ControllerInfo.Device in
+            guard let entity = byID[id] else {
+                return .init(name: settings.haEntityAliases[id] ?? id,
+                             detail: "离线或尚未刷新", available: false)
+            }
+            let name = settings.haEntityAliases[id] ?? entity.displayName
+            return .init(name: String(name.prefix(32)),
+                         detail: String(entity.displayValue.prefix(32)),
+                         available: entity.state.lowercased() != "unavailable")
+        }
+        if payload.isEmpty {
+            payload = [.init(name: "未配置控制实体", detail: "请在 Mac 软件中添加",
+                             available: false)]
+        }
+        m5HASelectionIndex = min(max(m5HASelectionIndex, 0), payload.count - 1)
+        if let message = m5HAActionMessage, payload.indices.contains(m5HASelectionIndex) {
+            payload[m5HASelectionIndex].detail = message
+        }
+        sendM5Payload(client: client, config: config,
+                      active: m5HASelectionIndex, cards: payload,
+                      title: "Home Assistant", footer: "A/B选择 长A执行 长B返回")
+    }
+
+    private func m5DeviceDetail(_ device: ManagedDevice) -> String {
+        switch device.type {
+        case .keyboard:
+            let mode = settings.activeDeviceID(for: .keyboard) == device.id
+                ? settings.displayMode
+                : device.settings.displayMode ?? settings.displayMode
+            // 打印机卡片不能显示“Bambu Lab 打印机 2”这类内部卡片位名称。
+            // 与菜单栏使用同一套稳定映射，始终解析到设备管理中的用户自定义名称。
+            return MenuBarNamingPolicy.printerCardTitle(for: mode, devices: settings.devices)
+        case .aiMacScreen:
+            let config = aiMacScreenSettings(for: device.id)
+            if config.mode == .card {
+                return MenuBarNamingPolicy.printerCardTitle(
+                    for: config.cardMode, devices: settings.devices)
+            }
+            if config.mode == .canvas,
+               config.canvasBoards.indices.contains(config.canvasBoardIndex) {
+                return config.canvasBoards[config.canvasBoardIndex].name
+            }
+            return config.mode.title
+        case .oracle:
+            let active = settings.activeDeviceID(for: .oracle) == device.id
+            let boards = active ? settings.oracleCanvasBoards
+                : device.settings.oracleCanvasBoards ?? []
+            let index = active ? settings.oracleCanvasBoardIndex
+                : device.settings.oracleCanvasBoardIndex ?? 0
+            return boards.indices.contains(index) ? boards[index].name : "画板"
+        case .excerpt:
+            let active = settings.activeDeviceID(for: .excerpt) == device.id
+            let boards = active ? settings.excerptCanvasBoards
+                : device.settings.excerptCanvasBoards ?? []
+            let index = active ? settings.excerptCanvasBoardIndex
+                : device.settings.excerptCanvasBoardIndex ?? 0
+            return boards.indices.contains(index) ? boards[index].name : "摘录内容"
+        case .awtrix:
+            return awtrixSnapshots[device.id]?.device.currentApp ?? "应用"
+        default:
+            return ""
         }
     }
 
@@ -7422,6 +10207,7 @@ public func setClockTimeFormat(_ format: String) {
                 settings.customImageHistory,
                 new: RecentImage(path: destination.path, name: name),
                 limit: 9)
+            clearActiveKeyboardSmartRotationReturn()
             settings.displayMode = .customImage
             lastImageRotation = Date()
             lastCustomImageRevision = currentCustomImageRevision()
@@ -7447,6 +10233,7 @@ public func setClockTimeFormat(_ format: String) {
             limit: 9)
         settings.customImagePath = entry.path
         settings.customImageName = entry.name
+        clearActiveKeyboardSmartRotationReturn()
         settings.displayMode = .customImage
         lastImageRotation = Date()
         lastCustomImageRevision = currentCustomImageRevision()
@@ -7699,21 +10486,35 @@ public func setClockTimeFormat(_ format: String) {
     /// 菜单栏直接选择某台 AI Mac 小屏幕的指定彩色画板并立即推送。
     public func menuBarSelectAIMacBoard(deviceID: UUID, boardID: UUID) {
         applyAIMacCanvasBoard(deviceID: deviceID, boardID: boardID)
-        guard activeDeviceID(for: .aiMacScreen) == deviceID,
-              aiMacCanvasBoards(for: deviceID).contains(where: { $0.id == boardID }) else { return }
-        Task { await pushAIMacScreen(deviceID: deviceID, force: true) }
     }
 
     // MARK: - 模式 / 主题 / 登录自启
 
+    @discardableResult
+    private func clearActiveKeyboardSmartRotationReturn() -> Bool {
+        guard let id = activeDeviceID(for: .keyboard),
+              let index = settings.devices.firstIndex(where: { $0.id == id }) else { return false }
+        let changed = settings.devices[index].settings.smartRotationReturnDisplayMode != nil
+            || settings.devices[index].settings.smartRotationReturnPrinterDeviceID != nil
+        guard changed else { return false }
+        settings.devices[index].settings.smartRotationReturnDisplayMode = nil
+        settings.devices[index].settings.smartRotationReturnPrinterDeviceID = nil
+        return true
+    }
+
     public func setMode(_ mode: DisplayMode, reactivateIfUnchanged: Bool = false) {
         let changed = settings.displayMode != mode
-        guard changed || reactivateIfUnchanged else { return }
+        let clearedSmartReturn = clearActiveKeyboardSmartRotationReturn()
+        guard changed || reactivateIfUnchanged || clearedSmartReturn else { return }
         if changed {
             settings.displayMode = mode
             persistSettings()
+        } else if clearedSmartReturn {
+            persistSettings()
         }
-        Task { await activateMode() }
+        if changed || reactivateIfUnchanged {
+            Task { await activateMode() }
+        }
     }
 
     public func setTheme(_ theme: CardTheme) {
@@ -7721,6 +10522,18 @@ public func setClockTimeFormat(_ format: String) {
         settings.cardTheme = theme
         persistSettings()
         renderPreview()
+    }
+
+    public func setCardRenderingMode(_ mode: CardRenderingMode) {
+        guard settings.cardRenderingMode != mode else { return }
+        LiquidGlassCardRenderer.clearCache()
+        lastUploadedHash = nil
+        aiMacScreenLastHashes = [:]
+        aiMacScreenLastPushAt = [:]
+        lastPreviewRender = nil
+        resetLinkedLyricsScheduling(preserveInFlightTasks: true)
+        // onChange 统一完成保存、各设备预览和防抖推送，避免重复生成整张画面。
+        settings.cardRenderingMode = mode
     }
 
     public func setStartWithSystem(_ enabled: Bool) {
@@ -7741,6 +10554,12 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     private func renderCurrent() throws -> RenderResult {
+        try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+            try self.renderCurrentClassic()
+        }
+    }
+
+    private func renderCurrentClassic() throws -> RenderResult {
         // 夸夸卡：完成时间段后的展示窗口内，任何界面都优先显示夸夸内容
         if let text = praiseText, let until = praiseUntil, Date() < until {
             return try ScreenRenderer.renderPraise(text: text,
@@ -7853,9 +10672,22 @@ public func setClockTimeFormat(_ format: String) {
 
     private func renderAndUpdatePreview() throws -> RenderResult {
         let result = try autoreleasepool { try renderCurrent() }
-        previewImage = NSImage(cgImage: result.image, size: NSSize(width: 142, height: 428))
-        lastPreviewRender = Date()
+        updateKeyboardPreview(from: result)
         return result
+    }
+
+    /// 软件预览以最终 JPEG 字节为唯一来源，和键盘收到的上传体完全一致。
+    /// 编码前 CGImage 只作为极端解码失败时的安全回退，不参与正常预览。
+    private func updateKeyboardPreview(from result: RenderResult) {
+        let uploadedImage: CGImage?
+        if let source = CGImageSourceCreateWithData(result.data as CFData, nil) {
+            uploadedImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        } else {
+            uploadedImage = nil
+        }
+        let image = uploadedImage ?? result.image
+        previewImage = NSImage(cgImage: image, size: NSSize(width: 142, height: 428))
+        lastPreviewRender = Date()
     }
 
     private func renderPreviewIfDue(now: Date) {

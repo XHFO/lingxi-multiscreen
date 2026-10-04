@@ -493,8 +493,17 @@ public enum ScreenRenderer {
                                     bambuHeroLayout: Bool = true) throws -> RenderResult {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
-        // 画板专用底色模式（手动深/浅色）覆盖默认调色板
-        let basePalette = palette ?? settings.resolvedPalette
+        // 画板专用底色模式（手动深/浅色）覆盖默认调色板。
+        // Liquid Glass 下封面取色与“智能封面背景”是两件事：即使用户
+        // 保留手动主题背景，两道玻璃光晕也仍应来自当前专辑封面。
+        let availableCoverArt = modules.contains(.nowPlaying)
+            ? (artworkImage ?? nowPlaying.artwork.flatMap { decodeArtwork($0) })
+            : nil
+        let selectedPalette = palette ?? settings.resolvedPalette
+        let basePalette = settings.cardRenderingMode == .liquidGlass
+            ? availableCoverArt.map { applyingArtworkAccents(to: selectedPalette, artwork: $0) }
+                ?? selectedPalette
+            : selectedPalette
 
         // 背景模式：图像模块铺满整卡作底（其上叠加深色蒙版保证文字可读）。
         // 图像模式仅键盘画板可选；墨水屏画板图片模块固定按叠加模块显示
@@ -504,15 +513,21 @@ public enum ScreenRenderer {
 
         // 智能封面取色背景：整卡背景替换为专辑封面主色（同「正在播放」卡片设计），
         // 需画板含「正在播放」模块且有封面；整卡文字/边框随主色明暗自适应
-        let coverArt = settings.canvasNowPlayingSmartBg && modules.contains(.nowPlaying)
-            ? (artworkImage ?? nowPlaying.artwork.flatMap { decodeArtwork($0) })
-            : nil
-        let coverDominant = coverArt.map { dominantColor(of: $0) }
+        let coverArt = settings.canvasNowPlayingSmartBg ? availableCoverArt : nil
+        let accentArtwork = coverArt
+            ?? (settings.cardRenderingMode == .liquidGlass ? availableCoverArt : nil)
+        let coverDominant = accentArtwork.map { dominantColor(of: $0) }
 
         let colors: ScreenPalette
         let c: CGRect
         if useImageBackground, let path = settings.customImagePath {
-            colors = ScreenThemes.get(.deepSpace) // 深色系，保证图上文字可读
+            let imagePalette = ScreenThemes.get(.deepSpace) // 深色系，保证图上文字可读
+            colors = settings.cardRenderingMode == .liquidGlass
+                ? availableCoverArt.map { applyingArtworkAccents(to: imagePalette, artwork: $0) }
+                    ?? imagePalette
+                : imagePalette
+            // 壁纸仍是原始图像层；玻璃容器在其后、文字之前单独合成。
+            _ = ColorCardSceneCapture.background(ctx, palette: colors)
             ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
             // 背景模式：图片等比完整显示（contain，不裁剪不变形），忽略顶部安全区、铺满整个屏幕；
@@ -524,9 +539,11 @@ public enum ScreenRenderer {
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
             c = CGRect(x: 9, y: CGFloat(safe) + 1, width: 124,
                        height: CGFloat(height) - 9 - (CGFloat(safe) + 1))
+            _ = ColorCardSceneCapture.panel(ctx, bounds: rect(c), radius: 13,
+                                            color: colors.cardCG)
             strokeRound(ctx, rect(c), radius: 13, color: colors.borderCG, width: 1)
-        } else if let dominant = coverDominant {
-            colors = artworkPalette(baseColor: dominant,
+        } else if let coverArt {
+            colors = artworkPalette(of: coverArt,
                                     themeAccent: basePalette.accent)
             c = drawCanvas(ctx, safeArea: safe, colors: colors)
         } else {
@@ -783,19 +800,30 @@ public enum ScreenRenderer {
         }
         // 口袋先知/摘录继续锁定黑白高对比文字；AI Mac 彩屏直接保留主题色、
         // 打印机品牌色、封面光晕与进度强调色。
-        let coverArt = nowPlayingSmartBackground && modules.contains(.nowPlaying)
+        let availableCoverArt = modules.contains(.nowPlaying)
             ? nowPlaying.artwork.flatMap { decodeArtwork($0) } : nil
-        let coverDominant = coverArt.map { dominantColor(of: $0) }
-        let basePalette = optimizeForEInk ? einkTextPalette(palette) : palette
+        let coverArt = nowPlayingSmartBackground ? availableCoverArt : nil
+        let accentArtwork = coverArt
+            ?? (!optimizeForEInk && settings.cardRenderingMode == .liquidGlass
+                ? availableCoverArt : nil)
+        let coverDominant = accentArtwork.map { dominantColor(of: $0) }
+        let selectedPalette = optimizeForEInk ? einkTextPalette(palette)
+            : (modules == [.sspai] ? sspaiPalette(palette) : palette)
+        let basePalette = (!optimizeForEInk && settings.cardRenderingMode == .liquidGlass)
+            ? availableCoverArt.map { applyingArtworkAccents(to: selectedPalette, artwork: $0) }
+                ?? selectedPalette
+            : selectedPalette
         let canvasPalette: ScreenPalette
-        if !optimizeForEInk, let coverDominant {
-            canvasPalette = artworkPalette(baseColor: coverDominant,
+        if !optimizeForEInk, let coverArt {
+            canvasPalette = artworkPalette(of: coverArt,
                                            themeAccent: palette.accent)
         } else {
             canvasPalette = basePalette
         }
-        ctx.setFillColor(canvasPalette.backgroundCG)
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if optimizeForEInk || !ColorCardSceneCapture.background(ctx, palette: canvasPalette) {
+            ctx.setFillColor(canvasPalette.backgroundCG)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
         // 模块绘制助手统一按键盘画板高度（428）做 Skia→CG 翻转；
         // 平移 CTM 使同一套坐标正确落到当前尺寸的画布上
         ctx.translateBy(x: 0, y: CGFloat(height) - CGFloat(ScreenRenderer.height))
@@ -804,6 +832,13 @@ public enum ScreenRenderer {
         let region = CGRect(x: inset, y: inset,
                             width: CGFloat(width) - inset * 2,
                             height: CGFloat(height) - inset * 2)
+        if !optimizeForEInk, ColorCardSceneCapture.isActive, modules != [.image] {
+            // 正方形画板原本没有整板卡片外壳。仅增加背后的玻璃层，保持所有
+            // 模块的现有排版区域和字号，不挤占可用空间；纯图片画板不加遮罩。
+            let glassBounds = region.insetBy(dx: -4, dy: -4)
+            _ = ColorCardSceneCapture.panel(ctx, bounds: rect(glassBounds), radius: 16,
+                                            color: canvasPalette.cardCG)
+        }
         if modules.isEmpty {
             drawText(ctx, "请在面板中添加模块", size: 9, bold: false,
                      color: canvasPalette.secondaryTextCG,
@@ -876,8 +911,10 @@ public enum ScreenRenderer {
         }
         ctx.setAllowsAntialiasing(true)
         ctx.setShouldAntialias(true)
-        ctx.setFillColor(palette.backgroundCG)
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if !ColorCardSceneCapture.background(ctx, palette: palette) {
+            ctx.setFillColor(palette.backgroundCG)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
         // rect()/drawText() 使用 142×428 渲染器的逻辑坐标，和设备画板保持同一 CTM。
         ctx.translateBy(x: 0, y: CGFloat(height) - CGFloat(ScreenRenderer.height))
 
@@ -1312,6 +1349,10 @@ public enum ScreenRenderer {
         let typography = canvasTypography()
         switch module {
         case .homeAssistant:
+            if deviceCanvas, !monochromeDeviceCanvas, band.width >= 140, band.height >= 56 {
+                drawSquareHomeAssistant(ctx, snapshot: ha, band: band, colors: colors)
+                break
+            }
             if ha.selectedEntities.count == 1, let entity = ha.selectedEntities.first {
                 // 单实体：图标 + 实体名（左）+ 状态值大字（右，含单位；on/off 映射开/关）
                 drawEntityIcon(ctx, symbol: SFIconMapper.symbol(for: entity),
@@ -2212,7 +2253,7 @@ public enum ScreenRenderer {
                           band: band, colors: colors, source: quoteSource)
         case .sspai:
             drawSspaiBand(ctx, articles: sspaiArticles, band: band, colors: colors,
-                          deviceCanvas: deviceCanvas)
+                          deviceCanvas: deviceCanvas, monochrome: monochromeDeviceCanvas)
         }
     }
 
@@ -2423,11 +2464,206 @@ public enum ScreenRenderer {
         }
     }
 
+    /// 少数派独立卡片及彩色方屏共用品牌色，避免方屏错误继承其他模块的绿色强调。
+    public static func sspaiPalette(_ base: ScreenPalette) -> ScreenPalette {
+        let luminance = 0.299 * base.background.0 + 0.587 * base.background.1 + 0.114 * base.background.2
+        let brand: (CGFloat, CGFloat, CGFloat) = luminance < 0.5
+            ? (0.98, 0.42, 0.28) : (0.82, 0.25, 0.15)
+        var result = base
+        result.accent = brand
+        result.secondaryAccent = brand
+        return result
+    }
+
+    /// 方屏推荐页：固定安全边距与标头，标题和作者作为完整文本组在正文区垂直居中。
+    private static func drawSquareSspai(_ ctx: CGContext, articles: [SspaiArticle],
+                                        band: CGRect, colors: ScreenPalette) {
+        let inner = band.insetBy(dx: 8, dy: 6)
+        let headerHeight: CGFloat = inner.height >= 90 ? 27 : 21
+        drawText(ctx, "SSPAI", size: 15, bold: true, color: colors.accentCG,
+                 in: rect(inner.minX, inner.minY, 72, headerHeight), align: .left)
+        drawText(ctx, "少数派推荐", size: 10, bold: true, color: colors.secondaryTextCG,
+                 in: rect(inner.minX + 78, inner.minY, inner.width - 78, headerHeight), align: .right)
+        drawLine(ctx, x1: inner.minX, y1: inner.minY + headerHeight,
+                 x2: inner.maxX, y2: inner.minY + headerHeight, color: colors.borderCG)
+        let content = CGRect(x: inner.minX, y: inner.minY + headerHeight + 8,
+                             width: inner.width, height: max(inner.height - headerHeight - 16, 12))
+        guard !articles.isEmpty else {
+            drawText(ctx, "正在获取推荐文章…", size: 12, bold: false, color: colors.secondaryTextCG,
+                     in: rect(content), align: .center)
+            return
+        }
+        let count = min(articles.count, 3, max(Int(content.height / 40), 1))
+        let gap: CGFloat = count > 1 ? 10 : 0
+        let rowLimit = max((content.height - gap * CGFloat(count - 1)) / CGFloat(count), 12)
+        let textWidth = max(content.width - 26, 20)
+        struct ArticleLayout {
+            let article: SspaiArticle
+            let lines: [String]
+            let size: CGFloat
+            let height: CGFloat
+            let authorHeight: CGFloat
+        }
+        let rows: [ArticleLayout] = articles.prefix(count).map { article in
+            let authorHeight: CGFloat = article.author.isEmpty || rowLimit < 38 ? 0 : 13
+            let titleLimit = max(rowLimit - authorHeight, 12)
+            var size: CGFloat = count == 1 ? 19 : 14
+            var lines = wrapText(article.title, maxWidth: textWidth, size: size)
+            while size > 9, CGFloat(lines.count) * size * 1.25 > titleLimit {
+                size -= 0.5
+                lines = wrapText(article.title, maxWidth: textWidth, size: size)
+            }
+            let maximumLines = max(Int(titleLimit / (size * 1.25)), 1)
+            if lines.count > maximumLines {
+                lines = splitLines(article.title, size: size, bold: false,
+                                   maxW: textWidth, maxLines: maximumLines)
+            }
+            return ArticleLayout(article: article, lines: lines, size: size,
+                                 height: CGFloat(max(lines.count, 1)) * size * 1.25 + authorHeight,
+                                 authorHeight: authorHeight)
+        }
+        let groupHeight = rows.reduce(CGFloat.zero) { $0 + $1.height } + gap * CGFloat(count - 1)
+        var y = content.minY + max((content.height - groupHeight) / 2, 0)
+        for (index, row) in rows.enumerated() {
+            drawText(ctx, "\(index + 1)", size: 12, bold: true, color: colors.accentCG,
+                     in: rect(content.minX, y, 18, row.size * 1.25), align: .center)
+            for (lineIndex, line) in row.lines.enumerated() {
+                drawText(ctx, line, size: row.size, bold: false, color: colors.primaryTextCG,
+                         in: rect(content.minX + 26, y + CGFloat(lineIndex) * row.size * 1.25,
+                                  textWidth, row.size * 1.25), align: .left)
+            }
+            if row.authorHeight > 0 {
+                drawAdaptiveText(ctx, row.article.author, maxSize: 9.5, minSize: 8,
+                                 bold: false, color: colors.secondaryTextCG,
+                                 in: rect(content.minX + 26, y + row.height - row.authorHeight,
+                                          textWidth, row.authorHeight), align: .left)
+            }
+            y += row.height + gap
+        }
+    }
+
+    /// 彩色方屏 HA：图片/摄像头使用可辨认的静态画面，普通实体保持名称与状态分区。
+    /// 最多四个等高项目，单图占满正文；模块变矮时统一压缩本模块，不侵入相邻模块。
+    private static func drawSquareHomeAssistant(_ ctx: CGContext, snapshot: HASnapshot,
+                                                band: CGRect, colors: ScreenPalette) {
+        let inner = band.insetBy(dx: 5, dy: 5)
+        let headerHeight: CGFloat = inner.height >= 100 ? 28 : 21
+        drawText(ctx, "HOME SYSTEM", size: 12, bold: true, color: colors.accentCG,
+                 in: rect(inner.minX + 2, inner.minY, inner.width - 4, headerHeight), align: .left)
+        drawLine(ctx, x1: inner.minX + 2, y1: inner.minY + headerHeight,
+                 x2: inner.maxX - 2, y2: inner.minY + headerHeight, color: colors.borderCG)
+        struct Item {
+            let name: String
+            let value: String
+            let icon: String
+            let image: Data?
+            let isMedia: Bool
+            let stale: Bool
+        }
+        var items = snapshot.selectedEntities.map { entity in
+            Item(name: snapshot.aliases[entity.entityId] ?? entity.displayName,
+                 value: entity.displayValue, icon: SFIconMapper.symbol(for: entity),
+                 image: snapshot.picture(for: entity.entityId),
+                 isMedia: !HAEntityPicker.pictureEntityIDs(in: [entity.entityId]).isEmpty,
+                 stale: false)
+        }
+        items += snapshot.missingRows().map {
+            Item(name: $0.name, value: $0.lastValue.isEmpty ? "失效" : $0.lastValue,
+                 icon: "exclamationmark.triangle", image: nil, isMedia: false, stale: true)
+        }
+        let bodyHeight = max(inner.height - headerHeight - 12, 10)
+        // 很矮的模块容不下“实体行 + 更多数量”。此时只保留计数摘要，避免
+        // 把正文强行撑到 10px 后再和底部“另有 N 项”挤在同一行。
+        if !items.isEmpty, bodyHeight < 30 {
+            drawText(ctx, "\(items.count) 项实体 · 增大模块可查看详情", size: 9, bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(inner.minX, inner.minY + headerHeight + 7,
+                              inner.width, bodyHeight), align: .left)
+            return
+        }
+        let mediaCandidate = items.prefix(haStandalonePageLimit).contains { $0.isMedia || $0.image != nil }
+        let possibleColumns = mediaCandidate && items.count > 1 && bodyHeight >= 72 ? 2 : 1
+        let possibleRows = max(Int((bodyHeight - (items.count > 1 ? 13 : 0) + 6) / 34), 1)
+        let shown = Array(items.prefix(min(haStandalonePageLimit, possibleColumns * possibleRows)))
+        let moreHeight: CGFloat = items.count > shown.count ? 13 : 0
+        let content = CGRect(x: inner.minX, y: inner.minY + headerHeight + 7,
+                             width: inner.width, height: max(inner.height - headerHeight - 12 - moreHeight, 10))
+        guard !shown.isEmpty else {
+            drawText(ctx, snapshot.errorText ?? "请选择显示的实体", size: 12, bold: false,
+                     color: colors.secondaryTextCG, in: rect(content), align: .center)
+            return
+        }
+        let hasMedia = shown.contains { $0.isMedia || $0.image != nil }
+        let columns = hasMedia && shown.count > 1 && content.height >= 72 ? 2 : 1
+        let rowCount = (shown.count + columns - 1) / columns
+        let gap: CGFloat = 6
+        let cellWidth = (content.width - gap * CGFloat(columns - 1)) / CGFloat(columns)
+        let availableHeight = max((content.height - gap * CGFloat(rowCount - 1)) / CGFloat(rowCount), 8)
+        let cellHeight = hasMedia ? availableHeight
+            : min(availableHeight, shown.count == 1 ? 84 : 38)
+        let groupHeight = cellHeight * CGFloat(rowCount) + gap * CGFloat(rowCount - 1)
+        let startY = content.minY + max((content.height - groupHeight) / 2, 0)
+        for (index, item) in shown.enumerated() {
+            let cell = CGRect(x: content.minX + CGFloat(index % columns) * (cellWidth + gap),
+                              y: startY + CGFloat(index / columns) * (cellHeight + gap),
+                              width: cellWidth, height: cellHeight)
+            fillRound(ctx, rect(cell), radius: 8, color: colors.insetCG)
+            strokeRound(ctx, rect(cell), radius: 8, color: colors.borderCG, width: 1)
+            let foreground = item.stale ? colors.secondaryTextCG : colors.primaryTextCG
+            if (item.isMedia || item.image != nil), cell.height >= 52 {
+                let pictureBox = CGRect(x: cell.minX + 5, y: cell.minY + 5,
+                                        width: cell.width - 10, height: cell.height - 32)
+                if let image = item.image,
+                   drawImageData(ctx, data: image, into: pictureBox, cover: true, radius: 5) {
+                    // The fetched static frame is drawn directly, without streaming or a new timer.
+                } else {
+                    drawText(ctx, "等待画面", size: 11, bold: false, color: colors.secondaryTextCG,
+                             in: rect(pictureBox), align: .center)
+                }
+                let label = splitLines(item.name, size: columns == 1 ? 11 : 9.5, bold: true,
+                                       maxW: cell.width - 10, maxLines: 2)
+                for (lineIndex, line) in label.enumerated() {
+                    drawText(ctx, line, size: columns == 1 ? 11 : 9.5, bold: true, color: foreground,
+                             in: rect(cell.minX + 5, cell.maxY - 25 + CGFloat(lineIndex) * 11,
+                                      cell.width - 10, 11), align: .center)
+                }
+            } else if cell.height >= 48 {
+                drawAdaptiveText(ctx, item.name, maxSize: 13, minSize: 9, bold: false,
+                                 color: colors.secondaryTextCG,
+                                 in: rect(cell.minX + 8, cell.minY + 5, cell.width - 16, 22), align: .center)
+                drawAdaptiveText(ctx, item.value, maxSize: min(28, cell.height * 0.34), minSize: 9,
+                                 bold: true, color: foreground,
+                                 in: rect(cell.minX + 8, cell.minY + 27, cell.width - 16,
+                                          cell.height - 32), align: .center)
+            } else {
+                let valueWidth = min(max(cell.width * 0.34, 42), 75)
+                drawEntityIcon(ctx, symbol: item.icon,
+                               in: rect(cell.minX + 6, cell.midY - 6, 12, 12), color: colors.accentCG)
+                drawAdaptiveText(ctx, item.name, maxSize: 11, minSize: 8, bold: false,
+                                 color: colors.secondaryTextCG,
+                                 in: rect(cell.minX + 22, cell.minY + 2,
+                                          max(cell.width - valueWidth - 29, 12), cell.height - 4), align: .left)
+                drawAdaptiveText(ctx, item.value, maxSize: 12, minSize: 8, bold: true, color: foreground,
+                                 in: rect(cell.maxX - valueWidth - 6, cell.minY + 2,
+                                          valueWidth, cell.height - 4), align: .right)
+            }
+        }
+        if moreHeight > 0 {
+            drawText(ctx, "另有 \(items.count - shown.count) 项", size: 9, bold: false,
+                     color: colors.tertiaryTextCG,
+                     in: rect(inner.minX, inner.maxY - moreHeight, inner.width, moreHeight), align: .right)
+        }
+    }
+
     /// 少数派推荐画板模块：编号 + 标题多行（自适应字号，长标题换行显示而不是截断；
     /// 键盘画板强调色用少数派品牌红橙，墨水屏设备画板统一为最深对比色）
     private static func drawSspaiBand(_ ctx: CGContext, articles: [SspaiArticle],
                                       band: CGRect, colors: ScreenPalette,
-                                      deviceCanvas: Bool) {
+                                      deviceCanvas: Bool, monochrome: Bool = true) {
+        if deviceCanvas, !monochrome, band.width >= 140, band.height >= 56 {
+            drawSquareSspai(ctx, articles: articles, band: band, colors: sspaiPalette(colors))
+            return
+        }
         let w = band.width
         if articles.isEmpty {
             drawText(ctx, "获取少数派推荐中…", size: 9, bold: false,
@@ -2437,13 +2673,10 @@ public enum ScreenRenderer {
         }
         // 编号强调色：墨水屏设备画板用最深对比色（无品牌色相），键盘画板用品牌红橙
         let brand: CGColor
-        if deviceCanvas {
+        if deviceCanvas && monochrome {
             brand = colors.accentCG
         } else {
-            let bgLum = 0.299 * colors.background.0 + 0.587 * colors.background.1 + 0.114 * colors.background.2
-            brand = bgLum < 0.5
-                ? CGColor(red: 0.98, green: 0.42, blue: 0.28, alpha: 1)
-                : CGColor(red: 0.82, green: 0.25, blue: 0.15, alpha: 1)
+            brand = sspaiPalette(colors).accentCG
         }
         // 每行至少 18pt，保证标题有换行空间、小屏幕下可读
         let maxFit = max(Int(band.height / 18), 1)
@@ -3417,6 +3650,7 @@ public enum ScreenRenderer {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
         // 背景铺黑
+        ColorCardSceneCapture.attach(ctx)
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         // 图片忽略全局顶部安全区，铺满整个屏幕显示范围（裁剪填充、不变形）
@@ -3539,6 +3773,8 @@ public enum ScreenRenderer {
             ctx.translateBy(x: groupCenterCG.x, y: groupCenterCG.y)
             ctx.scaleBy(x: groupScale, y: groupScale)
             ctx.translateBy(x: -groupCenterCG.x, y: -groupCenterCG.y)
+            // 与四位数字、日期共享变换，移动和缩放时始终是同一个图层组。
+            // 经典模式下此调用不绘制任何内容，保持壁纸和时钟原样。
             for index in 0..<4 {
                 let position = positions[index]
                 drawTextShadowed(ctx, String(digits[index]), size: digitSize, bold: false,
@@ -4421,6 +4657,8 @@ public enum ScreenRenderer {
         let warn = CGColor(red: 1, green: 0.92, blue: 0.55, alpha: 1)
         let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
         let dim = CGColor(red: 1, green: 0.85, blue: 0.85, alpha: 0.75)
+        // 告警必须保留深红底色，不能被普通主题背景替换。
+        ColorCardSceneCapture.attach(ctx)
         ctx.setFillColor(alertBG)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         let c = CGRect(x: 9, y: safe + 1, width: 124, height: CGFloat(height) - 9 - (safe + 1))
@@ -5086,8 +5324,8 @@ public enum ScreenRenderer {
         // 有封面时从封面取主色作为卡片背景；无封面回退主题配色
         let coverDominant = artImage.map { dominantColor(of: $0) }
         let colors: ScreenPalette
-        if let coverDominant {
-            colors = artworkPalette(baseColor: coverDominant,
+        if let artImage {
+            colors = artworkPalette(of: artImage,
                                     themeAccent: settings.resolvedPalette.accent)
         } else {
             colors = settings.resolvedPalette
@@ -5225,11 +5463,15 @@ public enum ScreenRenderer {
 
         // 页脚：当前时间（上：时钟，下：日期）；格式与字号可自定义，也可整体隐藏。
         // 各带高度随字号自适应，字号调小后行距同步收紧释放空间。
-        // 时间、日期与「当前时间」标签同样使用封面生成的强调色
+        // 页脚不能直接复用较细的进度条色：极深封面上，同色相的简单
+        // 倍率提亮仍可能不可读。按卡片实际底色选择对比度达标的同系色阶，
+        // 深底使用浅色、浅底使用深色，同时保留封面色相。
         if footerVisible {
+            let footerAccent = artworkReadableAccent(background: colors.card,
+                                                       seed: colors.accent)
             drawFooterClock(ctx, card: c, settings: settings, colors: colors, now: now,
-                            accent: CGColor(red: progressAccent.0, green: progressAccent.1,
-                                            blue: progressAccent.2, alpha: 1),
+                            accent: CGColor(red: footerAccent.0, green: footerAccent.1,
+                                            blue: footerAccent.2, alpha: 1),
                             tintAll: true)
         }
 
@@ -5649,13 +5891,7 @@ public enum ScreenRenderer {
                                    now: Date = Date()) throws -> RenderResult {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
-        let base = settings.resolvedPalette
-        // 少数派主色调（红橙）作为强调色；按底色明暗选亮/深一档保证可见
-        let bgLum = 0.299 * base.background.0 + 0.587 * base.background.1 + 0.114 * base.background.2
-        let brand: (CGFloat, CGFloat, CGFloat) = bgLum < 0.5 ? (0.98, 0.42, 0.28) : (0.82, 0.25, 0.15)
-        var colors = base
-        colors.accent = brand
-        colors.secondaryAccent = brand
+        let colors = sspaiPalette(settings.resolvedPalette)
         let c = drawCanvas(ctx, safeArea: safe, colors: colors)
         let accent = colors.accentCG
         drawHeader(ctx, card: c, title: "SSPAI", badge: "推荐",
@@ -5735,8 +5971,10 @@ public enum ScreenRenderer {
                                             now: Date = Date()) throws -> RenderResult {
         let ctx = createContext()
         let colors = settings.resolvedPalette
-        ctx.setFillColor(colors.backgroundCG)
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if !ColorCardSceneCapture.background(ctx, palette: colors) {
+            ctx.setFillColor(colors.backgroundCG)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
 
         let emojis = Array(settings.emojiWallpaperText)
         if emojis.isEmpty {
@@ -5789,6 +6027,17 @@ public enum ScreenRenderer {
         // 避免浅底上出现灰暗色块；深色背景才压暗保证文字可读
         let bg = colors.background
         let isLightBackground = 0.299 * bg.0 + 0.587 * bg.1 + 0.114 * bg.2 >= 0.5
+        if ColorCardSceneCapture.panel(
+            ctx, bounds: rect(4, max(labelTop - 8, 4), CGFloat(width) - 8,
+                              CGFloat(height) - 4 - max(labelTop - 8, 4)),
+            radius: 15, color: colors.cardCG) {
+            // 先保存完整 Emoji 底图，再由 SwiftUI 渲染玻璃；文字保持原来位置。
+            // 新模式不重复执行旧的模糊条带，避免图像被两次模糊。
+            drawFooterClock(ctx, card: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
+                            settings: settings, colors: colors, now: now,
+                            accent: colors.accentCG, tintAll: true)
+            return
+        }
         let base = ctx.makeImage()
         // 页脚文字动态取色：从底部遮罩区域背景采样主色，按明暗做深提亮/浅加深保证对比
         // （深背景取亮色、浅背景取深色，复用封面智能取色逻辑）；取样失败回退主题强调色
@@ -6086,14 +6335,18 @@ public enum ScreenRenderer {
 
     /// 与整图求平均不同，按色相聚类并优先选择占比高、色度清晰且不过曝的种子色，
     /// 避免多色照片被平均成灰褐色；低饱和图片则自然回退为中性色调阶。
-    private static func wallpaperSeedColor(of image: CGImage) -> (CGFloat, CGFloat, CGFloat) {
+    @inline(never)
+    private static func artworkSeedColors(
+        of image: CGImage
+    ) -> (primary: (CGFloat, CGFloat, CGFloat), secondary: (CGFloat, CGFloat, CGFloat)) {
         let size = 32
         guard let ctx = CGContext(data: nil, width: size, height: size,
                                   bitsPerComponent: 8, bytesPerRow: size * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let data = ctx.data else {
-            return dominantColor(of: image)
+            let fallback = dominantColor(of: image)
+            return (fallback, fallback)
         }
         ctx.interpolationQuality = .medium
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
@@ -6137,12 +6390,38 @@ public enum ScreenRenderer {
             buckets[bucketIndex].blue += b * weight
         }
 
-        guard let winner = buckets.max(by: { $0.score < $1.score }), winner.score > 0 else {
-            return dominantColor(of: image)
+        let ranked = buckets.enumerated()
+            .filter { $0.element.score > 0 }
+            .sorted { $0.element.score > $1.element.score }
+        guard let winner = ranked.first else {
+            let fallback = dominantColor(of: image)
+            return (fallback, fallback)
         }
-        return (winner.red / winner.score,
-                winner.green / winner.score,
-                winner.blue / winner.score)
+        func color(_ bucket: Bucket) -> (CGFloat, CGFloat, CGFloat) {
+            (bucket.red / bucket.score,
+             bucket.green / bucket.score,
+             bucket.blue / bucket.score)
+        }
+        // 第二道光晕不只按占比排序：用“实际占比 × 与主色的色相距离”选择，
+        // 让封面中面积较小但鲜明的颜色也能被保留，而不是总被大面积近似色吞掉。
+        var secondary = winner
+        var bestCollisionScore: CGFloat = -1
+        for candidate in ranked.dropFirst() {
+            let bucketDistance = abs(candidate.offset - winner.offset)
+            let normalizedDistance = CGFloat(min(bucketDistance,
+                buckets.count - bucketDistance)) / CGFloat(buckets.count / 2)
+            let share = candidate.element.score / max(winner.element.score, 0.001)
+            let score = min(share, 1) * (0.35 + normalizedDistance * 1.65)
+            if score > bestCollisionScore {
+                bestCollisionScore = score
+                secondary = candidate
+            }
+        }
+        return (color(winner.element), color(secondary.element))
+    }
+
+    private static func wallpaperSeedColor(of image: CGImage) -> (CGFloat, CGFloat, CGFloat) {
+        artworkSeedColors(of: image).primary
     }
 
     private struct OKLCHColor {
@@ -6238,9 +6517,128 @@ public enum ScreenRenderer {
         return (lighter + 0.05) / (darker + 0.05)
     }
 
-    /// 由封面主色生成整卡调色板（按明暗自动适配文字，保留主题强调色）
+    /// 从封面种子色生成适合小字的可读色。优先保留色相与色度，
+    /// 在 OKLCH 中逐档调整明度，直到与实际背景达到 WCAG AA 小文字对比度。
+    @inline(never)
+    public static func artworkReadableAccent(
+        background: (CGFloat, CGFloat, CGFloat),
+        seed: (CGFloat, CGFloat, CGFloat)
+    ) -> (CGFloat, CGFloat, CGFloat) {
+        let source = rgbToOKLCH(seed)
+        let chroma = max(min(source.chroma, 0.17), source.chroma >= 0.02 ? 0.055 : 0)
+        let lightSteps: [Double] = [0.84, 0.88, 0.92, 0.96, 0.99]
+        let darkSteps: [Double] = [0.28, 0.24, 0.20, 0.16, 0.10]
+        let preferred = relativeLuminance(background) < 0.36 ? lightSteps : darkSteps
+        var best = perceptualTone(of: seed, lightness: preferred[0], chroma: chroma)
+        var bestContrast = contrastRatio(best, background: background)
+        for lightness in preferred.dropFirst() {
+            let candidate = perceptualTone(of: seed, lightness: lightness, chroma: chroma)
+            let contrast = contrastRatio(candidate, background: background)
+            if contrast > bestContrast {
+                best = candidate
+                bestContrast = contrast
+            }
+            if contrast >= 4.5 { return candidate }
+        }
+        if bestContrast >= 4.5 { return best }
+        let neutral: (CGFloat, CGFloat, CGFloat) = relativeLuminance(background) < 0.36
+            ? (0.98, 0.98, 0.98) : (0.08, 0.08, 0.08)
+        return contrastRatio(neutral, background: background) > bestContrast ? neutral : best
+    }
+
+    /// 从同一张封面分别提取主/次种子色，再生成适合玻璃背景的两道强调色。
+    /// 封面中有真实异色时优先保留；近似单色时则从封面主种子派生一道
+    /// 错开约 78° 的协调色，在不混入应用主题色的前提下增加色彩碰撞。
+    @inline(never)
+    public static func artworkGlassAccents(
+        of image: CGImage
+    ) -> (primary: (CGFloat, CGFloat, CGFloat), secondary: (CGFloat, CGFloat, CGFloat)) {
+        let base = dominantColor(of: image)
+        let seeds = artworkSeedColors(of: image)
+        let darkBackground = relativeLuminance(base) < 0.5
+        let primarySource = rgbToOKLCH(seeds.primary)
+        let secondarySource = rgbToOKLCH(seeds.secondary)
+        let rawHueDistance = abs(primarySource.hue - secondarySource.hue)
+            .truncatingRemainder(dividingBy: Double.pi * 2)
+        let hueDistance = min(rawHueDistance, Double.pi * 2 - rawHueDistance)
+        let hasDistinctSampledHue = primarySource.chroma >= 0.018
+            && secondarySource.chroma >= 0.025
+            && hueDistance >= Double.pi / 4
+        let primaryChroma = primarySource.chroma >= 0.018
+            ? max(min(primarySource.chroma * 1.16, 0.22), 0.085)
+            : min(primarySource.chroma, 0.025)
+        let primary = perceptualTone(
+            of: seeds.primary,
+            lightness: darkBackground ? 0.82 : 0.28,
+            chroma: primaryChroma)
+        let secondarySeed = hasDistinctSampledHue ? seeds.secondary : seeds.primary
+        let secondaryChroma: Double
+        if primarySource.chroma < 0.018 {
+            secondaryChroma = min(max(secondarySource.chroma, 0), 0.035)
+        } else if hasDistinctSampledHue {
+            secondaryChroma = max(min(secondarySource.chroma * 1.24, 0.21), 0.10)
+        } else {
+            secondaryChroma = max(min(primarySource.chroma * 1.08, 0.19), 0.10)
+        }
+        var secondary = perceptualTone(
+            of: secondarySeed,
+            lightness: darkBackground ? 0.68 : 0.40,
+            chroma: secondaryChroma,
+            hueOffset: hasDistinctSampledHue ? 0 : Double.pi * 13 / 30)
+        let distance = abs(primary.0 - secondary.0)
+            + abs(primary.1 - secondary.1) + abs(primary.2 - secondary.2)
+        if distance < 0.28, primarySource.chroma >= 0.018 {
+            secondary = perceptualTone(
+                of: seeds.primary,
+                lightness: darkBackground ? 0.66 : 0.42,
+                chroma: max(min(primarySource.chroma * 1.12, 0.20), 0.11),
+                hueOffset: Double.pi * 5 / 9)
+        }
+        return (primary, secondary)
+    }
+
+    /// 保留用户选定的背景、文字和容器颜色，仅用封面替换两道强调色。
+    /// 用于彩色多模块画板：关闭“智能封面背景”时也能获得封面光晕，
+    /// 但不会擅自改变用户的主题底色。
+    public static func applyingArtworkAccents(to palette: ScreenPalette,
+                                              artwork image: CGImage) -> ScreenPalette {
+        let accents = artworkGlassAccents(of: image)
+        var result = palette
+        result.accent = accents.primary
+        result.secondaryAccent = accents.secondary
+        return result
+    }
+
+    /// 有原始封面时使用此入口，Liquid Glass 的两种强调色都来自封面采样。
+    public static func artworkPalette(of image: CGImage,
+                                      themeAccent: (CGFloat, CGFloat, CGFloat)) -> ScreenPalette {
+        let accents = artworkGlassAccents(of: image)
+        return artworkPalette(baseColor: dominantColor(of: image),
+                              accent: accents.primary,
+                              secondaryAccent: accents.secondary)
+    }
+
+    /// 只保留主色的兼容入口；两道强调色仍从主色衍生，不再混入主题强调色。
     public static func artworkPalette(baseColor: (CGFloat, CGFloat, CGFloat),
                                       themeAccent: (CGFloat, CGFloat, CGFloat)) -> ScreenPalette {
+        let darkBackground = relativeLuminance(baseColor) < 0.5
+        let source = rgbToOKLCH(baseColor)
+        let chroma = max(min(source.chroma, 0.18), 0.025)
+        return artworkPalette(
+            baseColor: baseColor,
+            accent: perceptualTone(of: baseColor,
+                                   lightness: darkBackground ? 0.80 : 0.30,
+                                   chroma: chroma),
+            secondaryAccent: perceptualTone(of: baseColor,
+                                            lightness: darkBackground ? 0.60 : 0.48,
+                                            chroma: max(chroma * 0.72, 0.02)))
+    }
+
+    private static func artworkPalette(
+        baseColor: (CGFloat, CGFloat, CGFloat),
+        accent: (CGFloat, CGFloat, CGFloat),
+        secondaryAccent: (CGFloat, CGFloat, CGFloat)
+    ) -> ScreenPalette {
         let (r, g, b) = baseColor
         let luminance = 0.299 * r + 0.587 * g + 0.114 * b
         let isDark = luminance < 0.5
@@ -6271,8 +6669,8 @@ public enum ScreenRenderer {
             card: card,
             inset: inset,
             border: border,
-            accent: themeAccent,
-            secondaryAccent: themeAccent,
+            accent: accent,
+            secondaryAccent: secondaryAccent,
             primaryText: text,
             secondaryText: sub,
             tertiaryText: ter
@@ -6321,8 +6719,10 @@ public enum ScreenRenderer {
 
     /// 绘制背景与卡片（Skia 语义坐标：origin 在屏幕左上，y 向下）
     private static func drawCanvas(_ ctx: CGContext, safeArea: CGFloat, colors: ScreenPalette) -> CGRect {
-        ctx.setFillColor(colors.backgroundCG)
-        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if !ColorCardSceneCapture.background(ctx, palette: colors) {
+            ctx.setFillColor(colors.backgroundCG)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
         // 卡片顶部从安全区下方开始（Skia 语义）
         let cardSkia = CGRect(x: 9, y: safeArea + 1, width: 124,
                               height: CGFloat(height) - 9 - (safeArea + 1))
@@ -6336,6 +6736,11 @@ public enum ScreenRenderer {
 
     private static func encode(_ ctx: CGContext, quality: Int) throws -> RenderResult {
         guard let image = ctx.makeImage() else { throw RenderError.encodeFailed }
+        // A scoped glass export still needs the foreground image, but encodes
+        // only the final SwiftUI composition, not this temporary transparent layer.
+        if ColorCardSceneCapture.isCapturing(ctx) {
+            return RenderResult(data: Data(), image: image)
+        }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             data, UTType.jpeg.identifier as CFString, 1, nil) else {
@@ -6372,6 +6777,7 @@ public enum ScreenRenderer {
     }
 
     private static func fillRound(_ ctx: CGContext, _ bounds: CGRect, radius: CGFloat, color: CGColor) {
+        if ColorCardSceneCapture.panel(ctx, bounds: bounds, radius: radius, color: color) { return }
         ctx.saveGState()
         ctx.setFillColor(color)
         ctx.addPath(CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil))
@@ -6380,6 +6786,7 @@ public enum ScreenRenderer {
     }
 
     private static func strokeRound(_ ctx: CGContext, _ bounds: CGRect, radius: CGFloat, color: CGColor, width: CGFloat) {
+        if ColorCardSceneCapture.suppressStroke(ctx, bounds: bounds) { return }
         ctx.saveGState()
         ctx.setStrokeColor(color)
         ctx.setLineWidth(width)

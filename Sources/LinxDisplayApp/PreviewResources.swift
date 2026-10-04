@@ -2,6 +2,14 @@ import AppKit
 
 /// 设备画板预览效果图的 hero 背景资源（随应用打包在 Resources/）
 enum PreviewResources {
+    /// M5Stack StickS3 正面产品图；背景已透明，用于控制器主页面与按键提示预览。
+    static let m5StickS3Image: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "m5-sticks3-cutout", withExtension: "png") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
     /// 摘录画板：quote_0 官方 hero 图（2000×671 横版）
     static let heroImage: NSImage? = {
         guard let url = Bundle.main.url(forResource: "quote_0_hero", withExtension: "png") else {

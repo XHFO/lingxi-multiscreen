@@ -13,6 +13,7 @@ public enum DeviceTransportKind: String, Codable {
     case cloudImageAPI
     case cloudDataAPI
     case sharedDataSource
+    case bluetoothControl
 }
 
 public struct DisplayPixelSize: Codable, Equatable {
@@ -77,7 +78,13 @@ public enum DeviceCapabilityRegistry {
         .init(type: .aiMacScreen, icon: "display", maximumInstances: 5,
               screenSize: .init(width: 240, height: 240),
               colorCapability: .fullColor, transport: .localHTTPImage,
-              cardSurface: .colorSquare, supportsMultipleBoards: true)
+              cardSurface: .colorSquare, supportsMultipleBoards: true),
+        .init(type: .awtrix, icon: "rectangle.grid.1x2", maximumInstances: 5,
+              screenSize: .init(width: 32, height: 8),
+              colorCapability: .fullColor, transport: .localHTTPImage),
+        .init(type: .m5Controller, icon: "gamecontroller", maximumInstances: 1,
+              screenSize: .init(width: 135, height: 240),
+              colorCapability: .fullColor, transport: .bluetoothControl)
     ]
 
     private static let byType = Dictionary(uniqueKeysWithValues: all.map { ($0.type, $0) })

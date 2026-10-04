@@ -84,6 +84,10 @@ public final class AppSettings: ObservableObject {
     @Published public var appearanceMode: AppearanceMode = .system {
         didSet { onChange() }
     }
+    /// 全局彩色卡片渲染风格，不随当前设备切换；墨水屏保持原有渲染。
+    @Published public var cardRenderingMode: CardRenderingMode = .classic {
+        didSet { onChange() }
+    }
     /// 软件当前有效的明暗状态（由 AppModel 依据外观模式 + 系统外观实时更新，不持久化）。
     /// 背景底色「跟随软件明暗」时以此决定深/浅底色。
     @Published public var softwareIsDark = true {
@@ -425,6 +429,10 @@ public final class AppSettings: ObservableObject {
     @Published public var lingxi68KnobPagingEnabled = false {
         didSet { onChange() }
     }
+    /// AWTRIX NG：由多屏灵犀直接连接、控制和推送中文点阵，不经过 Home Assistant。
+    @Published public var awtrix = AWTRIXSettings() {
+        didSet { onChange() }
+    }
     /// Home Assistant：服务器地址（全局唯一，所有设备共享；如 http://192.168.x.x:8123）
     @Published public var haServerURL = "" {
         didSet { onChange() }
@@ -581,6 +589,14 @@ public final class AppSettings: ObservableObject {
     }
     /// 当前活动 AI Mac 240×240 小屏幕设备 ID。
     @Published public var activeAIMacScreenDeviceID: UUID? {
+        didSet { onChange() }
+    }
+    /// 当前活动 AWTRIX NG 设备 ID。
+    @Published public var activeAWTRIXDeviceID: UUID? {
+        didSet { onChange() }
+    }
+    /// 当前活动 M5Stack StickS3 蓝牙控制器设备 ID。
+    @Published public var activeM5ControllerDeviceID: UUID? {
         didSet { onChange() }
     }
 
@@ -1132,7 +1148,7 @@ public final class AppSettings: ObservableObject {
              jpegQuality, qwenQuotaBaseline, qwenQuotaBaselineDay, displayMode, cardTheme, customImagePath, customImageName,
              oracleCanvasImagePath, oracleCanvasImageName, excerptCanvasImagePath, excerptCanvasImageName,
              customImageHistory,
-             startWithSystem, codexCliPath, appearanceMode, backgroundTone,
+             startWithSystem, codexCliPath, appearanceMode, cardRenderingMode, backgroundTone,
              customBackgroundHex, accentTone, customAccentHex,
              showCpu, showMemory, showNetwork, showUptime, showDisk,
              networkChart,
@@ -1150,7 +1166,7 @@ public final class AppSettings: ObservableObject {
              canvasModuleMargins, canvasPrinterFields, oracleCanvasPrinterFields, excerptCanvasPrinterFields, qwenQuotaShowPercent,
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
-             keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled,
+             keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled, awtrix,
              haServerURL, haToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
@@ -1171,7 +1187,7 @@ public final class AppSettings: ObservableObject {
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -1208,6 +1224,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(startWithSystem, forKey: .startWithSystem)
         try container.encodeIfPresent(codexCliPath, forKey: .codexCliPath)
         try container.encode(appearanceMode.rawValue, forKey: .appearanceMode)
+        try container.encode(cardRenderingMode.rawValue, forKey: .cardRenderingMode)
         try container.encode(backgroundTone.rawValue, forKey: .backgroundTone)
         try container.encodeIfPresent(customBackgroundHex, forKey: .customBackgroundHex)
         try container.encode(accentTone.rawValue, forKey: .accentTone)
@@ -1267,6 +1284,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(keyboardPageUpShortcut, forKey: .keyboardPageUpShortcut)
         try container.encode(keyboardPageDownShortcut, forKey: .keyboardPageDownShortcut)
         try container.encode(lingxi68KnobPagingEnabled, forKey: .lingxi68KnobPagingEnabled)
+        try container.encode(awtrix, forKey: .awtrix)
         try container.encode(haServerURL, forKey: .haServerURL)
         try container.encode(haToken, forKey: .haToken)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
@@ -1338,6 +1356,8 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeBambuLabDeviceID, forKey: .activeBambuLabDeviceID)
         try container.encodeIfPresent(activeFormlabsDeviceID, forKey: .activeFormlabsDeviceID)
         try container.encodeIfPresent(activeAIMacScreenDeviceID, forKey: .activeAIMacScreenDeviceID)
+        try container.encodeIfPresent(activeAWTRIXDeviceID, forKey: .activeAWTRIXDeviceID)
+        try container.encodeIfPresent(activeM5ControllerDeviceID, forKey: .activeM5ControllerDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
         try container.encode(excerptCanvasModules, forKey: .excerptCanvasModules)
         try container.encode(oracleImageRotate180, forKey: .oracleImageRotate180)
@@ -1400,6 +1420,7 @@ extension AppSettings: Codable {
            let mode = AppearanceMode(rawValue: raw) {
             appearanceMode = mode
         }
+        cardRenderingMode = try container.decodeIfPresent(CardRenderingMode.self, forKey: .cardRenderingMode) ?? .classic
         if let raw = try container.decodeIfPresent(Int.self, forKey: .backgroundTone),
            let tone = BackgroundTone(rawValue: raw) {
             backgroundTone = tone
@@ -1491,6 +1512,8 @@ extension AppSettings: Codable {
         keyboardPageUpShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageUpShortcut) ?? .defaultPageUp
         keyboardPageDownShortcut = try container.decodeIfPresent(GlobalShortcut.self, forKey: .keyboardPageDownShortcut) ?? .defaultPageDown
         lingxi68KnobPagingEnabled = try container.decodeIfPresent(Bool.self, forKey: .lingxi68KnobPagingEnabled) ?? false
+        awtrix = try container.decodeIfPresent(AWTRIXSettings.self, forKey: .awtrix) ?? AWTRIXSettings()
+        awtrix.sanitize()
         haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
         haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
@@ -1578,6 +1601,18 @@ extension AppSettings: Codable {
         activeBambuLabDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeBambuLabDeviceID) ?? activeBambuLabDeviceID
         activeFormlabsDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeFormlabsDeviceID) ?? activeFormlabsDeviceID
         activeAIMacScreenDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAIMacScreenDeviceID) ?? activeAIMacScreenDeviceID
+        activeAWTRIXDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAWTRIXDeviceID) ?? activeAWTRIXDeviceID
+        activeM5ControllerDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeM5ControllerDeviceID) ?? activeM5ControllerDeviceID
+        // 兼容早期把 AWTRIX 作为固定全局页面的版本：已有地址自动成为第一台受管设备。
+        if !awtrix.baseURL.isEmpty, !devices.contains(where: { $0.type == .awtrix }) {
+            var snapshot = DeviceSettings()
+            snapshot.awtrix = awtrix
+            let migrated = ManagedDevice(type: .awtrix,
+                                         name: ManagedDevice.defaultName(for: .awtrix, index: 0),
+                                         settings: snapshot)
+            devices.append(migrated)
+            activeAWTRIXDeviceID = migrated.id
+        }
         oracleCanvasModules = try container.decodeIfPresent([Int].self, forKey: .oracleCanvasModules) ?? oracleCanvasModules
         excerptCanvasModules = try container.decodeIfPresent([Int].self, forKey: .excerptCanvasModules) ?? excerptCanvasModules
         oracleImageRotate180 = try container.decodeIfPresent(Bool.self, forKey: .oracleImageRotate180) ?? oracleImageRotate180

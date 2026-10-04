@@ -5,6 +5,7 @@ public enum NowPlayingError: Error, LocalizedError {
     case frameworkUnavailable
     case timeout
     case notPlaying
+    case invalidResponse
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ public enum NowPlayingError: Error, LocalizedError {
             return "读取播放器状态超时。"
         case .notPlaying:
             return "当前没有正在播放的媒体。"
+        case .invalidResponse:
+            return "系统播放器返回了无法识别的数据。"
         }
     }
 }
@@ -80,15 +83,15 @@ public struct NowPlayingInfo: Equatable {
     /// 若拉取到的 elapsedTime 落后于本地值（MediaRemote 可能停滞），
     /// 保留本地较大值，避免进度条周期性回跳；换曲/暂停/时长变化则采用新值。
     public func mergedWithProgressed(current: NowPlayingInfo) -> NowPlayingInfo {
-        guard title == current.title,
-              abs(duration - current.duration) < 0.5,
+        var incoming = preservingArtwork(from: current)
+        guard incoming.title == current.title,
+              abs(incoming.duration - current.duration) < 0.5,
               current.isPlaying,
-              elapsedTime < current.elapsedTime else {
-            return self
+              incoming.elapsedTime < current.elapsedTime else {
+            return incoming
         }
-        var merged = self
-        merged.elapsedTime = current.elapsedTime
-        return merged
+        incoming.elapsedTime = current.elapsedTime
+        return incoming
     }
 
     /// 合并远端采样和本地时钟，同时区分“MediaRemote 返回同一旧值”与用户 seek。
@@ -97,30 +100,205 @@ public struct NowPlayingInfo: Equatable {
                                          previousRemote: NowPlayingInfo?,
                                          seekThreshold: TimeInterval = 1.5) ->
         (info: NowPlayingInfo, didSeek: Bool) {
-        guard title == current.title,
-              artist == current.artist,
-              abs(duration - current.duration) < 0.5,
+        let incoming = preservingArtwork(from: current)
+        guard incoming.title == current.title,
+              incoming.artist == current.artist,
+              abs(incoming.duration - current.duration) < 0.5,
               current.isPlaying,
-              isPlaying else {
-            return (self, false)
+              incoming.isPlaying else {
+            return (incoming, false)
         }
 
-        let predicted = current.effectiveElapsed(at: sampledAt)
-        let offset = elapsedTime - predicted
-        guard abs(offset) > seekThreshold else { return (self, false) }
-        if offset > 0 { return (self, true) }
+        let predicted = current.effectiveElapsed(at: incoming.sampledAt)
+        let offset = incoming.elapsedTime - predicted
+        guard abs(offset) > seekThreshold else { return (incoming, false) }
+        if offset > 0 { return (incoming, true) }
 
         if let previousRemote,
-           previousRemote.title == title,
-           previousRemote.artist == artist,
-           abs(previousRemote.duration - duration) < 0.5 {
-            let remoteDelta = elapsedTime - previousRemote.elapsedTime
-            if remoteDelta < -seekThreshold { return (self, true) }
+           previousRemote.title == incoming.title,
+           previousRemote.artist == incoming.artist,
+           abs(previousRemote.duration - incoming.duration) < 0.5 {
+            let remoteDelta = incoming.elapsedTime - previousRemote.elapsedTime
+            if remoteDelta < -seekThreshold { return (incoming, true) }
             if abs(remoteDelta) < 0.35 {
-                return (current.anchored(at: sampledAt), false)
+                var anchored = current.anchored(at: incoming.sampledAt)
+                if anchored.artwork == nil { anchored.artwork = incoming.artwork }
+                return (anchored, false)
             }
         }
-        return (self, true)
+        return (incoming, true)
+    }
+
+    /// MediaRemote 偶尔会在同一首歌的后续取样里暂时漏掉封面。此时保留已经
+    /// 成功取得的封面；只有完整媒体身份一致才继承，避免换歌时沿用上一首图片。
+    private func preservingArtwork(from current: NowPlayingInfo) -> NowPlayingInfo {
+        guard artwork == nil,
+              current.artwork != nil,
+              title == current.title,
+              artist == current.artist,
+              album == current.album,
+              abs(duration - current.duration) < 0.5 else { return self }
+        var result = self
+        result.artwork = current.artwork
+        return result
+    }
+}
+
+/// 同一个读取客户端的并发请求共享一次取样，避免定时器、播放器通知与手动刷新
+/// 同时启动多个 Swift 解释器。仅合并正在执行的请求，不缓存已完成的媒体状态。
+public actor NowPlayingRequestCoordinator {
+    private struct Request {
+        let id: UUID
+        let task: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<NowPlayingInfo, Error>]
+    }
+    private var pending: Request?
+
+    public init() {}
+
+    public func fetch(_ operation: @escaping () async throws -> NowPlayingInfo) async throws -> NowPlayingInfo {
+        try Task.checkCancellation()
+        let waiterID = UUID()
+        let value: NowPlayingInfo = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if pending != nil {
+                    pending?.waiters[waiterID] = continuation
+                    return
+                }
+                let requestID = UUID()
+                let task = Task {
+                    let result: Result<NowPlayingInfo, Error>
+                    do { result = .success(try await operation()) }
+                    catch { result = .failure(error) }
+                    self.complete(requestID, with: result)
+                }
+                pending = Request(id: requestID, task: task, waiters: [waiterID: continuation])
+            }
+        } onCancel: {
+            Task { await self.cancel(waiterID) }
+        }
+        try Task.checkCancellation()
+        return value
+    }
+
+    private func complete(_ id: UUID, with result: Result<NowPlayingInfo, Error>) {
+        guard let request = pending, request.id == id else { return }
+        pending = nil
+        for waiter in request.waiters.values { waiter.resume(with: result) }
+    }
+
+    private func cancel(_ waiterID: UUID) {
+        guard let waiter = pending?.waiters.removeValue(forKey: waiterID) else { return }
+        if pending?.waiters.isEmpty == true {
+            let task = pending?.task
+            pending = nil
+            task?.cancel()
+        }
+        waiter.resume(throwing: CancellationError())
+    }
+}
+
+/// 首次事件短暂合并，连续事件限频；取样中的新事件只保留一次尾随刷新。
+public struct NowPlayingEventRefreshThrottle {
+    public static let minimumInterval: TimeInterval = 1
+    public static let debounceInterval: TimeInterval = 0.09
+    public private(set) var hasPendingRefresh = false
+    private var lastStartedAt: Date?
+
+    public init() {}
+
+    public mutating func notify(hasDemand: Bool) { hasPendingRefresh = hasDemand }
+
+    public func delay(at now: Date) -> TimeInterval {
+        let remaining = lastStartedAt.map { Self.minimumInterval - now.timeIntervalSince($0) } ?? 0
+        return max(Self.debounceInterval, remaining)
+    }
+
+    @discardableResult
+    public mutating func beginRefresh(at now: Date, hasDemand: Bool) -> Bool {
+        guard hasDemand else { hasPendingRefresh = false; return false }
+        guard hasPendingRefresh,
+              lastStartedAt.map({ now.timeIntervalSince($0) >= Self.minimumInterval }) ?? true else { return false }
+        hasPendingRefresh = false
+        lastStartedAt = now
+        return true
+    }
+}
+
+/// 歌词上传使用目标键盘自己的独立连接/布局快照；活动键盘切换不会改变它。
+public struct NowPlayingKeyboardRenderTarget {
+    public let deviceID: UUID
+    public let endpoint: String
+    public let renderSettings: AppSettings
+
+    public init?(deviceID: UUID, source: AppSettings) {
+        guard let device = source.devices.first(where: {
+            $0.id == deviceID && $0.type == .keyboard && $0.isEnabled
+        }) else { return nil }
+        let snapshot = source.activeDeviceID(for: .keyboard) == deviceID
+            ? DeviceSettings.capture(from: source, type: .keyboard) : device.settings
+        guard snapshot.displayMode == .nowPlaying,
+              let endpoint = snapshot.endpoint,
+              !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let settings = AppSettings()
+        settings.softwareIsDark = source.softwareIsDark
+        settings.cardRenderingMode = source.cardRenderingMode
+        settings.backgroundTone = source.backgroundTone
+        settings.customBackgroundHex = source.customBackgroundHex
+        settings.accentTone = source.accentTone
+        settings.customAccentHex = source.customAccentHex
+        settings.timeFormat = source.timeFormat
+        settings.dateFormat = source.dateFormat
+        snapshot.apply(to: settings, type: .keyboard)
+        self.deviceID = deviceID
+        self.endpoint = endpoint
+        renderSettings = settings
+    }
+
+    public func isValid(in source: AppSettings) -> Bool {
+        guard let device = source.devices.first(where: {
+            $0.id == deviceID && $0.type == .keyboard && $0.isEnabled
+        }) else { return false }
+        if source.activeDeviceID(for: .keyboard) == deviceID {
+            return source.displayMode == .nowPlaying && source.endpoint == endpoint
+        }
+        return device.settings.displayMode == .nowPlaying && device.settings.endpoint == endpoint
+    }
+
+    public func ownsActivePreview(in source: AppSettings) -> Bool {
+        source.activeDeviceID(for: .keyboard) == deviceID && isValid(in: source)
+    }
+}
+
+/// Callback、超时和取消只允许其中一个完成 continuation；回调晚到时不会重复恢复。
+private final class NowPlayingContinuation<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var result: Result<Value, Error>?
+
+    func install(_ continuation: CheckedContinuation<Value, Error>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+        } else {
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func finish(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard self.result == nil else { lock.unlock(); return }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }
 
@@ -128,6 +306,7 @@ public struct NowPlayingInfo: Equatable {
 /// 键名为框架标准字面量（kMRMediaRemoteNowPlayingInfo*），
 /// 采用 dlsym 动态加载，避免直接链接私有框架。
 public final class NowPlayingClient {
+    private let requests = NowPlayingRequestCoordinator()
 
     private typealias GetNowPlayingInfo = @convention(c) (DispatchQueue, @escaping @convention(block) (CFDictionary?) -> Void) -> Void
     private typealias RegisterForNotifications = @convention(c) (DispatchQueue) -> Void
@@ -161,12 +340,33 @@ public final class NowPlayingClient {
         public static let timestamp = "kMRMediaRemoteNowPlayingInfoTimestamp"
     }
 
+    /// 兼容不同 macOS / 播放器返回的封面字段。标准字段优先；若系统换用了
+    /// 其他包含 Artwork 的 Data 字段，则选择最大的有效候选，避开摘要字节。
+    public static func artworkData(in dict: [String: Any]) -> Data? {
+        if let exact = dict[Keys.artworkData] as? Data, exact.count > 128 {
+            return exact
+        }
+        return dict.compactMap { key, value -> Data? in
+            guard key.localizedCaseInsensitiveContains("artwork"),
+                  let data = value as? Data,
+                  data.count > 128 else { return nil }
+            return data
+        }.max { $0.count < $1.count }
+    }
+
     /// MediaRemote 的变化通知用于立即捕获换歌、暂停/继续和拖动进度。若当前系统
     /// 不提供注册符号，调用会安全退化为现有的定时校准。
     public static let changeNotifications: [Notification.Name] = [
         Notification.Name("kMRMediaRemoteNowPlayingInfoDidChangeNotification"),
         Notification.Name("kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification"),
         Notification.Name("kMRMediaRemoteNowPlayingApplicationDidChangeNotification")
+    ]
+
+    /// 播放器自身的分布式通知补充 MediaRemote；只作为重新读取系统状态的信号，
+    /// 不相信通知负载中的歌曲/进度，以免不同来源争抢歌词时间锚点。
+    public static let playerChangeNotifications: [Notification.Name] = [
+        Notification.Name("com.apple.Music.playerInfo"),
+        Notification.Name("com.spotify.client.PlaybackStateChanged")
     ]
 
     public func registerForChangeNotifications() {
@@ -180,11 +380,23 @@ public final class NowPlayingClient {
     /// （仅有解释器 JIT 模式能拿到数据），因此优先通过 `swift` 解释器子进程读取，
     /// 子进程不可用时回退为直接调用。
     public func fetch(timeout: TimeInterval = 10) async throws -> NowPlayingInfo {
+        try Task.checkCancellation()
+        let result = try await requests.fetch {
+            try await self.fetchUnshared(timeout: timeout)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func fetchUnshared(timeout: TimeInterval) async throws -> NowPlayingInfo {
         do {
             return try await fetchViaSubprocess(timeout: timeout)
         } catch NowPlayingError.notPlaying {
             throw NowPlayingError.notPlaying
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try Task.checkCancellation()
             guard let get = Self.getNowPlayingInfo else {
                 throw NowPlayingError.frameworkUnavailable
             }
@@ -215,27 +427,58 @@ public final class NowPlayingClient {
         var env = ProcessInfo.processInfo.environment
         env["LINX_NP_OUT"] = outFile.path
         process.environment = env
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        // JSON 已写入结果文件；不用无人读取的管道，避免解释器诊断输出堵塞子进程。
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let completion = NowPlayingContinuation<Void>()
+        process.terminationHandler = { _ in completion.finish(.success(())) }
+        try Task.checkCancellation()
         try process.run()
 
-        // 等待子进程退出（带超时），随后读结果文件
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { process.waitUntilExit() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                process.terminate()
-                throw NowPlayingError.timeout
+        // 进程回调完成等待，不占用协作线程池；最后一个调用者取消时立即结束探测。
+        try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await withCheckedThrowingContinuation { completion.install($0) }
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(max(timeout, 0) * 1_000_000_000))
+                    completion.finish(.failure(NowPlayingError.timeout))
+                    if process.isRunning { process.terminate() }
+                    throw NowPlayingError.timeout
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
             }
-            _ = try await group.next()
-            group.cancelAll()
+        } onCancel: {
+            completion.finish(.failure(CancellationError()))
+            if process.isRunning { process.terminate() }
         }
+        try Task.checkCancellation()
+        guard process.terminationStatus == 0 else { throw NowPlayingError.invalidResponse }
         let output = (try? Data(contentsOf: outFile)) ?? Data()
+        return try Self.parseProbeOutput(output)
+    }
 
-        guard let json = try? JSONSerialization.jsonObject(with: output) as? [String: Any],
-              let playing = json["playing"] as? Bool, playing,
-              let title = json["title"] as? String, !title.isEmpty else {
-            throw NowPlayingError.notPlaying
+    /// 解析解释器 probe 的回传数据。只有结构合法且明确声明
+    /// `playing == false` 时才表示未在播放；空输出、损坏 JSON 或缺少字段
+    /// 都是 probe 故障，上层应回退到直接 MediaRemote 读取。
+    public static func parseProbeOutput(_ output: Data) throws -> NowPlayingInfo {
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: output)
+        } catch {
+            throw NowPlayingError.invalidResponse
+        }
+        guard let json = value as? [String: Any],
+              let playingNumber = json["playing"] as? NSNumber,
+              CFGetTypeID(playingNumber) == CFBooleanGetTypeID() else {
+            throw NowPlayingError.invalidResponse
+        }
+        let playing = playingNumber.boolValue
+        guard playing else { throw NowPlayingError.notPlaying }
+        guard let title = json["title"] as? String, !title.isEmpty else {
+            throw NowPlayingError.invalidResponse
         }
         return NowPlayingInfo(
             title: title,
@@ -261,13 +504,43 @@ public final class NowPlayingClient {
           let sym = dlsym(handle, "MRMediaRemoteGetNowPlayingInfo") else { exit(2) }
     let get = unsafeBitCast(sym, to: GetInfo.self)
 
-    let sema = DispatchSemaphore(value: 0)
     var output = "{\\"playing\\":false}"
-    get(DispatchQueue.global(qos: .userInitiated)) { info in
-        defer { sema.signal() }
-        guard let dict = info as? [String: Any] else { return }
-        guard let title = dict["kMRMediaRemoteNowPlayingInfoTitle"] as? String, !title.isEmpty else { return }
-        let artworkData = dict["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data
+
+    func artworkData(in dict: [String: Any]) -> Data? {
+        if let exact = dict["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data,
+           exact.count > 128 { return exact }
+        return dict.compactMap { key, value -> Data? in
+            guard key.localizedCaseInsensitiveContains("artwork"),
+                  let data = value as? Data,
+                  data.count > 128 else { return nil }
+            return data
+        }.max { $0.count < $1.count }
+    }
+
+    // MediaRemote 冷启动时常先返回标题，封面会晚约一两百毫秒就绪。
+    // 在同一个解释器进程内短暂复查，避免每次都在封面准备好前退出。
+    var bestDict: [String: Any]?
+    for attempt in 0..<3 {
+        let sema = DispatchSemaphore(value: 0)
+        var callbackDict: [String: Any]?
+        get(DispatchQueue.global(qos: .userInitiated)) { info in
+            callbackDict = info as? [String: Any]
+            sema.signal()
+        }
+        guard sema.wait(timeout: .now() + 1.0) == .success else { continue }
+        if let dict = callbackDict,
+           let title = dict["kMRMediaRemoteNowPlayingInfoTitle"] as? String,
+           !title.isEmpty {
+            bestDict = dict
+            if artworkData(in: dict) != nil { break }
+        }
+        if attempt < 2 { Thread.sleep(forTimeInterval: 0.18) }
+    }
+
+    if let dict = bestDict,
+       let title = dict["kMRMediaRemoteNowPlayingInfoTitle"] as? String,
+       !title.isEmpty {
+        let artwork = artworkData(in: dict)
         let callbackAt = Date()
         let callbackEpoch = callbackAt.timeIntervalSince1970
         var sampledEpoch = callbackEpoch
@@ -288,7 +561,7 @@ public final class NowPlayingClient {
             "duration": dict["kMRMediaRemoteNowPlayingInfoDuration"] as? Double ?? 0,
             "elapsedTime": dict["kMRMediaRemoteNowPlayingInfoElapsedTime"] as? Double ?? 0,
             "playbackRate": dict["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double ?? 0,
-            "artwork": artworkData?.base64EncodedString() ?? "",
+            "artwork": artwork?.base64EncodedString() ?? "",
             // 优先使用播放器提供的进度锚点。仅在播放器没有提供 timestamp 时才用
             // 回调时刻，避免把媒体端已经滞后的 elapsedTime 当成“此刻”的进度。
             "sampledAt": sampledEpoch
@@ -298,7 +571,6 @@ public final class NowPlayingClient {
             output = text
         }
     }
-    _ = sema.wait(timeout: .now() + 4)
     if let outPath = ProcessInfo.processInfo.environment["LINX_NP_OUT"] {
         try? output.write(toFile: outPath, atomically: true, encoding: .utf8)
     }
@@ -323,28 +595,35 @@ public final class NowPlayingClient {
     }
 
     private func fetchInternal(get: GetNowPlayingInfo) async throws -> NowPlayingInfo {
-        try await withCheckedThrowingContinuation { continuation in
-            let queue = DispatchQueue.global(qos: .userInitiated)
-            get(queue) { info in
-                guard let dict = info as? [String: Any],
-                      let title = dict[Self.Keys.title] as? String,
-                      !title.isEmpty else {
-                    continuation.resume(throwing: NowPlayingError.notPlaying)
-                    return
+        let completion = NowPlayingContinuation<NowPlayingInfo>()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                completion.install(continuation)
+                let queue = DispatchQueue.global(qos: .userInitiated)
+                get(queue) { info in
+                    guard let dict = info as? [String: Any],
+                          let title = dict[Self.Keys.title] as? String,
+                          !title.isEmpty else {
+                        completion.finish(.failure(NowPlayingError.notPlaying))
+                        return
+                    }
+                    completion.finish(.success(NowPlayingInfo(
+                        title: title,
+                        artist: dict[Self.Keys.artist] as? String ?? "",
+                        album: dict[Self.Keys.album] as? String ?? "",
+                        duration: (dict[Self.Keys.duration] as? Double) ?? 0,
+                        elapsedTime: (dict[Self.Keys.elapsedTime] as? Double) ?? 0,
+                        playbackRate: (dict[Self.Keys.playbackRate] as? Double) ?? 0,
+                        artwork: Self.artworkData(in: dict),
+                        appName: nil,
+                        sampledAt: Self.playbackSampleDate(
+                            dict[Self.Keys.timestamp], fallback: Date())
+                    )))
                 }
-                continuation.resume(returning: NowPlayingInfo(
-                    title: title,
-                    artist: dict[Self.Keys.artist] as? String ?? "",
-                    album: dict[Self.Keys.album] as? String ?? "",
-                    duration: (dict[Self.Keys.duration] as? Double) ?? 0,
-                    elapsedTime: (dict[Self.Keys.elapsedTime] as? Double) ?? 0,
-                    playbackRate: (dict[Self.Keys.playbackRate] as? Double) ?? 0,
-                    artwork: dict[Self.Keys.artworkData] as? Data,
-                    appName: nil,
-                    sampledAt: Self.playbackSampleDate(
-                        dict[Self.Keys.timestamp], fallback: Date())
-                ))
             }
+        } onCancel: {
+            completion.finish(.failure(CancellationError()))
         }
     }
 
@@ -375,7 +654,7 @@ public final class NowPlayingClient {
             duration: (dict[Keys.duration] as? Double) ?? 0,
             elapsedTime: (dict[Keys.elapsedTime] as? Double) ?? 0,
             playbackRate: (dict[Keys.playbackRate] as? Double) ?? 0,
-            artwork: dict[Keys.artworkData] as? Data,
+            artwork: artworkData(in: dict),
             sampledAt: sampledAt
         )
     }

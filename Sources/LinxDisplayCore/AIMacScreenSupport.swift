@@ -103,6 +103,9 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var lyricsKeyboardDeviceID: UUID?
     public var pushIntervalSeconds: Int
     public var jpegQuality: Int
+    /// 仅校准软件推送的最终彩色画面；设备端原生时钟不受影响。
+    public var saturationPercent: Int
+    public var contrastPercent: Int
     public var customImagePath: String?
     public var canvasBoards: [AIMacCanvasBoard]
     public var canvasBoardIndex: Int
@@ -115,6 +118,11 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var cardRotationModes: [Int]?
     public var cardRotationEnabled: Bool
     public var cardRotationMinutes: Int
+    /// 智能换歌把页面临时切到“正在播放”前的完整目标。两项成对存在；持久化后，
+    /// 应用在播放期间重启也不会把临时抢占变成永久页面。
+    public var smartRotationReturnContentMode: AIMacScreenContentMode?
+    public var smartRotationReturnCardModeRawValue: Int?
+    public var smartRotationReturnPrinterDeviceID: UUID?
     /// 这台小屏幕独立 Home Assistant 卡片的实体列表。nil 仅表示旧设置文件，
     /// 由应用首次读取时兼容原键盘选择；空数组表示用户明确未选择。
     public var haCardEntityIDs: [String]?
@@ -125,11 +133,15 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
                 lyricsKeyboardDeviceID: UUID? = nil,
                 pushIntervalSeconds: Int = 2,
                 jpegQuality: Int = 82, customImagePath: String? = nil,
+                saturationPercent: Int = 100, contrastPercent: Int = 100,
                 canvasBoards: [AIMacCanvasBoard] = [], canvasBoardIndex: Int = 0,
                 boardRotationEnabled: Bool = false, boardRotationMinutes: Int = 5,
                 cardModeRawValue: Int? = nil, cardPanels: [Int]? = [],
                 cardRotationModes: [Int]? = [], cardRotationEnabled: Bool = false,
-                cardRotationMinutes: Int = 5, haCardEntityIDs: [String]? = []) {
+                cardRotationMinutes: Int = 5, haCardEntityIDs: [String]? = [],
+                smartRotationReturnContentMode: AIMacScreenContentMode? = nil,
+                smartRotationReturnCardModeRawValue: Int? = nil,
+                smartRotationReturnPrinterDeviceID: UUID? = nil) {
         self.host = host
         self.mode = mode
         self.autoPush = autoPush
@@ -138,6 +150,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.lyricsKeyboardDeviceID = lyricsKeyboardDeviceID
         self.pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         self.jpegQuality = min(max(jpegQuality, 50), 90)
+        self.saturationPercent = saturationPercent
+        self.contrastPercent = contrastPercent
         self.customImagePath = customImagePath
         self.canvasBoards = canvasBoards
         self.canvasBoardIndex = canvasBoardIndex
@@ -148,6 +162,9 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.cardRotationModes = cardRotationModes
         self.cardRotationEnabled = cardRotationEnabled
         self.cardRotationMinutes = cardRotationMinutes
+        self.smartRotationReturnContentMode = smartRotationReturnContentMode
+        self.smartRotationReturnCardModeRawValue = smartRotationReturnCardModeRawValue
+        self.smartRotationReturnPrinterDeviceID = smartRotationReturnPrinterDeviceID
         self.haCardEntityIDs = haCardEntityIDs
         clamp()
     }
@@ -157,9 +174,15 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         set { cardModeRawValue = newValue.rawValue }
     }
 
+    public var hasColorCalibration: Bool {
+        saturationPercent != 100 || contrastPercent != 100
+    }
+
     public mutating func clamp() {
         pushIntervalSeconds = min(max(pushIntervalSeconds, 1), 60)
         jpegQuality = min(max(jpegQuality, 50), 90)
+        saturationPercent = min(max(saturationPercent, 50), 200)
+        contrastPercent = min(max(contrastPercent, 75), 150)
         canvasBoards = canvasBoards.map { board in
             var clean = board
             clean.clamp()
@@ -188,13 +211,30 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
             }
         }
         if DisplayMode(rawValue: cardModeRawValue ?? -1) == nil { cardModeRawValue = nil }
+        if smartRotationReturnContentMode == nil {
+            smartRotationReturnContentMode = nil
+            smartRotationReturnCardModeRawValue = nil
+            smartRotationReturnPrinterDeviceID = nil
+        } else if smartRotationReturnContentMode == .card,
+                  DisplayMode(rawValue: smartRotationReturnCardModeRawValue ?? -1) == nil {
+            smartRotationReturnContentMode = nil
+            smartRotationReturnCardModeRawValue = nil
+            smartRotationReturnPrinterDeviceID = nil
+        } else if DisplayMode(rawValue: smartRotationReturnCardModeRawValue ?? -1) == nil {
+            // 非卡片页面只需恢复 contentMode；旧 cardMode 不影响当前显示。
+            smartRotationReturnCardModeRawValue = nil
+            smartRotationReturnPrinterDeviceID = nil
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
         case host, mode, autoPush, followSystemSleep, awakeBrightness, lyricsKeyboardDeviceID
         case pushIntervalSeconds, jpegQuality, customImagePath
+        case saturationPercent, contrastPercent
         case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
         case cardModeRawValue, cardPanels, cardRotationModes, cardRotationEnabled, cardRotationMinutes
+        case smartRotationReturnContentMode, smartRotationReturnCardModeRawValue,
+             smartRotationReturnPrinterDeviceID
         case haCardEntityIDs
     }
 
@@ -210,6 +250,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
                                                                forKey: .lyricsKeyboardDeviceID)
         pushIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .pushIntervalSeconds) ?? 2
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? 82
+        saturationPercent = try container.decodeIfPresent(Int.self, forKey: .saturationPercent) ?? 100
+        contrastPercent = try container.decodeIfPresent(Int.self, forKey: .contrastPercent) ?? 100
         customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
         canvasBoards = try container.decodeIfPresent([AIMacCanvasBoard].self,
                                                      forKey: .canvasBoards) ?? []
@@ -225,6 +267,12 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
                                                             forKey: .cardRotationEnabled) ?? false
         cardRotationMinutes = try container.decodeIfPresent(Int.self,
                                                             forKey: .cardRotationMinutes) ?? 5
+        smartRotationReturnContentMode = try container.decodeIfPresent(
+            AIMacScreenContentMode.self, forKey: .smartRotationReturnContentMode)
+        smartRotationReturnCardModeRawValue = try container.decodeIfPresent(
+            Int.self, forKey: .smartRotationReturnCardModeRawValue)
+        smartRotationReturnPrinterDeviceID = try container.decodeIfPresent(
+            UUID.self, forKey: .smartRotationReturnPrinterDeviceID)
         haCardEntityIDs = try container.decodeIfPresent([String].self, forKey: .haCardEntityIDs)
         // 把旧版固定页面无损迁移到统一卡片模式。旧桌面时钟升级为设备端
         // 原生时钟卡片，避免继续按秒上传整张图片。
@@ -256,18 +304,26 @@ public struct AIMacScreenCapabilities: Equatable {
     public let host: String
     public let jpegUploadURL: URL
     public let rgb565UploadURL: URL?
+    /// 固件当前实际显示模式（none / external / clock / now_playing）。
+    /// 设备重启后会回到 none；软件可据此补发首帧，而不是被本地画面哈希误导。
+    public let activeMode: String?
+    /// 固件本次启动以来成功接收的外部画面代次。重启后归零。
+    public let frameRevision: UInt64?
     public let brightnessURL: URL?
     public let brightnessLevel: Int?
     public let nativeClockURL: URL?
     public let nativeNowPlayingURL: URL?
 
     public init(host: String, jpegUploadURL: URL, rgb565UploadURL: URL?,
+                activeMode: String? = nil, frameRevision: UInt64? = nil,
                 brightnessURL: URL? = nil, brightnessLevel: Int? = nil,
                 nativeClockURL: URL? = nil,
                 nativeNowPlayingURL: URL? = nil) {
         self.host = host
         self.jpegUploadURL = jpegUploadURL
         self.rgb565UploadURL = rgb565UploadURL
+        self.activeMode = activeMode
+        self.frameRevision = frameRevision
         self.brightnessURL = brightnessURL
         self.brightnessLevel = brightnessLevel
         self.nativeClockURL = nativeClockURL
@@ -348,6 +404,14 @@ public enum AIMacScreenSupport {
            let path = raw["path"] as? String, path.hasPrefix("/") {
             rgb565URL = URL(string: "http://\(host)\(path)")
         }
+        let activeMode = (json["mode"] as? String)?.lowercased()
+        let frameRevision: UInt64? = {
+            guard let imageAPI = json["image_api"] as? [String: Any] else { return nil }
+            if let value = imageAPI["frame_rev"] as? UInt64 { return value }
+            if let value = imageAPI["frame_rev"] as? Int, value >= 0 { return UInt64(value) }
+            if let value = imageAPI["frame_rev"] as? NSNumber { return value.uint64Value }
+            return nil
+        }()
         let brightnessLevel = (json["brightness"] as? Int).map { min(max($0, 0), 100) }
         let brightnessURL = brightnessLevel == nil
             ? nil : URL(string: "http://\(host)/api/brightness")
@@ -365,10 +429,22 @@ public enum AIMacScreenSupport {
         }
         return AIMacScreenCapabilities(host: host, jpegUploadURL: jpegURL,
                                        rgb565UploadURL: rgb565URL,
+                                       activeMode: activeMode,
+                                       frameRevision: frameRevision,
                                        brightnessURL: brightnessURL,
                                        brightnessLevel: brightnessLevel,
                                        nativeClockURL: nativeClockURL,
                                        nativeNowPlayingURL: nativeNowPlayingURL)
+    }
+
+    /// 本地 hash 只说明“电脑上生成的图没变”，不能证明重启后的设备仍保存该图。
+    /// 新固件公开当前模式和帧代次；旧固件缺少这些字段时保持原有 hash 行为。
+    public static func requiresPrimeFrame(activeMode: String?, frameRevision: UInt64?,
+                                          expectedMode: String) -> Bool {
+        guard let activeMode = activeMode?.lowercased() else { return false }
+        let expected = expectedMode.lowercased()
+        if activeMode != expected { return true }
+        return expected == "external" && frameRevision == 0
     }
 
     /// 0.8.1+ 固件使用 POST 查询参数调整背光；0 表示彻底熄屏。
@@ -505,6 +581,43 @@ public enum AIMacScreenSupport {
             }
         }
         return output
+    }
+
+    /// 把设备实际接收的高字节在前 RGB565 帧展开成预览图。位复制扩展会把
+    /// 5/6 位通道完整映射回 0...255，避免简单左移造成预览整体偏暗。
+    public static func decodeRGB565(_ data: Data,
+                                    width: Int = frameSize,
+                                    height: Int = frameSize) -> CGImage? {
+        guard width > 0, height > 0,
+              width <= Int.max / height,
+              width * height <= Int.max / 2,
+              data.count == width * height * 2,
+              let context = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)
+                    ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue |
+                    CGImageAlphaInfo.premultipliedLast.rawValue),
+              let destination = context.data?.assumingMemoryBound(to: UInt8.self) else {
+            return nil
+        }
+        data.withUnsafeBytes { raw in
+            let source = raw.bindMemory(to: UInt8.self)
+            for pixel in 0..<(width * height) {
+                let packed = UInt16(source[pixel * 2]) << 8
+                    | UInt16(source[pixel * 2 + 1])
+                let red5 = UInt8((packed >> 11) & 0x1F)
+                let green6 = UInt8((packed >> 5) & 0x3F)
+                let blue5 = UInt8(packed & 0x1F)
+                let offset = pixel * 4
+                destination[offset] = (red5 << 3) | (red5 >> 2)
+                destination[offset + 1] = (green6 << 2) | (green6 >> 4)
+                destination[offset + 2] = (blue5 << 3) | (blue5 >> 2)
+                destination[offset + 3] = 255
+            }
+        }
+        return context.makeImage()
     }
 
     public static func encodeJPEG(_ image: CGImage, preferredQuality: Int) throws -> Data {
@@ -656,7 +769,12 @@ public enum AIMacScreenSupport {
     }
 
     private static func drawDashboard(in context: CGContext, system: SystemSnapshot, now: Date) {
-        fillBackground(context)
+        // The legacy dashboard has fixed white text, so retain its dark palette.
+        if !ColorCardSceneCapture.background(context, palette: ScreenThemes.get(.deepSpace)) {
+            fillBackground(context)
+        }
+        _ = ColorCardSceneCapture.panel(context, bounds: CGRect(x: 5, y: 5, width: 230, height: 230),
+                                         radius: 16, color: ScreenThemes.get(.deepSpace).cardCG)
         drawText("LINGXI", size: 13, weight: .bold,
                  color: NSColor(calibratedRed: 0.33, green: 0.90, blue: 0.72, alpha: 1),
                  rect: CGRect(x: 14, y: 210, width: 100, height: 18), context: context)

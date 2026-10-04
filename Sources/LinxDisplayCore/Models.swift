@@ -106,6 +106,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
             return "printer"
         }
     }
+
 }
 
 /// Emoji 壁纸排列方式（居中排列，间隔可调）
@@ -1196,6 +1197,8 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
     case bambuLab = 4
     case formlabs = 5
     case aiMacScreen = 6
+    case awtrix = 7
+    case m5Controller = 8
 
     public var id: Int { rawValue }
 
@@ -1208,7 +1211,14 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .bambuLab: return "Bambu Lab 打印机"
         case .formlabs: return "Formlabs 打印机"
         case .aiMacScreen: return "AI Mac 小屏幕"
+        case .awtrix: return "AWTRIX NG"
+        case .m5Controller: return "M5 StickS3 控制器"
         }
+    }
+
+    /// 设备类型级的试验状态；界面使用文字徽标呈现，不只依赖颜色。
+    public var isBeta: Bool {
+        self == .m5Controller
     }
 }
 
@@ -1528,9 +1538,15 @@ public struct DeviceSettings: Codable, Equatable {
     public var networkChart: Bool?
     /// 当前显示的卡片（每台键盘记住自己的卡片，切换设备互不干扰）
     public var displayMode: DisplayMode?
+    /// 智能换歌临时抢占前的页面。它直接跟随键盘设备快照持久化，应用在歌曲播放
+    /// 期间重启后仍能在“未在播放”时回到原页；手动切页会清除此字段。
+    public var smartRotationReturnDisplayMode: DisplayMode?
+    /// 返回目标若为打印机卡，同时记录打印机稳定 UUID；槽位顺序变化后按身份重映射，
+    /// 不能把原来的第 3 槽误恢复成另一台打印机。
+    public var smartRotationReturnPrinterDeviceID: UUID?
     /// 键盘卡片主题（每台键盘独立）
     public var cardTheme: CardTheme?
-    /// 系统监控卡片显示区块（每台键盘独立）
+    /// 系统监控卡片显示区块（键盘与 AI Mac 均按设备独立保存）
     public var showCpu: Bool?
     public var showMemory: Bool?
     public var showNetwork: Bool?
@@ -1686,11 +1702,25 @@ public struct DeviceSettings: Codable, Equatable {
     public var formlabsConnection: FormlabsConnectionSettings?
     /// ESP8266 AI Mac 240×240 小屏幕：每台设备独立保存，不经过全局镜像。
     public var aiMacScreen: AIMacScreenDeviceSettings?
+    /// AWTRIX NG：每台设备保存一份完整连接、显示和中文应用设置。
+    public var awtrix: AWTRIXSettings?
+    /// M5Stack StickS3 蓝牙控制器：独立保存配对与被控设备列表。
+    public var m5Controller: M5ControllerDeviceSettings?
     /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
     public var canvasImagePath: String?
     public var canvasImageName: String?
 
     public init() {}
+
+    /// AI Mac 系统监控按这台设备的开关选择模块；旧档案缺字段时保留原来的全部显示。
+    /// 这些字段保存在设备快照中，不读取当前键盘的同名全局镜像。
+    public var aiMacSystemMonitorModules: [CanvasModule] {
+        let fields: [(CanvasModule, Bool?)] = [
+            (.cpu, showCpu), (.memory, showMemory), (.disk, showDisk),
+            (.network, showNetwork), (.uptime, showUptime)
+        ]
+        return fields.compactMap { module, visible in (visible ?? true) ? module : nil }
+    }
 
     /// 从活动设置捕获该类型设备的全部相关字段
     public static func capture(from s: AppSettings, type: DeviceType) -> DeviceSettings {
@@ -1852,6 +1882,11 @@ public struct DeviceSettings: Codable, Equatable {
             break
         case .aiMacScreen:
             // 小屏幕设置直接保存在 ManagedDevice.settings 中。
+            break
+        case .awtrix:
+            d.awtrix = s.awtrix
+        case .m5Controller:
+            // 控制器设置直接保存在 ManagedDevice.settings 中。
             break
         }
         return d
@@ -2017,6 +2052,10 @@ public struct DeviceSettings: Codable, Equatable {
             break
         case .aiMacScreen:
             break
+        case .awtrix:
+            if let awtrix { s.awtrix = awtrix }
+        case .m5Controller:
+            break
         }
     }
 }
@@ -2057,8 +2096,48 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
         case .bambuLab: return "打印机 \(index + 1)"
         case .formlabs: return "Formlabs \(index + 1)"
         case .aiMacScreen: return "AI Mac 小屏幕 \(index + 1)"
+        case .awtrix: return "AWTRIX NG \(index + 1)"
+        case .m5Controller: return "M5 StickS3 控制器 \(index + 1)"
         default: return "\(type.title) \(index + 1)"
         }
+    }
+}
+
+/// 系统菜单栏中的设备与卡片命名规则。
+///
+/// 菜单每次展开都会重新生成，因此这里只保留纯值规则：所有二级选项始终带上
+/// 用户设置的显示设备名；打印机卡片则按启用设备的稳定顺序解析到对应设备名。
+/// 名称为空只做显示回退，不会把默认名写回用户设置。
+public enum MenuBarNamingPolicy {
+    public static func resolvedDeviceName(_ device: ManagedDevice) -> String {
+        let name = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? device.type.title : name
+    }
+
+    public static func deviceScopedTitle(device: ManagedDevice,
+                                         childTitle: String) -> String {
+        let child = childTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deviceName = resolvedDeviceName(device)
+        return child.isEmpty ? deviceName : "\(deviceName) · \(child)"
+    }
+
+    public static func printerCardTitle(for mode: DisplayMode,
+                                        devices: [ManagedDevice]) -> String {
+        let type: DeviceType
+        let slot: Int
+        if let value = mode.bambuSlotIndex {
+            type = .bambuLab
+            slot = value
+        } else if let value = mode.formlabsSlotIndex {
+            type = .formlabs
+            slot = value
+        } else {
+            return mode.title
+        }
+        let printers = devices.filter { $0.type == type && $0.isEnabled }
+        guard printers.indices.contains(slot) else { return mode.title }
+        let name = printers[slot].name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? mode.title : name
     }
 }
 
@@ -2233,6 +2312,80 @@ public struct GlobalShortcut: Codable, Equatable {
     public static let optionKey: UInt32 = 0x0800
     public static let controlKey: UInt32 = 0x1000
 
+    /// macOS ANSI 键盘上会以 flagsChanged 上报的左右修饰键虚拟键码。
+    /// 保留物理键码，语音输入绑定到“左 Control”或“右 Command”时才能精确复现。
+    public static func modifierMask(for keyCode: UInt32) -> UInt32? {
+        switch keyCode {
+        case 55, 54: return cmdKey       // 左/右 Command
+        case 56, 60: return shiftKey     // 左/右 Shift
+        case 58, 61: return optionKey    // 左/右 Option
+        case 59, 62: return controlKey   // 左/右 Control
+        default: return nil
+        }
+    }
+
+    public static func isModifierKey(_ keyCode: UInt32) -> Bool {
+        modifierMask(for: keyCode) != nil
+    }
+
+    /// 纯修饰键快捷键对应的标准 USB/BLE HID Keyboard modifier byte。
+    public var hidModifierByte: UInt8? {
+        let physicalBit: UInt8
+        switch keyCode {
+        case 59: physicalBit = 0x01 // Left Control
+        case 56: physicalBit = 0x02 // Left Shift
+        case 58: physicalBit = 0x04 // Left Option / Alt
+        case 55: physicalBit = 0x08 // Left Command / GUI
+        case 62: physicalBit = 0x10 // Right Control
+        case 60: physicalBit = 0x20 // Right Shift
+        case 61: physicalBit = 0x40 // Right Option / Alt
+        case 54: physicalBit = 0x80 // Right Command / GUI
+        default: return nil
+        }
+        var result = physicalBit
+        // 组合中的通用修饰键按左侧键发送；录制器会从 modifiers 中移除
+        // 主物理键所属的那一类，因此不会意外把左右同类键一起按下。
+        if modifiers & Self.controlKey != 0 { result |= 0x01 }
+        if modifiers & Self.shiftKey != 0 { result |= 0x02 }
+        if modifiers & Self.optionKey != 0 { result |= 0x04 }
+        if modifiers & Self.cmdKey != 0 { result |= 0x08 }
+        return result
+    }
+
+    /// 将 macOS ANSI 虚拟键码转换为标准 USB/BLE HID Keyboard 报告。
+    /// 绝大多数录制得到的字母、数字、方向键、功能键与左右修饰键都可由
+    /// StickS3 直接发送，macOS 会把它视为真实键盘输入，不需要辅助功能权限。
+    public var hidKeyboardReport: (modifiers: UInt8, key: UInt8)? {
+        var modifierByte: UInt8 = 0
+        if modifiers & Self.controlKey != 0 { modifierByte |= 0x01 }
+        if modifiers & Self.shiftKey != 0 { modifierByte |= 0x02 }
+        if modifiers & Self.optionKey != 0 { modifierByte |= 0x04 }
+        if modifiers & Self.cmdKey != 0 { modifierByte |= 0x08 }
+        if let physical = hidModifierByte {
+            return (physical, 0)
+        }
+        let usages: [UInt32: UInt8] = [
+            0: 0x04, 1: 0x16, 2: 0x07, 3: 0x09, 4: 0x0B, 5: 0x0A,
+            6: 0x1D, 7: 0x1B, 8: 0x06, 9: 0x19, 11: 0x05,
+            12: 0x14, 13: 0x1A, 14: 0x08, 15: 0x15, 16: 0x1C, 17: 0x17,
+            18: 0x1E, 19: 0x1F, 20: 0x20, 21: 0x21, 22: 0x23, 23: 0x22,
+            24: 0x2E, 25: 0x26, 26: 0x24, 27: 0x2D, 28: 0x25, 29: 0x27,
+            30: 0x30, 31: 0x12, 32: 0x18, 33: 0x2F, 34: 0x0C, 35: 0x13,
+            36: 0x28, 37: 0x0F, 38: 0x0D, 39: 0x34, 40: 0x0E, 41: 0x33,
+            42: 0x31, 43: 0x36, 44: 0x38, 45: 0x11, 46: 0x10, 47: 0x37,
+            48: 0x2B, 49: 0x2C, 50: 0x35, 51: 0x2A, 53: 0x29,
+            64: 0x6C, 79: 0x6D, 80: 0x6E,
+            96: 0x3E, 97: 0x3F, 98: 0x40, 99: 0x3C, 100: 0x41,
+            101: 0x42, 103: 0x44, 105: 0x68, 106: 0x6B, 107: 0x69,
+            109: 0x43, 111: 0x45, 113: 0x6A, 117: 0x4C, 118: 0x3D,
+            120: 0x3B, 122: 0x3A,
+            115: 0x4A, 116: 0x4B, 119: 0x4D, 121: 0x4E,
+            123: 0x50, 124: 0x4F, 125: 0x51, 126: 0x52
+        ]
+        guard let key = usages[keyCode] else { return nil }
+        return (modifierByte, key)
+    }
+
     public init(keyCode: UInt32, modifiers: UInt32) {
         self.keyCode = keyCode
         self.modifiers = modifiers
@@ -2268,6 +2421,7 @@ public struct GlobalShortcut: Codable, Equatable {
         28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P", 36: "Return",
         37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M",
         47: ".", 48: "Tab", 49: "Space", 50: "`", 51: "⌫", 53: "Esc", 117: "⌦",
+        54: "右⌘", 55: "左⌘", 56: "左⇧", 58: "左⌥", 59: "左⌃", 60: "右⇧", 61: "右⌥", 62: "右⌃",
         64: "F17", 79: "F18", 80: "F19", 96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8",
         101: "F9", 103: "F11", 105: "F13", 106: "F16", 107: "F14", 109: "F10", 111: "F12",
         113: "F15", 118: "F4", 120: "F2", 122: "F1",

@@ -24,5 +24,10 @@
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>用于通过局域网向 AI Mac 240×240 小屏幕推送图片帧。</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
