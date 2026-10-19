@@ -16,6 +16,21 @@
 
 完整变更、构建及验证边界见 [C6 2.0 开发记录](docs/C6-STANDALONE-2.0.md)、[通用 C6 固件说明](Tools/WaveshareC6Firmware/README.md) 与 [Formlabs 专用固件说明](Tools/FormlabsC6Firmware/README.md)。自动化测试与包校验不等于物理屏幕、真实云账号或长时间稳定性验收。不要将实验固件的 HTTP 配置接口暴露到公网。
 
+## 未来规划
+
+### 2.0：独立运行与混合卡片（开发测试中）
+
+当前测试进度：**App 2.0.0（build 31）／通用 C6 固件 2.0.0-alpha.20**。以下能力已进入测试分支，尚未作为正式版发布：
+
+- **C6 独立运行**：新增独立的 Waveshare ESP32-C6-LCD-1.3 设备类型，可脱离电脑获取 Home Assistant 实体、Bambu Lab 局域网 MQTT／HA、Formlabs 云 API 与低频更新的天气信息。
+- **电脑与本地卡片混合轮换**：统一管理显示、排序和轮换；时钟始终由设备本地实时渲染，电脑断开后恢复固件本地轮询，电脑独有卡片仍可在连接时使用。
+- **配置同步与设备隔离**：同步电脑与网页设置，保留网页侧未被电脑修改的选项；按设备、品牌和数据来源隔离配置，支持 USB 刷写与 OTA 更新。
+- **外观与显示控制**：增加可选主题、时钟与主数字样式、屏幕旋转及自动休眠设置，并提供设备实际画面预览。
+
+[查看 2.0 测试分支与构建说明](https://github.com/XHFO/lingxi-multiscreen/tree/test/2.0-c6-alpha20) · [查看开发记录与验证范围](https://github.com/XHFO/lingxi-multiscreen/blob/test/2.0-c6-alpha20/docs/C6-STANDALONE-2.0.md)
+
+自动化回归与内置固件资源校验已通过；alpha.20 的实际屏幕、在线混合轮换、按键翻页、断线恢复、真实云账号及长期稳定性仍待验收。当前入口提供开发源码与内置固件，不是正式安装包下载；稳定版继续使用 [Releases](https://github.com/XHFO/lingxi-multiscreen/releases) 中的 1.5.5。
+
 ## 项目来源
 
 本项目最初基于 [NCZkevin/LinxDisplayWindows](https://github.com/NCZkevin/LinxDisplayWindows) 开发，将其移植为 macOS 原生 SwiftUI 版本，并在此基础上做了大量功能增加与重构（多设备管理、卡片管理、墨水屏画板、按键控制、口袋先知多画板等）。感谢原作者的贡献。
