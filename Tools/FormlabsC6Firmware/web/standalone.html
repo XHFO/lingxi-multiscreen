@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer"><title>XH Multiscreen · Form Monitor</title>
+<style>/* PORTAL_STYLE */
+.printer-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.printer-header h3{margin:0}
+.printer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}.printer-grid label{display:flex;flex-direction:column;gap:6px}
+.checks{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px}.checks label{display:flex;align-items:center;gap:7px}
+.health-row{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border,#ccd)}
+.health-row:last-child{border-bottom:0}.health-row small{display:block;margin-top:4px}.danger{color:#bf3838}.print-panel{margin:16px 0;padding:20px;border:1px solid var(--border,#ccd);border-radius:16px}
+#status{white-space:pre-wrap}.print-panel,.health-row{border-color:var(--line)}input[type=file]{max-width:100%}section{padding:24px;background:var(--card);border:1px solid var(--line);border-radius:18px;margin:20px 0;scroll-margin-top:20px}main{min-width:0}@media(max-width:520px){section{padding:16px}.print-panel{padding:14px}.printer-header{align-items:flex-start}}
+</style></head><body>
+<div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>XH Multiscreen</span></div><p class="model">Form Monitor<span>C6</span></p>
+<nav aria-label="设置导航"><p class="nav-label">显示内容</p><a href="/standalone#preview">屏幕预览</a><a href="/standalone#printers">打印机</a><a href="/standalone#clock">翻页钟</a><a href="/standalone#weather">天气</a><p class="nav-label">设备</p><a href="/standalone#display">屏幕与轮转</a><a href="/standalone#sleep">自动休眠</a><a href="/standalone#firmware">固件更新</a><a href="/">Wi-Fi 配网</a></nav></aside>
+<main><header class="page-heading"><div><p class="eyebrow">FORM MONITOR C6</p><h1>设备设置</h1><p id="identity">正在读取设备信息…</p></div><div class="header-controls"><label class="language-control"><span class="language-label" data-no-i18n><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>语言 / Language</span><select id="pageLanguage" aria-label="语言 / Language" aria-describedby="languageStatus"><option value="0" lang="zh-CN">中文</option><option value="1" lang="en">English</option></select></label><label class="appearance">网页外观<select id="appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label></div></header>
+<div class="language-feedback"><p id="languageStatus" class="hint" role="status" aria-live="polite">网页与小屏使用同一语言，切换后自动保存。</p><button id="languageRetry" type="button" hidden>重试同步</button></div>
+<div class="actions"><button id="read" type="button">读取配置</button><button id="save" type="button" disabled>立即保存 / 重试</button></div>
+<p id="status" class="status" role="status" aria-live="polite">连接同一局域网后读取配置。网络仅支持 2.4 GHz。</p>
+<div class="console-layout"><section id="preview" class="preview-panel"><h2>屏幕预览</h2><div class="preview-display"><canvas id="screenPreview" width="240" height="240" role="img" aria-label="设备屏幕实时画面"></canvas></div>
+<p id="previewStatus" class="preview-status" role="status" aria-live="polite" data-i18n="正在连接预览…">正在连接预览…</p><label>预览卡片<select id="previewCard"><option value="auto">当前画面</option></select></label>
+<div class="actions"><button id="previewShow" type="button">切换设备画面</button><button id="previewRefresh" type="button">刷新预览</button><button id="previewAuto" type="button">恢复轮转</button></div>
+<details><summary>预览说明</summary>
+<p>预览直接读取设备画面，每 3 秒刷新。切换画面会在设备上显示 90 秒，不修改已保存设置。</p></details></section><div class="config-column">
+<form id="settings" hidden>
+<section id="printers"><h2>Formlabs 打印机</h2><p>支持独立监看最多 3 台打印机，通过 Formlabs 云端 API 更新任务信息。仅提供状态监看，不执行暂停或停止打印等操作。</p>
+<div id="printerList"></div><button id="add" type="button">添加打印机</button>
+<details><summary>打印机总览</summary><p>添加两台或更多打印机后，自动显示总览卡片并加入轮转，集中展示各台设备的状态与进度。</p></details>
+<details><summary>演示序列号</summary><p>添加打印机时，序列号填入 ;;tex_1（空闲）、;;tex_2（打印中）、;;tex_3（已完成）或 ;;tex_4（出错）。无需云端凭据；作为普通打印机保存、轮转并加入总览，数据固定不更新。最多同时添加 3 台，可移除后更换状态。真实序列号仍需有效凭据。</p></details>
+<details><summary>获取云端访问凭据</summary><p>在 Formlabs Developer Platform 创建应用，填写 Client ID、Client Secret 和打印机序列号。凭据按打印机独立保存，同一账户可复用。已保存的 Secret 不回显；留空保留，变更序列号或 Client ID 后需重新填写。</p></details>
+<h3>实时连接状态</h3><div id="health" role="status">尚未获取</div></section>
+<section id="clock"><h2>翻页钟</h2><div class="checks"><label><input id="clock_on" type="checkbox">显示时钟</label><label><input id="flip" type="checkbox">翻页动画</label><label><input id="clock_rotate" type="checkbox">加入轮转</label></div>
+<p>设备自行校时与渲染。只在分钟变化时播放约 720 毫秒的折页动画，空闲每秒刷新。</p>
+<label for="timezone">时区（相对 UTC 的秒数）</label><input id="timezone" type="number" min="-43200" max="50400" step="900" value="28800"><p>中国大陆使用 28800。设备未联网校时时会显示等待校时。</p></section>
+<section id="weather"><h2>天气</h2><div class="checks"><label><input id="weather_on" type="checkbox">显示天气</label><label><input id="weather_rotate" type="checkbox">加入轮转</label></div>
+<div class="city-search"><label for="city">城市名称</label><div class="city-search-row"><input id="city" maxlength="63" autocomplete="off" aria-describedby="cityStatus cityPrivacy"><button id="citySearch" type="button" data-no-i18n>查找城市</button></div></div>
+<p id="cityStatus" class="hint" role="status" aria-live="polite" data-no-i18n></p><div id="cityResults" class="city-results" data-no-i18n></div>
+<p id="cityPrivacy" class="hint" data-no-i18n></p>
+<details id="weatherCoordinates"><summary>手动设置经纬度</summary><div class="printer-grid"><label>纬度<input id="latitude" type="number" min="-90" max="90" step="any"></label><label>经度<input id="longitude" type="number" min="-180" max="180" step="any"></label></div></details>
+<label class="field">更新间隔（分钟）<input id="weather_minutes" type="number" min="15" max="180" step="1"></label>
+<p id="weatherStatus" class="hint" role="status" aria-live="polite" data-no-i18n></p>
+<p>启用后会将所填经纬度发送至 Open-Meteo 获取天气，默认每 30 分钟更新。失败保留最近数据并退避重试。</p></section>
+<section id="display"><h2>屏幕与轮转</h2><div class="printer-grid"><label>主数字风格<select id="digit_style"><option value="0">像素 · 复古仪表</option><option value="1">平滑 · 航天曲线</option></select></label><label>屏幕方向<select id="rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label><label>亮度（0–100）<span class="brightness-control"><input id="brightness" type="range" min="0" max="100" step="1" aria-describedby="brightnessValue"><output id="brightnessValue" for="brightness" data-no-i18n>80%</output></span></label><label>轮转间隔（秒）<input id="interval" type="number" min="5" max="300"></label><label>饱和度（50–200%）<input id="saturation" type="number" min="50" max="200"></label><label>对比度（75–150%）<input id="contrast" type="number" min="75" max="150"></label></div>
+<p>仅影响翻页钟主数字、天气温度和打印进度百分比。其他文字保持不变，选择后自动保存并应用。</p>
+<p>仅轮转勾选的时钟、天气与打印机卡片；打印机空闲或离线时仍保留卡片，便于检查连接。已完成任务保留至下一项任务。</p>
+<p>BOOT 单击翻页，双击详情或确认，长按约 1.5 秒进入设置或返回。RST 只用于重启。</p></section>
+<section id="sleep"><h2>自动休眠</h2><div class="printer-grid"><label>休眠策略<select id="sleep_mode"><option value="0">关闭</option><option value="1">无操作休眠</option><option value="2">定时休眠</option></select></label><label>无操作时长（分钟）<input id="sleep_idle_minutes" type="number" min="1" max="120" value="5"></label><label>休眠开始<input id="sleep_start" type="time" value="23:00"></label><label>休眠结束<input id="sleep_end" type="time" value="07:00"></label></div>
+<div class="checks"><label><input id="sleep_keep_printing" type="checkbox">打印期间保持亮屏</label></div><p>休眠时关闭背光并暂停画面渲染，网络连接与数据更新保持运行。按 BOOT 唤醒；定时休眠期间，手动唤醒后保持所设无操作时长。休眠时段使用设备时区，支持跨午夜；开始与结束时间不能相同。</p></section>
+</form>
+<section id="firmware"><h2>固件更新</h2><p>只选择本专用版的 OTA .bin 文件。普通 C6、ESP8266 或其他开发板固件会被拒绝。更新保留 Wi-Fi 与设备设置。</p><label for="otaFile">OTA 固件文件</label><input id="otaFile" type="file" accept=".bin"><button id="ota" type="button" disabled>更新固件…</button></section>
+<footer><p>这是独立测试分支，不替换多屏灵犀应用内置的通用 C6 固件。配置保存在这台设备内；云端授权仅在内存中缓存。</p></footer>
+</div></div></main></div><script>
+'use strict';
+/* PORTAL_HASH */
+/* PORTAL_I18N */
+const $=id=>document.getElementById(id),encoder=new TextEncoder();
+let cfg=null,saved=null,token='',busy=false,dirty=false,pageLanguageChosen=false,portalAlive=true,statusSource='连接同一局域网后读取配置。网络仅支持 2.4 GHz。';
+function status(message){statusSource=message;$('status').textContent=t(message);}
+function controls(){for(const id of ['read','add','save','ota','previewShow','previewAuto'])$(id).disabled=busy||(id!=='read'&&!cfg)||(id==='add'&&cfg?.printers.length>=3);$('pageLanguage').disabled=busy;$('languageRetry').disabled=busy;}
+function demoSerial(serial){return /^;;tex_[1-4]$/.test(serial);}
+function markDirty(){dirty=true;autosave.change();status('未保存 · 将自动保存');}
+function input(id,value,type='text'){const element=document.createElement('input');element.id=id;element.type=type;if(type==='checkbox')element.checked=!!value;else element.value=value==null?'':value;element.addEventListener('input',markDirty);return element;}
+function field(parent,label,id,value,type='text'){const wrapper=document.createElement('label');labelText(wrapper,label);wrapper.append(input(id,value,type));parent.append(wrapper);}
+function updateBrightness(){$('brightnessValue').textContent=$('brightness').value+'%';}
+function fill(next){cfg=next;$('settings').hidden=false;
+uiEnglish=pageLanguageChosen?$('pageLanguage').value==='1':cfg.language===1;$('pageLanguage').value=uiEnglish?1:0;applyLanguage();if(!pageLanguageChosen)languageStatus('网页与小屏使用同一语言，切换后自动保存。');
+$('digit_style').value=cfg.digit_style||0;
+for(const [id,key] of [['clock_on','clock'],['flip','flip_animation'],['weather_on','weather']])$(id).checked=!!cfg[key];
+$('sleep_mode').value=cfg.sleep_mode||0;$('sleep_idle_minutes').value=cfg.sleep_idle_minutes||5;$('sleep_keep_printing').checked=cfg.sleep_keep_printing!==false;
+for(const id of ['sleep_start','sleep_end']){const n=cfg[id]===undefined?(id==='sleep_start'?1380:420):cfg[id];$(id).value=String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');}
+$('clock_rotate').checked=!!(cfg.card_mask&1);$('weather_rotate').checked=!!(cfg.card_mask&4);
+for(const [id,key] of [['timezone','timezone'],['city','weather_city'],['latitude','latitude'],['longitude','longitude'],['weather_minutes','weather_minutes'],['rotation','rotation'],['brightness','brightness'],['interval','interval'],['saturation','saturation_percent'],['contrast','contrast_percent']])$(id).value=cfg[key];
+updateBrightness();weatherUI.render();
+$('printerList').replaceChildren();cfg.printers.forEach((p,i)=>{
+const panel=document.createElement('div');panel.className='print-panel';const heading=document.createElement('div');heading.className='printer-header';const title=document.createElement('h3');if(p.name||p.serial)title.textContent=p.name||p.serial;else translatedText(title,'新的打印机');
+const remove=document.createElement('button');remove.type='button';remove.className='danger';translatedText(remove,'移除');remove.onclick=()=>{try{const draft=collect(false);draft.printers.splice(i,1);fill(draft);markDirty();}catch(e){status(e.message);}};heading.append(title,remove);panel.append(heading);
+const fields=document.createElement('div');fields.className='printer-grid';field(fields,'设备名称','name_'+i,p.name);field(fields,'打印机序列号','serial_'+i,p.serial);field(fields,'Client ID','client_'+i,p.form_client_id);field(fields,'Client Secret（留空保留）','secret_'+i,p.form_client_secret||'','password');$('secret_'+i)?.setAttribute('autocomplete','new-password');panel.append(fields);
+const checks=document.createElement('div');checks.className='checks';for(const [key,label] of [['enabled','启用'],['rotate','加入轮转']])field(checks,label,key+'_'+i,p[key],'checkbox');panel.append(checks);
+const details=document.createElement('details'),summary=document.createElement('summary');translatedText(summary,'卡片详细选项');details.append(summary);
+const style=document.createElement('select');style.id='style_'+i;for(const [value,label] of [[0,'标准 · 任务封面'],[1,'超大百分比 · 无缩略图'],[2,'剩余打印时间 · 无缩略图']]){const option=document.createElement('option');option.value=value;translatedText(option,label);style.append(option);}style.value=p.card_style||0;
+const styling=document.createElement('label');labelText(styling,'卡片样式');styling.append(style);details.append(styling);
+const hint=document.createElement('p');hint.className='hint';translatedText(hint,'新样式自动隐藏任务封面，切回标准样式保留原选项；剩余时间样式始终显示剩余时长。');details.append(hint);
+const options=document.createElement('div');options.className='checks';for(const [key,label] of [['show_task','任务名称'],['show_status','打印状态'],['show_progress','进度'],['show_remaining','时间'],['show_image','任务封面'],['show_layers','层数'],['show_material','材料'],['brand_accent','品牌强调色']])field(options,label,key+'_'+i,p[key],'checkbox');details.append(options);
+const select=document.createElement('select');select.id='time_'+i;for(const [value,label] of [[0,'剩余时间'],[1,'预计结束时间']]){const option=document.createElement('option');option.value=value;translatedText(option,label);select.append(option);}select.value=p.time_mode||0;select.onchange=markDirty;const timing=document.createElement('label');labelText(timing,'时间显示');timing.append(select);details.append(timing);panel.append(details);$('printerList').append(panel);
+const styleControls=()=>{$('show_image_'+i).disabled=style.value!=='0';$('show_progress_'+i).disabled=style.value==='1';$('show_remaining_'+i).disabled=style.value==='2';select.disabled=style.value==='2';};style.onchange=()=>{styleControls();markDirty();};styleControls();
+$('secret_'+i).autocomplete='new-password';
+const demoHint=document.createElement('p');demoHint.className='hint';panel.append(demoHint);
+const serialControls=()=>{const demo=demoSerial($('serial_'+i).value.trim());for(const key of ['client_','secret_']){const el=$(key+i);el.disabled=demo;if(demo)el.value='';}demoHint.hidden=!demo;translatedText(demoHint,'模拟数据 · 固定不更新');};$('serial_'+i).oninput=serialControls;serialControls();
+});controls();if(typeof previewOptions==='function')previewOptions(saved||cfg);}
+function finite(id,min,max,whole=true){const text=$(id).value.trim(),value=Number(text);if(!text||!Number.isFinite(value)||value<min||value>max||(whole&&!Number.isInteger(value))){$(id).focus();throw Error(uiEnglish?'Check the range for '+$(id).closest('label')?.textContent:'请检查 '+$(id).closest('label')?.textContent+' 的输入范围');}return value;}
+function bytes(value,max,label){if(encoder.encode(value).length>=max)throw Error(uiEnglish?t(label)+' is too long':label+'过长');return value;}
+function collect(validate=true){if(!cfg)throw Error(t('请先读取设备配置'));if(validate)weatherUI.validate();const next=structuredClone(cfg);
+next.language=cfg.language||0;if(next.language!==0&&next.language!==1)throw Error('Invalid language');
+next.digit_style=Number($('digit_style').value);if(![0,1].includes(next.digit_style))throw Error(t('主数字风格无效'));
+next.sleep_mode=Number($('sleep_mode').value);if(![0,1,2].includes(next.sleep_mode))throw Error(t('休眠策略无效'));
+next.sleep_idle_minutes=validate?finite('sleep_idle_minutes',1,120):Number($('sleep_idle_minutes').value);next.sleep_keep_printing=$('sleep_keep_printing').checked;
+for(const id of ['sleep_start','sleep_end']){const time=$(id).value;if(!/^\d{2}:\d{2}$/.test(time))throw Error(t('请设置有效的休眠时间'));const [h,m]=time.split(':').map(Number);if(h>23||m>59)throw Error(t('请设置有效的休眠时间'));next[id]=h*60+m;}
+if(validate&&next.sleep_mode===2&&next.sleep_start===next.sleep_end)throw Error(t('休眠开始与结束时间不能相同'));
+Object.assign(next,{schema_version:2,enabled:true,local_first:true,diagnostics:false,clock:$('clock_on').checked,flip_animation:$('flip').checked,weather:$('weather_on').checked,card_mask:($('clock_rotate').checked?1:0)|($('weather_rotate').checked?4:0),weather_city:$('city').value.trim(),ha:{enabled:false,host:'',port:8123,tls:false,entities:[]}});
+for(const [id,key,min,max,whole] of [['timezone','timezone',-43200,50400,true],['latitude','latitude',-90,90,false],['longitude','longitude',-180,180,false],['weather_minutes','weather_minutes',15,180,true],['rotation','rotation',0,270,true],['brightness','brightness',0,100,true],['interval','interval',5,300,true],['saturation','saturation_percent',50,200,true],['contrast','contrast_percent',75,150,true]])next[key]=validate?finite(id,min,max,whole):Number($(id).value);
+if(validate&&![0,90,180,270].includes(next.rotation))throw Error(t('屏幕方向无效'));
+next.printers=cfg.printers.map((p,i)=>{const card_style=Number($('style_'+i).value);if(![0,1,2].includes(card_style))throw Error(t('卡片样式无效'));const updated={...p,card_style,source_formlabs:true,source_ha:false,brand:'formlabs',host:'',certificate:'',trust_lan:false,name:$('name_'+i).value,serial:$('serial_'+i).value.trim(),form_client_id:$('client_'+i).value.trim(),time_mode:Number($('time_'+i).value),show_nozzle:false,show_bed:false,show_error:false,live_image:false};
+for(const key of ['enabled','rotate','show_task','show_status','show_progress','show_remaining','show_image','show_layers','show_material','brand_accent'])updated[key]=$(key+'_'+i).checked;
+for(const key of ['status_entity','progress_entity','task_entity','remaining_entity','image_entity','task_cover_entity','nozzle_entity','bed_entity','error_entity','end_time_entity'])updated[key]='';
+delete updated.access_code;delete updated.form_client_secret;const secret=$('secret_'+i).value;if(demoSerial(updated.serial)){updated.form_client_id='';delete updated.form_credentials_set;}else if(secret)updated.form_client_secret=secret;return updated;});
+if(validate){bytes(next.weather_city,64,'城市名称');const seen=new Set();for(const p of next.printers){bytes(p.name,64,'设备名称');const demo=demoSerial(p.serial);if(!demo&&!/^[A-Za-z0-9_-]{1,39}$/.test(p.serial))throw Error(t('序列号需要 1–39 个英文字母、数字、下划线或连字符'));if(seen.has(p.serial))throw Error(t('不能重复添加同一打印机'));seen.add(p.serial);bytes(p.form_client_id,128,'Client ID');if(p.form_client_secret)bytes(p.form_client_secret,256,'Client Secret');const retained=saved?.printers.some(old=>old.serial===p.serial&&old.form_client_id===p.form_client_id&&old.form_credentials_set);if(p.enabled&&!demo&&(!p.form_client_id||(!p.form_client_secret&&!retained)))throw Error(uiEnglish?'Enter cloud credentials for '+(p.name||p.serial):'请填写 '+(p.name||p.serial)+' 的云端凭据');}
+if(next.printers.length<2&&!(next.clock&&(next.card_mask&1))&&!(next.weather&&(next.card_mask&4))&&!next.printers.some(p=>p.enabled&&p.rotate))throw Error(t('请至少启用一张参与轮转的卡片'));if(encoder.encode(JSON.stringify(next)).length>=12288)throw Error(t('配置过大'));}return next;}
+async function request(path,options={}){const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),20000);try{return await fetch(path,{cache:'no-store',...options,signal:abort.signal});}finally{clearTimeout(timer);}}
+async function authorize(){if(token)return;
+const pair=()=>request('/api/pair',{method:'POST',headers:{'Content-Type':'application/json','X-Lingxi-LAN':'1'},body:JSON.stringify({mode:'lan'})});let r=await pair();
+// Keep the firmware's STA-only authorization boundary. A fast QR scan can
+// reach the LAN before the setup AP has closed; wait visibly, then retry.
+if(!r.ok&&r.status===403){let data;try{data=await request('/api/info').then(x=>x.json());}catch{}if(data?.wifi_connected&&data.setup_ap&&typeof location!=='undefined'&&location.hostname===data.ip){
+status('热点正在收尾，稍等片刻就能继续设置…');
+for(let i=0;i<15&&portalAlive;i++){await new Promise(resolve=>setTimeout(resolve,1000));if(!portalAlive)break;data=await request('/api/info').then(x=>x.json());if(!data.setup_ap){r=await pair();break;}}
+}}
+if(!portalAlive)throw Error(t('暂未连接设备'));if(!r.ok)throw Error(t('请连接设备所在的局域网；首次配网完成后热点会关闭。'));const result=await r.json();if(!/^[a-f0-9]{16}$/.test(result.token||''))throw Error(t('授权响应无效'));token=result.token;}
+function clearSecrets(){for(const element of document.querySelectorAll('input[type=password]'))element.value='';}
+function fingerprint(body){const copy=structuredClone(body);delete copy.revision;return JSON.stringify(copy);}
+let lastSavedFingerprint='';
+/* PORTAL_AUTOSAVE */
+const autosave=new AutoSave(async sequence=>{
+    if(busy){autosave.pending=true;return;}
+    const body=collect(),key=fingerprint(body);if(key===lastSavedFingerprint){dirty=false;status('设置已保存 · 自动应用');return;}
+    busy=true;controls();status('正在保存…');
+    try{await authorize();const r=await request('/api/standalone',{method:'PUT',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){if(r.status===401)token='';const e=Error(r.status===409?t('配置已在其他页面更新，请重新读取后再修改。'):t('保存失败 · 修改仍保留，请重试'));e.conflict=r.status===409;throw e;}
+        const result=await r.json();saved=structuredClone(result);
+        if(sequence===autosave.sequence){fill(result);clearSecrets();dirty=false;lastSavedFingerprint=fingerprint(collect());status('设置已保存 · 自动应用');}
+        else{cfg.revision=result.revision;dirty=true;autosave.pending=true;}
+    }finally{busy=false;controls();health();setTimeout(()=>refreshPreview(true),300);}
+},e=>status(e.message));
+async function transfer(save){if(save){autosave.pending=dirty;return autosave.flush();}if(busy)return;if(dirty&&!confirm(t('重新读取会丢弃未保存的修改，继续吗？')))return;autosave.reset();let body;try{body=null;}catch(e){status(e.message);return;}busy=true;controls();status('正在读取…');
+try{await authorize();const r=await request('/api/standalone',{headers:{Authorization:'Bearer '+token}});if(!r.ok){if(r.status===401)token='';throw Error(t('保存失败 · 修改仍保留，请重试'));}const result=await r.json();saved=structuredClone(result);weatherUI.reset();fill(result);clearSecrets();dirty=false;lastSavedFingerprint=fingerprint(collect());status('设备配置已读取。');await health();}catch(e){status(e.name==='AbortError'?'连接超时，请检查设备网络。':e.message);}finally{busy=false;controls();}}
+let healthSnapshot=null;
+function renderHealth(result){const box=$('health');box.replaceChildren();for(const p of result.printers||[]){const row=document.createElement('div');row.className='health-row';const name=document.createElement('span');name.textContent=p.name||p.serial;const detail=document.createElement('small');detail.textContent=p.serial;name.append(detail);const value=document.createElement('span');const phases={waiting:'等待联网',connected:'已连接',retrying:'正在重试',auth_rejected:'凭据被拒绝',low_memory:'等待内存',demo:'模拟数据 · 固定不更新'};value.textContent=t(phases[p.phase]||'等待数据')+' · '+printState(p.status)+(p.connected&&p.progress_valid!==false?' · '+p.progress+'%':'');row.append(name,value);box.append(row);}if(!result.printers?.length)box.textContent=t('尚未添加打印机');}
+async function health(){if(!token)return;try{const r=await request('/api/health',{headers:{Authorization:'Bearer '+token}});if(!r.ok)throw Error();const result=await r.json();if(result.snapshot_available===false)throw Error();healthSnapshot=result;renderHealth(result);weatherUI.health(result);}catch{weatherUI.health(null);}}
+$('add').onclick=()=>{try{const draft=collect(false);if(draft.printers.length>=3)return;draft.printers.push({enabled:true,rotate:true,source_formlabs:true,source_ha:false,name:'',serial:'',form_client_id:'',host:'',certificate:'',trust_lan:false,show_task:true,show_status:true,show_progress:true,show_remaining:true,show_image:true,show_layers:true,show_material:true,brand_accent:true,time_mode:0});fill(draft);markDirty();}catch(e){status(e.message);}};
+$('read').onclick=()=>transfer(false);$('save').onclick=()=>transfer(true);$('settings').onsubmit=e=>e.preventDefault();for(const element of document.querySelectorAll('#settings input,#settings select'))element.addEventListener('input',markDirty);
+$('settings').addEventListener('compositionstart',()=>{autosave.composing=true;clearTimeout(autosave.timer);});
+$('settings').addEventListener('compositionend',()=>{autosave.composing=false;markDirty();});
+$('settings').addEventListener('focusout',()=>autosave.flush());
+$('pageLanguage').value=uiEnglish?1:0;applyLanguage();
+async function switchLanguage(){
+    if(busy)return;
+    pageLanguageChosen=true;uiEnglish=$('pageLanguage').value==='1';applyLanguage();weatherUI.render();status(statusSource);if(healthSnapshot)renderHealth(healthSnapshot);health();if(cfg)previewOptions(saved||cfg);
+    busy=true;controls();clearTimeout(autosave.timer);languageStatus('正在同步小屏语言…');
+    try{
+        const result=await saveDeviceLanguage(uiEnglish?1:0);if(!portalAlive)return;
+        if(cfg){
+            if(cfg.revision===result.previousRevision){cfg.revision=result.revision;if(saved)saved.revision=result.revision;}
+            else{autosave.blocked=true;status('配置已在其他页面更新，请重新读取后再修改。');}
+            cfg.language=result.language;if(saved)saved.language=result.language;
+            if(lastSavedFingerprint){const previous=JSON.parse(lastSavedFingerprint);previous.language=result.language;lastSavedFingerprint=fingerprint(previous);}
+        }
+        languageStatus('网页与小屏语言已同步');setTimeout(()=>refreshPreview(true),300);
+    }catch(e){if(portalAlive){languageStatus(e.name==='AbortError'?t('网页已切换，小屏尚未同步，请重试'):e.message,true);if(e.conflict)autosave.blocked=true;}}
+    finally{busy=false;if(portalAlive){controls();if(autosave.pending&&!autosave.blocked)autosave.timer=setTimeout(()=>autosave.flush(),250);}}
+}
+$('pageLanguage').onchange=switchLanguage;$('languageRetry').onclick=switchLanguage;
+languageStatus('网页与小屏使用同一语言，切换后自动保存。');
+setupAppearance();
+$('ota').onclick=async()=>{const file=$('otaFile').files[0];if(!file)return status('请选择本专用版 OTA .bin 文件');if(file.size<1024||file.size>0x1e0000)return status('固件文件大小不正确');if(!confirm(t('将更新这台设备并重启，继续吗？')))return;busy=true;controls();try{const bytes=await file.arrayBuffer(),hash=firmwareSHA256(bytes);await authorize();status('正在写入固件，请勿断电…');const r=await request('/api/ota',{method:'POST',headers:{Authorization:'Bearer '+token,'X-Firmware-SHA256':hash,'Content-Type':'application/octet-stream'},body:bytes});if(!r.ok)throw Error(uiEnglish?'Update rejected ('+r.status+'). Select the dedicated OTA firmware.':'设备拒绝更新（'+r.status+'），请确认选择的是专用 OTA 固件。');status('固件已写入，设备正在重启。稍后重新读取配置。');token='';}catch(e){status(e.message);}finally{busy=false;controls();}};
+window.addEventListener('beforeunload',e=>{if(dirty||busy){e.preventDefault();e.returnValue='';}});window.addEventListener('pagehide',()=>{portalAlive=false;autosave.reset();token='';cfg=null;clearSecrets();});
+async function info(){try{const r=await request('/api/info'),data=await r.json();$('identity').textContent=(data.ip||t('等待联网'))+' · '+(data.fw||t('专用测试版'));}catch{$('identity').textContent=t('暂未连接设备');}}
+/* PORTAL_PREVIEW */
+/* PORTAL_WEATHER */
+const weatherUI=setupWeather();$('brightness').addEventListener('input',updateBrightness);$('brightness').addEventListener('pointerup',()=>autosave.flush());
+setInterval(()=>{if(!busy&&!document.hidden)health();},10000);controls();info();transfer(false);
+</script></body></html>

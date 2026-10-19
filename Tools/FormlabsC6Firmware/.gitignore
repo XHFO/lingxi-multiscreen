@@ -1,0 +1,4 @@
+.pio/
+sdkconfig.formlabs-c6
+managed_components/
+dependencies.lock

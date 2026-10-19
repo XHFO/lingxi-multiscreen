@@ -1,4 +1,7 @@
 .build/
+.build-smoke/
+.pio/
+/artifacts/
 dist/
 .DS_Store
 *.log

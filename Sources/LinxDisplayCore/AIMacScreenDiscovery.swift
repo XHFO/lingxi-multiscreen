@@ -5,6 +5,7 @@ public struct AIMacDiscoveredDevice: Identifiable, Equatable, Sendable {
     public let ip: String
     public let hostname: String
     public let firmwareVersion: String
+    public var type: DeviceType = .aiMacScreen
 
     public init(ip: String, hostname: String, firmwareVersion: String) {
         self.ip = ip
@@ -15,6 +16,7 @@ public struct AIMacDiscoveredDevice: Identifiable, Equatable, Sendable {
     public var id: String { ip }
 
     public var displayName: String {
+        if type == .c6Screen { return "灵犀 C6 \(hostname.split(separator: "-").last ?? "小屏幕")" }
         let suffix = hostname
             .replacingOccurrences(of: "lingxi-aimac-", with: "", options: [.caseInsensitive])
             .uppercased()
@@ -39,7 +41,7 @@ public enum AIMacScreenDiscoveryError: Error, LocalizedError, Equatable {
 public enum AIMacScreenDiscovery {
     public static func discoveredIP(from data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["device"] as? String == "esp8266-ai-screen",
+              AIMacScreenSupport.isSupportedDeviceIdentity(object["device"] as? String),
               let ip = object["ip"] as? String else { return nil }
         let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4,
@@ -54,16 +56,18 @@ public enum AIMacScreenDiscovery {
     /// 避免把恰好提供 `/api/info` 的其他局域网服务显示为小屏幕。
     public static func discoveredDevice(from data: Data, fallbackIP: String) -> AIMacDiscoveredDevice? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["device"] as? String == "esp8266-ai-screen",
+              AIMacScreenSupport.isSupportedDeviceIdentity(object["device"] as? String),
               let screen = object["screen"] as? [String: Any],
               screen["width"] as? Int == 240,
               screen["height"] as? Int == 240 else { return nil }
         let ip = discoveredIP(from: data) ?? fallbackIP
         guard isValidIPv4(ip) else { return nil }
-        return AIMacDiscoveredDevice(
+        var result = AIMacDiscoveredDevice(
             ip: ip,
             hostname: object["hostname"] as? String ?? "",
             firmwareVersion: object["fw"] as? String ?? "未知版本")
+        result.type = object["device"] as? String == "lingxi-esp32-c6-screen" ? .c6Screen : .aiMacScreen
+        return result
     }
 
     /// 把当前活动 IPv4 接口转换为待扫描的 /24 地址。家庭路由器绝大多数使用
@@ -84,8 +88,8 @@ public enum AIMacScreenDiscovery {
 
     /// 扫描当前 Mac 所在局域网中已经刷好固件且完成联网的小屏幕。
     /// 每批最多并发 32 个短请求，兼顾发现速度与路由器负载。
-    public static func scanLocalNetwork() async -> [AIMacDiscoveredDevice] {
-        let hosts = scanCandidateHosts(localIPv4s: localIPv4Addresses())
+    public static func scanLocalNetwork(excluding excludedHosts: Set<String> = []) async -> [AIMacDiscoveredDevice] {
+        let hosts = scanCandidateHosts(localIPv4s: localIPv4Addresses()).filter { !excludedHosts.contains($0) }
         guard !hosts.isEmpty else { return [] }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData

@@ -1,6 +1,20 @@
 # 多屏灵犀（Lingxi MultiScreen）
 
-一套软件驱动多种桌面屏幕：灵犀68 键盘屏、口袋先知（Rand/0）墨水屏、摘录（Dot）墨水屏、AI Mac 240×240 小屏幕与 AWTRIX NG 点阵屏，并提供 Beta 阶段的 M5Stack StickS3 蓝牙控制器。版本 1.5.5 · macOS 26+（Apple 芯片）。
+一套软件驱动多种桌面屏幕：灵犀68 键盘屏、口袋先知（Rand/0）墨水屏、摘录（Dot）墨水屏、AI Mac 240×240 小屏幕与 AWTRIX NG 点阵屏，并提供 Beta 阶段的 M5Stack StickS3 蓝牙控制器。macOS 26+（Apple 芯片）。
+
+## 2.0 开发测试分支
+
+本分支 `test/2.0-c6-alpha20` 基于正式版 1.5.5，保存 **2.0.0 测试版（31）** 的源码与内置通用 C6 **2.0.0-alpha.20** 固件，不是正式发布。稳定版继续位于 [`main`](https://github.com/XHFO/lingxi-multiscreen/tree/main) 与 [Releases](https://github.com/XHFO/lingxi-multiscreen/releases)。下方界面截图仍为已归档的历史正式版，不冒充本次测试版截图。
+
+- 新增独立的 Waveshare ESP32-C6-LCD-1.3 设备类型（240×240、4 MB），保留 ESP8266 AI Mac 的设备身份与固件边界。
+- 电脑推送与 C6 本地卡片统一管理显示、轮换和排序；侧边栏、菜单栏与 BOOT 翻页使用同一在线列表。
+- C6 时钟由固件本地校时、演算和渲染，沿用设备样式，不再由电脑推送时钟图片。需将设备更新至本分支内置的 alpha.20；预览读取当前设备真实画面。
+- 支持 C6 独立 Home Assistant、Bambu Lab 局域网 MQTT／HA 来源、Formlabs 云 API 与天气；电脑断开后恢复本地轮询。各设备、品牌、账号与数据源隔离，网页设置与电脑设置按实际变更合并。
+- 包含独立 Formlabs 专用固件的源码、网页及主机测试；该型号不包含通用 C6 的全部功能，不会自动替换软件内的通用固件。
+
+构建测试 App：安装 Xcode Command Line Tools 后运行 `bash scripts/make-app.sh`，输出到 `dist/多屏灵犀 2.0 测试版.app`。测试版使用独立 Bundle ID 和数据目录，不导入正式版设备。仓库不包含用户设置、账号令牌、Wi-Fi 密码、本地回退包或构建缓存。
+
+完整变更、构建及验证边界见 [C6 2.0 开发记录](docs/C6-STANDALONE-2.0.md)、[通用 C6 固件说明](Tools/WaveshareC6Firmware/README.md) 与 [Formlabs 专用固件说明](Tools/FormlabsC6Firmware/README.md)。自动化测试与包校验不等于物理屏幕、真实云账号或长时间稳定性验收。不要将实验固件的 HTTP 配置接口暴露到公网。
 
 ## 项目来源
 

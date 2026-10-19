@@ -212,7 +212,7 @@ public struct BambuLabCardSettings: Codable, Equatable {
 
     /// 从设备快照读取（旧版单台字段 + 显示选项）
     public static func from(_ s: DeviceSettings) -> BambuLabCardSettings {
-        BambuLabCardSettings(name: s.bambuPrinterName ?? "打印机",
+        let config = BambuLabCardSettings(name: s.bambuPrinterName ?? "打印机",
                              enableAlert: s.bambuEnableAlert ?? true,
                              statusEntityID: s.bambuStatusEntityID ?? "",
                              progressEntityID: s.bambuProgressEntityID ?? "",
@@ -236,11 +236,17 @@ public struct BambuLabCardSettings: Codable, Equatable {
                              showRemaining: s.bambuShowRemaining ?? true,
                              showError: s.bambuShowError ?? true,
                              showImage: s.bambuShowImage ?? true)
+        return s.bambuDataSource == .localMQTT ? (s.bambuMQTT ?? BambuMQTTSettings()).applying(to: config) : config
     }
 
     /// 从打印机设备读取：卡片徽标优先用设备名（设备重命名即同步卡片显示；与侧栏分组一致）
     public static func from(_ device: ManagedDevice) -> BambuLabCardSettings {
         var config = from(device.settings)
+        if device.settings.bambuDataSource == .localMQTT {
+            var mqtt = device.settings.bambuMQTT ?? BambuMQTTSettings()
+            mqtt.namespace = device.id.uuidString
+            config = mqtt.applying(to: config)
+        }
         let deviceName = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !deviceName.isEmpty {
             config.name = deviceName

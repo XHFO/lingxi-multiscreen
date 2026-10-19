@@ -106,6 +106,8 @@ public enum ScreenThemes {
                 background: "0b0a07", card: "1a160d", inset: "100e08", border: "5b4720",
                 accent: "fbbf24", secondaryAccent: "fb923c",
                 primaryText: "fff7d6", secondaryText: "d6b96c", tertiaryText: "8c7540")
+        case .laserOrange:
+            return laserDark
         case .deepSpace:
             return ScreenPalette(
                 background: "080b12", card: "111827", inset: "0b1220", border: "26344a",
@@ -122,7 +124,8 @@ public enum ScreenThemes {
                                 customBackgroundHex: String?,
                                 accentTone: AccentTone,
                                 customAccentHex: String?,
-                                softwareIsDark: Bool = true) -> ScreenPalette {
+                                softwareIsDark: Bool = true,
+                                renderingMode: CardRenderingMode = .classic) -> ScreenPalette {
         let base = get(theme)
 
         // 「跟随软件明暗」：按软件当前明暗解析为深色/浅色底色
@@ -143,6 +146,15 @@ public enum ScreenThemes {
         }
 
         let luminance = 0.299 * bg.0 + 0.587 * bg.1 + 0.114 * bg.2
+        // 独立的工业橙黑主题，不替换玻璃默认颜色，也不覆盖用户明确指定的底色。
+        // 浅色模式采用深橙文字，避免亮橙在白底上失去对比度。
+        if theme == .laserOrange && backgroundTone != .custom {
+            var palette = luminance < 0.5 ? laserDark : laserLight
+            if let accent = AppearanceResolver.accentRGB(tone: accentTone, customHex: customAccentHex) {
+                palette.accent = accent
+            }
+            return palette
+        }
         let baseForText = luminance >= 0.5 ? get(.minimalLight) : get(.deepSpace)
 
         var palette = base
@@ -160,6 +172,29 @@ public enum ScreenThemes {
             // 强调色「跟随主题」：使用所选主题的强调色，保持主题个性
             palette.accent = base.accent
         }
-        return palette
+        // 只更新玻璃的默认配色；经典、霓虹/琥珀主题及明确选择的颜色保持原样。
+        guard renderingMode == .liquidGlass,
+              theme == .deepSpace || theme == .minimalLight,
+              backgroundTone != .custom, accentTone == .system else { return palette }
+        return luminance < 0.5 ? glassDark : glassLight
     }
+
+    /// 冷灰玻璃底色 + 雾蓝 / 鸢尾紫，避免旧版高饱和薄荷绿的终端感。
+    public static let glassDark = ScreenPalette(
+        background: "11151f", card: "171d2a", inset: "141a26", border: "354053",
+        accent: "9dbbff", secondaryAccent: "b9abed",
+        primaryText: "f2f4fa", secondaryText: "abb6ca", tertiaryText: "8896ae")
+    public static let glassLight = ScreenPalette(
+        background: "eef1f7", card: "f8faff", inset: "e8edf6", border: "c4ccdc",
+        accent: "3658c9", secondaryAccent: "8066b6",
+        primaryText: "182334", secondaryText: "48576d", tertiaryText: "667287")
+
+    public static let laserDark = ScreenPalette(
+        background: "000000", card: "111111", inset: "0a0a0a", border: "383838",
+        accent: "ff5500", secondaryAccent: "ffc09b",
+        primaryText: "f5f4f0", secondaryText: "ababab", tertiaryText: "8c8c8c")
+    public static let laserLight = ScreenPalette(
+        background: "f3f2ef", card: "ffffff", inset: "e9e7e3", border: "ccc8c2",
+        accent: "a63c00", secondaryAccent: "80563e",
+        primaryText: "24231f", secondaryText: "62615c", tertiaryText: "6d6b66")
 }

@@ -381,6 +381,23 @@ public final class ESP8266FirmwareFlasher {
         progress: @escaping @Sendable (Double) -> Void,
         log: @escaping @Sendable (String) -> Void
     ) async throws {
+        try await flashESP32(port: port, helperURL: helperURL, firmwareURL: firmwareURL,
+                             c6: false, progress: progress, log: log)
+    }
+    public func flashC6(port: ESPSerialPort, helperURL: URL, firmwareURL: URL,
+                        wifiProvisioningImage: Data? = nil,
+                        progress: @escaping @Sendable (Double) -> Void,
+                        log: @escaping @Sendable (String) -> Void) async throws {
+        let resource = try EmbeddedC6Firmware.resource(ota: false)
+        guard resource.url == firmwareURL else { throw ESP8266FlashError.invalidFirmware }
+        try await flashESP32(port: port, helperURL: helperURL, firmwareURL: firmwareURL,
+                             c6: true, wifiProvisioningImage: wifiProvisioningImage,
+                             progress: progress, log: log)
+    }
+    private func flashESP32(port: ESPSerialPort, helperURL: URL, firmwareURL: URL, c6: Bool,
+                            wifiProvisioningImage: Data? = nil,
+                            progress: @escaping @Sendable (Double) -> Void,
+                            log: @escaping @Sendable (String) -> Void) async throws {
         guard FileManager.default.fileExists(atPath: port.path) else {
             throw ESP8266FlashError.invalidPort
         }
@@ -388,26 +405,40 @@ public final class ESP8266FirmwareFlasher {
             throw ESP8266FlashError.missingResource(EmbeddedM5StickS3Firmware.helperName)
         }
         guard let firmware = try? Data(contentsOf: firmwareURL),
-              EmbeddedM5StickS3Firmware.validate(firmware) else {
+              (c6 ? (try? EmbeddedC6Firmware.resource(ota: false).data) == firmware : EmbeddedM5StickS3Firmware.validate(firmware)) else {
             throw ESP8266FlashError.invalidFirmware
         }
 
         let process = Process()
         let outputPipe = Pipe()
         process.executableURL = helperURL
+        var staging: URL?
+        defer { if let staging { try? FileManager.default.removeItem(at: staging) } }
+        var regions = [EmbeddedM5StickS3Firmware.flashAddress, firmwareURL.path]
+        if c6 {
+            let flashPlan = try C6WiFiProvisioning.flashRegions(from: firmware, image: wifiProvisioningImage)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("lingxi-c6-flash-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                   attributes: [.posixPermissions: 0o700])
+            staging = directory; regions = []
+            for region in flashPlan {
+                let file = directory.appendingPathComponent("segment-\(region.address).bin")
+                try region.data.write(to: file, options: [.atomic])
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                regions += [String(format: "0x%x", region.address), file.path]
+            }
+        }
         process.arguments = [
-            "--chip", "esp32s3",
+            "--chip", c6 ? "esp32c6" : "esp32s3",
             "--port", port.path,
             "--baud", "460800",
             "--before", "default_reset",
-            "--after", "watchdog_reset",
+            "--after", c6 ? "hard_reset" : "watchdog_reset",
             "write_flash",
             "--flash_mode", "dio",
-            "--flash_freq", "80m",
-            "--flash_size", "8MB",
-            EmbeddedM5StickS3Firmware.flashAddress,
-            firmwareURL.path
-        ]
+            "--flash_freq", c6 ? "40m" : "80m",
+            "--flash_size", c6 ? "4MB" : "8MB"
+        ] + regions
         process.standardOutput = outputPipe
         process.standardError = outputPipe
 

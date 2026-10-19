@@ -162,6 +162,7 @@ public struct AWTRIXCardDescriptor: Equatable, Identifiable, Sendable {
 
 public enum AWTRIXCardPolicy {
     public static let homeAssistantAppName = "lingxi_home"
+    public static let weatherAppName = "lingxi_weather"
 
     public static func cards(apps: [AWTRIXAppInfo],
                              settings: AWTRIXSettings) -> [AWTRIXCardDescriptor] {
@@ -174,7 +175,8 @@ public enum AWTRIXCardPolicy {
                                         isInLoop: app.map { $0.inLoop ?? $0.enabled ?? false } ?? false)
         }
         var result = [generated(textName, title: "灵犀文字", symbol: "textformat"),
-                      generated(homeAssistantAppName, title: "Home Assistant", symbol: "house.fill")]
+                      generated(homeAssistantAppName, title: "Home Assistant", symbol: "house.fill"),
+                      generated(weatherAppName, title: "天气", symbol: "cloud.sun.fill")]
         var seen = Set(result.map(\.name))
         for app in apps where seen.insert(app.name).inserted {
             result.append(AWTRIXCardDescriptor(name: app.name, title: app.title,
@@ -194,7 +196,7 @@ public enum AWTRIXCardPolicy {
         let available = cards(apps: apps, settings: settings)
         guard let names = settings.sidebarAppNames else {
             // 旧设备保留文字入口和原有应用；HA 仅在此前已推送时自动出现。
-            return available.filter { $0.name != homeAssistantAppName || $0.isInstalled }
+            return available.filter { ![homeAssistantAppName, weatherAppName].contains($0.name) || $0.isInstalled }
         }
         let byName = Dictionary(available.map { ($0.name, $0) },
                                 uniquingKeysWith: { first, _ in first })

@@ -47,10 +47,12 @@ private struct BambuCameraZoomRuntime {
 private struct AIMacSmartRotationTarget: Equatable {
     var contentMode: AIMacScreenContentMode
     var cardMode: DisplayMode
+    var c6NativeCardID: String?
 
     init(_ settings: AIMacScreenDeviceSettings) {
         contentMode = settings.mode
         cardMode = settings.cardMode
+        c6NativeCardID = settings.mode == .card ? settings.c6NativeCardID : nil
     }
 }
 
@@ -112,6 +114,16 @@ public final class AppModel: ObservableObject {
     private var lastCustomImageRevision: String?
     /// AI Mac 小屏幕按设备保存能力、内容指纹与推送节流状态，不与键盘上传状态混用。
     private var aiMacScreenCapabilities: [UUID: AIMacScreenCapabilities] = [:]
+    private var bambuMQTTClients: [UUID: BambuMQTTClient] = [:]
+    private var bambuMQTTClientSettings: [UUID: BambuMQTTSettings] = [:]
+    private var bambuMQTTEntities: [UUID: [HAEntity]] = [:]
+    private var bambuMQTTAccessCodes: [UUID: String] = [:]
+    @Published public var bambuMQTTStatuses: [UUID: String] = [:]
+    @Published public var bambuMQTTCertificates: [UUID: String] = [:]
+    private var aiMacButtonTask: Task<Void, Never>?
+    private var aiMacButtonState: [UUID: (host: String, snapshot: C6ButtonSnapshot, time: Date)] = [:]
+    private var c6MenuPausedIDs = Set<UUID>()
+    private var c6MenuHosts: [UUID: String] = [:]
     private var aiMacScreenLastHashes: [UUID: String] = [:]
     private var aiMacScreenLastPushAt: [UUID: Date] = [:]
     /// 画板首次出现 HA 图片时使用每台设备一条 latest-only 准备队列；避免每秒 tick
@@ -297,6 +309,14 @@ public final class AppModel: ObservableObject {
     private var bambuCameraZoomRuntime: [String: BambuCameraZoomRuntime] = [:]
     /// 同一图片实体的并发请求以“后启动的一轮”为准，避免慢旧帧覆盖新帧。
     private var haPictureRequestGenerations: [String: UInt64] = [:]
+    private var c6PictureTaskKeys: [String: [String: String]] = [:]
+    private var c6PictureOrigins: [String: String] = [:]
+
+    private var c6CurrentPictureOrigin: String {
+        let connection = c6HomeAssistantConnection
+        return Self.sha256(Data((connection?.url ?? settings.haServerURL).utf8)
+            + Data([0]) + Data((connection?.token ?? settings.haToken).utf8))
+    }
     /// 两个独立画板定时推送的上次推送时间（初始化为启动时刻，避免启动即推送）
     private var lastOracleAutoPush: Date?
     private var lastOracleBoardRotation: Date?
@@ -348,6 +368,7 @@ public final class AppModel: ObservableObject {
     @Published public var aiMacScreenLastPushText: [UUID: String] = [:]
     @Published public var aiMacScreenLosslessIDs: Set<UUID> = []
     @Published public var aiMacScreenBusyIDs: Set<UUID> = []
+    private var c6PendingForcedPushIDs: Set<UUID> = []
     /// AWTRIX NG 独立控制状态（按受管设备隔离，不依赖 Home Assistant）。
     @Published public var awtrixSnapshots: [UUID: AWTRIXSnapshot] = [:]
     @Published public var awtrixStatuses: [UUID: String] = [:]
@@ -362,6 +383,9 @@ public final class AppModel: ObservableObject {
     var awtrixHASyncTasks: [UUID: Task<Void, Never>] = [:]
     var awtrixHALastAttempt: [UUID: Date] = [:]
     var awtrixHALastContent: [UUID: String] = [:]
+    var awtrixWeatherTasks: [UUID: Task<Void, Never>] = [:]
+    var awtrixWeatherLastAttempt: [UUID: Date] = [:]
+    var awtrixWeatherLastContent: [UUID: WeatherSnapshot] = [:]
     var awtrixHAEntities: [UUID: [HAEntity]] = [:]
     var awtrixLoopSaveTasks: [UUID: Task<Void, Never>] = [:]
     var awtrixDesiredLoopOrders: [UUID: [String]] = [:]
@@ -468,6 +492,57 @@ public final class AppModel: ObservableObject {
     public var onAppearanceChanged: (() -> Void)?
     /// 正式应用允许定时刷新、自动发现与网络推送；发布截图使用隔离模型关闭这些行为。
     public let backgroundServicesEnabled: Bool
+    public var enabledColorWiFiScreens: [ManagedDevice] {
+        settings.devices.filter { $0.type.isColorWiFiScreen && $0.isEnabled }
+    }
+    // Shared editors use the device selected in the sidebar, not the ESP8266 active pointer.
+    // Each hardware family still keeps its own persisted active ID and per-device settings.
+    @Published private var selectedColorScreenType: DeviceType = .aiMacScreen
+    public var activeColorScreenType: DeviceType {
+        activeColorScreenDevice?.type ?? selectedColorScreenType
+    }
+    public var activeColorScreenDeviceID: UUID? { activeColorScreenDevice?.id }
+    public var activeColorScreenDevice: ManagedDevice? {
+        ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: selectedColorScreenType)
+    }
+    public func selectColorScreen(deviceID: UUID) {
+        guard let type = ColorWiFiScreenSelectionPolicy.requestedType(for: deviceID, in: settings) else { return }
+        switchDevice(type: type, to: deviceID)
+    }
+    private var c6HeartbeatAt: Date?
+    private var c6HeartbeatBusy = false
+    private var c6HeartbeatTask: Task<Void, Never>?
+    @Published public var c6SyncStatuses: [UUID: String] = [:]
+    /// A valid LAN session remains usable if installation-local persistence fails.
+    @Published public var c6SessionOnlyAuthorizationIDs: Set<UUID> = []
+    @Published public var c6OfflineSimulationIDs: Set<UUID> = []
+    @Published public var c6OfflineSimulationBusyIDs: Set<UUID> = []
+    private var c6OfflineSimulationHosts: [UUID: String] = [:]
+    private var c6SyncTasks: [UUID: Task<Void, Never>] = [:]
+    private var c6SyncLastCheck: [UUID: Date] = [:]
+    private var c6SyncRequests: [UUID: String] = [:]
+    private var c6SyncedInputs: [UUID: String] = [:]
+    private var c6AttemptInputs: [UUID: String] = [:]
+    private var c6Tokens: [UUID: String] = [:]
+    private var c6NativeCardSelections: [UUID: [String: String]] = [:]
+    private var c6CardOptionTasks: [UUID: Task<Void, Never>] = [:]
+    // Lifecycle epochs reject old work even if a host is changed and changed
+    // back. Tail IDs only clean finished queue slots; they never drop unrelated
+    // ordered edits such as clock appearance followed by card participation.
+    private var c6CardOptionEpochs: [UUID: UUID] = [:]
+    private var c6CardOptionTaskIDs: [UUID: UUID] = [:]
+    private var c6PreparingForQuit = false
+    @Published public var c6SyncedConfigurations: [UUID: C6StandaloneConfiguration] = [:]
+    private var c6SyncedHosts: [UUID: String] = [:]
+    private var c6SyncedPictureOrigins: [UUID: String] = [:]
+    private var c6ThumbnailTasks: [UUID: Task<Void, Never>] = [:]
+    private var c6ThumbnailRequests: [UUID: UUID] = [:]
+    private var c6ThumbnailAttempts: [UUID: Date] = [:]
+    private var c6ThumbnailHashes: [UUID: [String: String]] = [:]
+    @Published public var weatherStatus = "请选择天气城市"
+    @Published public var weatherBusy = false
+    private var weatherLastAttempt: Date?
+    private var weatherLocationKey = ""
 
     /// 正式运行默认启用全部后台服务。视觉导出可以注入隔离存储并关闭后台服务，
     /// 这样不会读取、改写或推送用户正在使用的设备数据。
@@ -557,6 +632,7 @@ public final class AppModel: ObservableObject {
             case .bambuLab: activeID = loaded.activeBambuLabDeviceID
             case .formlabs: activeID = loaded.activeFormlabsDeviceID
             case .aiMacScreen: activeID = loaded.activeAIMacScreenDeviceID
+            case .c6Screen: activeID = loaded.activeC6ScreenDeviceID
             case .awtrix: activeID = loaded.activeAWTRIXDeviceID
             case .m5Controller: activeID = loaded.activeM5ControllerDeviceID
             }
@@ -574,6 +650,7 @@ public final class AppModel: ObservableObject {
             applyStartupState()
             refreshAIMacFlashPorts()
             startTimer()
+            startAIMacButtonPolling()
             startLyricsTimer()
             startNowPlayingNotifications()
             Task { await activateMode() }
@@ -753,7 +830,7 @@ public final class AppModel: ObservableObject {
                 self?.renderPreview()
                 self?.refreshOracleCanvasPreview()
                 self?.refreshExcerptCanvasPreview()
-                self?.enabledDevices(for: .aiMacScreen).forEach {
+                self?.enabledColorWiFiScreens.forEach {
                     self?.refreshAIMacScreenPreview(deviceID: $0.id)
                 }
                 self?.onAppearanceChanged?()
@@ -777,7 +854,7 @@ public final class AppModel: ObservableObject {
             } catch { return }
             guard let self, !Task.isCancelled else { return }
             await self.pushWhenAvailable(force: false, silentIfUnchanged: true)
-            for device in self.enabledDevices(for: .aiMacScreen) {
+            for device in self.enabledColorWiFiScreens {
                 let config = self.aiMacScreenSettings(for: device.id)
                 if config.autoPush {
                     await self.pushAIMacScreen(deviceID: device.id, force: false)
@@ -820,6 +897,8 @@ public final class AppModel: ObservableObject {
         let smartRotationReturn = settings.devices[index].settings.smartRotationReturnDisplayMode
         let smartRotationPrinterID = settings.devices[index].settings.smartRotationReturnPrinterDeviceID
         var captured = DeviceSettings.capture(from: settings, type: type)
+        captured.bambuDataSource = settings.devices[index].settings.bambuDataSource
+        captured.bambuMQTT = settings.devices[index].settings.bambuMQTT
         captured.smartRotationReturnDisplayMode = smartRotationReturn
         captured.smartRotationReturnPrinterDeviceID = smartRotationPrinterID
         settings.devices[index].settings = captured
@@ -896,9 +975,9 @@ public final class AppModel: ObservableObject {
     /// 当前 AI Mac 画板页正在编辑的彩色小屏设备。
     public var activeAIMacScreenBinding: Binding<UUID> {
         Binding(get: {
-            self.activeDevice(for: .aiMacScreen)?.id ?? UUID()
+            self.activeColorScreenDeviceID ?? UUID()
         }, set: { id in
-            self.switchDevice(type: .aiMacScreen, to: id)
+            self.selectColorScreen(deviceID: id)
         })
     }
 
@@ -932,6 +1011,11 @@ public final class AppModel: ObservableObject {
     /// 切换某类型的活动设备：存回原设备快照 → 套用新设备快照（Core 内原子完成），
     /// 这里只做切换后的界面/会话副作用
     public func switchDevice(type: DeviceType, to deviceID: UUID?) {
+        if type.isColorWiFiScreen,
+           let id = deviceID ?? settings.activeDeviceID(for: type),
+           settings.devices.contains(where: { $0.id == id && $0.type == type && $0.isEnabled }) {
+            selectedColorScreenType = type
+        }
         guard let newDevice = settings.switchActiveDevice(of: type, to: deviceID) else { return }
         // 切换键盘设备：轮换池与当前卡片都换了，重置轮换时钟，从这台键盘自己的卡片重新开始
         if type == .keyboard {
@@ -958,7 +1042,7 @@ public final class AppModel: ObservableObject {
         if type == .formlabs {
             syncFormlabsPreviewSlot(for: newDevice.id)
         }
-        if type == .aiMacScreen {
+        if type.isColorWiFiScreen {
             aiMacScreenLastBoardRotation[newDevice.id] = Date()
             aiMacScreenLastCardRotation[newDevice.id] = Date()
             refreshAIMacScreenPreview(deviceID: newDevice.id)
@@ -1126,7 +1210,7 @@ public final class AppModel: ObservableObject {
         case .formlabs:
             let fresh = FormlabsConnectionSettings()
             settings.devices[index].settings.formlabsConnection = fresh
-        case .aiMacScreen:
+        case .aiMacScreen, .c6Screen:
             settings.devices[index].settings.aiMacScreen = AIMacScreenDeviceSettings()
         case .awtrix:
             let fresh = AWTRIXSettings()
@@ -1152,7 +1236,7 @@ public final class AppModel: ObservableObject {
         if type == .formlabs {
             addFormlabsPrinterCard()
         }
-        if type == .aiMacScreen {
+        if type.isColorWiFiScreen {
             aiMacScreenStatuses[device.id] = "等待连接小屏幕"
             refreshAIMacScreenPreview(deviceID: device.id)
         }
@@ -1177,6 +1261,28 @@ public final class AppModel: ObservableObject {
     public func removeDevice(id: UUID) {
         guard let device = settings.devices.first(where: { $0.id == id }) else { return }
         let type = device.type
+        if type == .c6Screen {
+            invalidateC6CardOptionTasks(deviceID: id)
+            c6OfflineSimulationIDs.remove(id); c6OfflineSimulationHosts[id] = nil
+            c6OfflineSimulationBusyIDs.remove(id)
+            c6ThumbnailTasks.removeValue(forKey: id)?.cancel(); c6SyncedConfigurations[id] = nil
+            c6ThumbnailRequests[id] = nil
+            c6SyncedHosts[id] = nil
+            c6ThumbnailAttempts[id] = nil; c6ThumbnailHashes[id] = nil
+            c6SyncTasks.removeValue(forKey: id)?.cancel()
+            c6SyncStatuses[id] = nil; c6SyncedInputs[id] = nil; c6SyncRequests[id] = nil
+            c6Tokens[id] = nil; c6AttemptInputs[id] = nil; c6SyncLastCheck[id] = nil
+            c6SessionOnlyAuthorizationIDs.remove(id)
+            _ = C6SecretStore.save("", deviceID: id)
+        }
+        if type == .awtrix {
+            awtrixWeatherTasks.removeValue(forKey: id)?.cancel()
+            awtrixWeatherLastContent[id] = nil; awtrixWeatherLastAttempt[id] = nil
+        }
+        if type == .bambuLab {
+            disconnectBambuMQTT(id)
+            BambuMQTTSecretStore.save("", deviceID: id)
+        }
         let removingActiveDevice = activeDeviceID(for: type) == id
         // StickS3 的设备卡片保存在控制器 RAM 中。删除档案前先写入空列表，
         // 等 BLE 写入确认后再断开，否则控制器仍会显示并控制已经删除的旧目标。
@@ -1209,7 +1315,7 @@ public final class AppModel: ObservableObject {
             store.saveFormlabsTaskCache(formlabsSnapshots)
             removeFormlabsPrinterCard()
         }
-        if type == .aiMacScreen {
+        if type.isColorWiFiScreen {
             aiMacScreenCapabilities[id] = nil
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
@@ -1297,7 +1403,7 @@ public final class AppModel: ObservableObject {
                 if settings.devices[index].type == .oracle,
                    settings.devices[index].settings.oracleLyricsKeyboardDeviceID == id {
                     settings.devices[index].settings.oracleLyricsKeyboardDeviceID = nil
-                } else if settings.devices[index].type == .aiMacScreen,
+                } else if settings.devices[index].type.isColorWiFiScreen,
                           var config = settings.devices[index].settings.aiMacScreen,
                           config.lyricsKeyboardDeviceID == id {
                     config.lyricsKeyboardDeviceID = nil
@@ -1648,11 +1754,12 @@ public final class AppModel: ObservableObject {
         homeAssistantDiscoveryBusy = true
         homeAssistantDiscoveryStatus = "正在查找局域网中的 Home Assistant…"
         defer { homeAssistantDiscoveryBusy = false }
-        let services = await HomeAssistantDiscovery.scan(timeout: 3)
+        let scannedServices = await HomeAssistantDiscovery.scan(timeout: 3)
+        let services = scannedServices.filter { !isHomeAssistantAdded($0) }
         homeAssistantDiscoveredServices = services
         homeAssistantDiscoveryStatus = services.isEmpty
-            ? "没有自动发现服务器，可继续使用手动添加"
-            : "发现 \(services.count) 个 Home Assistant 服务器"
+            ? "没有发现尚未添加的服务器，可继续使用手动添加"
+            : "发现 \(services.count) 个尚未添加的 Home Assistant 服务器"
     }
 
     public func isHomeAssistantAdded(_ discovered: HomeAssistantDiscoveredService) -> Bool {
@@ -1896,7 +2003,8 @@ public final class AppModel: ObservableObject {
             let host = EndpointBuilder.host(from: device.settings.rand0IP ?? "")
             return host.isEmpty ? nil : host
         })
-        let found = await Rand0Discovery.scanLocalNetwork(excluding: excluded)
+        let scannedDevices = await Rand0Discovery.scanLocalNetwork(excluding: excluded)
+        let found = scannedDevices.filter { !isRand0DeviceAdded($0) }
         rand0DiscoveredDevices = found
         rand0DiscoveryStatus = found.isEmpty
             ? "没有发现新的口袋先知，可继续使用手动添加"
@@ -1944,16 +2052,20 @@ public final class AppModel: ObservableObject {
         aiMacNetworkScanBusy = true
         aiMacNetworkScanStatus = "正在扫描当前局域网…"
         defer { aiMacNetworkScanBusy = false }
-        let devices = await AIMacScreenDiscovery.scanLocalNetwork()
+        let excluded = Set(settings.devices.filter { $0.type.isColorWiFiScreen }.map {
+            AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "")
+        }.filter { !$0.isEmpty })
+        let scannedDevices = await AIMacScreenDiscovery.scanLocalNetwork(excluding: excluded)
+        let devices = scannedDevices.filter { !isAIMacScreenAdded($0) }
         aiMacDiscoveredDevices = devices
         aiMacNetworkScanStatus = devices.isEmpty
-            ? "没有发现已联网的小屏幕，请确认 Mac 与设备位于同一网络"
-            : "发现 \(devices.count) 台已联网的小屏幕"
+            ? "没有发现尚未添加的小屏幕，请确认 Mac 与设备位于同一网络"
+            : "发现 \(devices.count) 台尚未添加的小屏幕"
     }
 
     public func isAIMacScreenAdded(_ discovered: AIMacDiscoveredDevice) -> Bool {
         let host = AIMacScreenSupport.normalizedHost(discovered.ip)
-        return devices(for: .aiMacScreen).contains {
+        return settings.devices.filter { $0.type.isColorWiFiScreen }.contains {
             AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "") == host
         }
     }
@@ -1962,24 +2074,25 @@ public final class AppModel: ObservableObject {
     @discardableResult
     public func addDiscoveredAIMacScreen(_ discovered: AIMacDiscoveredDevice) -> UUID? {
         let host = AIMacScreenSupport.normalizedHost(discovered.ip)
-        if let existing = devices(for: .aiMacScreen).first(where: {
+        if let existing = settings.devices.filter({ $0.type.isColorWiFiScreen }).first(where: {
             AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "") == host
         }) {
             setDeviceEnabled(id: existing.id, enabled: true)
-            switchDevice(type: .aiMacScreen, to: existing.id)
+            switchDevice(type: existing.type, to: existing.id)
             aiMacScreenStatuses[existing.id] = "已在设备列表中 · \(host)"
             Task { await testAIMacScreenConnection(deviceID: existing.id) }
             return existing.id
         }
-        guard settings.canAddDevice(of: .aiMacScreen) else {
+        guard settings.canAddDevice(of: discovered.type) else {
             aiMacNetworkScanStatus = "AI Mac 小屏幕已达到 5 台上限"
             return nil
         }
-        let id = addDevice(type: .aiMacScreen)
+        let id = addDevice(type: discovered.type)
         mutateAIMacScreenSettings(id, schedulePush: false) { $0.host = host }
         if let index = settings.devices.firstIndex(where: { $0.id == id }) {
             settings.devices[index].name = discovered.displayName
         }
+        aiMacDiscoveredDevices.removeAll { AIMacScreenSupport.normalizedHost($0.ip) == host }
         aiMacScreenStatuses[id] = "已通过局域网扫描添加 · \(host)"
         persistSettings()
         Task { await testAIMacScreenConnection(deviceID: id) }
@@ -2127,7 +2240,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func aiMacScreenSettings(for id: UUID) -> AIMacScreenDeviceSettings {
-        settings.devices.first(where: { $0.id == id && $0.type == .aiMacScreen })?
+        settings.devices.first(where: { $0.id == id && $0.type.isColorWiFiScreen })?
             .settings.aiMacScreen ?? AIMacScreenDeviceSettings()
     }
 
@@ -2138,27 +2251,35 @@ public final class AppModel: ObservableObject {
         _ body: (inout AIMacScreenDeviceSettings) -> Void
     ) {
         guard let index = settings.devices.firstIndex(where: {
-            $0.id == id && $0.type == .aiMacScreen
+            $0.id == id && $0.type.isColorWiFiScreen
         }) else { return }
         var value = settings.devices[index].settings.aiMacScreen ?? AIMacScreenDeviceSettings()
         let previousHost = AIMacScreenSupport.normalizedHost(value.host)
         body(&value)
         if value.smartRotationReturnContentMode != nil,
-           (value.mode != .card || value.cardMode != .nowPlaying) {
+           (value.mode != .card || value.cardMode != .nowPlaying || value.c6NativeCardID != nil) {
             // 只要页面已离开本次智能抢占目标（手动或普通轮播均可），返回令牌就失效；
             // 后续“未在播放”不能覆盖用户/轮播已经作出的新选择。
             value.smartRotationReturnContentMode = nil
             value.smartRotationReturnCardModeRawValue = nil
             value.smartRotationReturnPrinterDeviceID = nil
+            value.smartRotationReturnC6NativeCardID = nil
         }
         value.clamp()
         settings.devices[index].settings.aiMacScreen = value
         if AIMacScreenSupport.normalizedHost(value.host) != previousHost {
+            invalidateC6CardOptionTasks(deviceID: id)
             aiMacScreenCapabilities[id] = nil
             aiMacScreenLastHashes[id] = nil
             aiMacScreenLastPushAt[id] = nil
             aiMacScreenLosslessIDs.remove(id)
             aiMacScreenLastClockSyncAt[id] = nil
+            c6SyncedConfigurations[id] = nil
+            c6SyncedHosts[id] = nil
+            c6NativeCardSelections[id] = nil
+            value.c6LastSyncedInputKey = nil
+            value.c6LastSyncedSelection = nil
+            settings.devices[index].settings.aiMacScreen = value
         }
         persistSettings()
         refreshAIMacScreenPreview(deviceID: id)
@@ -2181,6 +2302,8 @@ public final class AppModel: ObservableObject {
                 $0.smartRotationReturnContentMode = nil
                 $0.smartRotationReturnCardModeRawValue = nil
                 $0.smartRotationReturnPrinterDeviceID = nil
+                $0.smartRotationReturnC6NativeCardID = nil
+                $0.c6NativeCardID = nil
                 $0.mode = value
             }
         })
@@ -2193,6 +2316,8 @@ public final class AppModel: ObservableObject {
             $0.smartRotationReturnContentMode = nil
             $0.smartRotationReturnCardModeRawValue = nil
             $0.smartRotationReturnPrinterDeviceID = nil
+            $0.smartRotationReturnC6NativeCardID = nil
+            $0.c6NativeCardID = nil
             $0.mode = mode
         }
     }
@@ -2275,6 +2400,54 @@ public final class AppModel: ObservableObject {
         })
     }
 
+    public func c6ClockStyleBinding(for id: UUID) -> Binding<C6ClockStyle> {
+        Binding(get: { self.c6SyncedConfigurations[id]?.clockStyle ?? .flip }, set: { style in
+            guard !self.c6PreparingForQuit,
+                  self.settings.devices.contains(where: { $0.id == id && $0.type == .c6Screen }) else { return }
+            let host = AIMacScreenSupport.normalizedHost(self.aiMacScreenSettings(for: id).host)
+            let epoch = self.c6CardOptionEpochs[id] ?? UUID()
+            let operationID = UUID()
+            self.c6CardOptionEpochs[id] = epoch
+            self.c6CardOptionTaskIDs[id] = operationID
+            let previous = self.c6CardOptionTasks[id]
+            self.c6CardOptionTasks[id] = Task { @MainActor [weak self] in
+                await previous?.value
+                guard let self else { return }
+                defer { self.finishC6CardOptionTask(deviceID: id, operationID: operationID) }
+                guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                do {
+                    let client = try C6StandaloneClient(host: host)
+                    let token = self.c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+                    for attempt in 0..<2 {
+                        var local = try await client.read(token: token)
+                        guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                        local.clockStyle = style
+                        do {
+                            let saved = try await client.save(local, token: token, credentials: C6Credentials())
+                            guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                            self.didUpdateC6DeviceConfiguration(saved, deviceID: id, host: host)
+                            await self.pushAIMacScreen(deviceID: id, force: true)
+                            guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                            return
+                        } catch C6StandaloneError.conflict where attempt == 0 { continue }
+                    }
+                } catch {
+                    guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                    self.c6SyncStatuses[id] = "时钟样式未保存：\(error.localizedDescription)"
+                }
+            }
+        })
+    }
+
+    public func didUpdateC6DeviceConfiguration(_ configuration: C6StandaloneConfiguration, deviceID: UUID, host: String) {
+        guard isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)),
+              settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen else { return }
+        c6SyncedConfigurations[deviceID] = configuration
+        c6SyncedHosts[deviceID] = host
+        aiMacScreenLastClockSyncAt[deviceID] = nil
+        refreshAIMacScreenPreview(deviceID: deviceID)
+    }
+
     public func aiMacScreenSaturationBinding(for id: UUID) -> Binding<Double> {
         aiMacScreenColorCalibrationBinding(for: id, \.saturationPercent)
     }
@@ -2290,7 +2463,7 @@ public final class AppModel: ObservableObject {
             Double(self.aiMacScreenSettings(for: id)[keyPath: keyPath])
         }, set: { value in
             guard value.isFinite, (0...1_000).contains(value),
-                  self.settings.devices.contains(where: { $0.id == id && $0.type == .aiMacScreen }) else { return }
+                  self.settings.devices.contains(where: { $0.id == id && $0.type.isColorWiFiScreen }) else { return }
             var config = self.aiMacScreenSettings(for: id)
             let previous = config
             config[keyPath: keyPath] = Int(value.rounded())
@@ -2301,7 +2474,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func resetAIMacScreenColorCalibration(deviceID: UUID) {
-        guard settings.devices.contains(where: { $0.id == deviceID && $0.type == .aiMacScreen }) else { return }
+        guard settings.devices.contains(where: { $0.id == deviceID && $0.type.isColorWiFiScreen }) else { return }
         var config = aiMacScreenSettings(for: deviceID)
         guard config.hasColorCalibration else { return }
         config.saturationPercent = 100
@@ -2316,7 +2489,7 @@ public final class AppModel: ObservableObject {
         _ config: AIMacScreenDeviceSettings, deviceID: UUID
     ) {
         guard let index = settings.devices.firstIndex(where: {
-            $0.id == deviceID && $0.type == .aiMacScreen
+            $0.id == deviceID && $0.type.isColorWiFiScreen
         }) else { return }
         settings.deviceSyncInFlight = true
         var devices = settings.devices
@@ -2367,7 +2540,7 @@ public final class AppModel: ObservableObject {
         aiMacColorCalibrationCommitTasks[deviceID] = nil
         guard aiMacColorCalibrationPendingIDs.remove(deviceID) != nil else { return }
         guard settings.devices.contains(where: {
-            $0.id == deviceID && $0.type == .aiMacScreen
+            $0.id == deviceID && $0.type.isColorWiFiScreen
         }) else { return }
         persistSettings()
         // 最终刻度只做一次真实传输格式模拟；拖动中的约 30 fps 预览保留轻量
@@ -2392,7 +2565,7 @@ public final class AppModel: ObservableObject {
                 do { try await Task.sleep(nanoseconds: 25_000_000) } catch { return }
                 guard self.aiMacColorCalibrationPushGenerations[deviceID] == generation,
                       self.settings.devices.contains(where: {
-                          $0.id == deviceID && $0.type == .aiMacScreen
+                          $0.id == deviceID && $0.type.isColorWiFiScreen
                       }) else { return }
             }
             let latest = self.aiMacScreenSettings(for: deviceID)
@@ -2408,12 +2581,47 @@ public final class AppModel: ObservableObject {
 
     /// App 退出前把不足 180ms 的最后一次滑杆修改写盘；终止期间不再发网络请求。
     public func prepareForTermination() {
+        c6PreparingForQuit = true
+        c6HeartbeatTask?.cancel()
+        c6CardOptionTasks.values.forEach { $0.cancel() }
+        c6CardOptionTasks = [:]
+        c6CardOptionTaskIDs = [:]
+        c6CardOptionEpochs = [:]
+        c6SyncTasks.values.forEach { $0.cancel() }
+        c6ThumbnailTasks.values.forEach { $0.cancel() }
+        awtrixWeatherTasks.values.forEach { $0.cancel() }
         cancelAWTRIXBackgroundWork()
         aiMacColorCalibrationCommitTasks.values.forEach { $0.cancel() }
         aiMacColorCalibrationCommitTasks = [:]
         guard !aiMacColorCalibrationPendingIDs.isEmpty else { return }
         aiMacColorCalibrationPendingIDs = []
         persistSettings()
+    }
+
+    public var hasC6SoftwareControlToRelease: Bool {
+        enabledDevices(for: .c6Screen).contains {
+            !AIMacScreenSupport.normalizedHost(aiMacScreenSettings(for: $0.id).host).isEmpty
+        }
+    }
+
+    public func releaseC6SoftwareControlBeforeQuit() async {
+        // Stop new frames first; finish/cancel renewals before sending the final handoff.
+        await c6HeartbeatTask?.value
+        let deadline = Date().addingTimeInterval(1)
+        while !aiMacScreenBusyIDs.isEmpty && Date() < deadline && !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard !Task.isCancelled else { return }
+        let targets = enabledDevices(for: .c6Screen).compactMap { device -> (C6StandaloneClient, String)? in
+            let token = c6Tokens[device.id] ?? C6SecretStore.read(deviceID: device.id)
+            guard !token.isEmpty, let client = try? C6StandaloneClient(host: aiMacScreenSettings(for: device.id).host) else { return nil }
+            return (client, token)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for (client, token) in targets {
+                group.addTask { try? await client.releaseSoftwareControl(token: token) }
+            }
+        }
     }
 
     // MARK: AI Mac 通用卡片能力
@@ -2437,7 +2645,7 @@ public final class AppModel: ObservableObject {
 
     public func aiMacSystemMonitorModules(for deviceID: UUID) -> [CanvasModule] {
         let deviceSettings = settings.devices.first {
-            $0.id == deviceID && $0.type == .aiMacScreen
+            $0.id == deviceID && $0.type.isColorWiFiScreen
         }?.settings ?? DeviceSettings()
         return deviceSettings.aiMacSystemMonitorModules
     }
@@ -2446,11 +2654,11 @@ public final class AppModel: ObservableObject {
         for deviceID: UUID, _ keyPath: WritableKeyPath<DeviceSettings, Bool?>
     ) -> Binding<Bool> {
         Binding(get: {
-            self.settings.devices.first { $0.id == deviceID && $0.type == .aiMacScreen }?
+            self.settings.devices.first { $0.id == deviceID && $0.type.isColorWiFiScreen }?
                 .settings[keyPath: keyPath] ?? true
         }, set: { visible in
             guard let device = self.settings.devices.first(where: {
-                $0.id == deviceID && $0.type == .aiMacScreen
+                $0.id == deviceID && $0.type.isColorWiFiScreen
             }), device.settings[keyPath: keyPath] != visible else { return }
             // 正常设置监听器负责保存、刷新预览及防抖推送；不写键盘的全局 show 字段。
             self.mutateDeviceSettings(deviceID) { $0[keyPath: keyPath] = visible }
@@ -2464,17 +2672,25 @@ public final class AppModel: ObservableObject {
 
     public func isCurrentAIMacCard(deviceID: UUID, mode: DisplayMode) -> Bool {
         let config = aiMacScreenSettings(for: deviceID)
-        return config.mode == .card && config.cardMode == mode
+        return config.mode == .card && config.cardMode == mode && config.c6NativeCardID == nil
     }
 
     public func activateAIMacCard(_ mode: DisplayMode, deviceID: UUID) {
         guard availableAIMacCardModes.contains(mode) else { return }
+        if settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen,
+           mode == .aiMacClock,
+           let card = allC6Cards(for: deviceID).first(where: { $0.nativeCard?.kind == "clock" }) {
+            activateC6Card(card, deviceID: deviceID)
+            return
+        }
         mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
             // 明确点选（包括再次点“正在播放”）取得页面所有权，不再让旧自动抢占
             // 在媒体结束时把用户带回更早的页面。
             config.smartRotationReturnContentMode = nil
             config.smartRotationReturnCardModeRawValue = nil
             config.smartRotationReturnPrinterDeviceID = nil
+            config.smartRotationReturnC6NativeCardID = nil
+            config.c6NativeCardID = nil
             config.mode = .card
             config.cardMode = mode
         }
@@ -2523,6 +2739,195 @@ public final class AppModel: ObservableObject {
             }
             config.cardRotationModes = values
         }
+    }
+
+    // C6 has a single online playlist. Native targets have stable source identities,
+    // not indices or editable names; ESP8266 retains its existing software playlist.
+    private func allC6Cards(for deviceID: UUID) -> [C6CardDescriptor] {
+        guard let device = settings.devices.first(where: { $0.id == deviceID && $0.type == .c6Screen }) else { return [] }
+        let config = aiMacScreenSettings(for: deviceID)
+        let local = c6SyncedConfigurations[deviceID] ?? C6StandaloneConfiguration()
+        let selected = c6Selection(for: device)
+        var mappings: [String: DisplayMode] = [:]
+        for printer in local.printers {
+            guard let match = selected.printers.first(where: { C6ConfigurationSync.mediaSourceMatches(printer, selected: $0) }) else { continue }
+            if printer.sourceHA && c6SyncedPictureOrigins[deviceID] != c6CurrentPictureOrigin { continue }
+            let devices = enabledDevices(for: printer.sourceFormlabs ? .formlabs : .bambuLab)
+            if let index = devices.firstIndex(where: { item in
+                if printer.sourceFormlabs {
+                    let connection = item.settings.formlabsConnection
+                    return connection?.printerSerial == match.serial && connection?.clientID == match.formClientID
+                }
+                if printer.sourceHA { return item.id.uuidString.replacingOccurrences(of: "-", with: "") == match.serial }
+                return item.settings.bambuMQTT?.serial == match.serial
+                    && item.settings.bambuMQTT?.host == match.host
+                    && item.settings.bambuDataSource == .localMQTT
+            }), let mode = DisplayMode(rawValue: (printer.sourceFormlabs ? DisplayMode.formlabs.rawValue : DisplayMode.bambuLab.rawValue) + index) {
+                mappings[C6MergedCardPolicy.printerIdentity(printer, configuration: local)] = mode
+            }
+        }
+        return C6MergedCardPolicy.descriptors(settings: config, configuration: local,
+            softwareModes: availableAIMacCardModes, printerDisplayModes: mappings).map { descriptor in
+                var card = descriptor
+                if card.nativeCard == nil, let mode = card.displayMode { card.title = menuTitle(for: mode) }
+                return card
+            }
+    }
+
+    public func c6CardList(for deviceID: UUID) -> [C6CardDescriptor] {
+        allC6Cards(for: deviceID).filter(\.visible)
+    }
+    public func c6HiddenCardList(for deviceID: UUID) -> [C6CardDescriptor] {
+        allC6Cards(for: deviceID).filter { !$0.visible }
+    }
+    public func c6CardRotationList(for deviceID: UUID) -> [C6CardDescriptor] {
+        c6CardList(for: deviceID).filter(\.participatesInRotation)
+    }
+    public func selectedC6Card(for deviceID: UUID) -> C6CardDescriptor? {
+        let config = aiMacScreenSettings(for: deviceID)
+        guard config.mode == .card || config.mode == .clock else { return nil }
+        let cards = allC6Cards(for: deviceID)
+        if config.mode == .clock || (config.c6NativeCardID == nil && config.cardMode == .aiMacClock) {
+            return cards.first { $0.nativeCard?.kind == "clock" }
+        }
+        if let id = config.c6NativeCardID { return cards.first { $0.nativeCard?.id == id } }
+        return cards.first { $0.nativeCard == nil && $0.displayMode == config.cardMode }
+    }
+    public func isCurrentC6Card(deviceID: UUID, card: C6CardDescriptor) -> Bool {
+        selectedC6Card(for: deviceID)?.id == card.id
+    }
+    public func activateC6Card(_ card: C6CardDescriptor, deviceID: UUID) {
+        guard allC6Cards(for: deviceID).contains(where: { $0.id == card.id }) else { return }
+        if let native = card.nativeCard {
+            mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
+                config.mode = .card; config.c6NativeCardID = native.id
+                config.cardMode = native.displayMode ?? .systemMonitor
+                config.smartRotationReturnContentMode = nil
+                config.smartRotationReturnCardModeRawValue = nil
+                config.smartRotationReturnPrinterDeviceID = nil
+                config.smartRotationReturnC6NativeCardID = nil
+            }
+            aiMacScreenLastCardRotation[deviceID] = Date()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.c6CardOptionTasks[deviceID]?.value
+                await self.pushAIMacScreen(deviceID: deviceID, force: true)
+            }
+        } else if let mode = card.displayMode { activateAIMacCard(mode, deviceID: deviceID) }
+    }
+    public func setC6CardVisible(_ card: C6CardDescriptor, visible: Bool, deviceID: UUID) {
+        if card.nativeCard == nil, let mode = card.displayMode {
+            setAIMacCardVisible(mode, visible: visible, deviceID: deviceID); return
+        }
+        var ids = allC6Cards(for: deviceID).filter { $0.nativeCard != nil && $0.visible }.compactMap { $0.nativeCard?.id }
+        guard let native = card.nativeCard else { return }
+        if visible { if !ids.contains(native.id) { ids.append(native.id) } }
+        else { ids.removeAll { $0 == native.id } }
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { $0.c6NativeCardPanels = ids }
+        saveC6NativeCardOptions(deviceID: deviceID)
+    }
+    public func setC6CardRotation(_ card: C6CardDescriptor, enabled: Bool, deviceID: UUID) {
+        if card.nativeCard == nil, let mode = card.displayMode {
+            setAIMacCardRotationMode(mode, enabled: enabled, deviceID: deviceID); return
+        }
+        var ids = allC6Cards(for: deviceID).filter { $0.nativeCard != nil && $0.participatesInRotation }.compactMap { $0.nativeCard?.id }
+        guard let native = card.nativeCard else { return }
+        if enabled { if !ids.contains(native.id) { ids.append(native.id) } }
+        else { ids.removeAll { $0 == native.id } }
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { $0.c6NativeCardRotationIDs = ids }
+        saveC6NativeCardOptions(deviceID: deviceID)
+    }
+    public func commitC6CardOrder(_ cards: [C6CardDescriptor], deviceID: UUID) {
+        let all = allC6Cards(for: deviceID)
+        let order = C6MergedCardPolicy.normalizedOrder(cards.map(\.id) + all.filter { !$0.visible }.map(\.id), availableIDs: all.map(\.id))
+        mutateAIMacScreenSettings(deviceID, schedulePush: false) { $0.c6MergedCardOrder = order }
+    }
+
+    private func invalidateC6CardOptionTasks(deviceID id: UUID) {
+        c6CardOptionTasks.removeValue(forKey: id)?.cancel()
+        c6CardOptionTaskIDs[id] = nil
+        c6CardOptionEpochs[id] = nil
+    }
+    private func isCurrentC6CardOptionTarget(_ id: UUID, host: String, epoch: UUID) -> Bool {
+        !Task.isCancelled && !c6PreparingForQuit && c6CardOptionEpochs[id] == epoch
+            && isCurrentColorScreenTarget(id, host: host)
+    }
+    private func finishC6CardOptionTask(deviceID id: UUID, operationID: UUID) {
+        guard c6CardOptionTaskIDs[id] == operationID else { return }
+        c6CardOptionTaskIDs[id] = nil
+        c6CardOptionTasks[id] = nil
+    }
+
+    /// Patch only local card participation. Conflict retries reread the device, so
+    /// unrelated web edits and credentials are never overwritten by a stale snapshot.
+    private func saveC6NativeCardOptions(deviceID id: UUID) {
+        guard !c6PreparingForQuit else { return }
+        let host = AIMacScreenSupport.normalizedHost(aiMacScreenSettings(for: id).host)
+        let epoch = c6CardOptionEpochs[id] ?? UUID()
+        let operationID = UUID()
+        c6CardOptionEpochs[id] = epoch
+        c6CardOptionTaskIDs[id] = operationID
+        let previous = c6CardOptionTasks[id]
+        c6CardOptionTasks[id] = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            defer { self.finishC6CardOptionTask(deviceID: id, operationID: operationID) }
+            guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch), !self.c6OfflineSimulationIDs.contains(id) else { return }
+            do {
+                let token = self.c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+                let client = try C6StandaloneClient(host: host)
+                for attempt in 0..<2 {
+                    var latest = try await client.read(token: token)
+                    guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch), !self.c6OfflineSimulationIDs.contains(id) else { return }
+                    let desired = self.aiMacScreenSettings(for: id)
+                    let cards = C6MergedCardPolicy.descriptors(settings: desired, configuration: latest,
+                        softwareModes: self.availableAIMacCardModes)
+                    for (kind, bit) in [("clock", 0), ("diagnostics", 1), ("weather", 2), ("ha", 3)] {
+                        let local = cards.filter { $0.nativeCard?.kind == kind }
+                        if local.contains(where: { $0.visible && $0.participatesInRotation }) { latest.cardMask |= 1 << bit }
+                        else { latest.cardMask &= ~(1 << bit) }
+                        if local.contains(where: \.visible) {
+                            if kind == "clock" { latest.clock = true }
+                            if kind == "diagnostics" { latest.diagnostics = true }
+                            if kind == "weather" { latest.weather = true }
+                            if kind == "ha" { latest.ha.enabled = true }
+                            latest.enabled = true
+                        }
+                    }
+                    for index in latest.printers.indices {
+                        let identity = C6MergedCardPolicy.printerIdentity(latest.printers[index], configuration: latest)
+                        if let card = cards.first(where: { $0.nativeCard?.id == "printer:" + Self.sha256(Data(identity.utf8)) }) {
+                            latest.printers[index].rotate = card.visible && card.participatesInRotation
+                            if card.visible { latest.printers[index].enabled = true; latest.enabled = true }
+                        }
+                    }
+                    do {
+                        let saved = try await client.save(latest, token: token, credentials: C6Credentials())
+                        guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch), !self.c6OfflineSimulationIDs.contains(id) else { return }
+                        self.didUpdateC6DeviceConfiguration(saved, deviceID: id, host: host)
+                        self.c6SyncStatuses[id] = "在线卡片选择已保存 · 本地轮询资格已同步"
+                        return
+                    } catch C6StandaloneError.conflict where attempt == 0 { continue }
+                }
+            } catch {
+                guard self.isCurrentC6CardOptionTarget(id, host: host, epoch: epoch) else { return }
+                self.c6SyncStatuses[id] = "本地卡片设置未保存到设备：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func refreshC6NativeCardPreview(deviceID id: UUID) async {
+        guard let card = selectedC6Card(for: id), card.nativeCard != nil,
+              c6NativeCardSelections[id] == card.nativeCard?.headers else { return }
+        let host = AIMacScreenSupport.normalizedHost(aiMacScreenSettings(for: id).host)
+        guard isCurrentColorScreenTarget(id, host: host), !c6OfflineSimulationIDs.contains(id) else { return }
+        do {
+            let token = c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+            let bytes = try await C6StandaloneClient(host: host).previewFrame(token: token)
+            guard !Task.isCancelled, isCurrentColorScreenTarget(id, host: host),
+                  selectedC6Card(for: id)?.id == card.id, let image = AIMacScreenSupport.decodeRGB565(bytes) else { return }
+            aiMacScreenPreviews[id] = NSImage(cgImage: image, size: NSSize(width: 240, height: 240))
+        } catch { /* A preview read never changes selection or interrupts rotation. */ }
     }
 
     public func aiMacCardRotationBinding(for deviceID: UUID) -> Binding<Bool> {
@@ -2591,8 +2996,7 @@ public final class AppModel: ObservableObject {
     /// 按能力目录刷新一张卡片真正依赖的数据，再向目标小屏推送；不改变灵犀 68 当前卡片。
     private func refreshAIMacCardDataAndPush(mode: DisplayMode, deviceID: UUID) async {
         guard let capability = CardCapabilityRegistry.capability(for: mode),
-              aiMacScreenSettings(for: deviceID).mode == .card,
-              aiMacScreenSettings(for: deviceID).cardMode == mode else { return }
+              isCurrentAIMacCard(deviceID: deviceID, mode: mode) else { return }
         let requirements = capability.requirements
         if requirements.contains(.system) {
             _ = monitor.sample(now: Date())
@@ -2628,6 +3032,9 @@ public final class AppModel: ObservableObject {
             _ = await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: ids)
         }
         guard isCurrentAIMacCard(deviceID: deviceID, mode: mode) else { return }
+        let presentation = aiMacScreenSettings(for: deviceID)
+        let presentationHost = AIMacScreenSupport.normalizedHost(presentation.host)
+        let pictureOrigin = c6CurrentPictureOrigin
         await pushAIMacScreen(deviceID: deviceID, force: true)
         if mode.bambuSlotIndex != nil {
             let config = bambuConfig(for: mode)
@@ -2639,6 +3046,10 @@ public final class AppModel: ObservableObject {
             if config.showImage, !pictureIDs.isEmpty,
                await refreshHAPictures(entities: haSnapshot.entities,
                                        wantedIDs: pictureIDs) {
+                guard isCurrentAIMacCard(deviceID: deviceID, mode: mode),
+                      isCurrentColorScreenPresentation(deviceID, host: presentationHost, config: presentation),
+                      c6CurrentPictureOrigin == pictureOrigin,
+                      bambuConfig(for: mode) == config else { return }
                 await pushAIMacScreen(deviceID: deviceID, force: false)
             }
         }
@@ -2660,7 +3071,7 @@ public final class AppModel: ObservableObject {
     }
 
     public var aiMacCanvasBoardName: String {
-        guard let id = activeDeviceID(for: .aiMacScreen) else { return "未命名" }
+        guard let id = activeColorScreenDeviceID else { return "未命名" }
         let config = aiMacScreenSettings(for: id)
         guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else {
             return CanvasBoardNamingPolicy.untitledName
@@ -2669,7 +3080,7 @@ public final class AppModel: ObservableObject {
     }
 
     public var aiMacCanvasModules: [CanvasModule] {
-        guard let id = activeDeviceID(for: .aiMacScreen) else { return [] }
+        guard let id = activeColorScreenDeviceID else { return [] }
         let config = aiMacScreenSettings(for: id)
         guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return [] }
         return config.canvasBoards[config.canvasBoardIndex].moduleList
@@ -2680,7 +3091,7 @@ public final class AppModel: ObservableObject {
         schedulePush: Bool = true,
         _ body: (inout AIMacCanvasBoard) -> Void
     ) {
-        guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let id = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(id, pushImmediately: pushImmediately,
                                   schedulePush: false) { config in
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return }
@@ -2695,7 +3106,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func addAIMacCanvasBoard() {
-        guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let id = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(id, pushImmediately: true) { config in
             config.canvasBoards.append(AIMacCanvasBoard())
             config.canvasBoardIndex = config.canvasBoards.count - 1
@@ -2706,9 +3117,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func applyAIMacCanvasBoard(deviceID: UUID, boardID: UUID) {
-        if activeDeviceID(for: .aiMacScreen) != deviceID {
-            switchDevice(type: .aiMacScreen, to: deviceID)
-        }
+        selectColorScreen(deviceID: deviceID)
         mutateAIMacScreenSettings(deviceID, schedulePush: false) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoardIndex = index
@@ -2802,7 +3211,7 @@ public final class AppModel: ObservableObject {
     public func renameAIMacCanvasBoard(id boardID: UUID, to name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty,
-              let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+              let deviceID = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(deviceID) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoards[index].name = clean
@@ -2810,7 +3219,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func setAIMacCanvasBoardSidebarVisible(id boardID: UUID, visible: Bool) {
-        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let deviceID = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(deviceID) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoards[index].sidebarVisible = visible
@@ -2818,7 +3227,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func setAIMacCanvasBoardRotationEnabled(id boardID: UUID, enabled: Bool) {
-        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let deviceID = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(deviceID) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoards[index].rotationEnabled = enabled
@@ -2826,7 +3235,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func removeAIMacCanvasBoard(id boardID: UUID) {
-        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let deviceID = activeColorScreenDeviceID else { return }
         mutateAIMacScreenSettings(deviceID, pushImmediately: true) { config in
             guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID }) else { return }
             config.canvasBoards.remove(at: index)
@@ -2842,7 +3251,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func commitAIMacCanvasBoards(_ boards: [AIMacCanvasBoard]) {
-        guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+        guard let deviceID = activeColorScreenDeviceID else { return }
         let old = aiMacScreenSettings(for: deviceID)
         let currentID = old.canvasBoards.indices.contains(old.canvasBoardIndex)
             ? old.canvasBoards[old.canvasBoardIndex].id : nil
@@ -2918,6 +3327,13 @@ public final class AppModel: ObservableObject {
                                    system snapshot: SystemSnapshot,
                                    nowPlayingOverride: NowPlayingInfo? = nil,
                                    now: Date = Date()) throws -> CGImage {
+        let deviceType = settings.devices.first { $0.id == deviceID }?.type ?? .aiMacScreen
+        // A C6 clock can only be shown by selecting the native device card.
+        // Refuse even legacy/generic render calls rather than fabricate its style.
+        if deviceType == .c6Screen,
+           config.c6NativeCardID != nil || config.mode == .clock || (config.mode == .card && config.cardMode == .aiMacClock) {
+            throw C6StandaloneError.unsupported
+        }
         let isNativeClock = config.mode == .clock
             || (config.mode == .card && config.cardMode == .aiMacClock)
         let isEmojiWallpaper = config.mode == .card && config.cardMode == .emojiWallpaper
@@ -2935,10 +3351,11 @@ public final class AppModel: ObservableObject {
             customBackgroundHex: nil,
             accentTone: settings.accentTone,
             customAccentHex: settings.customAccentHex,
-            softwareIsDark: dark)
+            softwareIsDark: dark,
+            renderingMode: (isNativeClock || isEmojiWallpaper) ? .classic : settings.cardRenderingMode)
         // 设备端桌面时钟保留固件实际样式；其他彩色卡片的预览和推送共享同一张成图。
         let image = try LiquidGlassCardRenderer.renderImage(
-            for: .aiMacScreen, mode: (isNativeClock || isEmojiWallpaper) ? .classic : settings.cardRenderingMode,
+            for: deviceType, mode: (isNativeClock || isEmojiWallpaper) ? .classic : settings.cardRenderingMode,
             palette: palette) {
                 try self.renderAIMacScreenClassic(
                     deviceID: deviceID, config: config, system: snapshot,
@@ -2946,8 +3363,18 @@ public final class AppModel: ObservableObject {
             }
         // 校准在玻璃合成之后统一执行，Emoji 也只校准颜色、不增加玻璃。
         // 桌面时钟由固件自行渲染，预览不能添加固件不会显示的色彩处理。
-        guard !isNativeClock else { return image }
-        return AIMacColorCalibration.apply(to: image, settings: config)
+        let calibrated = isNativeClock ? image : AIMacColorCalibration.apply(to: image, settings: config)
+        // C6 在固件显示层统一旋转，传输图片与软件预览保持正向；灵犀68也不走此路径。
+        guard AIMacScreenSupport.needsSoftwareRotation(deviceType: deviceType,
+            rotate180: config.rotate180, isNativeClock: isNativeClock) else { return calibrated }
+        guard let context = CGContext(data: nil, width: calibrated.width, height: calibrated.height,
+            bitsPerComponent: 8, bytesPerRow: calibrated.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return calibrated }
+        context.translateBy(x: CGFloat(calibrated.width), y: CGFloat(calibrated.height))
+        context.rotate(by: .pi)
+        context.draw(calibrated, in: CGRect(x: 0, y: 0, width: calibrated.width, height: calibrated.height))
+        return context.makeImage() ?? calibrated
     }
 
     private func renderAIMacScreenClassic(deviceID: UUID,
@@ -2962,7 +3389,8 @@ public final class AppModel: ObservableObject {
                                        nowPlaying: playbackInfo, now: now)
         }
         guard config.mode == .canvas else {
-            return try AIMacScreenSupport.render(settings: config, system: snapshot, now: now)
+            return try AIMacScreenSupport.render(settings: config, system: snapshot, now: now,
+                c6FlipClock: settings.devices.first { $0.id == deviceID }?.type == .c6Screen)
         }
         let board = config.canvasBoards.indices.contains(config.canvasBoardIndex)
             ? config.canvasBoards[config.canvasBoardIndex] : AIMacCanvasBoard()
@@ -2972,7 +3400,8 @@ public final class AppModel: ObservableObject {
                                             customBackgroundHex: nil,
                                             accentTone: settings.accentTone,
                                             customAccentHex: settings.customAccentHex,
-                                            softwareIsDark: dark)
+                                            softwareIsDark: dark,
+                                            renderingMode: settings.cardRenderingMode)
         return ScreenRenderer.renderDeviceCanvas(
             modules: board.moduleList, system: snapshot,
             nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
@@ -3015,7 +3444,8 @@ public final class AppModel: ObservableObject {
             var previewConfig = config
             previewConfig.mode = .clock
             return try AIMacScreenSupport.render(settings: previewConfig,
-                                                 system: snapshot, now: now)
+                                                 system: snapshot, now: now,
+                c6FlipClock: settings.devices.first { $0.id == deviceID }?.type == .c6Screen)
         case .deviceCanvas:
             // AI Mac 的设备画板走上层 canvas 分支；通用卡片列表不会暴露这一配方。
             throw AIMacScreenSupportError.encodeFailed
@@ -3029,7 +3459,8 @@ public final class AppModel: ObservableObject {
                 customBackgroundHex: nil,
                 accentTone: settings.accentTone,
                 customAccentHex: settings.customAccentHex,
-                softwareIsDark: dark)
+                softwareIsDark: dark,
+                renderingMode: settings.cardRenderingMode)
             let cardHA = mode == .homeAssistant
                 ? haSnapshot.selecting(entityIDs: aiMacHAEntityIDs(for: deviceID))
                 : haSnapshot
@@ -3042,8 +3473,18 @@ public final class AppModel: ObservableObject {
                     ? (bambuAutoZoomImages[cameraID] ?? cameraRaw) : cameraRaw
                 let taskCoverID = bambu.taskImageEntityID
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                let taskCover = taskCoverID.isEmpty
+                var taskCover = taskCoverID.isEmpty
                     ? nil : haSnapshot.picture(for: taskCoverID)
+                if settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen {
+                    // Restoring the established layout must not revive a cached
+                    // cover belonging to another task or HA server connection.
+                    let key = haSnapshot.entities.first { $0.entityId == bambu.taskEntityID }
+                        .flatMap { C6TaskThumbnail.homeAssistantTaskKey($0.state) }
+                    if key == nil || c6PictureTaskKeys[taskCoverID]?[bambu.taskEntityID] != key
+                        || c6PictureOrigins[taskCoverID] != c6CurrentPictureOrigin {
+                        taskCover = nil
+                    }
+                }
                 return ScreenRenderer.renderAIMacBambuCard(
                     bambu, entities: haSnapshot.entities,
                     cameraImage: cameraFrame, taskCoverImage: taskCover,
@@ -3079,7 +3520,19 @@ public final class AppModel: ObservableObject {
 
     public func refreshAIMacScreenPreview(deviceID: UUID,
                                           simulateTransport: Bool = false) {
+        guard !c6OfflineSimulationIDs.contains(deviceID) else { return }
         let config = aiMacScreenSettings(for: deviceID)
+        if settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen,
+           selectedC6Card(for: deviceID)?.nativeCard != nil {
+            // Native cards use the actual device frame, never a desktop clock
+            // approximation that could disagree with its style or timezone.
+            if c6NativeCardSelections[deviceID] != selectedC6Card(for: deviceID)?.nativeCard?.headers {
+                aiMacScreenPreviews[deviceID] = nil
+            }
+            return
+        }
+        if aiMacScreenCapabilities[deviceID]?.prefersNativeCards == true,
+           c6NativeCardSelections[deviceID] == c6CardContextHeaders(config: config) { return }
         do {
             let image = try renderAIMacScreen(deviceID: deviceID, config: config,
                                               system: system)
@@ -3114,6 +3567,22 @@ public final class AppModel: ObservableObject {
         return decoded
     }
 
+    private func isCurrentColorScreenTarget(_ deviceID: UUID, host: String) -> Bool {
+        !c6PreparingForQuit && settings.devices.contains {
+            $0.id == deviceID && $0.isEnabled && $0.type.isColorWiFiScreen
+                && AIMacScreenSupport.normalizedHost($0.settings.aiMacScreen?.host ?? "") == host
+        }
+    }
+
+    private func isCurrentColorScreenPresentation(_ id: UUID, host: String,
+                                                 config: AIMacScreenDeviceSettings) -> Bool {
+        let current = aiMacScreenSettings(for: id)
+        return isCurrentColorScreenTarget(id, host: host)
+            && AIMacSmartRotationTarget(current) == AIMacSmartRotationTarget(config)
+            && current.canvasBoardIndex == config.canvasBoardIndex
+            && current.customImagePath == config.customImagePath
+    }
+
     private func fetchAIMacScreenCapabilities(
         deviceID: UUID,
         force: Bool = false,
@@ -3133,17 +3602,29 @@ public final class AppModel: ObservableObject {
         request.timeoutInterval = timeout
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            guard isCurrentColorScreenTarget(deviceID, host: host) else { throw CancellationError() }
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 throw AIMacScreenSupportError.invalidDevice
             }
             let capabilities = try AIMacScreenSupport.parseCapabilities(data: data, host: host)
+            if capabilities.isC6, let index = settings.devices.firstIndex(where: { $0.id == deviceID && $0.type == .aiMacScreen }) {
+                // Older test builds registered C6 as AI Mac. Preserve UUID, choices and credentials.
+                var devices = settings.devices; devices[index].type = .c6Screen
+                settings.devices = devices
+                if settings.activeAIMacScreenDeviceID == deviceID {
+                    settings.activeAIMacScreenDeviceID = enabledDevices(for: .aiMacScreen).first?.id
+                }
+                if settings.activeC6ScreenDeviceID == nil { settings.activeC6ScreenDeviceID = deviceID }
+                persistSettings()
+            }
             aiMacScreenCapabilities[deviceID] = capabilities
             if let brightness = capabilities.brightnessLevel, brightness > 0 {
                 aiMacScreenSavedBrightness[deviceID] = brightness
             }
             return capabilities
         } catch {
+            guard isCurrentColorScreenTarget(deviceID, host: host) else { throw CancellationError() }
             if !allowJPEGFallback { throw error }
             // 0.6.x 等旧版固件没有能力接口，但仍支持 /image/upload。
             let fallback = try AIMacScreenSupport.jpegOnlyCapabilities(host: host)
@@ -3156,7 +3637,15 @@ public final class AppModel: ObservableObject {
         guard !aiMacScreenBusyIDs.contains(deviceID) else { return }
         aiMacScreenBusyIDs.insert(deviceID)
         aiMacScreenStatuses[deviceID] = "正在检测小屏幕…"
-        defer { aiMacScreenBusyIDs.remove(deviceID) }
+        defer {
+            aiMacScreenBusyIDs.remove(deviceID)
+            if c6PendingForcedPushIDs.remove(deviceID) != nil,
+               settings.devices.contains(where: { $0.id == deviceID && $0.isEnabled && $0.type == .c6Screen }) {
+                Task { @MainActor [weak self] in
+                    await self?.pushAIMacScreen(deviceID: deviceID, force: true)
+                }
+            }
+        }
         do {
             let capabilities = try await fetchAIMacScreenCapabilities(deviceID: deviceID, force: true)
             if capabilities.supportsLosslessRGB565 {
@@ -3182,13 +3671,14 @@ public final class AppModel: ObservableObject {
     public func handleAIMacSystemSleepChange(sleeping: Bool) async {
         guard aiMacScreensSystemSleeping != sleeping else { return }
         aiMacScreensSystemSleeping = sleeping
-        let targets = enabledDevices(for: .aiMacScreen).filter {
+        let targets = enabledColorWiFiScreens.filter {
             ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).followSystemSleep
                 && !AIMacScreenSupport.normalizedHost(
                     ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).host).isEmpty
         }
         await withTaskGroup(of: Void.self) { group in
             for device in targets {
+                guard !self.c6PreparingForQuit, !Task.isCancelled else { return }
                 group.addTask { [weak self] in
                     await self?.setAIMacScreenPower(deviceID: device.id, sleeping: sleeping)
                 }
@@ -3203,7 +3693,7 @@ public final class AppModel: ObservableObject {
             return
         }
         aiMacScreensSystemSleeping = false
-        let targets = enabledDevices(for: .aiMacScreen).filter {
+        let targets = enabledColorWiFiScreens.filter {
             ($0.settings.aiMacScreen ?? AIMacScreenDeviceSettings()).followSystemSleep
         }
         for device in targets {
@@ -3325,14 +3815,92 @@ public final class AppModel: ObservableObject {
     public func pushAIMacScreen(deviceID: UUID, force: Bool = true) async {
         await pushAIMacScreen(deviceID: deviceID, force: force, sampleDashboard: true)
     }
+    private func maintainC6SoftwareLeases(now: Date) {
+        guard !c6PreparingForQuit else { return }
+        for id in c6OfflineSimulationIDs where !isCurrentColorScreenTarget(id,
+            host: AIMacScreenSupport.normalizedHost(c6OfflineSimulationHosts[id] ?? "")) {
+            // Changing or removing a device never carries its paused session to
+            // another address. The old hardware's short control lease expires.
+            c6OfflineSimulationIDs.remove(id); c6OfflineSimulationHosts[id] = nil
+            c6ThumbnailHashes[id] = nil; aiMacButtonState[id] = nil
+        }
+        guard !c6HeartbeatBusy, c6HeartbeatAt.map({ now.timeIntervalSince($0) >= 10 }) ?? true else { return }
+        let targets = enabledDevices(for: .c6Screen).filter {
+            c6OfflineSimulationIDs.contains($0.id)
+                || (aiMacScreenSettings(for: $0.id).autoPush && !aiMacScreenShouldSleep(deviceID: $0.id))
+        }
+        guard !targets.isEmpty else { return }
+        c6HeartbeatBusy = true; c6HeartbeatAt = now
+        c6HeartbeatTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.c6HeartbeatBusy = false; self.c6HeartbeatTask = nil }
+            for device in targets {
+                let host = self.aiMacScreenSettings(for: device.id).host
+                guard !self.c6OfflineSimulationBusyIDs.contains(device.id),
+                      self.isCurrentColorScreenTarget(device.id, host: AIMacScreenSupport.normalizedHost(host)),
+                      let client = try? C6StandaloneClient(host: host) else { continue }
+                if self.c6OfflineSimulationIDs.contains(device.id) {
+                    guard self.c6OfflineSimulationHosts[device.id] == host else { continue }
+                    let token = self.c6Tokens[device.id] ?? C6SecretStore.read(deviceID: device.id)
+                    try? await client.simulateSoftwareOffline(true, token: token)
+                    continue
+                }
+                var request = URLRequest(url: client.baseURL.appendingPathComponent("api/software"))
+                request.httpMethod = "POST"; request.timeoutInterval = 2
+                _ = try? await URLSession.shared.data(for: request)
+            }
+        }
+    }
+
+    private func c6CardContextHeaders(config: AIMacScreenDeviceSettings) -> [String: String] {
+        guard config.mode == .card else { return ["X-Lingxi-Card": "generic"] }
+        let mode = config.cardMode
+        if mode == .weather { return ["X-Lingxi-Card": "weather"] }
+        if mode == .homeAssistant { return ["X-Lingxi-Card": "ha"] }
+        if mode == .aiMacClock { return ["X-Lingxi-Card": "clock"] }
+        var serial: String?, brand = "bambu", source = "ha"
+        if let slot = mode.bambuSlotIndex {
+            let devices = enabledDevices(for: .bambuLab)
+            if devices.indices.contains(slot) {
+                let device = devices[slot]
+                if device.settings.bambuDataSource == .localMQTT {
+                    serial = device.settings.bambuMQTT?.serial; source = "mqtt"
+                } else { serial = device.id.uuidString.replacingOccurrences(of: "-", with: "") }
+            }
+        } else if let slot = mode.formlabsSlotIndex {
+            let devices = enabledDevices(for: .formlabs)
+            if devices.indices.contains(slot) { serial = devices[slot].settings.formlabsConnection?.printerSerial }
+            brand = "formlabs"; source = "formlabs"
+        }
+        guard let serial, !serial.isEmpty, serial.utf8.count < 40,
+              serial.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+        else { return ["X-Lingxi-Card": "generic"] }
+        return ["X-Lingxi-Card": "printer", "X-Lingxi-Serial": serial,
+                "X-Lingxi-Brand": brand, "X-Lingxi-Source": source]
+    }
+
+    private func selectedC6NativeCard(deviceID: UUID, config: AIMacScreenDeviceSettings) -> C6NativeCard? {
+        guard config.mode == .clock || config.mode == .card else { return nil }
+        let cards = C6MergedCardPolicy.nativeCards(configuration: c6SyncedConfigurations[deviceID] ?? C6StandaloneConfiguration())
+        if config.mode == .clock || (config.c6NativeCardID == nil && config.cardMode == .aiMacClock) {
+            return cards.first { $0.kind == "clock" }
+        }
+        return cards.first { $0.id == config.c6NativeCardID }
+    }
 
     private func pushAIMacScreen(deviceID: UUID, force: Bool,
                                  sampleDashboard: Bool) async {
-        guard !aiMacScreenBusyIDs.contains(deviceID),
-              let device = settings.devices.first(where: {
-                  $0.id == deviceID && $0.type == .aiMacScreen && $0.isEnabled
+        guard !c6PreparingForQuit else { return }
+        guard !c6OfflineSimulationIDs.contains(deviceID) else { return }
+        guard let device = settings.devices.first(where: {
+                  $0.id == deviceID && $0.type.isColorWiFiScreen && $0.isEnabled
               }) else { return }
-        let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        guard !aiMacScreenBusyIDs.contains(deviceID) else {
+            if device.type == .c6Screen && force { c6PendingForcedPushIDs.insert(deviceID) }
+            return
+        }
+        var config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        let targetHost = AIMacScreenSupport.normalizedHost(config.host)
         guard !(aiMacScreensSystemSleeping && config.followSystemSleep) else { return }
         guard !AIMacScreenSupport.normalizedHost(config.host).isEmpty else {
             aiMacScreenStatuses[deviceID] = AIMacScreenSupportError.invalidHost.localizedDescription
@@ -3342,24 +3910,167 @@ public final class AppModel: ObservableObject {
         aiMacScreenLastPushAt[deviceID] = Date()
         let isNativeClock = config.mode == .clock
             || (config.mode == .card && config.cardMode == .aiMacClock)
-        aiMacScreenStatuses[deviceID] = isNativeClock
+        aiMacScreenStatuses[deviceID] = config.c6NativeCardID != nil
+            ? "正在切换设备本地卡片…" : isNativeClock
             ? "正在同步设备端时钟…" : "正在生成并推送画面…"
-        defer { aiMacScreenBusyIDs.remove(deviceID) }
+        defer {
+            aiMacScreenBusyIDs.remove(deviceID)
+            if device.type == .c6Screen {
+                let pending = c6PendingForcedPushIDs.remove(deviceID) != nil
+                if !c6PreparingForQuit, !c6OfflineSimulationIDs.contains(deviceID),
+                   let current = settings.devices.first(where: { $0.id == deviceID && $0.isEnabled && $0.type == .c6Screen }),
+                   pending || (current.settings.aiMacScreen ?? AIMacScreenDeviceSettings()) != config {
+                    Task { @MainActor [weak self] in
+                        await self?.pushAIMacScreen(deviceID: deviceID, force: true)
+                    }
+                }
+            }
+        }
         do {
+            var c6Capabilities: AIMacScreenCapabilities?
+            if device.type == .c6Screen {
+                let c6 = try await fetchAIMacScreenCapabilities(deviceID: deviceID, force: true, allowJPEGFallback: false)
+                guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config), !c6OfflineSimulationIDs.contains(deviceID) else { return }
+                c6Capabilities = c6
+                if c6.interactionProtocol == 2 {
+                    if c6.menuActive { c6MenuPausedIDs.insert(deviceID); c6MenuHosts[deviceID] = targetHost }
+                    else { c6MenuPausedIDs.remove(deviceID); c6MenuHosts[deviceID] = nil }
+                }
+                if c6.rotationURL != nil {
+                    // Device-side edits are authoritative. Ordinary frame pushes
+                    // must not undo a rotation saved with the BOOT settings menu.
+                    config.rotate180 = c6.displayRotation == 180
+                    if let angle = c6.displayRotation, var local = c6SyncedConfigurations[deviceID], local.rotation != angle {
+                        local.rotation = angle; c6SyncedConfigurations[deviceID] = local
+                    }
+                    if aiMacScreenSettings(for: deviceID).rotate180 != config.rotate180 {
+                        mutateAIMacScreenSettings(deviceID, pushImmediately: false, schedulePush: false) { $0.rotate180 = config.rotate180 }
+                    }
+                } else if config.rotate180 {
+                    throw NSError(domain: "C6Display", code: 2, userInfo: [NSLocalizedDescriptionKey: "请更新 C6 内置固件以使用设备端 180° 旋转。"])
+                }
+                guard c6.acceptsSoftwareFrames else {
+                    aiMacScreenStatuses[deviceID] = c6.menuActive ? "设备菜单已打开 · 退出后推送最新画面" : "本地数据优先 · 软件推送已让位"
+                    return
+                }
+                // The native clock is a playlist member, not a Mac clock command.
+                // Only the target is sent; clock_style/digit_style/timezone stay
+                // authoritative on the firmware. Older firmware must be upgraded.
+                if config.c6NativeCardID != nil || isNativeClock {
+                    guard c6.nativeCardVersion >= 2 else {
+                        throw NSError(domain: "C6Cards", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                            "请在设备管理中更新 C6 固件，以使用电脑与本地卡片混合轮换。"])
+                    }
+                    var token = c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)
+                    let client = try C6StandaloneClient(host: targetHost)
+                    if token.isEmpty {
+                        token = try await client.connectLAN()
+                        guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config) else { return }
+                        authorizeC6Sync(deviceID: deviceID, token: token)
+                    }
+                    if c6SyncedConfigurations[deviceID] == nil {
+                        let local = try await client.read(token: token)
+                        guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config) else { return }
+                        didUpdateC6DeviceConfiguration(local, deviceID: deviceID, host: targetHost)
+                    }
+                    guard let native = selectedC6NativeCard(deviceID: deviceID, config: config) else {
+                        throw NSError(domain: "C6Cards", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                            "该本地卡片已移除或数据源已改变，请在卡片管理中重新选择。"])
+                    }
+                    // Migrate a previously selected software clock without changing
+                    // its device-owned appearance. Other disabled cards stay explicit.
+                    if let local = c6SyncedConfigurations[deviceID], !local.enabled || (native.kind == "clock" && !local.clock) {
+                        for attempt in 0..<2 {
+                            var latest = try await client.read(token: token)
+                            guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config) else { return }
+                            latest.enabled = true
+                            if native.kind == "clock" { latest.clock = true }
+                            do {
+                                let saved = try await client.save(latest, token: token, credentials: C6Credentials())
+                                guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config) else { return }
+                                didUpdateC6DeviceConfiguration(saved, deviceID: deviceID, host: targetHost)
+                                break
+                            } catch C6StandaloneError.conflict where attempt == 0 { continue }
+                        }
+                    }
+                    guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config) else { return }
+                    let status = try await client.selectNativeCard(token: token, headers: native.headers, explicitNative: true)
+                    guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config),
+                          !c6OfflineSimulationIDs.contains(deviceID) else { return }
+                    if status == 204 { aiMacScreenStatuses[deviceID] = "设备菜单已打开 · 退出后显示选中卡片"; return }
+                    guard status == 200 else {
+                        throw NSError(domain: "C6Cards", code: status, userInfo: [NSLocalizedDescriptionKey:
+                            "本地卡片尚未启用或来源已改变，请检查设备本地设置。"])
+                    }
+                    c6NativeCardSelections[deviceID] = native.headers
+                    aiMacScreenLastHashes[deviceID] = nil
+                    aiMacScreenLastClockSyncAt[deviceID] = nil
+                    let bytes = try? await client.previewFrame(token: token)
+                    guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config),
+                          !c6OfflineSimulationIDs.contains(deviceID) else { return }
+                    if let bytes, let image = AIMacScreenSupport.decodeRGB565(bytes) {
+                        aiMacScreenPreviews[deviceID] = NSImage(cgImage: image, size: NSSize(width: 240, height: 240))
+                    }
+                    aiMacScreenStatuses[deviceID] = "\(native.title) · 设备本地实时运行 · 统一轮换"
+                    return
+                }
+                let context = c6CardContextHeaders(config: config)
+                if !isNativeClock, c6.prefersNativeCards, c6.nativeCardURL != nil,
+                   ["weather", "ha", "printer"].contains(context["X-Lingxi-Card"] ?? "") {
+                    let token = c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)
+                    let client = try C6StandaloneClient(host: targetHost)
+                    let status = try await client.selectNativeCard(token: token, headers: context)
+                    guard isCurrentColorScreenTarget(deviceID, host: targetHost),
+                          !c6PreparingForQuit, !c6OfflineSimulationIDs.contains(deviceID),
+                          aiMacScreenSettings(for: deviceID).mode == config.mode,
+                          aiMacScreenSettings(for: deviceID).cardMode == config.cardMode,
+                          aiMacScreenSettings(for: deviceID).c6NativeCardID == nil,
+                          c6CardContextHeaders(config: aiMacScreenSettings(for: deviceID)) == context else { return }
+                    if status == 204 {
+                        aiMacScreenStatuses[deviceID] = "设备菜单已打开 · 退出后显示最新卡片"
+                        return
+                    }
+                    if status == 200 {
+                        // Show the device's actual native frame, not a Mac-rendered approximation.
+                        let bytes = try? await client.previewFrame(token: token)
+                        guard isCurrentColorScreenTarget(deviceID, host: targetHost),
+                              !c6PreparingForQuit, !c6OfflineSimulationIDs.contains(deviceID),
+                              aiMacScreenSettings(for: deviceID).mode == config.mode,
+                              aiMacScreenSettings(for: deviceID).cardMode == config.cardMode,
+                              aiMacScreenSettings(for: deviceID).c6NativeCardID == nil,
+                              c6CardContextHeaders(config: aiMacScreenSettings(for: deviceID)) == context else { return }
+                        c6NativeCardSelections[deviceID] = context
+                        if let bytes, let image = AIMacScreenSupport.decodeRGB565(bytes) {
+                            aiMacScreenPreviews[deviceID] = NSImage(cgImage: image, size: NSSize(width: 240, height: 240))
+                        }
+                        aiMacScreenLastHashes[deviceID] = nil
+                        aiMacScreenLastClockSyncAt[deviceID] = nil
+                        aiMacScreenStatuses[deviceID] = "设备本地卡片 · 与电脑卡片混合轮转"
+                        return
+                    }
+                    // 404: no identical enabled local counterpart; push the software card normally.
+                }
+                c6NativeCardSelections[deviceID] = nil
+            }
             if isNativeClock {
                 // 普通自动推送节拍不会再产生时钟图片。仅每 30 分钟低频校时，
                 // 手动切入、自动轮播切入以及系统唤醒都会强制立即同步一次。
-                var probedCapabilities: AIMacScreenCapabilities?
+                var probedCapabilities: AIMacScreenCapabilities? = c6Capabilities
                 if !force, let last = aiMacScreenLastClockSyncAt[deviceID],
                    Date().timeIntervalSince(last) < 30 * 60 {
                     // 本地记住“已校时”不代表重启后的设备仍在时钟模式。
                     // 读取固件 mode，只有设备真的还在 clock 才跳过本次命令。
-                    let current = try await fetchAIMacScreenCapabilities(
-                        deviceID: deviceID, force: true, allowJPEGFallback: false)
+                    let current: AIMacScreenCapabilities
+                    if let c6Capabilities { current = c6Capabilities }
+                    else {
+                        current = try await fetchAIMacScreenCapabilities(
+                            deviceID: deviceID, force: true, allowJPEGFallback: false)
+                    }
                     if !AIMacScreenSupport.requiresPrimeFrame(
                         activeMode: current.activeMode,
                         frameRevision: current.frameRevision,
-                        expectedMode: "clock") {
+                        expectedMode: "clock"),
+                       !current.isC6 || (current.nativeClockStyle ?? 0) == (config.c6ClockStyle ?? .flip).rawValue {
                         aiMacScreenStatuses[deviceID] = "设备端时钟正在实时运行"
                         return
                     }
@@ -3374,12 +4085,19 @@ public final class AppModel: ObservableObject {
                     capabilities = try await fetchAIMacScreenCapabilities(
                         deviceID: deviceID, force: true, allowJPEGFallback: false)
                 }
+                if capabilities.isC6, !capabilities.nativeClockStyles.contains((config.c6ClockStyle ?? .flip).rawValue) {
+                    throw NSError(domain: "C6Clock", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                        "此固件尚不支持圆角粗数字时钟，请在设备管理中更新内置 C6 固件。"])
+                }
                 guard let url = capabilities.nativeClockURL,
                       let request = AIMacScreenSupport.nativeClockRequest(
-                        url: url, now: Date(), timeZone: .current) else {
+                        url: url, now: Date(), timeZone: .current,
+                        c6Style: capabilities.isC6 ? config.c6ClockStyle ?? .flip : nil) else {
                     throw AIMacScreenSupportError.nativeClockUnavailable
                 }
+                guard !c6PreparingForQuit else { return }
                 let (_, response) = try await URLSession.shared.data(for: request)
+                guard isCurrentColorScreenTarget(deviceID, host: targetHost), !c6OfflineSimulationIDs.contains(deviceID) else { return }
                 guard let http = response as? HTTPURLResponse,
                       (200..<300).contains(http.statusCode) else {
                     throw AIMacScreenSupportError.nativeClockUnavailable
@@ -3413,7 +4131,9 @@ public final class AppModel: ObservableObject {
             // 首次失败产生的 JPEG 兼容结果不能永久阻止后续识别新固件重启状态。
             let shouldProbeDeviceState = !force
             let capabilities: AIMacScreenCapabilities
-            if shouldProbeDeviceState {
+            if let c6Capabilities {
+                capabilities = c6Capabilities
+            } else if shouldProbeDeviceState {
                 capabilities = try await fetchAIMacScreenCapabilities(
                     deviceID: deviceID, force: true,
                     allowJPEGFallback: !knownModernFirmware)
@@ -3478,13 +4198,22 @@ public final class AppModel: ObservableObject {
                 }
                 return
             }
+            guard !c6PreparingForQuit, isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config), !c6OfflineSimulationIDs.contains(deviceID) else { return }
             if capabilities.supportsLosslessRGB565 {
-                _ = try await imageApi.upload(
-                    rgb565: bytes, endpoint: endpoint.absoluteString, timeout: 12)
+                let status = try await imageApi.upload(
+                    rgb565: bytes, endpoint: endpoint.absoluteString, timeout: 12,
+                    headers: device.type == .c6Screen ? c6CardContextHeaders(config: config) : [:])
+                // 204 means the physical menu/local priority won the race. It did
+                // not accept a frame; never remember its hash as a success.
+                if device.type == .c6Screen, status == 204 {
+                    aiMacScreenStatuses[deviceID] = "设备正在本地显示 · 等待可接收画面"
+                    return
+                }
             } else {
                 _ = try await imageApi.upload(
                     jpeg: bytes, endpoint: endpoint.absoluteString, timeout: 12)
             }
+            guard isCurrentColorScreenPresentation(deviceID, host: targetHost, config: config), !c6OfflineSimulationIDs.contains(deviceID) else { return }
             aiMacScreenLastHashes[deviceID] = frameHash
             let measuredLatency = min(max(Date().timeIntervalSince(uploadStartedAt), 0), 3)
             if let previous = aiMacScreenUploadLatency[deviceID] {
@@ -3505,6 +4234,7 @@ public final class AppModel: ObservableObject {
                 ? "推送成功 · \(modeText) · 设备端实时进度"
                 : "推送成功 · \(modeText)"
         } catch {
+            guard isCurrentColorScreenTarget(deviceID, host: targetHost), !c6OfflineSimulationIDs.contains(deviceID) else { return }
             // 失败可能正是设备重启的离线窗口。清掉电脑端基线，设备重新上线后
             // 下一次自动节拍必须实际上传，不能继续被旧 hash 短路。
             aiMacScreenLastHashes[deviceID] = nil
@@ -3554,9 +4284,11 @@ public final class AppModel: ObservableObject {
     }
 
     private func maybeAutoPushAIMacScreens(now: Date) async {
-        let dueDevices = enabledDevices(for: .aiMacScreen).filter { device in
+        reconcileBambuMQTTClients()
+        let dueDevices = enabledColorWiFiScreens.filter { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard config.autoPush,
+                  !c6MenuPausedIDs.contains(device.id),
                   !(aiMacScreensSystemSleeping && config.followSystemSleep),
                   !AIMacScreenSupport.normalizedHost(config.host).isEmpty,
                   !aiMacScreenBusyIDs.contains(device.id),
@@ -3572,6 +4304,9 @@ public final class AppModel: ObservableObject {
         // CPU/内存/网络统计调用按台数重复放大。
         if dueDevices.contains(where: { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+            if device.type == .c6Screen,
+               config.c6NativeCardID != nil || config.mode == .clock
+                || (config.mode == .card && config.cardMode == .aiMacClock) { return false }
             if config.mode == .dashboard { return true }
             if config.mode == .card {
                 return CardCapabilityRegistry.capability(for: config.cardMode)?
@@ -3586,6 +4321,7 @@ public final class AppModel: ObservableObject {
         }
         var rotatedCanvasDeviceIDs = Set<UUID>()
         var rotatedCardModes: [UUID: DisplayMode] = [:]
+        var rotatedNativeDeviceIDs = Set<UUID>()
         for device in dueDevices {
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard config.mode == .canvas, config.boardRotationEnabled,
@@ -3609,6 +4345,36 @@ public final class AppModel: ObservableObject {
             // 画板与卡片各自只运行自己的轮播器；两者同时开启时不能在同一拍先切画板、
             // 又立刻被卡片轮播覆盖。
             guard config.mode == .card, config.cardRotationEnabled else { continue }
+            if device.type == .c6Screen {
+                let cards = c6CardRotationList(for: device.id)
+                guard cards.count > 1 else { continue }
+                let last = aiMacScreenLastCardRotation[device.id] ?? now
+                if aiMacScreenLastCardRotation[device.id] == nil {
+                    aiMacScreenLastCardRotation[device.id] = now; continue
+                }
+                guard now.timeIntervalSince(last) >= TimeInterval(config.cardRotationMinutes * 60) else { continue }
+                aiMacScreenLastCardRotation[device.id] = now
+                let currentID = selectedC6Card(for: device.id)?.id
+                let current = cards.firstIndex { $0.id == currentID } ?? -1
+                let next = (1...cards.count).compactMap { offset -> C6CardDescriptor? in
+                    let candidate = cards[(current + offset + cards.count) % cards.count]
+                    guard candidate.id != currentID else { return nil }
+                    if let mode = candidate.displayMode,
+                       candidate.nativeCard == nil || candidate.nativeCard?.kind == "printer" {
+                        guard self.isAutomaticRotationModeEligible(mode, now: now) else { return nil }
+                    }
+                    return candidate
+                }.first
+                guard let next else { continue }
+                mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
+                    value.mode = .card
+                    value.c6NativeCardID = next.nativeCard?.id
+                    value.cardMode = next.displayMode ?? .systemMonitor
+                }
+                if next.nativeCard != nil { rotatedNativeDeviceIDs.insert(device.id) }
+                else if let mode = next.displayMode { rotatedCardModes[device.id] = mode }
+                continue
+            }
             let modes = aiMacCardRotationList(for: device.id)
             guard modes.count > 1 else { continue }
             let last = aiMacScreenLastCardRotation[device.id] ?? now
@@ -3626,6 +4392,7 @@ public final class AppModel: ObservableObject {
             ) else { continue }
             mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
                 value.mode = .card
+                value.c6NativeCardID = nil
                 value.cardMode = next
             }
             rotatedCardModes[device.id] = next
@@ -3642,6 +4409,9 @@ public final class AppModel: ObservableObject {
         // 都先更新再推送，避免轮播刚切入时显示上一轮缓存。
         for (deviceID, mode) in rotatedCardModes {
             await refreshAIMacCardDataAndPush(mode: mode, deviceID: deviceID)
+        }
+        for deviceID in rotatedNativeDeviceIDs {
+            await pushAIMacScreen(deviceID: deviceID, force: true)
         }
         for device in dueDevices {
             if aiMacCanvasPicturePreparationTasks[device.id] != nil
@@ -3662,6 +4432,17 @@ public final class AppModel: ObservableObject {
         if let id = settings.activeHomeAssistantDeviceID,
            settings.devices.contains(where: { $0.id == id }) { return id }
         return settings.devices.first { $0.type == .homeAssistant }?.id
+    }
+
+    /// Reuse the actual device-management connection, including saved credentials.
+    /// Do not send credentials from a stale global preview mirror to C6.
+    public var c6HomeAssistantConnection: (name: String, url: String, token: String)? {
+        if let id = activeHADeviceID,
+           let device = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant }) {
+            return (device.name, device.settings.haServerURL ?? "", device.settings.haToken ?? "")
+        }
+        guard !settings.haServerURL.isEmpty else { return nil }
+        return ("Home Assistant", settings.haServerURL, settings.haToken)
     }
 
     /// Bambu Lab 字段实体映射绑定（按打印机设备快照；活动设备时同步全局镜像防 sync 覆盖）
@@ -3694,7 +4475,90 @@ public final class AppModel: ObservableObject {
     /// 某台 Bambu Lab 打印机设备的卡片配置（nil = 设备不存在）
     public func bambuSettings(for deviceID: UUID) -> BambuLabCardSettings? {
         guard let dev = settings.devices.first(where: { $0.id == deviceID }) else { return nil }
-        return BambuLabCardSettings.from(dev.settings)
+        return BambuLabCardSettings.from(dev)
+    }
+
+    public func bambuDataSourceBinding(_ id: UUID) -> Binding<BambuDataSource> {
+        Binding(get: { self.settings.devices.first { $0.id == id }?.settings.bambuDataSource ?? .homeAssistant },
+                set: { value in
+            self.mutateDeviceSettings(id) { $0.bambuDataSource = value }
+            self.reconcileBambuMQTTClients(); self.renderPreview()
+        })
+    }
+    public func bambuMQTTFieldBinding(_ id: UUID, key: WritableKeyPath<BambuMQTTSettings, String>) -> Binding<String> {
+        Binding(get: { (self.settings.devices.first { $0.id == id }?.settings.bambuMQTT ?? BambuMQTTSettings())[keyPath: key] },
+                set: { value in
+            self.mutateDeviceSettings(id) {
+                var c = $0.bambuMQTT ?? BambuMQTTSettings()
+                c[keyPath: key] = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                c.certificateSHA256 = ""; c.certificatePEM = nil; $0.bambuMQTT = c
+            }
+            self.disconnectBambuMQTT(id)
+        })
+    }
+    public func bambuMQTTAccessCodeBinding(_ id: UUID) -> Binding<String> {
+        if bambuMQTTAccessCodes[id] == nil { bambuMQTTAccessCodes[id] = BambuMQTTSecretStore.read(deviceID: id) }
+        return Binding(get: { self.bambuMQTTAccessCodes[id] ?? "" }, set: { value in
+            if !BambuMQTTSecretStore.save(value, deviceID: id) { self.bambuMQTTStatuses[id] = "无法保存访问码到钥匙串" }
+            else { self.bambuMQTTAccessCodes[id] = value }
+            self.disconnectBambuMQTT(id)
+        })
+    }
+    public func connectBambuMQTT(_ id: UUID) {
+        disconnectBambuMQTT(id); reconcileBambuMQTTClients()
+    }
+    public func trustBambuMQTTCertificate(_ id: UUID) {
+        guard let fingerprint = bambuMQTTCertificates[id] else { return }
+        mutateDeviceSettings(id) {
+            var c = $0.bambuMQTT ?? BambuMQTTSettings(); c.certificateSHA256 = fingerprint
+            c.certificatePEM = nil; $0.bambuMQTT = c
+        }
+        bambuMQTTCertificates[id] = nil; connectBambuMQTT(id)
+    }
+    private func disconnectBambuMQTT(_ id: UUID) {
+        bambuMQTTClients.removeValue(forKey: id)?.stop(); bambuMQTTClientSettings[id] = nil
+        bambuMQTTEntities[id] = nil; bambuMQTTCertificates[id] = nil
+        applyHASnapshot(entities: haSnapshot.entities, errorText: haSnapshot.errorText, rebuildBambuCatalog: false)
+    }
+    private func reconcileBambuMQTTClients() {
+        let devices = enabledDevices(for: .bambuLab).filter { $0.settings.bambuDataSource == .localMQTT }
+        let active = Set(devices.map(\.id))
+        for id in Array(bambuMQTTClients.keys) where !active.contains(id) { disconnectBambuMQTT(id) }
+        for device in devices {
+            let id = device.id
+            var config = device.settings.bambuMQTT ?? BambuMQTTSettings()
+            config.namespace = id.uuidString
+            if bambuMQTTClientSettings[id] == config { continue }
+            disconnectBambuMQTT(id)
+            let client = BambuMQTTClient(settings: config, accessCode: BambuMQTTSecretStore.read(deviceID: id))
+            bambuMQTTClients[id] = client; bambuMQTTClientSettings[id] = config
+            client.onStatus = { [weak self, weak client] status in
+                guard let self, let client, self.bambuMQTTClients[id] === client else { return }
+                self.bambuMQTTStatuses[id] = status
+                if status.contains("断开") {
+                    self.bambuMQTTEntities[id] = [HAEntity(entityId: config.entityPrefix + "status",
+                        friendlyName: "status", state: "unavailable", unitOfMeasurement: nil)]
+                    self.applyHASnapshot(entities: self.haSnapshot.entities, errorText: self.haSnapshot.errorText, rebuildBambuCatalog: false)
+                }
+            }
+            client.onCertificate = { [weak self, weak client] fingerprint in
+                guard let self, let client, self.bambuMQTTClients[id] === client else { return }
+                self.bambuMQTTCertificates[id] = fingerprint
+            }
+            client.onVerifiedCertificate = { [weak self, weak client] pem in
+                guard let self, let client, self.bambuMQTTClients[id] === client,
+                      self.settings.devices.first(where: { $0.id == id })?.settings.bambuMQTT?.certificatePEM != pem else { return }
+                self.mutateDeviceSettings(id) { $0.bambuMQTT?.certificatePEM = pem }
+            }
+            client.onReport = { [weak self, weak client] report in
+                guard let self, let client, self.bambuMQTTClients[id] === client else { return }
+                let now = Date(); self.bambuMQTTEntities[id] = report.entities(config: config, now: now)
+                self.applyHASnapshot(entities: self.haSnapshot.entities, errorText: self.haSnapshot.errorText, rebuildBambuCatalog: false, sampledAt: now)
+                self.observeBambuPrinterRotationStates(entities: self.haSnapshot.entities, now: now, deviceIDs: [id])
+                self.renderPreview()
+            }
+            client.start()
+        }
     }
 
     /// 打印机名称绑定：读写设备名（重命名设备，侧栏分组/设备管理/卡片徽标同步更新；
@@ -4249,6 +5113,7 @@ public final class AppModel: ObservableObject {
     }
 
     deinit {
+        aiMacButtonTask?.cancel()
         timer?.invalidate()
         lyricsTimer?.invalidate()
         linkedLyricsPushTasks.values.forEach { $0.cancel() }
@@ -4308,10 +5173,12 @@ public final class AppModel: ObservableObject {
     private var smartRotationNeedsLiveNowPlaying: Bool {
         let keyboardRotationNeedsMedia = activeDevice(for: .keyboard) != nil
             && settings.cardRotationEnabled && keyboardRotationList.contains(.nowPlaying)
-        let aiMacRotationNeedsMedia = enabledDevices(for: .aiMacScreen).contains { device in
+        let aiMacRotationNeedsMedia = enabledColorWiFiScreens.contains { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             return config.autoPush && config.cardRotationEnabled
-                && aiMacCardRotationList(for: device.id).contains(.nowPlaying)
+                && (device.type == .c6Screen
+                    ? c6CardRotationList(for: device.id).contains { $0.nativeCard == nil && $0.displayMode == .nowPlaying }
+                    : aiMacCardRotationList(for: device.id).contains(.nowPlaying))
         }
         return keyboardRotationNeedsMedia || aiMacRotationNeedsMedia
     }
@@ -4354,7 +5221,11 @@ public final class AppModel: ObservableObject {
 
     private func tick() async {
         let now = Date()
+        maintainC6SoftwareLeases(now: now)
+        scheduleC6ConfigurationSync(periodic: true)
+        refreshWeatherIfDue(now: now)
         scheduleAWTRIXHomeAssistantSync(now: now)
+        scheduleAWTRIXWeatherSync(now: now)
         // 设备端时钟每秒重绘，软件效果图也只在应用处于前台时跟随同一秒刷新；
         // 这里仅更新 240×240 本地预览，不触发图片上传或设备网络请求。
         refreshActiveAIMacClockPreview(now: now)
@@ -4417,6 +5288,8 @@ public final class AppModel: ObservableObject {
             case .none:
                 renderPreviewIfDue(now: now)
             }
+        case .weather:
+            await refreshPreviewOrPush(now: now)
         case .systemMonitor:
             system = monitor.sample(now: now)
             await refreshPreviewOrPush(now: now)
@@ -4536,11 +5409,14 @@ public final class AppModel: ObservableObject {
 
     private func refreshActiveAIMacClockPreview(now: Date) {
         guard NSApp.isActive,
-              let id = activeDeviceID(for: .aiMacScreen),
+              let id = activeColorScreenDeviceID,
               let device = settings.devices.first(where: {
-                  $0.id == id && $0.type == .aiMacScreen && $0.isEnabled
+                  $0.id == id && $0.type.isColorWiFiScreen && $0.isEnabled
               }) else { return }
         let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
+        // C6 clock previews are actual firmware frames, refreshed by the native
+        // view. Never enter the legacy once-per-second desktop clock renderer.
+        guard device.type != .c6Screen else { return }
         let isNativeClock = (config.mode == .card && config.cardMode == .aiMacClock)
             || config.mode == .clock
         guard isNativeClock else { return }
@@ -4560,7 +5436,7 @@ public final class AppModel: ObservableObject {
         lastCanvasPreviewMinute = minute
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
-        if let id = activeDeviceID(for: .aiMacScreen) {
+        if let id = activeColorScreenDeviceID {
             let mode = aiMacScreenSettings(for: id).mode
             if mode == .canvas || mode == .card || mode == .clock || mode == .dashboard {
                 refreshAIMacScreenPreview(deviceID: id)
@@ -4695,7 +5571,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleCanvasImagePath
         case .excerpt: return settings.excerptCanvasImagePath
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            guard let id = activeColorScreenDeviceID else { return nil }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return nil }
             return config.canvasBoards[config.canvasBoardIndex].imagePath
@@ -4709,7 +5585,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleCanvasImageName
         case .excerpt: return settings.excerptCanvasImageName
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            guard let id = activeColorScreenDeviceID else { return nil }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return nil }
             return config.canvasBoards[config.canvasBoardIndex].imageName
@@ -4870,7 +5746,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: refreshOracleCanvasPreview()
         case .excerpt: refreshExcerptCanvasPreview()
         case .aiMac:
-            if let id = activeDeviceID(for: .aiMacScreen) {
+            if let id = activeColorScreenDeviceID {
                 refreshAIMacScreenPreview(deviceID: id)
             }
         }
@@ -4977,7 +5853,7 @@ public func setClockTimeFormat(_ format: String) {
         now: Date,
         deviceIDs: Set<UUID>? = nil
     ) {
-        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        let byID = Dictionary(entities.map { ($0.entityId, $0) }, uniquingKeysWith: { _, newest in newest })
         for device in enabledDevices(for: .bambuLab)
             where deviceIDs?.contains(device.id) ?? true {
             let config = BambuLabCardSettings.from(device)
@@ -5098,15 +5974,18 @@ public func setClockTimeFormat(_ format: String) {
 
         var aiMacRestores: [(deviceID: UUID, target: AIMacSmartRotationTarget)] = []
         let aiMacIDs = settings.devices.compactMap { device in
-            device.type == .aiMacScreen ? device.id : nil
+            device.type.isColorWiFiScreen ? device.id : nil
         }
         for deviceID in aiMacIDs {
+            guard !c6MenuPausedIDs.contains(deviceID) else { continue }
             let config = aiMacScreenSettings(for: deviceID)
             guard let returnContentMode = config.smartRotationReturnContentMode else { continue }
             let storedCardMode = config.smartRotationReturnCardModeRawValue
                 .flatMap(DisplayMode.init(rawValue:)) ?? config.cardMode
             let previousCardMode: DisplayMode?
-            if returnContentMode == .card {
+            if let nativeID = config.smartRotationReturnC6NativeCardID {
+                previousCardMode = allC6Cards(for: deviceID).contains { $0.nativeCard?.id == nativeID } ? storedCardMode : nil
+            } else if returnContentMode == .card {
                 previousCardMode = resolvedSmartRotationReturnMode(
                     storedCardMode,
                     printerDeviceID: config.smartRotationReturnPrinterDeviceID)
@@ -5121,7 +6000,8 @@ public func setClockTimeFormat(_ format: String) {
                 SmartCardRotationPolicy.releaseAutomaticTakeover(
                     .init(previousTarget: AIMacSmartRotationTarget(
                         AIMacScreenDeviceSettings(mode: returnContentMode,
-                                                  cardModeRawValue: cardMode.rawValue)),
+                                                  cardModeRawValue: cardMode.rawValue,
+                                                  c6NativeCardID: config.smartRotationReturnC6NativeCardID)),
                           presentedTarget: presented),
                     current: currentTarget)
             }
@@ -5129,14 +6009,16 @@ public func setClockTimeFormat(_ format: String) {
                 value.smartRotationReturnContentMode = nil
                 value.smartRotationReturnCardModeRawValue = nil
                 value.smartRotationReturnPrinterDeviceID = nil
+                value.smartRotationReturnC6NativeCardID = nil
                 if let requested {
                     value.mode = requested.contentMode
                     value.cardMode = requested.cardMode
+                    value.c6NativeCardID = requested.c6NativeCardID
                 }
             }
             guard let requested,
                   let device = settings.devices.first(where: {
-                      $0.id == deviceID && $0.type == .aiMacScreen && $0.isEnabled
+                      $0.id == deviceID && $0.type.isColorWiFiScreen && $0.isEnabled
                   }) else { continue }
             let restored = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard restored.autoPush,
@@ -5155,7 +6037,7 @@ public func setClockTimeFormat(_ format: String) {
         for restore in aiMacRestores {
             let current = aiMacScreenSettings(for: restore.deviceID)
             guard AIMacSmartRotationTarget(current) == restore.target else { continue }
-            if restore.target.contentMode == .card {
+            if restore.target.contentMode == .card && restore.target.c6NativeCardID == nil {
                 await refreshAIMacCardDataAndPush(
                     mode: restore.target.cardMode, deviceID: restore.deviceID)
             } else {
@@ -5304,7 +6186,7 @@ public func setClockTimeFormat(_ format: String) {
             scheduleLinkedLyricsPush(force: true, now: Date())
             // 小屏幕的播放状态锚点也要在暂停、继续和 seek 时立即刷新，不能等
             // 用户设定的下一次完整图片推送。
-            for device in enabledDevices(for: .aiMacScreen) {
+            for device in enabledColorWiFiScreens {
                 let config = aiMacScreenSettings(for: device.id)
                 if config.autoPush, config.mode == .card,
                    config.cardMode == .nowPlaying,
@@ -5359,10 +6241,13 @@ public func setClockTimeFormat(_ format: String) {
         }
 
         var aiMacActions: [(deviceID: UUID, needsRefresh: Bool)] = []
-        for device in enabledDevices(for: .aiMacScreen) {
+        for device in enabledColorWiFiScreens {
+            guard !c6MenuPausedIDs.contains(device.id) else { continue }
             let config = aiMacScreenSettings(for: device.id)
             let currentCard = config.mode == .card ? config.cardMode : .canvas
-            let modes = aiMacCardRotationList(for: device.id)
+            let modes = device.type == .c6Screen
+                ? c6CardRotationList(for: device.id).filter { $0.nativeCard == nil }.compactMap(\.displayMode)
+                : aiMacCardRotationList(for: device.id)
             let shouldSwitch = SmartCardRotationPolicy.shouldPrioritizeNowPlaying(
                 songChanged: true, isPlaying: nowPlaying.isPlaying,
                 rotationEnabled: config.cardRotationEnabled,
@@ -5382,9 +6267,11 @@ public func setClockTimeFormat(_ format: String) {
             mutateAIMacScreenSettings(device.id, schedulePush: false) { value in
                 value.smartRotationReturnContentMode = previousTarget.contentMode
                 value.smartRotationReturnCardModeRawValue = previousTarget.cardMode.rawValue
+                value.smartRotationReturnC6NativeCardID = previousTarget.c6NativeCardID
                 value.smartRotationReturnPrinterDeviceID = previousTarget.contentMode == .card
                     ? self.printerDeviceID(for: previousTarget.cardMode) : nil
                 value.mode = .card
+                value.c6NativeCardID = nil
                 value.cardMode = .nowPlaying
             }
             aiMacActions.append((device.id, true))
@@ -5654,7 +6541,7 @@ public func setClockTimeFormat(_ format: String) {
             lastSidebarArtworkData = nowPlaying.artwork
             refreshOracleCanvasPreview()
             refreshExcerptCanvasPreview()
-            for device in enabledDevices(for: .aiMacScreen) {
+            for device in enabledColorWiFiScreens {
                 let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
                 if config.mode == .card && config.cardMode == .nowPlaying {
                     refreshAIMacScreenPreview(deviceID: device.id)
@@ -5699,6 +6586,9 @@ public func setClockTimeFormat(_ format: String) {
         switch settings.displayMode {
         case .codex, .qwenWork:
             await refreshData(upload: true, forceUpload: false)
+        case .weather:
+            if settings.weatherSnapshot == nil { await refreshWeather() }
+            await push(force: true)
         case .systemMonitor:
             _ = monitor.sample(now: Date())
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -5767,14 +6657,14 @@ public func setClockTimeFormat(_ format: String) {
     // MARK: - 数据刷新（Codex 用量 / 千问办公额度：统一调取，一次拉两个源供各功能共享）
 
     private var allAIMacCanvasModules: [CanvasModule] {
-        enabledDevices(for: .aiMacScreen).flatMap { device in
+        enabledColorWiFiScreens.flatMap { device in
             (device.settings.aiMacScreen ?? AIMacScreenDeviceSettings())
                 .canvasBoards.flatMap(\.moduleList)
         }
     }
 
     private var activeAIMacCardModes: [DisplayMode] {
-        enabledDevices(for: .aiMacScreen).compactMap { device in
+        enabledColorWiFiScreens.compactMap { device in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             return config.mode == .card ? config.cardMode : nil
         }
@@ -5798,7 +6688,7 @@ public func setClockTimeFormat(_ format: String) {
     private var deviceCanvasNeedsLiveNowPlaying: Bool {
         (settings.oracleAutoPushEnabled && settings.oracleCanvasModuleList.contains(.nowPlaying))
             || (settings.excerptAutoPushEnabled && settings.excerptCanvasModuleList.contains(.nowPlaying))
-            || enabledDevices(for: .aiMacScreen).contains { device in
+            || enabledColorWiFiScreens.contains { device in
                 let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
                 if config.autoPush, config.mode == .card {
                     return CardCapabilityRegistry.capability(for: config.cardMode)?
@@ -5862,7 +6752,7 @@ public func setClockTimeFormat(_ format: String) {
             self.renderPreview()
             self.status = failures.isEmpty ? "Codex 额度来源已切换" : failures.joined(separator: "；")
             await self.pushWhenAvailable(force: false, silentIfUnchanged: true)
-            for device in self.enabledDevices(for: .aiMacScreen) {
+            for device in self.enabledColorWiFiScreens {
                 let config = self.aiMacScreenSettings(for: device.id)
                 if config.autoPush {
                     await self.pushAIMacScreen(deviceID: device.id, force: false)
@@ -5901,7 +6791,7 @@ public func setClockTimeFormat(_ format: String) {
         let currentCardSlots = activeAIMacCardModes.compactMap(\.formlabsSlotIndex)
         let keyboardRotationSlots = settings.cardRotationEnabled
             ? keyboardRotationList.compactMap(\.formlabsSlotIndex) : []
-        let aiMacRotationSlots = enabledDevices(for: .aiMacScreen).flatMap { device -> [Int] in
+        let aiMacRotationSlots = enabledColorWiFiScreens.flatMap { device -> [Int] in
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             guard config.autoPush, config.cardRotationEnabled else { return [] }
             return aiMacCardRotationList(for: device.id).compactMap(\.formlabsSlotIndex)
@@ -5925,7 +6815,7 @@ public func setClockTimeFormat(_ format: String) {
         if settings.excerptCanvasModuleList.contains(where: { $0.formlabsSlotIndex != nil }) {
             refreshExcerptCanvasPreview()
         }
-        for device in enabledDevices(for: .aiMacScreen) {
+        for device in enabledColorWiFiScreens {
             let config = aiMacScreenSettings(for: device.id)
             let usesFormlabs = config.mode == .card && config.cardMode.formlabsSlotIndex != nil
                 || config.mode == .canvas && config.canvasBoards.indices.contains(config.canvasBoardIndex)
@@ -6252,6 +7142,8 @@ public func setClockTimeFormat(_ format: String) {
     private func applyHASnapshot(entities: [HAEntity], errorText: String?,
                                  rebuildBambuCatalog: Bool = true,
                                  sampledAt: Date? = nil) {
+        let entities = entities.filter { !$0.entityId.hasPrefix("sensor.lingxi_mqtt_") }
+            + bambuMQTTEntities.values.flatMap { $0 }
         let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
         // 最后已知值只服务于已经绑定的实体。旧逻辑保存服务器全部实体且永不清理，
         // 在大型 HA 实例或实体改名后会持续抬高常驻内存。
@@ -6301,7 +7193,7 @@ public func setClockTimeFormat(_ format: String) {
             add(config.imageEntityID)
             add(config.taskImageEntityID)
         }
-        for device in enabledDevices(for: .aiMacScreen) {
+        for device in enabledColorWiFiScreens {
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             if config.mode == .card, config.cardMode == .homeAssistant {
                 HAEntityPicker.pictureEntityIDs(
@@ -6313,6 +7205,16 @@ public func setClockTimeFormat(_ format: String) {
                     HAEntityPicker.pictureEntityIDs(in: board.haEntityIDs).forEach(add)
                 }
             }
+        }
+        // Fetch static covers once when preparing an offline test, even if the
+        // currently visible online card uses its camera or another card type.
+        // Do not expand steady-state camera/image polling for all saved cards.
+        for device in enabledDevices(for: .c6Screen) where c6OfflineSimulationBusyIDs.contains(device.id) {
+            let selection = c6Selection(for: device)
+            for printer in selection.printers where printer.sourceHA && printer.showImage {
+                add(printer.imageEntity); add(printer.taskCoverEntity)
+            }
+            HAEntityPicker.pictureEntityIDs(in: selection.ha.entities.map(\.id)).forEach(add)
         }
         return ids
     }
@@ -6350,6 +7252,9 @@ public func setClockTimeFormat(_ format: String) {
     /// 因而切换 AI Mac 卡片无需临时改变键盘当前显示模式。
     private func refreshBambuEntities(for mode: DisplayMode) async {
         guard mode.bambuSlotIndex != nil else { return }
+        if let device = bambuDevice(for: mode), device.settings.bambuDataSource == .localMQTT {
+            reconcileBambuMQTTClients(); return
+        }
         // 冷启动直接落在 Bambu 卡片时，先建立一次完整目录；以后切卡仍只刷新已选实体。
         if bambuEntityCatalog.printerEntities.isEmpty {
             await ensureBambuEntityCatalog()
@@ -6534,6 +7439,8 @@ public func setClockTimeFormat(_ format: String) {
             bambuAutoZoomImages = [:]
             bambuCameraZoomRuntime = [:]
             haPictureRequestGenerations = [:]
+            c6PictureTaskKeys = [:]
+            c6PictureOrigins = [:]
             return changed
         }
         // URL 和鉴权必须属于同一轮服务器配置；等待期间切换 HA 时，旧请求结果
@@ -6541,6 +7448,15 @@ public func setClockTimeFormat(_ format: String) {
         let serverURL = settings.haServerURL
         let token = settings.haToken
         let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.entityId, $0) })
+        var pictureTaskKeys: [String: [String: String]] = [:]
+        for printer in enabledDevices(for: .bambuLab) where printer.settings.bambuDataSource != .localMQTT {
+            let fields = BambuLabCardSettings.from(printer)
+            if let task = byID[fields.taskEntityID], let key = C6TaskThumbnail.homeAssistantTaskKey(task.state) {
+                for imageID in [fields.taskImageEntityID, fields.imageEntityID] where !imageID.isEmpty {
+                    pictureTaskKeys[imageID, default: [:]][fields.taskEntityID] = key
+                }
+            }
+        }
         var requests: [(id: String, url: URL, generation: UInt64)] = []
         for id in wanted {
             guard let entity = byID[id],
@@ -6578,9 +7494,14 @@ public func setClockTimeFormat(_ format: String) {
         for (id, generation, data) in fetched
             where retainedNow.contains(id) && haPictureRequestGenerations[id] == generation {
             images[id] = data
+            c6PictureTaskKeys[id] = pictureTaskKeys[id]
+            c6PictureOrigins[id] = Self.sha256(Data(serverURL.utf8) + Data([0]) + Data(token.utf8))
         }
+        c6PictureTaskKeys = c6PictureTaskKeys.filter { retainedNow.contains($0.key) }
+        c6PictureOrigins = c6PictureOrigins.filter { retainedNow.contains($0.key) }
         let changed = images != haSnapshot.images
         haSnapshot.images = images
+        scheduleC6ThumbnailSync()
         return changed
     }
 
@@ -6596,7 +7517,7 @@ public func setClockTimeFormat(_ format: String) {
         canvasHAEntityIDs(for: .keyboard).forEach { add($0) }
         canvasHAEntityIDs(for: .oracle).forEach { add($0) }
         canvasHAEntityIDs(for: .excerpt).forEach { add($0) }
-        for device in enabledDevices(for: .aiMacScreen) {
+        for device in enabledColorWiFiScreens {
             let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
             (config.haCardEntityIDs ?? settings.haCardEntityIDs).forEach { add($0) }
             config.canvasBoards.flatMap(\.haEntityIDs).forEach { add($0) }
@@ -6930,7 +7851,7 @@ public func setClockTimeFormat(_ format: String) {
             return settings.devices.first(where: { $0.id == id })?
                 .settings.oracleLyricsKeyboardDeviceID
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return nil }
+            guard let id = activeColorScreenDeviceID else { return nil }
             return aiMacScreenSettings(for: id).lyricsKeyboardDeviceID
         case .keyboard, .excerpt:
             return nil
@@ -6947,7 +7868,7 @@ public func setClockTimeFormat(_ format: String) {
             settings.devices[index].settings.oracleLyricsKeyboardDeviceID = keyboardID
             persistSettings()
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return }
+            guard let id = activeColorScreenDeviceID else { return }
             mutateAIMacScreenSettings(id, schedulePush: false) {
                 $0.lyricsKeyboardDeviceID = keyboardID
             }
@@ -6995,7 +7916,7 @@ public func setClockTimeFormat(_ format: String) {
         for device in enabledDevices(for: .oracle) {
             if let id = device.settings.oracleLyricsKeyboardDeviceID { ids.insert(id) }
         }
-        for device in enabledDevices(for: .aiMacScreen) {
+        for device in enabledColorWiFiScreens {
             if let id = (device.settings.aiMacScreen ?? AIMacScreenDeviceSettings())
                 .lyricsKeyboardDeviceID { ids.insert(id) }
         }
@@ -7034,7 +7955,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleCanvasHAEntityIDs
         case .excerpt: return settings.excerptCanvasHAEntityIDs
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return [] }
+            guard let id = activeColorScreenDeviceID else { return [] }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return [] }
             return config.canvasBoards[config.canvasBoardIndex].haEntityIDs
@@ -7049,7 +7970,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: settings.oracleCanvasHAEntityIDs = cleaned
         case .excerpt: settings.excerptCanvasHAEntityIDs = cleaned
         case .aiMac:
-            guard let deviceID = activeDeviceID(for: .aiMacScreen) else { return }
+            guard let deviceID = activeColorScreenDeviceID else { return }
             // 图片实体要先取得静态帧再首次推送，不能让通用设置监听抢先发送空图。
             mutateCurrentAIMacCanvasBoard(pushImmediately: false, schedulePush: false) {
                 $0.haEntityIDs = cleaned
@@ -7079,7 +8000,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleSspaiCount
         case .excerpt: return settings.excerptSspaiCount
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return 3 }
+            guard let id = activeColorScreenDeviceID else { return 3 }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return 3 }
             return config.canvasBoards[config.canvasBoardIndex].sspaiCount
@@ -7113,7 +8034,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleNowPlayingHorizontal
         case .excerpt: return settings.excerptNowPlayingHorizontal
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return false }
+            guard let id = activeColorScreenDeviceID else { return false }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
             return config.canvasBoards[config.canvasBoardIndex].nowPlayingHorizontal
@@ -7132,7 +8053,7 @@ public func setClockTimeFormat(_ format: String) {
     func nowPlayingCover(for owner: CanvasOwner) -> Bool {
         switch owner {
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return true }
+            guard let id = activeColorScreenDeviceID else { return true }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return true }
             return config.canvasBoards[config.canvasBoardIndex].usesNowPlayingCover
@@ -7155,7 +8076,7 @@ public func setClockTimeFormat(_ format: String) {
         case .keyboard: return settings.canvasNowPlayingSmartBg
         case .oracle, .excerpt: return false
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return true }
+            guard let id = activeColorScreenDeviceID else { return true }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return true }
             return config.canvasBoards[config.canvasBoardIndex].usesNowPlayingSmartBackground
@@ -7190,7 +8111,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: stored = settings.oracleCanvasPrinterFields
         case .excerpt: stored = settings.excerptCanvasPrinterFields
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { stored = [:]; break }
+            guard let id = activeColorScreenDeviceID else { stored = [:]; break }
             let config = aiMacScreenSettings(for: id)
             stored = config.canvasBoards.indices.contains(config.canvasBoardIndex)
                 ? config.canvasBoards[config.canvasBoardIndex].printerFields : [:]
@@ -7224,7 +8145,7 @@ public func setClockTimeFormat(_ format: String) {
         case .oracle: return settings.oracleSspaiRandom
         case .excerpt: return settings.excerptSspaiRandom
         case .aiMac:
-            guard let id = activeDeviceID(for: .aiMacScreen) else { return false }
+            guard let id = activeColorScreenDeviceID else { return false }
             let config = aiMacScreenSettings(for: id)
             guard config.canvasBoards.indices.contains(config.canvasBoardIndex) else { return false }
             return config.canvasBoards[config.canvasBoardIndex].sspaiRandom
@@ -8714,7 +9635,7 @@ public func setClockTimeFormat(_ format: String) {
                     self.status = "M5 控制器：推送摘录画板"
                     await self.pushExcerptCanvas()
                 }
-            case .aiMacScreen:
+            case .aiMacScreen, .c6Screen:
                 self.status = "M5 控制器：AI Mac \(forward ? "下一张" : "上一张")卡片"
                 self.aiMacPageCard(deviceID: target.id, direction: direction)
             case .awtrix:
@@ -8730,6 +9651,15 @@ public func setClockTimeFormat(_ format: String) {
 
     public func aiMacPageCard(deviceID: UUID, direction: Int) {
         let config = aiMacScreenSettings(for: deviceID)
+        if settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen {
+            let cards = c6CardList(for: deviceID)
+            guard !cards.isEmpty else { return }
+            let current = cards.firstIndex { $0.id == selectedC6Card(for: deviceID)?.id } ?? -1
+            let offset = config.mode == .card ? direction : 1
+            let index = ((current + offset) % cards.count + cards.count) % cards.count
+            activateC6Card(cards[index], deviceID: deviceID)
+            return
+        }
         let modes = aiMacCardList(for: deviceID)
         guard !modes.isEmpty else { return }
         guard config.mode == .card else {
@@ -8742,9 +9672,138 @@ public func setClockTimeFormat(_ format: String) {
         let next = modes[((current + direction) % count + count) % count]
         mutateAIMacScreenSettings(deviceID, pushImmediately: true) {
             $0.mode = .card
+            $0.c6NativeCardID = nil
             $0.cardMode = next
         }
         aiMacScreenLastCardRotation[deviceID] = Date()
+    }
+
+    public func aiMacRotationBinding(deviceID: UUID) -> Binding<Bool> {
+        Binding(get: { self.aiMacScreenSettings(for: deviceID).rotate180 }, set: { value in
+            if self.settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen {
+                let host = self.aiMacScreenSettings(for: deviceID).host
+                Task { @MainActor in
+                    do {
+                        let client = try C6StandaloneClient(host: host)
+                        var token = self.c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)
+                        if token.isEmpty { token = try await client.connectLAN(); self.authorizeC6Sync(deviceID: deviceID, token: token) }
+                        for attempt in 0..<2 {
+                            var remote = try await client.read(token: token); remote.rotation = value ? 180 : 0
+                            guard self.isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                            do { _ = try await client.save(remote, token: token); break }
+                            catch C6StandaloneError.conflict where attempt == 0 { continue }
+                        }
+                        guard self.isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                        self.mutateAIMacScreenSettings(deviceID, pushImmediately: true) { $0.rotate180 = value }
+                    } catch { self.aiMacScreenStatuses[deviceID] = "屏幕方向未保存：\(error.localizedDescription)" }
+                }
+                return
+            }
+            self.mutateAIMacScreenSettings(deviceID, pushImmediately: true) { $0.rotate180 = value }
+        })
+    }
+
+    /// This C6-only choice changes the LCD boundary, never the pushed pixels.
+    public func c6DisplayRotationBinding(deviceID: UUID) -> Binding<Int> {
+        Binding(get: {
+            self.c6SyncedConfigurations[deviceID]?.rotation ?? (self.aiMacScreenSettings(for: deviceID).rotate180 ? 180 : 0)
+        }, set: { angle in
+            guard [0, 90, 180, 270].contains(angle), self.settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen else { return }
+            let host = self.aiMacScreenSettings(for: deviceID).host
+            Task { @MainActor in
+                do {
+                    let client = try C6StandaloneClient(host: host)
+                    var token = self.c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)
+                    if token.isEmpty { token = try await client.connectLAN(); self.authorizeC6Sync(deviceID: deviceID, token: token) }
+                    for attempt in 0..<2 {
+                        var remote = try await client.read(token: token); remote.rotation = angle
+                        try await client.ensureSupports(remote, token: token)
+                        guard self.isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                        do {
+                            let saved = try await client.save(remote, token: token)
+                            guard self.isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                            self.didUpdateC6DeviceConfiguration(saved, deviceID: deviceID, host: host)
+                            self.mutateAIMacScreenSettings(deviceID, pushImmediately: true) { $0.rotate180 = angle == 180 }
+                            break
+                        } catch C6StandaloneError.conflict where attempt == 0 { continue }
+                    }
+                } catch { self.aiMacScreenStatuses[deviceID] = "屏幕方向未保存：\(error.localizedDescription)" }
+            }
+        })
+    }
+
+    private func startAIMacButtonPolling() {
+        aiMacButtonTask?.cancel()
+        aiMacButtonTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pollAIMacButtons()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+        }
+    }
+
+    private func pollAIMacButtons() async {
+        for id in c6MenuPausedIDs {
+            guard let host = c6MenuHosts[id], isCurrentColorScreenTarget(id, host: host) else {
+                c6MenuPausedIDs.remove(id); c6MenuHosts[id] = nil; aiMacButtonState[id] = nil
+                continue
+            }
+        }
+        for device in enabledColorWiFiScreens {
+            guard !c6OfflineSimulationIDs.contains(device.id) else { continue }
+            let config = aiMacScreenSettings(for: device.id)
+            guard !(aiMacScreensSystemSleeping && config.followSystemSleep),
+                  let caps = aiMacScreenCapabilities[device.id],
+                  caps.host == AIMacScreenSupport.normalizedHost(config.host),
+                  let url = caps.buttonURL else { continue }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 1
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      !c6OfflineSimulationIDs.contains(device.id),
+                      let snapshot = try? JSONDecoder().decode(C6ButtonSnapshot.self, from: data),
+                      snapshot.isCompatible(protocol: caps.interactionProtocol, identity: caps.deviceIdentity),
+                      settings.devices.contains(where: { $0.id == device.id && $0.isEnabled }),
+                      AIMacScreenSupport.normalizedHost(aiMacScreenSettings(for: device.id).host) == caps.host
+                else { continue }
+                let previous = aiMacButtonState[device.id]
+                let now = Date()
+                aiMacButtonState[device.id] = (caps.host, snapshot, now)
+                let wasPaused = c6MenuPausedIDs.contains(device.id)
+                if snapshot.menuActive == true { c6MenuPausedIDs.insert(device.id); c6MenuHosts[device.id] = caps.host }
+                else { c6MenuPausedIDs.remove(device.id); c6MenuHosts[device.id] = nil }
+                if wasPaused && snapshot.menuActive == false {
+                    aiMacScreenLastCardRotation[device.id] = now
+                    aiMacScreenLastBoardRotation[device.id] = now
+                }
+                if device.type == .c6Screen,
+                   previous == nil || previous?.host != caps.host || previous?.snapshot.bootID != snapshot.bootID {
+                    // Static covers live in device RAM, unlike its saved revision.
+                    // A reboot/reconnect must not be deduplicated by the Mac's
+                    // successful-upload hash from the preceding session.
+                    c6ThumbnailHashes[device.id] = nil; c6ThumbnailAttempts[device.id] = nil
+                    scheduleC6ThumbnailSync()
+                }
+                let refresh = device.type == .c6Screen && snapshot.menuActive != true && (
+                    wasPaused || previous == nil || previous?.snapshot.bootID != snapshot.bootID ||
+                    previous?.snapshot.viewRevision != snapshot.viewRevision)
+                if refresh {
+                    aiMacScreenLastHashes[device.id] = nil
+                    await pushAIMacScreen(deviceID: device.id, force: true)
+                }
+                // Baseline on first contact/reboot/reconnect. Never replay stale presses.
+                if let previous, previous.host == caps.host, previous.snapshot.bootID == snapshot.bootID,
+                   now.timeIntervalSince(previous.time) < 2,
+                   snapshot.menuActive != true,
+                   snapshot.sequence > previous.snapshot.sequence {
+                    aiMacPageCard(deviceID: device.id, direction: 1)
+                }
+            } catch {
+                aiMacButtonState[device.id] = nil
+            }
+        }
     }
 
     public func sendM5ControllerInfo() {
@@ -8996,7 +10055,7 @@ public func setClockTimeFormat(_ format: String) {
             // 打印机卡片不能显示“Bambu Lab 打印机 2”这类内部卡片位名称。
             // 与菜单栏使用同一套稳定映射，始终解析到设备管理中的用户自定义名称。
             return MenuBarNamingPolicy.printerCardTitle(for: mode, devices: settings.devices)
-        case .aiMacScreen:
+        case .aiMacScreen, .c6Screen:
             let config = aiMacScreenSettings(for: device.id)
             if config.mode == .card {
                 return MenuBarNamingPolicy.printerCardTitle(
@@ -10547,6 +11606,122 @@ public func setClockTimeFormat(_ format: String) {
         }
     }
 
+    /// Menu-only rendering reads cached data and detached configurations. It never
+    /// selects a device, samples the system, connects, persists or pushes content.
+    func menuBarPreview(for target: MenuBarPreviewTarget) throws -> NSImage? {
+        guard let device = MenuBarPresentationPolicy.displayDevices(settings.devices)
+            .first(where: { $0.id == target.deviceID }) else { return nil }
+        return try autoreleasepool {
+            switch target {
+            case let .c6Local(id, token):
+                // A native preview is the current hardware frame, never a fake
+                // software rendition or a command that switches the device.
+                guard device.type == .c6Screen,
+                      selectedC6Card(for: id)?.id == token,
+                      selectedC6Card(for: id)?.nativeCard?.headers == c6NativeCardSelections[id]
+                else { return nil }
+                return aiMacScreenPreviews[id]
+            case let .awtrix(id, name):
+                // AWTRIX owns app rendering. Only its actual current frame is available;
+                // do not silently switch apps or fetch over the network just to preview.
+                guard awtrixSnapshots[id]?.device.currentApp?.caseInsensitiveCompare(name) == .orderedSame else { return nil }
+                return awtrixLivePreviewImages[id]
+            case let .card(id, mode) where device.type == .keyboard:
+                guard keyboardCardList(for: id).contains(where: { $0.displayMode == mode }) else { return nil }
+                if activeDeviceID(for: .keyboard) == id, settings.displayMode == mode,
+                   let previewImage { return previewImage }
+                let copy = try MenuBarPresentationPolicy.previewSettings(from: settings, device: device)
+                copy.displayMode = mode
+                let result = try LiquidGlassCardRenderer.renderKeyboard(settings: copy) {
+                    try self.renderCurrentClassic(previewSettings: copy, previewKeyboardID: id)
+                }
+                return NSImage(data: result.data) ?? NSImage(cgImage: result.image, size: NSSize(width: 142, height: 428))
+            case .card where device.type.isColorWiFiScreen, .board where device.type.isColorWiFiScreen:
+                var config = aiMacScreenSettings(for: device.id)
+                switch target {
+                case let .card(_, mode):
+                    if device.type == .c6Screen && mode == .aiMacClock {
+                        guard let clock = selectedC6Card(for: device.id), clock.nativeCard?.kind == "clock",
+                              clock.nativeCard?.headers == c6NativeCardSelections[device.id] else { return nil }
+                        return aiMacScreenPreviews[device.id]
+                    }
+                    guard aiMacCardList(for: device.id).contains(mode) else { return nil }
+                    if isCurrentAIMacCard(deviceID: device.id, mode: mode),
+                       let cached = aiMacScreenPreviews[device.id] { return cached }
+                    config.mode = .card
+                    config.c6NativeCardID = nil
+                    config.cardMode = mode
+                case let .board(_, boardID):
+                    guard let index = config.canvasBoards.firstIndex(where: { $0.id == boardID && $0.isSidebarVisible }) else { return nil }
+                    if isCurrentAIMacCanvasBoard(deviceID: device.id, boardID: boardID),
+                       let cached = aiMacScreenPreviews[device.id] { return cached }
+                    config.mode = .canvas
+                    config.c6NativeCardID = nil
+                    config.canvasBoardIndex = index
+                default: return nil
+                }
+                let image = try renderAIMacScreen(deviceID: device.id, config: config, system: system)
+                return NSImage(cgImage: aiMacScreenTransportPreview(image, deviceID: device.id, config: config),
+                    size: NSSize(width: 240, height: 240))
+            case let .board(_, boardID):
+                guard device.type == .oracle || device.type == .excerpt else { return nil }
+                let copy = try MenuBarPresentationPolicy.previewSettings(from: settings, device: device)
+                let oracle = device.type == .oracle
+                if oracle {
+                    guard let board = visibleOracleCanvasBoards(for: device.id).first(where: { $0.id == boardID }) else { return nil }
+                    if activeDeviceID(for: .oracle) == device.id,
+                       isCurrentOracleCanvasBoard(deviceID: device.id, boardID: boardID),
+                       let oracleCanvasImage { return oracleCanvasImage }
+                    board.apply(to: copy)
+                } else {
+                    guard let board = visibleExcerptCanvasBoards(for: device.id).first(where: { $0.id == boardID }) else { return nil }
+                    if activeDeviceID(for: .excerpt) == device.id,
+                       isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: boardID),
+                       let excerptCanvasImage { return excerptCanvasImage }
+                    board.apply(to: copy)
+                }
+                let dark = (oracle ? copy.oracleBackgroundMode : copy.excerptBackgroundMode) == .dark
+                let palette = ScreenThemes.resolved(theme: copy.cardTheme, backgroundTone: dark ? .dark : .light,
+                    customBackgroundHex: nil, accentTone: copy.accentTone,
+                    customAccentHex: copy.customAccentHex, softwareIsDark: dark)
+                var fields = oracle ? copy.oracleCanvasPrinterFields : copy.excerptCanvasPrinterFields
+                for module in CanvasModule.allCases where module.bambuSlotIndex != nil && fields[module.rawValue] == nil {
+                    fields[module.rawValue] = .default
+                }
+                let width = oracle ? ScreenRenderer.oracleCanvasSize : ScreenRenderer.excerptCanvasWidth
+                let height = oracle ? ScreenRenderer.oracleCanvasSize : ScreenRenderer.excerptCanvasHeight
+                let raw = ScreenRenderer.renderDeviceCanvas(
+                    modules: oracle ? copy.oracleCanvasModuleList : copy.excerptCanvasModuleList,
+                    system: system, nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
+                    customText: copy.canvasText, settings: copy, codex: usage, qwenQuota: qwenQuota,
+                    sspaiArticles: Array(sspaiArticles.prefix(max(0, min(6, oracle ? copy.oracleSspaiCount : copy.excerptSspaiCount)))),
+                    ha: haSnapshot.selecting(entityIDs: oracle ? copy.oracleCanvasHAEntityIDs : copy.excerptCanvasHAEntityIDs),
+                    formlabsItems: formlabsCanvasItems(), now: Date(), width: width, height: height, palette: palette,
+                    flipVertical: !oracle && copy.excerptImageRotate180,
+                    flipHorizontal: !oracle && copy.excerptImageRotate180,
+                    columns: oracle ? 1 : copy.excerptLayoutColumns,
+                    fullWidthModules: oracle ? [] : Set(copy.excerptFullWidthModules),
+                    nowPlayingHorizontal: oracle ? copy.oracleNowPlayingHorizontal : copy.excerptNowPlayingHorizontal,
+                    canvasImagePath: oracle ? copy.oracleCanvasImagePath : copy.excerptCanvasImagePath,
+                    printerFields: fields, optimizeBambuForOracleEInk: true, bambuHeroLayout: true, showBambuCamera: false)
+                let image: CGImage
+                if oracle {
+                    image = ScreenRenderer.oraclePreviewImage(from: raw, algorithm: copy.oracleGrayAlgorithm,
+                        mode: copy.oracleDisplayMode, dither: copy.oracleDitherKernel)
+                } else {
+                    image = ScreenRenderer.grayscaleCanvasImage(from: raw,
+                        algorithm: copy.excerptPushRawImage ? .luminosity : copy.excerptGrayAlgorithm,
+                        mode: copy.excerptPushRawImage ? .gray4 : copy.excerptDisplayMode,
+                        dither: copy.excerptPushRawImage
+                            ? ScreenRenderer.localDitherKernel(for: copy.excerptServerDitherType, kernel: copy.excerptServerDitherKernel)
+                            : copy.excerptDitherKernel, width: width, height: height)
+                }
+                return NSImage(cgImage: image, size: NSSize(width: width, height: height))
+            default: return nil
+            }
+        }
+    }
+
     // MARK: - 渲染
 
     public func renderBytes() throws -> Data {
@@ -10559,28 +11734,33 @@ public func setClockTimeFormat(_ format: String) {
         }
     }
 
-    private func renderCurrentClassic() throws -> RenderResult {
+    private func renderCurrentClassic(previewSettings: AppSettings? = nil,
+                                      previewKeyboardID: UUID? = nil) throws -> RenderResult {
+        let settings = previewSettings ?? self.settings
         // 夸夸卡：完成时间段后的展示窗口内，任何界面都优先显示夸夸内容
-        if let text = praiseText, let until = praiseUntil, Date() < until {
+        if previewSettings == nil, let text = praiseText, let until = praiseUntil, Date() < until {
             return try ScreenRenderer.renderPraise(text: text,
                                                    sessions: pomodoroSnapshot.completedFocusSessions,
                                                    settings: settings)
         }
         // 打印完成庆祝卡：打印成功后短暂展示 🎉（与夸夸同模式），并显示完成的任务名
-        if let name = printSuccessName, let until = printSuccessUntil, Date() < until {
+        if previewSettings == nil, let name = printSuccessName, let until = printSuccessUntil, Date() < until {
             return try ScreenRenderer.renderPrintSuccess(printerName: name,
                                                          taskName: printSuccessTask,
                                                          picture: printSuccessImage,
                                                          settings: settings)
         }
         // HA 异常告警：监控到异常时优先显示告警卡（打印机名 + 错误码，醒目样式），恢复后自动消失
-        if !haAlertTitle.isEmpty {
+        if previewSettings == nil, !haAlertTitle.isEmpty {
             return try ScreenRenderer.renderHAAlert(title: haAlertTitle, message: haAlertMessage,
                                                     settings: settings)
         }
         switch settings.displayMode {
         case .pomodoro:
             return try ScreenRenderer.renderPomodoro(pomodoroSnapshot, settings: settings)
+        case .weather:
+            return try ScreenRenderer.renderCanvas(modules: [.weather], system: system,
+                nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot, customText: "", settings: settings)
         case .systemMonitor:
             return try ScreenRenderer.renderSystem(system, history: monitor.networkHistory, settings: settings)
         case .customImage:
@@ -10592,9 +11772,11 @@ public func setClockTimeFormat(_ format: String) {
         case .qwenWork:
             return try ScreenRenderer.renderQwenWork(qwenQuota, settings: settings)
         case .homeAssistant:
-            return try ScreenRenderer.renderHA(haSnapshot.selectedEntities,
+            let snapshot = previewSettings == nil ? haSnapshot : haSnapshot.selecting(
+                entityIDs: Self.haCardPerKeyboardEnabled ? settings.haCardEntityIDs : settings.haEntities)
+            return try ScreenRenderer.renderHA(snapshot.selectedEntities,
                                                aliases: haSnapshot.aliases,
-                                               missing: haSnapshot.missingRows(),
+                                               missing: snapshot.missingRows(),
                                                images: haSnapshot.images,
                                                errorText: haSnapshot.errorText,
                                                settings: settings)
@@ -10629,7 +11811,7 @@ public func setClockTimeFormat(_ format: String) {
             return try ScreenRenderer.renderEmojiWallpaper(settings: settings, now: Date())
         case .nowPlaying:
             let artwork = cachedArtworkImage(for: nowPlaying.artwork)
-            let keyboardID = activeDeviceID(for: .keyboard)
+            let keyboardID = previewKeyboardID ?? activeDeviceID(for: .keyboard)
             let linked = keyboardID.map { linkedLyricsKeyboardIDs.contains($0) } ?? false
             let playbackNow = nowPlaying.anchored(at: Date())
             let lyrics = lyricsForKeyboard(keyboardID)?
@@ -10646,7 +11828,8 @@ public func setClockTimeFormat(_ format: String) {
                 customText: settings.canvasText, settings: settings,
                 codex: usage, qwenQuota: qwenQuota,
                 sspaiArticles: sspaiDisplayArticles(for: .keyboard),
-                ha: haSnapshot(forCanvas: .keyboard),
+                ha: previewSettings == nil ? haSnapshot(forCanvas: .keyboard)
+                    : haSnapshot.selecting(entityIDs: settings.canvasHAEntityIDs),
                 formlabsItems: formlabsCanvasItems(),
                 artworkImage: cachedArtworkImage(for: nowPlaying.artwork))
         case .aiMacClock:
@@ -10715,6 +11898,620 @@ public func setClockTimeFormat(_ format: String) {
 
     private func persistSettings() {
         store.save(settings)
+        scheduleC6ConfigurationSync()
+    }
+
+    public func c6AutomaticSyncBinding(for id: UUID) -> Binding<Bool> {
+        Binding(get: { self.settings.devices.first { $0.id == id }?.settings.c6AutomaticSync ?? true },
+                set: { value in
+            self.mutateDeviceSettings(id) { $0.c6AutomaticSync = value }
+            if !value { self.c6SyncTasks.removeValue(forKey: id)?.cancel(); self.c6SyncRequests[id] = nil }
+            else {
+                self.c6SyncLastCheck[id] = nil; self.c6SyncedInputs[id] = nil; self.c6AttemptInputs[id] = nil
+                self.scheduleC6ConfigurationSync()
+            }
+        })
+    }
+
+    public func setC6OfflineSimulation(deviceID id: UUID, enabled: Bool) async {
+        guard !c6OfflineSimulationBusyIDs.contains(id),
+              settings.devices.contains(where: { $0.id == id && $0.type == .c6Screen && $0.isEnabled }) else { return }
+        let host = aiMacScreenSettings(for: id).host
+        c6OfflineSimulationBusyIDs.insert(id)
+        defer { c6OfflineSimulationBusyIDs.remove(id) }
+        do {
+            // Serialize mode changes after any in-flight renewal. A cancelled
+            // URL request may already have reached the device; awaiting it makes
+            // the stop command the final request before permitting software frames.
+            await c6HeartbeatTask?.value
+            guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+            // Finish the latest selected entities/printers before disconnecting.
+            if enabled {
+                scheduleC6ConfigurationSync()
+                await c6SyncTasks[id]?.value
+                if let remote = c6SyncedConfigurations[id] {
+                    let covers = remote.printers.filter { $0.enabled && $0.sourceHA && $0.showImage }
+                        .flatMap { [$0.imageEntity, $0.taskCoverEntity] }
+                        + HAEntityPicker.pictureEntityIDs(in: remote.ha.entities.map(\.id))
+                    if !covers.isEmpty {
+                        await refreshHAPictures(entities: haSnapshot.entities, wantedIDs: covers)
+                    }
+                }
+                scheduleC6ThumbnailSync()
+                // Complete one best-effort, timeout-bounded cached-cover upload
+                // before pausing software traffic. Cover failures don't prevent
+                // standalone status/weather operation.
+                await c6ThumbnailTasks[id]?.value
+            }
+            guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+            if enabled, let current = settings.devices.first(where: { $0.id == id }),
+               current.settings.c6AutomaticSync ?? true {
+                guard c6SyncedHosts[id] == host,
+                      c6SyncedInputs[id] == c6SyncInput(for: current).key else {
+                    throw NSError(domain: "C6Simulation", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                        "最新显示配置尚未同步成功，请先检查同步状态后重试，以免测试设备旧配置。"])
+                }
+            }
+            let token = c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+            let client = try C6StandaloneClient(host: host)
+            if enabled {
+                let remote = try await client.read(token: token)
+                guard remote.enabled else {
+                    throw NSError(domain: "C6Simulation", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先同步设置，并启用电脑离线时独立运行。"])
+                }
+                guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                c6SyncTasks.removeValue(forKey: id)?.cancel(); c6SyncRequests[id] = nil
+                c6ThumbnailTasks.removeValue(forKey: id)?.cancel()
+                c6ThumbnailRequests[id] = nil
+                c6PendingForcedPushIDs.remove(id)
+                c6OfflineSimulationHosts[id] = host; c6OfflineSimulationIDs.insert(id)
+                aiMacScreenPreviews[id] = nil
+                aiMacButtonState[id] = nil
+                aiMacScreenStatuses[id] = "正在交回设备本地运行…"
+                do { try await client.simulateSoftwareOffline(true, token: token) }
+                catch {
+                    // A timed-out response may already have been applied by the device.
+                    try? await client.simulateSoftwareOffline(false, token: token)
+                    throw error
+                }
+                guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                      c6OfflineSimulationHosts[id] == host else { return }
+                c6HeartbeatAt = nil
+                aiMacScreenStatuses[id] = "模拟软件离线 · 设备独立订阅与轮转"
+                c6SyncStatuses[id] = "模拟离线中 · 电脑配置同步已暂停"
+                await refreshC6OfflinePreview(deviceID: id)
+            } else {
+                // Stop the remote control lease before allowing a fresh Mac frame.
+                try await client.simulateSoftwareOffline(false, token: token)
+                guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                c6OfflineSimulationIDs.remove(id); c6OfflineSimulationHosts[id] = nil
+                aiMacButtonState[id] = nil; aiMacScreenLastHashes[id] = nil
+                aiMacScreenLastClockSyncAt[id] = nil; c6HeartbeatAt = nil
+                c6SyncLastCheck[id] = nil
+                scheduleC6ConfigurationSync()
+                await pushAIMacScreen(deviceID: id, force: true)
+            }
+        } catch {
+            guard isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+            if enabled {
+                c6OfflineSimulationIDs.remove(id); c6OfflineSimulationHosts[id] = nil
+                scheduleC6ConfigurationSync()
+                Task { @MainActor [weak self] in await self?.pushAIMacScreen(deviceID: id, force: true) }
+            }
+            aiMacScreenStatuses[id] = "\(enabled ? "无法开始" : "无法结束")离线模拟：\(error.localizedDescription)"
+        }
+    }
+
+    public func refreshC6OfflinePreview(deviceID id: UUID) async {
+        guard c6OfflineSimulationIDs.contains(id), let host = c6OfflineSimulationHosts[id],
+              isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+        do {
+            let token = c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+            let bytes = try await C6StandaloneClient(host: host).previewFrame(token: token)
+            guard !Task.isCancelled, c6OfflineSimulationIDs.contains(id), c6OfflineSimulationHosts[id] == host,
+                  isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                  let image = AIMacScreenSupport.decodeRGB565(bytes) else { return }
+            aiMacScreenPreviews[id] = NSImage(cgImage: image, size: NSSize(width: 240, height: 240))
+            aiMacScreenStatuses[id] = "模拟软件离线 · 设备独立订阅与轮转"
+        } catch {
+            guard c6OfflineSimulationIDs.contains(id), c6OfflineSimulationHosts[id] == host else { return }
+            aiMacScreenStatuses[id] = "设备离线预览不可用：\(error.localizedDescription)"
+        }
+    }
+
+    /// View changes reuse a successful LAN connection without system prompts.
+    public func c6SessionAuthorization(deviceID: UUID) -> String {
+        c6Tokens[deviceID] ?? ""
+    }
+
+    public func authorizeC6Sync(deviceID: UUID, token: String) {
+        guard !token.isEmpty else { return }
+        // Keep the live LAN session even if private local persistence fails.
+        if C6SecretStore.save(token, deviceID: deviceID) {
+            c6SessionOnlyAuthorizationIDs.remove(deviceID)
+        } else {
+            c6SessionOnlyAuthorizationIDs.insert(deviceID)
+        }
+        c6Tokens[deviceID] = token
+        c6SyncLastCheck[deviceID] = nil; c6SyncedInputs[deviceID] = nil
+        c6ThumbnailHashes[deviceID] = nil; c6ThumbnailAttempts[deviceID] = nil
+        scheduleC6ConfigurationSync()
+    }
+
+    @discardableResult
+    public func invalidateC6Authorization(deviceID: UUID, host: String, token: String) -> Bool {
+        guard isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)),
+              (c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)) == token else { return false }
+        c6Tokens[deviceID] = ""
+        _ = C6SecretStore.save("", deviceID: deviceID)
+        c6SessionOnlyAuthorizationIDs.remove(deviceID)
+        c6SyncedInputs[deviceID] = nil
+        c6SyncStatuses[deviceID] = "设备连接已更新，将自动重新连接局域网设备。"
+        return true
+    }
+
+    private func c6Selection(for device: ManagedDevice) -> C6StandaloneConfiguration {
+        let screen = aiMacScreenSettings(for: device.id)
+        let modes = aiMacCardList(for: device.id)
+        let boards = screen.canvasBoards.filter(\.isSidebarVisible)
+        let modules = boards.flatMap(\.moduleList)
+        var selection = C6StandaloneConfiguration()
+        selection.enabled = true; selection.diagnostics = false
+        selection.clock = screen.mode == .clock || modes.contains(.aiMacClock)
+        selection.clockStyle = screen.c6ClockStyle ?? .flip
+        selection.rotation = screen.rotate180 ? 180 : 0
+        selection.brightness = screen.awakeBrightness ?? 80
+        selection.saturationPercent = screen.saturationPercent
+        selection.contrastPercent = screen.contrastPercent
+        let dark: Bool
+        if screen.mode == .canvas, screen.canvasBoards.indices.contains(screen.canvasBoardIndex) {
+            dark = screen.canvasBoards[screen.canvasBoardIndex].backgroundMode == .dark
+        } else {
+            dark = settings.softwareIsDark
+        }
+        let palette = ScreenThemes.resolved(theme: settings.cardTheme,
+            backgroundTone: dark ? .dark : .light, customBackgroundHex: nil,
+            accentTone: settings.accentTone, customAccentHex: settings.customAccentHex,
+            softwareIsDark: dark)
+        func rgb24(_ color: (CGFloat, CGFloat, CGFloat)) -> Int {
+            let values = [color.0, color.1, color.2].map { Int((min(1, max(0, $0)) * 255).rounded()) }
+            return (values[0] << 16) | (values[1] << 8) | values[2]
+        }
+        selection.theme = C6RenderTheme(enabled: true, dark: dark,
+            background: rgb24(palette.background), card: rgb24(palette.card),
+            inset: rgb24(palette.inset), border: rgb24(palette.border),
+            accent: rgb24(palette.accent), secondaryAccent: rgb24(palette.secondaryAccent),
+            primaryText: rgb24(palette.primaryText), secondaryText: rgb24(palette.secondaryText),
+            tertiaryText: rgb24(palette.tertiaryText))
+        selection.interval = min(300, max(5, screen.cardRotationMinutes * 60))
+        var ids = modes.contains(.homeAssistant) ? aiMacHAEntityIDs(for: device.id) : []
+        for board in boards where board.moduleList.contains(.homeAssistant) {
+            ids = HAEntityListEditor.merge(ids, adding: board.haEntityIDs)
+        }
+        selection.ha.entities = ids.map { id in
+            C6HAEntity(id: id, name: settings.haEntityAliases[id] ?? haSnapshot.entities.first { $0.entityId == id }?.displayName ?? id)
+        }
+        let wanted = Set(modes.compactMap(\.bambuSlotIndex) + modules.compactMap(\.bambuSlotIndex))
+        for (index, printer) in enabledDevices(for: .bambuLab).enumerated() where wanted.contains(index) {
+            let fields = BambuLabCardSettings.from(printer)
+            var p = C6PrinterConfiguration()
+            p.name = printer.name; p.serial = printer.id.uuidString.replacingOccurrences(of: "-", with: "")
+            p.showStatus = fields.showStatus; p.showProgress = fields.showProgress
+            p.showTask = fields.showTask; p.showRemaining = fields.showRemaining
+            p.showImage = fields.showImage
+            p.showNozzle = fields.showTemperature && !fields.nozzleTempEntityID.isEmpty
+            p.showBed = fields.showTemperature && !fields.bedTempEntityID.isEmpty
+            p.showError = fields.showError && !fields.errorEntityID.isEmpty
+            p.timeMode = fields.timeDisplayMode == .endTime ? 1 : 0
+            p.brandAccent = fields.themeAccent == .bambuLab
+            if !modes.contains(where: { $0.bambuSlotIndex == index }),
+               let board = boards.first(where: { $0.moduleList.contains(where: { $0.bambuSlotIndex == index }) }),
+               let module = board.moduleList.first(where: { $0.bambuSlotIndex == index }),
+               let f = board.printerFields[module.rawValue] {
+                p.showStatus = f.showStatus; p.showProgress = f.showProgress; p.showTask = f.showTask; p.showRemaining = f.showRemaining
+                p.showImage = f.showImage
+                p.showNozzle = f.showNozzleTemp && !fields.nozzleTempEntityID.isEmpty
+                p.showBed = f.showBedTemp && !fields.bedTempEntityID.isEmpty
+                p.showError = f.showError && !fields.errorEntityID.isEmpty
+            }
+            if printer.settings.bambuDataSource == .localMQTT {
+                let mqtt = printer.settings.bambuMQTT ?? BambuMQTTSettings()
+                p.host = mqtt.host; p.serial = mqtt.serial
+                p.certificate = mqtt.certificateSHA256.isEmpty ? "" : (mqtt.certificatePEM ?? "")
+            } else {
+                p.sourceHA = true; p.statusEntity = fields.statusEntityID
+                p.progressEntity = fields.progressEntityID; p.taskEntity = fields.taskEntityID
+                p.remainingEntity = fields.remainingEntityID
+                p.nozzleEntity = fields.nozzleTempEntityID
+                p.bedEntity = fields.bedTempEntityID
+                p.errorEntity = fields.errorEntityID
+                p.endTimeEntity = fields.endTimeEntityID
+                let imageID = fields.imageEntityID
+                p.imageEntity = imageID.hasPrefix("image.") || imageID.hasPrefix("camera.") ? imageID : ""
+                p.liveImage = !p.imageEntity.isEmpty
+                p.taskCoverEntity = fields.taskImageEntityID.hasPrefix("image.") ? fields.taskImageEntityID : ""
+            }
+            selection.printers.append(p)
+        }
+        let wantedForms = Set(modes.compactMap(\.formlabsSlotIndex) + modules.compactMap(\.formlabsSlotIndex))
+        for (index, printer) in enabledDevices(for: .formlabs).enumerated() where wantedForms.contains(index) {
+            let fields = printer.settings.formlabsConnection ?? FormlabsConnectionSettings()
+            var p = C6PrinterConfiguration()
+            p.sourceFormlabs = true; p.serial = fields.printerSerial
+            p.formClientID = fields.clientID; p.name = printer.name
+            p.showImage = fields.showThumbnail; p.showLayers = fields.showLayers
+            p.showMaterial = fields.showMaterial; p.brandAccent = fields.useBrandAccent
+            if !modes.contains(where: { $0.formlabsSlotIndex == index }),
+               let board = boards.first(where: { $0.moduleList.contains(where: { $0.formlabsSlotIndex == index }) }),
+               let module = board.moduleList.first(where: { $0.formlabsSlotIndex == index }),
+               let f = board.printerFields[module.rawValue] {
+                p.showStatus = f.showStatus; p.showProgress = f.showProgress
+                p.showTask = f.showTask; p.showRemaining = f.showRemaining; p.showImage = f.showImage
+            }
+            selection.printers.append(p)
+        }
+        selection.ha.enabled = !selection.ha.entities.isEmpty || selection.printers.contains(where: \.sourceHA)
+        if let endpoint = C6ConfigurationSync.homeAssistantEndpoint(c6HomeAssistantConnection?.url ?? "") {
+            selection.ha.host = endpoint.host; selection.ha.tls = endpoint.tls
+            selection.ha.port = endpoint.port
+        }
+        selection.weather = modes.contains(.weather) || modules.contains(.weather)
+        selection.latitude = settings.weather.latitude; selection.longitude = settings.weather.longitude
+        selection.weatherCity = settings.weather.city; selection.weatherMinutes = settings.weather.refreshMinutes
+        // With no offline-capable content selected, keep one useful fallback rather than blanking the screen.
+        if !selection.clock && !selection.ha.enabled && selection.printers.isEmpty && !selection.weather { selection.clock = true }
+        return selection
+    }
+
+    private func c6SyncInput(for device: ManagedDevice) -> (selection: C6StandaloneConfiguration, credentials: C6Credentials, key: String) {
+        let selection = c6Selection(for: device)
+        var credentials = C6Credentials()
+        credentials.haToken = selection.ha.enabled ? (c6HomeAssistantConnection?.token ?? "") : ""
+        for printer in enabledDevices(for: .formlabs) {
+            let fields = printer.settings.formlabsConnection ?? FormlabsConnectionSettings()
+            if selection.printers.contains(where: { $0.sourceFormlabs && $0.serial == fields.printerSerial && $0.formClientID == fields.clientID }) {
+                if let p = selection.printers.first(where: { $0.sourceFormlabs && $0.serial == fields.printerSerial && $0.formClientID == fields.clientID }) {
+                    credentials.formClientSecrets[p.credentialKey] = fields.clientSecret
+                }
+            }
+        }
+        for printer in enabledDevices(for: .bambuLab) where printer.settings.bambuDataSource == .localMQTT
+            && selection.printers.contains(where: { !$0.sourceHA && !$0.sourceFormlabs && $0.serial == printer.settings.bambuMQTT?.serial && $0.host == printer.settings.bambuMQTT?.host }) {
+            if let p = selection.printers.first(where: { !$0.sourceHA && !$0.sourceFormlabs && $0.serial == printer.settings.bambuMQTT?.serial && $0.host == printer.settings.bambuMQTT?.host }) {
+                credentials.printerAccessCodes[p.credentialKey] = BambuMQTTSecretStore.read(deviceID: printer.id)
+            }
+        }
+        var encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let bytes = (try? encoder.encode(selection)) ?? Data()
+        let secretBytes = (try? JSONSerialization.data(withJSONObject: credentials.printerAccessCodes, options: [.sortedKeys])) ?? Data()
+        let host = aiMacScreenSettings(for: device.id).host
+        let token = c6Tokens[device.id] ?? C6SecretStore.read(deviceID: device.id)
+        let formSecretBytes = (try? JSONSerialization.data(withJSONObject: credentials.formClientSecrets, options: [.sortedKeys])) ?? Data()
+        let key = Self.sha256(bytes + secretBytes + formSecretBytes + Data((host + token + credentials.haToken + c6CurrentPictureOrigin).utf8))
+        return (selection, credentials, key)
+    }
+
+    private func scheduleC6ConfigurationSync(periodic: Bool = false) {
+        guard backgroundServicesEnabled, !c6PreparingForQuit else { return }
+        for device in enabledDevices(for: .c6Screen) {
+            let automaticSync = device.settings.c6AutomaticSync ?? true
+            let id = device.id, host = aiMacScreenSettings(for: device.id).host
+            guard !c6OfflineSimulationIDs.contains(id) else { continue }
+            let due = c6SyncLastCheck[id].map { Date().timeIntervalSince($0) >= 60 } ?? true
+            if periodic && (!due || c6SyncTasks[id] != nil) { continue }
+            if c6Tokens[id] == nil { c6Tokens[id] = C6SecretStore.read(deviceID: id) }
+            let token = c6Tokens[id] ?? ""
+            guard !token.isEmpty else {
+                guard c6SyncTasks[id] == nil, due else { continue }
+                let requestID = "lan|" + host
+                c6SyncRequests[id] = requestID
+                c6SyncStatuses[id] = "正在连接局域网设备…"
+                c6SyncTasks[id] = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    defer { if self.c6SyncRequests[id] == requestID { self.c6SyncRequests[id] = nil; self.c6SyncTasks[id] = nil } }
+                    do {
+                        let session = try await C6StandaloneClient(host: host).connectLAN()
+                        guard !Task.isCancelled, !self.c6PreparingForQuit,
+                              self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                              !self.c6OfflineSimulationIDs.contains(id), self.c6SyncRequests[id] == requestID else { return }
+                        self.c6SyncTasks[id] = nil; self.c6SyncRequests[id] = nil
+                        self.authorizeC6Sync(deviceID: id, token: session)
+                    } catch {
+                        guard !Task.isCancelled, self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                        self.c6SyncLastCheck[id] = Date()
+                        self.c6SyncStatuses[id] = "局域网连接未完成：请检查设备网络；旧固件需先 USB 更新。"
+                    }
+                }
+                continue
+            }
+            let (selection, credentials, inputKey) = c6SyncInput(for: device)
+            let key = automaticSync ? inputKey : "read|" + host
+            let pictureOrigin = c6CurrentPictureOrigin
+            if c6AttemptInputs[id] == key && !due { continue }
+            guard c6SyncRequests[id] != key, key != c6SyncedInputs[id] || (periodic && due) else { continue }
+            let previous = c6SyncTasks[id]; previous?.cancel()
+            c6SyncRequests[id] = key
+            c6SyncTasks[id] = Task { @MainActor [weak self] in
+                await previous?.value
+                do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                self.c6SyncLastCheck[id] = Date(); self.c6AttemptInputs[id] = key; self.c6SyncStatuses[id] = "正在同步显示设置…"
+                defer { if self.c6SyncRequests[id] == key { self.c6SyncRequests[id] = nil; self.c6SyncTasks[id] = nil } }
+                do {
+                    let client = try C6StandaloneClient(host: host)
+                    guard !Task.isCancelled, self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                    var remote = try await client.read(token: token)
+                    guard !Task.isCancelled, self.c6SyncRequests[id] == key,
+                          self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                    let previousRemote = self.c6SyncedConfigurations[id]
+                    self.didUpdateC6DeviceConfiguration(remote, deviceID: id, host: host)
+                    let checkpoint = self.aiMacScreenSettings(for: id)
+                    let appliesSelection = automaticSync && C6ConfigurationSync.shouldApplySelection(inputKey: key,
+                        lastSyncedInputKey: self.c6SyncedInputs[id] ?? checkpoint.c6LastSyncedInputKey)
+                    var resolvedCheckpoint: C6StandaloneConfiguration?
+                    var authorizesMediaOrigin = false
+                    if appliesSelection {
+                        guard selection.ha.entities.count <= 6, selection.printers.count <= 3 else {
+                            throw NSError(domain: "C6Sync", code: 1, userInfo: [NSLocalizedDescriptionKey: "C6 独立运行目前最多 6 个实体、3 台打印机；未覆盖设备原配置，请减少选择后重试"])
+                        }
+                        if selection.weather && !self.settings.weather.isValid { throw C6StandaloneError.invalidConfiguration }
+                        var resolved = selection
+                        var resolvedCredentials = credentials
+                        if resolved.ha.enabled {
+                            guard !resolved.ha.host.isEmpty else {
+                                throw NSError(domain: "C6Sync", code: 3, userInfo: [NSLocalizedDescriptionKey: "请先在设备管理中填写 Home Assistant 服务器与长期令牌；C6 会自动复用，无需重复输入"])
+                            }
+                            resolved.ha.host = try await C6ConfigurationSync.localIPv4(resolved.ha.host)
+                        }
+                        for i in resolved.printers.indices where !resolved.printers[i].sourceHA && !resolved.printers[i].sourceFormlabs {
+                            let enteredKey = resolved.printers[i].credentialKey
+                            resolved.printers[i].host = try await C6ConfigurationSync.localIPv4(resolved.printers[i].host)
+                            if let secret = resolvedCredentials.printerAccessCodes.removeValue(forKey: enteredKey) {
+                                resolvedCredentials.printerAccessCodes[resolved.printers[i].credentialKey] = secret
+                            }
+                            guard !resolved.printers[i].certificate.isEmpty else {
+                                throw NSError(domain: "C6Sync", code: 2, userInfo: [NSLocalizedDescriptionKey: "请先在打印机设备管理中连接并确认 TLS 证书，再同步本地 MQTT"])
+                            }
+                        }
+                        resolvedCheckpoint = resolved
+                        let delta = C6ConfigurationSync.changedSelection(resolved, since: checkpoint.c6LastSyncedSelection)
+                        if delta.ha.enabled && resolvedCredentials.haToken.isEmpty {
+                            throw NSError(domain: "C6Sync", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                                "请先在设备管理中填写 Home Assistant 长期令牌；设备已有的本地配置不会被覆盖。"])
+                        }
+                        if !delta.ha.enabled { resolvedCredentials.haToken = "" }
+                        for attempt in 0..<2 {
+                            guard !C6ConfigurationSync.hasHomeAssistantOriginConflict(selection: delta, remote: remote) else {
+                                throw NSError(domain: "C6Sync", code: 4, userInfo: [NSLocalizedDescriptionKey:
+                                    "设备已配置另一 Home Assistant 来源；原配置已保留，请在本地设置中确认来源后再同步。"])
+                            }
+                            guard !C6ConfigurationSync.hasPrinterOriginConflict(selection: delta, remote: remote) else {
+                                throw NSError(domain: "C6Sync", code: 6, userInfo: [NSLocalizedDescriptionKey:
+                                    "同一打印机在设备与电脑中使用了不同来源或云端账号；设备原配置已保留，请确认来源后再同步。"])
+                            }
+                            let desired = C6ConfigurationSync.applyingChanges(resolved, since: checkpoint.c6LastSyncedSelection, into: remote)
+                            // Re-evaluate after every conflict read. An unchanged
+                            // source removed/replaced in the web UI must not receive
+                            // credentials from a previous attempt's allowlist.
+                            let permittedPrinters = delta.printers + resolved.printers.filter { selected in
+                                remote.printers.contains { C6ConfigurationSync.mediaSourceMatches($0, selected: selected) }
+                            }
+                            let permittedKeys = Set(permittedPrinters.map(\.credentialKey))
+                            var attemptCredentials = resolvedCredentials
+                            attemptCredentials.printerAccessCodes = attemptCredentials.printerAccessCodes.filter { permittedKeys.contains($0.key) }
+                            attemptCredentials.formClientSecrets = attemptCredentials.formClientSecrets.filter { permittedKeys.contains($0.key) }
+                            guard desired.ha.entities.count <= 6, desired.printers.count <= 3 else {
+                                throw NSError(domain: "C6Sync", code: 5, userInfo: [NSLocalizedDescriptionKey:
+                                    "合并后超出 C6 的 6 个实体或 3 台打印机限制；原配置已保留，请调整本地或电脑卡片选择。"])
+                            }
+                            guard !Task.isCancelled, self.c6SyncRequests[id] == key,
+                                  !self.c6OfflineSimulationIDs.contains(id),
+                                  self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                                  self.settings.devices.contains(where: { $0.id == id && $0.isEnabled && ($0.settings.c6AutomaticSync ?? true) }) else { return }
+                            do {
+                                remote = try await client.save(desired, token: token, credentials: attemptCredentials)
+                                authorizesMediaOrigin = !attemptCredentials.haToken.isEmpty
+                                    && C6ConfigurationSync.canAuthorizeMediaOrigin(selection: resolved, current: remote)
+                                break
+                            }
+                            catch C6StandaloneError.conflict where attempt == 0 { remote = try await client.read(token: token) }
+                        }
+                    }
+                    guard !Task.isCancelled, self.c6SyncRequests[id] == key,
+                          !self.c6OfflineSimulationIDs.contains(id),
+                          self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                          self.settings.devices.contains(where: { $0.id == id && $0.isEnabled }) else { return }
+                    let retainsMediaOrigin = C6ConfigurationSync.canRetainMediaOrigin(
+                        previous: previousRemote, current: remote,
+                        originMatches: self.c6SyncedPictureOrigins[id] == pictureOrigin)
+                    self.c6SyncedInputs[id] = key
+                    self.c6SyncedConfigurations[id] = remote
+                    self.c6SyncedHosts[id] = host
+                    if let resolvedCheckpoint {
+                        self.mutateAIMacScreenSettings(id, schedulePush: false) {
+                            $0.c6LastSyncedInputKey = key
+                            $0.c6LastSyncedSelection = resolvedCheckpoint
+                        }
+                    }
+                    if authorizesMediaOrigin || retainsMediaOrigin {
+                        self.c6SyncedPictureOrigins[id] = pictureOrigin
+                    } else {
+                        // A changed web-side server invalidates desktop media
+                        // authorization until a deliberate content sync restores it.
+                        self.c6SyncedPictureOrigins[id] = nil
+                        self.c6ThumbnailTasks.removeValue(forKey: id)?.cancel()
+                        self.c6ThumbnailRequests[id] = nil; self.c6ThumbnailHashes[id] = nil
+                        self.c6ThumbnailAttempts[id] = nil
+                    }
+                    self.scheduleC6ThumbnailSync()
+                    let resultLabel = appliesSelection ? "已同步到设备" : "已读取设备配置"
+                    self.c6SyncStatuses[id] = "\(resultLabel) · \(remote.ha.entities.count) 个实体 / \(remote.printers.count) 台打印机\(remote.weather ? " / 天气" : "")"
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    if error as? C6StandaloneError == .unauthorized,
+                       self.invalidateC6Authorization(deviceID: id, host: host, token: token) { return }
+                    let needsInput: Bool
+                    if let issue = error as? C6StandaloneError {
+                        switch issue {
+                        case .address, .invalidConfiguration, .unsupported, .upgradeRequired, .unauthorized, .configurationSave: needsInput = true
+                        default: needsInput = false
+                        }
+                    } else { needsInput = (error as NSError).domain == "C6Sync" }
+                    self.c6SyncStatuses[id] = "尚未同步：\(error.localizedDescription)" + (needsInput ? "" : "；设备联网后自动重试")
+                }
+            }
+        }
+    }
+
+    private struct C6MediaUpload {
+        var serial = "", entityID = "", taskEntity = "", cacheKey = ""
+        var brand = "", source = ""
+        var cover = false
+        var formDeviceID: UUID?
+        var formClientID = ""
+        var taskKey = "", hash = ""
+        var data = Data()
+    }
+
+    private func c6MediaPrinterKey(_ p: C6PrinterConfiguration) -> String? {
+        if let task = haSnapshot.entities.first(where: { $0.entityId == p.taskEntity }),
+           let key = C6TaskThumbnail.homeAssistantTaskKey(task.state) { return key }
+        return C6TaskThumbnail.taskKey(source: "snapshot", value: p.imageEntity.isEmpty ? p.taskCoverEntity : p.imageEntity)
+    }
+
+    private func c6MediaUploadIsCurrent(_ upload: C6MediaUpload, deviceID: UUID,
+                                      configuration: C6StandaloneConfiguration) -> Bool {
+        if !upload.serial.isEmpty {
+            guard let screen = settings.devices.first(where: { $0.id == deviceID && $0.isEnabled && $0.type == .c6Screen }),
+                  let printer = configuration.printers.first(where: {
+                      $0.serial == upload.serial && $0.brand == upload.brand && $0.source == upload.source
+                  }), c6Selection(for: screen).printers.contains(where: {
+                      C6ConfigurationSync.mediaSourceMatches(printer, selected: $0)
+                  }) else { return false }
+        }
+        if let id = upload.formDeviceID {
+            guard let printer = settings.devices.first(where: { $0.id == id && $0.isEnabled && $0.type == .formlabs }),
+                  printer.settings.formlabsConnection?.printerSerial == upload.serial,
+                  printer.settings.formlabsConnection?.clientID == upload.formClientID,
+                  let print = formlabsSnapshots[id]?.print else { return false }
+            return C6TaskThumbnail.formlabsTaskKey(runID: print.runID, name: print.name) == upload.taskKey
+        }
+        if upload.serial.isEmpty { return C6TaskThumbnail.taskKey(source: "entity", value: upload.entityID) == upload.taskKey }
+        if let task = haSnapshot.entities.first(where: { $0.entityId == upload.taskEntity }),
+           let key = C6TaskThumbnail.homeAssistantTaskKey(task.state) { return key == upload.taskKey }
+        return upload.taskKey == C6TaskThumbnail.taskKey(source: "snapshot", value: upload.cacheKey.components(separatedBy: "|").last ?? "")
+    }
+
+    private func scheduleC6ThumbnailSync() {
+        guard backgroundServicesEnabled, !c6PreparingForQuit else { return }
+        for device in enabledDevices(for: .c6Screen) {
+            let id = device.id, host = aiMacScreenSettings(for: id).host
+            let pictureOrigin = c6CurrentPictureOrigin
+            guard !c6OfflineSimulationIDs.contains(id), c6ThumbnailTasks[id] == nil,
+                  let remote = c6SyncedConfigurations[id], c6SyncedHosts[id] == host,
+                  c6SyncedPictureOrigins[id] == pictureOrigin,
+                  c6ThumbnailAttempts[id].map({ Date().timeIntervalSince($0) >= 15 }) ?? true else { continue }
+            var uploads: [C6MediaUpload] = []
+            func append(_ value: C6MediaUpload) {
+                var u = value
+                // Firmware has a four-frame LRU pool. Refresh acknowledged cache
+                // entries occasionally so eviction doesn't permanently suppress
+                // a still-current picture supplied by the Mac.
+                let cacheLease = Int(Date().timeIntervalSince1970 / 120)
+                u.hash = "\(remote.revision)|\(u.taskKey)|\(u.cacheKey)|\(cacheLease)|" + Self.sha256(u.data)
+                if c6ThumbnailHashes[id]?[u.cacheKey] != u.hash { uploads.append(u) }
+            }
+            let selectedPrinters = c6Selection(for: device).printers
+            for p in remote.printers where p.enabled && p.showImage
+                && selectedPrinters.contains(where: { C6ConfigurationSync.mediaSourceMatches(p, selected: $0) }) {
+                if p.sourceFormlabs {
+                    guard let device = enabledDevices(for: .formlabs).first(where: {
+                        $0.settings.formlabsConnection?.printerSerial == p.serial
+                            && $0.settings.formlabsConnection?.clientID == p.formClientID
+                    }), let snapshot = formlabsSnapshots[device.id], let print = snapshot.print,
+                       let taskKey = C6TaskThumbnail.formlabsTaskKey(runID: print.runID, name: print.name),
+                       let data = snapshot.thumbnail else { continue }
+                    append(C6MediaUpload(serial: p.serial, cacheKey: p.credentialKey + "|formlabs", brand: p.brand, source: p.source,
+                        formDeviceID: device.id, formClientID: p.formClientID, taskKey: taskKey, data: data))
+                } else if p.sourceHA, let key = c6MediaPrinterKey(p) {
+                    for (entity, cover) in [(p.imageEntity, false), (p.taskCoverEntity, true)] {
+                        guard entity.hasPrefix("image.") || entity.hasPrefix("camera."),
+                              c6PictureOrigins[entity] == pictureOrigin,
+                              let data = haSnapshot.picture(for: entity) else { continue }
+                        if let raw = haSnapshot.entities.first(where: { $0.entityId == p.taskEntity }),
+                           C6TaskThumbnail.homeAssistantTaskKey(raw.state) != nil,
+                           c6PictureTaskKeys[entity]?[p.taskEntity] != key { continue }
+                        let fallbackEntity = p.imageEntity.isEmpty ? p.taskCoverEntity : p.imageEntity
+                        append(C6MediaUpload(serial: p.serial, taskEntity: p.taskEntity,
+                            cacheKey: p.credentialKey + (cover ? "|cover|" : "|image|") + fallbackEntity, brand: p.brand, source: p.source,
+                            cover: cover, taskKey: key, data: data))
+                    }
+                }
+            }
+            if remote.ha.enabled {
+                for e in remote.ha.entities where e.id.hasPrefix("camera.") || e.id.hasPrefix("image.") {
+                    guard c6PictureOrigins[e.id] == pictureOrigin, let data = haSnapshot.picture(for: e.id),
+                          let key = C6TaskThumbnail.taskKey(source: "entity", value: e.id) else { continue }
+                    append(C6MediaUpload(entityID: e.id, cacheKey: "entity|" + e.id, taskKey: key, data: data))
+                }
+            }
+            guard !uploads.isEmpty else { continue }
+            c6ThumbnailAttempts[id] = Date()
+            let token = c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+            let requestID = UUID(); c6ThumbnailRequests[id] = requestID
+            c6ThumbnailTasks[id] = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { if self.c6ThumbnailRequests[id] == requestID { self.c6ThumbnailTasks[id] = nil; self.c6ThumbnailRequests[id] = nil } }
+                for upload in uploads {
+                    guard !Task.isCancelled, !self.c6OfflineSimulationIDs.contains(id),
+                          self.c6ThumbnailRequests[id] == requestID,
+                          self.c6SyncedPictureOrigins[id] == pictureOrigin, self.c6CurrentPictureOrigin == pictureOrigin,
+                          self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)),
+                          self.c6SyncedConfigurations[id]?.revision == remote.revision,
+                          self.c6MediaUploadIsCurrent(upload, deviceID: id, configuration: remote),
+                          let small = C6TaskThumbnail.encodeMedia(from: upload.data) else { continue }
+                    do {
+                        try await C6StandaloneClient(host: host).uploadMedia(small, serial: upload.serial,
+                            entityID: upload.entityID, brand: upload.brand, source: upload.source, cover: upload.cover,
+                            taskKey: upload.taskKey, revision: remote.revision, token: token)
+                        guard !Task.isCancelled, !self.c6OfflineSimulationIDs.contains(id),
+                              self.c6ThumbnailRequests[id] == requestID,
+                              self.c6SyncedConfigurations[id]?.revision == remote.revision,
+                              self.c6MediaUploadIsCurrent(upload, deviceID: id, configuration: remote),
+                              self.isCurrentColorScreenTarget(id, host: AIMacScreenSupport.normalizedHost(host)) else { return }
+                        self.c6ThumbnailHashes[id, default: [:]][upload.cacheKey] = upload.hash
+                    } catch {
+                        // Cache failure cannot block state subscriptions or replace another task.
+                        // The device retries independently; a full visible-page pool is bounded.
+                    }
+                }
+            }
+        }
+    }
+
+    private func refreshWeatherIfDue(now: Date) {
+        guard settings.weather.isValid, !weatherBusy else { return }
+        let key = "\(settings.weather.latitude),\(settings.weather.longitude),\(settings.weather.city)"
+        if key != weatherLocationKey {
+            weatherLocationKey = key; weatherLastAttempt = nil
+            if settings.weatherSnapshot?.matches(settings.weather) != true { settings.weatherSnapshot = nil }
+        }
+        let elapsed = weatherLastAttempt.map { now.timeIntervalSince($0) } ?? .infinity
+        let cachedElapsed = settings.weatherSnapshot.map { now.timeIntervalSince($0.updatedAt) } ?? .infinity
+        guard elapsed >= 300, cachedElapsed >= Double(settings.weather.refreshMinutes * 60) else { return }
+        Task { @MainActor [weak self] in await self?.refreshWeather() }
+    }
+
+    public func refreshWeather() async {
+        guard !weatherBusy, settings.weather.isValid else { return }
+        let request = settings.weather; weatherBusy = true; weatherLastAttempt = Date()
+        defer { weatherBusy = false }
+        do {
+            let snapshot = try await WeatherClient.fetch(request)
+            guard request == settings.weather else { return }
+            settings.weatherSnapshot = snapshot; weatherStatus = "已更新 · Open-Meteo"
+            renderPreview(); enabledColorWiFiScreens.forEach { refreshAIMacScreenPreview(deviceID: $0.id) }
+        } catch { weatherStatus = "天气更新失败，保留最近缓存；稍后重试" }
     }
 
     // MARK: - 工具

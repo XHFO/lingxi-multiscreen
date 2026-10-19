@@ -5,8 +5,10 @@ let package = Package(
     name: "LinxDisplay",
     platforms: [.macOS(.v26)],
     targets: [
+        .target(name: "C6DisplayRenderer", path: "Sources/C6DisplayRenderer", publicHeadersPath: "include"),
         .target(
             name: "LinxDisplayCore",
+            dependencies: ["C6DisplayRenderer"],
             path: "Sources/LinxDisplayCore",
             linkerSettings: [
                 .linkedFramework("JavaScriptCore"),

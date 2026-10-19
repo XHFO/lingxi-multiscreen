@@ -22,14 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var model: AppModel?
     private var statusItem: NSStatusItem?
     private var windowController: NSWindowController?
-    private var modeItems: [NSMenuItem] = []
     private var pomodoroSubmenu: NSMenu?
-    private var keyboardCanvasSubmenu: NSMenu?
-    private var oracleCanvasSubmenu: NSMenu?
-    private var excerptCanvasSubmenu: NSMenu?
-    private var aiMacCanvasSubmenu: NSMenu?
-    private var awtrixMenuEntry: NSMenuItem?
-    private var awtrixSubmenu: NSMenu?
+    private var deviceMenuEntries: [NSMenuItem] = []
+    private var previewViews: [NSMenu: MenuBarScreenPreview] = [:]
+    private var previewTargets: [NSMenuItem: MenuBarPreviewTarget] = [:]
+    private var previewCache: [MenuBarPreviewTarget: NSImage] = [:]
+    private var previewTimer: Timer?
     private var workspaceDisplayObservers: [NSObjectProtocol] = []
     private var distributedDisplayObservers: [NSObjectProtocol] = []
     private var awtrixQuitRestorePending = false
@@ -85,10 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.hasAWTRIXManualDisplayToRestore else { return .terminateNow }
+        guard let model else { return .terminateNow }
+        guard model.hasAWTRIXManualDisplayToRestore || model.hasC6SoftwareControlToRelease else { return .terminateNow }
         guard !awtrixQuitRestorePending else { return .terminateLater }
         awtrixQuitRestorePending = true
-        let restore = Task { @MainActor in await model.restoreAWTRIXManualDisplaysBeforeQuit() }
+        model.prepareForTermination()
+        let restore = Task { @MainActor in
+            async let c6: Void = model.releaseC6SoftwareControlBeforeQuit()
+            async let awtrix: Void = model.restoreAWTRIXManualDisplaysBeforeQuit()
+            _ = await (c6, awtrix)
+        }
         // 不让离线设备阻塞退出；未完成的恢复点留在磁盘，下次启动重试。
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -218,40 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // 三类画板统一折叠为二级菜单：只列出用户实际添加并保持可见的卡片/画板，
-        // 避免所有内容平铺在系统菜单栏造成层级混乱。
-        let keyboardCanvasSubmenu = NSMenu(title: "灵犀画板")
-        let keyboardEntry = NSMenuItem(title: "灵犀画板", action: nil, keyEquivalent: "")
-        keyboardEntry.submenu = keyboardCanvasSubmenu
-        menu.addItem(keyboardEntry)
-        self.keyboardCanvasSubmenu = keyboardCanvasSubmenu
-
-        let oracleCanvasSubmenu = NSMenu(title: "口袋先知画板")
-        let oracleEntry = NSMenuItem(title: "口袋先知画板", action: nil, keyEquivalent: "")
-        oracleEntry.submenu = oracleCanvasSubmenu
-        menu.addItem(oracleEntry)
-        self.oracleCanvasSubmenu = oracleCanvasSubmenu
-
-        let excerptCanvasSubmenu = NSMenu(title: "摘录画板")
-        let excerptEntry = NSMenuItem(title: "摘录画板", action: nil, keyEquivalent: "")
-        excerptEntry.submenu = excerptCanvasSubmenu
-        menu.addItem(excerptEntry)
-        self.excerptCanvasSubmenu = excerptCanvasSubmenu
-
-        let aiMacCanvasSubmenu = NSMenu(title: "AI Mac 小屏幕")
-        let aiMacEntry = NSMenuItem(title: "AI Mac 小屏幕", action: nil, keyEquivalent: "")
-        aiMacEntry.submenu = aiMacCanvasSubmenu
-        menu.addItem(aiMacEntry)
-        self.aiMacCanvasSubmenu = aiMacCanvasSubmenu
-
-        let awtrixSubmenu = NSMenu(title: "AWTRIX NG")
-        awtrixSubmenu.autoenablesItems = false
-        let awtrixEntry = NSMenuItem(title: "AWTRIX NG", action: nil, keyEquivalent: "")
-        awtrixEntry.submenu = awtrixSubmenu
-        awtrixEntry.isHidden = true
-        menu.addItem(awtrixEntry)
-        self.awtrixMenuEntry = awtrixEntry
-        self.awtrixSubmenu = awtrixSubmenu
+        // Device entries are rebuilt immediately before opening the native menu.
 
         menu.addItem(.separator())
 
@@ -294,151 +265,226 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if menu === self.pomodoroSubmenu || menu === self.statusItem?.menu {
                 let items = self.pomodoroSubmenu?.items ?? []
-                if items.count >= 4 {
+                if items.count >= 5 {
                     items[0].title = "\(model.pomodoroAction)  \(GlobalHotkeyManager.shortcutHint(for: .togglePomodoro))"
                     items[1].title = "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))"
                     items[2].title = "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))"
-                    items[3].title = model.pomodoroStatus
+                    items[4].title = model.pomodoroStatus
                 }
             }
         }
+        if let view = previewViews[menu],
+           let item = menu.items.first(where: { $0.state == .on && previewTargets[$0] != nil })
+            ?? menu.items.first(where: { previewTargets[$0] != nil }) {
+            schedulePreview(item, in: menu, view: view)
+        }
     }
 
-    /// 每次展开菜单时按当前设备快照重建内容子菜单，确保新增、删除、重命名、
-    /// 显示/隐藏与设备切换都无需重启即可同步，且不同设备的画板不会串到一起。
+    /// One submenu per physical screen; no type → device → card cascade.
     @MainActor
     private func rebuildCanvasSubmenus(model: AppModel) {
-        modeItems.removeAll(keepingCapacity: true)
-        keyboardCanvasSubmenu?.removeAllItems()
-        oracleCanvasSubmenu?.removeAllItems()
-        excerptCanvasSubmenu?.removeAllItems()
-        aiMacCanvasSubmenu?.removeAllItems()
+        guard let root = statusItem?.menu else { return }
+        previewTimer?.invalidate()
+        previewTargets.removeAll()
+        previewViews.removeAll()
+        previewCache.removeAll()
+        for entry in deviceMenuEntries { root.removeItem(entry) }
+        deviceMenuEntries.removeAll()
 
-        let targetKeyboard = model.settings.menuBarKeyboardDeviceID.flatMap { targetID in
-            model.enabledDevices(for: .keyboard).first { $0.id == targetID }
-        } ?? model.activeDevice(for: .keyboard)
-        if let keyboard = targetKeyboard {
-            let panels = model.keyboardCardList(for: keyboard.id)
-            for panel in panels {
-                guard let mode = panel.displayMode else { continue }
-                let title = MenuBarNamingPolicy.deviceScopedTitle(
-                    device: keyboard, childTitle: model.menuTitle(for: mode))
-                let item = NSMenuItem(title: title,
-                                      action: #selector(switchMode(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = mode.rawValue
-                item.state = mode == model.settings.displayMode ? .on : .off
-                modeItems.append(item)
-                keyboardCanvasSubmenu?.addItem(item)
+        for device in MenuBarPresentationPolicy.displayDevices(model.settings.devices) {
+            let name = MenuBarNamingPolicy.resolvedDeviceName(device)
+            let submenu = NSMenu(title: name)
+            submenu.autoenablesItems = false
+            submenu.delegate = self
+            let entry = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+            entry.submenu = submenu
+            entry.toolTip = device.type.title
+            let symbol: String
+            switch device.type {
+            case .keyboard: symbol = "keyboard"
+            case .oracle, .excerpt: symbol = "rectangle"
+            case .awtrix: symbol = "rectangle.split.3x1"
+            default: symbol = "display"
             }
-        }
-        addEmptyHintIfNeeded(to: keyboardCanvasSubmenu, title: "尚未添加卡片")
+            entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: device.type.title)
+            root.insertItem(entry, at: 5 + deviceMenuEntries.count)
+            deviceMenuEntries.append(entry)
 
-        let oracleDevices = model.enabledDevices(for: .oracle)
-        for device in oracleDevices {
-            for board in model.visibleOracleCanvasBoards(for: device.id) {
-                let title = MenuBarNamingPolicy.deviceScopedTitle(
-                    device: device, childTitle: board.name)
-                let item = NSMenuItem(title: title,
-                                      action: #selector(switchOracleBoard(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
-                item.state = model.activeDeviceID(for: .oracle) == device.id
-                    && model.isCurrentOracleCanvasBoard(deviceID: device.id, boardID: board.id)
-                    ? .on : .off
-                oracleCanvasSubmenu?.addItem(item)
+            // Add actions first so an empty screen doesn't occupy a large preview.
+            switch device.type {
+            case .keyboard:
+                let current = model.activeDeviceID(for: .keyboard) == device.id
+                    ? model.settings.displayMode : device.settings.displayMode
+                for panel in model.keyboardCardList(for: device.id) {
+                    guard let mode = panel.displayMode else { continue }
+                    let item = NSMenuItem(title: model.menuTitle(for: mode),
+                        action: #selector(switchMode(_:)), keyEquivalent: "")
+                    item.target = self
+                    let target = MenuBarPreviewTarget.card(device.id, mode)
+                    item.representedObject = target
+                    item.state = current == mode ? .on : .off
+                    previewTargets[item] = target
+                    submenu.addItem(item)
+                }
+            case .oracle, .excerpt:
+                let oracle = device.type == .oracle
+                let boards: [(UUID, String, Bool)] = oracle
+                    ? model.visibleOracleCanvasBoards(for: device.id).map {
+                        ($0.id, $0.name, model.isCurrentOracleCanvasBoard(deviceID: device.id, boardID: $0.id))
+                    } : model.visibleExcerptCanvasBoards(for: device.id).map {
+                        ($0.id, $0.name, model.isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: $0.id))
+                    }
+                for (id, title, selected) in boards {
+                    let item = NSMenuItem(title: title,
+                        action: oracle ? #selector(switchOracleBoard(_:)) : #selector(switchExcerptBoard(_:)),
+                        keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = "\(device.id.uuidString)|\(id.uuidString)"
+                    item.state = selected ? .on : .off
+                    previewTargets[item] = .board(device.id, id)
+                    submenu.addItem(item)
+                }
+            case .aiMacScreen, .c6Screen:
+                let hasCards: Bool
+                if device.type == .c6Screen {
+                    let cards = model.c6CardList(for: device.id)
+                    hasCards = !cards.isEmpty
+                    for card in cards {
+                        let item = NSMenuItem(title: "\(card.title) · \(card.sourceTitle)",
+                            action: #selector(switchC6Card(_:)), keyEquivalent: "")
+                        item.target = self
+                        item.representedObject = "\(device.id.uuidString)|c6card|\(card.id)"
+                        item.state = model.isCurrentC6Card(deviceID: device.id, card: card) ? .on : .off
+                        if card.nativeCard != nil {
+                            previewTargets[item] = .c6Local(device.id, card.id)
+                        } else if let mode = card.displayMode {
+                            previewTargets[item] = .card(device.id, mode)
+                        }
+                        submenu.addItem(item)
+                    }
+                } else {
+                    let modes = model.aiMacCardList(for: device.id)
+                    hasCards = !modes.isEmpty
+                    for mode in modes {
+                        let item = NSMenuItem(title: model.menuTitle(for: mode),
+                            action: #selector(switchAIMacCard(_:)), keyEquivalent: "")
+                        item.target = self
+                        item.representedObject = "\(device.id.uuidString)|card|\(mode.rawValue)"
+                        item.state = model.isCurrentAIMacCard(deviceID: device.id, mode: mode) ? .on : .off
+                        previewTargets[item] = .card(device.id, mode)
+                        submenu.addItem(item)
+                    }
+                }
+                let boards = model.visibleAIMacCanvasBoards(for: device.id)
+                if hasCards && !boards.isEmpty { submenu.addItem(.separator()) }
+                for board in boards {
+                    let item = NSMenuItem(title: board.name, action: #selector(switchAIMacBoard(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
+                    item.state = model.isCurrentAIMacCanvasBoard(deviceID: device.id, boardID: board.id) ? .on : .off
+                    previewTargets[item] = .board(device.id, board.id)
+                    submenu.addItem(item)
+                }
+            case .awtrix:
+                rebuildAWTRIXSubmenu(model: model, device: device, menu: submenu)
+            default: break
             }
+            if submenu.items.contains(where: { previewTargets[$0] != nil }) {
+                let view = MenuBarScreenPreview(imageAreaHeight: device.type == .keyboard ? 300 : device.type == .awtrix ? 76 : 184)
+                previewViews[submenu] = view
+                let header = NSMenuItem(title: "画面预览", action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                header.view = view
+                submenu.insertItem(header, at: 0)
+                submenu.insertItem(.separator(), at: 1)
+            }
+            addEmptyHintIfNeeded(to: submenu, title: "尚未添加可见卡片或画板")
         }
-        addEmptyHintIfNeeded(to: oracleCanvasSubmenu, title: "尚未创建可见画板")
-
-        let excerptDevices = model.enabledDevices(for: .excerpt)
-        for device in excerptDevices {
-            for board in model.visibleExcerptCanvasBoards(for: device.id) {
-                let title = MenuBarNamingPolicy.deviceScopedTitle(
-                    device: device, childTitle: board.name)
-                let item = NSMenuItem(title: title,
-                                      action: #selector(switchExcerptBoard(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
-                item.state = model.activeDeviceID(for: .excerpt) == device.id
-                    && model.isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: board.id)
-                    ? .on : .off
-                excerptCanvasSubmenu?.addItem(item)
-            }
+        if deviceMenuEntries.isEmpty {
+            let hint = NSMenuItem(title: "尚未添加显示设备", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            root.insertItem(hint, at: 5)
+            deviceMenuEntries.append(hint)
         }
-        addEmptyHintIfNeeded(to: excerptCanvasSubmenu, title: "尚未创建可见画板")
-
-        let aiMacDevices = model.enabledDevices(for: .aiMacScreen)
-        for device in aiMacDevices {
-            let cardModes = model.aiMacCardList(for: device.id)
-            for mode in cardModes {
-                let cardTitle = MenuBarNamingPolicy.deviceScopedTitle(
-                    device: device, childTitle: model.menuTitle(for: mode))
-                let item = NSMenuItem(title: cardTitle,
-                                      action: #selector(switchAIMacCard(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = "\(device.id.uuidString)|card|\(mode.rawValue)"
-                item.state = model.activeDeviceID(for: .aiMacScreen) == device.id
-                    && model.isCurrentAIMacCard(deviceID: device.id, mode: mode)
-                    ? .on : .off
-                aiMacCanvasSubmenu?.addItem(item)
-            }
-            if !cardModes.isEmpty && !model.visibleAIMacCanvasBoards(for: device.id).isEmpty {
-                aiMacCanvasSubmenu?.addItem(.separator())
-            }
-            for board in model.visibleAIMacCanvasBoards(for: device.id) {
-                let title = MenuBarNamingPolicy.deviceScopedTitle(
-                    device: device, childTitle: board.name)
-                let item = NSMenuItem(title: title,
-                                      action: #selector(switchAIMacBoard(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = "\(device.id.uuidString)|\(board.id.uuidString)"
-                item.state = model.activeDeviceID(for: .aiMacScreen) == device.id
-                    && model.isCurrentAIMacCanvasBoard(deviceID: device.id, boardID: board.id)
-                    ? .on : .off
-                aiMacCanvasSubmenu?.addItem(item)
-            }
-        }
-        addEmptyHintIfNeeded(to: aiMacCanvasSubmenu, title: "尚未添加可见卡片或画板")
-        rebuildAWTRIXSubmenu(model: model)
     }
 
-    /// 仅使用已加载的设备配置与快照；展开菜单本身不会触发联网。
     @MainActor
-    private func rebuildAWTRIXSubmenu(model: AppModel) {
-        guard let awtrixSubmenu else { return }
-        awtrixSubmenu.removeAllItems()
-        let devices = model.enabledDevices(for: .awtrix)
-        awtrixMenuEntry?.isHidden = devices.isEmpty
-        for device in devices {
-            let deviceName = MenuBarNamingPolicy.resolvedDeviceName(device)
-            let deviceMenu = NSMenu(title: deviceName)
-            deviceMenu.autoenablesItems = false
-            let deviceEntry = NSMenuItem(title: deviceName, action: nil, keyEquivalent: "")
-            deviceEntry.submenu = deviceMenu
-            awtrixSubmenu.addItem(deviceEntry)
+    private func rebuildAWTRIXSubmenu(model: AppModel, device: ManagedDevice, menu: NSMenu) {
+        let snapshot = model.awtrixSnapshots[device.id]
+        for card in model.awtrixVisibleCards(for: device.id) {
+            let item = awtrixMenuItem(title: card.title, action: .showCard(device.id, card.name))
+            item.image = NSImage(systemSymbolName: card.symbol, accessibilityDescription: card.title)
+            item.state = snapshot?.device.currentApp?.caseInsensitiveCompare(card.name) == .orderedSame ? .on : .off
+            previewTargets[item] = .awtrix(device.id, card.name)
+            menu.addItem(item)
+        }
+        addEmptyHintIfNeeded(to: menu, title: "尚未添加可见卡片")
+        menu.addItem(.separator())
+        let rotation = awtrixMenuItem(title: "自动轮播", action: .toggleRotation(device.id))
+        rotation.state = model.awtrixSettings(for: device.id).autoTransition ? .on : .off
+        menu.addItem(rotation)
+        menu.addItem(awtrixMenuItem(title: "上一张卡片", action: .move(device.id, next: false)))
+        menu.addItem(awtrixMenuItem(title: "下一张卡片", action: .move(device.id, next: true)))
+        menu.addItem(.separator())
+        let refresh = awtrixMenuItem(title: "刷新数据", action: .refresh(device.id))
+        refresh.isEnabled = !model.awtrixBusyIDs.contains(device.id)
+        menu.addItem(refresh)
+    }
 
-            let snapshot = model.awtrixSnapshots[device.id]
-            for card in model.awtrixVisibleCards(for: device.id) {
-                let item = awtrixMenuItem(title: card.title, action: .showCard(device.id, card.name))
-                item.image = NSImage(systemSymbolName: card.symbol, accessibilityDescription: card.title)
-                item.state = snapshot?.device.currentApp?.caseInsensitiveCompare(card.name) == .orderedSame
-                    ? .on : .off
-                deviceMenu.addItem(item)
+    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
+        guard let item, let view = previewViews[menu], previewTargets[item] != nil else { return }
+        schedulePreview(item, in: menu, view: view)
+    }
+
+    private func schedulePreview(_ item: NSMenuItem, in menu: NSMenu, view: MenuBarScreenPreview) {
+        guard let target = previewTargets[item] else { return }
+        previewTimer?.invalidate()
+        let title = item.title
+        if let image = previewCache[target] {
+            view.show(image: image, title: title)
+            return
+        }
+        view.show(image: nil, title: title, explanation: "正在准备预览…")
+        // Only one hovered frame is rendered, after a short debounce. No polling,
+        // network request or render of every card on root-menu opening.
+        let timer = Timer(timeInterval: 0.12, repeats: false) { [weak self, weak view] _ in
+            MainActor.assumeIsolated {
+                guard let self, let view, let model = self.model,
+                      self.previewViews[menu] === view else { return }
+                do {
+                    let image = try model.menuBarPreview(for: target)
+                    if let image {
+                        // Bound retained bitmaps even in a long, user-defined menu.
+                        if self.previewCache.count >= 12 { self.previewCache.removeAll() }
+                        self.previewCache[target] = image
+                    }
+                    let explanation: String?
+                    if case .awtrix = target {
+                        explanation = image == nil ? "仅当前应用有设备快照 · 点击切换" : "设备最近画面 · 点击切换"
+                    } else if case .c6Local = target {
+                        explanation = image == nil ? "仅当前本地卡片有设备快照 · 点击切换" : "设备最近画面 · 点击切换"
+                    } else { explanation = nil }
+                    view.show(image: image, title: title, explanation: explanation)
+                } catch {
+                    view.show(image: nil, title: title, explanation: "预览暂不可用 · 点击卡片仍可切换")
+                }
             }
-            addEmptyHintIfNeeded(to: deviceMenu, title: "尚未添加可见卡片")
-            deviceMenu.addItem(.separator())
+        }
+        previewTimer = timer
+        // Explicitly support menu tracking; a default-mode timer won't fire while
+        // the user holds a submenu open. The timer is one-shot, not polling.
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        RunLoop.main.add(timer, forMode: .default)
+    }
 
-            let rotation = awtrixMenuItem(title: "自动轮播", action: .toggleRotation(device.id))
-            let isRotating = model.awtrixSettings(for: device.id).autoTransition
-            rotation.state = isRotating ? .on : .off
-            deviceMenu.addItem(rotation)
-            deviceMenu.addItem(awtrixMenuItem(title: "上一张卡片", action: .move(device.id, next: false)))
-            deviceMenu.addItem(awtrixMenuItem(title: "下一张卡片", action: .move(device.id, next: true)))
-            deviceMenu.addItem(.separator())
-            let refresh = awtrixMenuItem(title: "刷新数据", action: .refresh(device.id))
-            refresh.isEnabled = !model.awtrixBusyIDs.contains(device.id)
-            deviceMenu.addItem(refresh)
+    func menuDidClose(_ menu: NSMenu) {
+        previewTimer?.invalidate()
+        previewTimer = nil
+        if menu === statusItem?.menu {
+            for view in previewViews.values { view.show(image: nil, title: "画面预览") }
+            previewCache.removeAll()
+            previewTargets.removeAll()
+            previewViews.removeAll()
         }
     }
 
@@ -540,10 +586,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func switchMode(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? Int,
-              let mode = DisplayMode(rawValue: raw),
+        guard let target = sender.representedObject as? MenuBarPreviewTarget,
+              case let .card(deviceID, mode) = target,
               let model else { return }
-        MainActor.assumeIsolated { model.menuBarSetMode(mode) }
+        MainActor.assumeIsolated {
+            guard model.enabledDevices(for: .keyboard).contains(where: { $0.id == deviceID }),
+                  model.keyboardCardList(for: deviceID).contains(where: { $0.displayMode == mode }) else { return }
+            model.switchDevice(type: .keyboard, to: deviceID)
+            model.setMode(mode)
+        }
     }
 
     @objc private func switchOracleBoard(_ sender: NSMenuItem) {
@@ -563,7 +614,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func switchAIMacBoard(_ sender: NSMenuItem) {
         guard let (deviceID, boardID) = boardIDs(from: sender), let model else { return }
         MainActor.assumeIsolated {
+            guard model.enabledColorWiFiScreens.contains(where: { $0.id == deviceID }),
+                  model.visibleAIMacCanvasBoards(for: deviceID).contains(where: { $0.id == boardID }) else { return }
+            model.selectColorScreen(deviceID: deviceID)
             model.menuBarSelectAIMacBoard(deviceID: deviceID, boardID: boardID)
+        }
+    }
+
+    @objc private func switchC6Card(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, let model else { return }
+        let parts = key.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[1] == "c6card",
+              let deviceID = UUID(uuidString: String(parts[0])) else { return }
+        let token = String(parts[2])
+        MainActor.assumeIsolated {
+            guard model.enabledDevices(for: .c6Screen).contains(where: { $0.id == deviceID }),
+                  let card = model.c6CardList(for: deviceID).first(where: { $0.id == token }) else { return }
+            model.selectColorScreen(deviceID: deviceID)
+            model.activateC6Card(card, deviceID: deviceID)
         }
     }
 
@@ -575,9 +643,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let rawValue = Int(parts[2]),
               let mode = DisplayMode(rawValue: rawValue) else { return }
         MainActor.assumeIsolated {
-            if model.activeDeviceID(for: .aiMacScreen) != deviceID {
-                model.switchDevice(type: .aiMacScreen, to: deviceID)
-            }
+            guard model.enabledColorWiFiScreens.contains(where: { $0.id == deviceID }),
+                  model.aiMacCardList(for: deviceID).contains(mode) else { return }
+            model.selectColorScreen(deviceID: deviceID)
             model.activateAIMacCard(mode, deviceID: deviceID)
         }
     }

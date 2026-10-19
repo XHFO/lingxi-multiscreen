@@ -591,6 +591,12 @@ public final class AppSettings: ObservableObject {
     @Published public var activeAIMacScreenDeviceID: UUID? {
         didSet { onChange() }
     }
+    @Published public var activeC6ScreenDeviceID: UUID? {
+        didSet { onChange() }
+    }
+    @Published public var weather = WeatherSettings() { didSet { onChange() } }
+    /// Cached readings are data, not credentials; recovered immediately on startup/offline.
+    @Published public var weatherSnapshot: WeatherSnapshot? { didSet { onChange() } }
     /// 当前活动 AWTRIX NG 设备 ID。
     @Published public var activeAWTRIXDeviceID: UUID? {
         didSet { onChange() }
@@ -849,7 +855,7 @@ public final class AppSettings: ObservableObject {
     public func defaultCanvasMargin(for module: CanvasModule) -> Int {
         switch module {
         case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
-        case .pomodoro: return 4
+        case .pomodoro, .weather: return 4
         case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
              .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return 4
@@ -1009,7 +1015,8 @@ public final class AppSettings: ObservableObject {
             customBackgroundHex: customBackgroundHex,
             accentTone: accentTone,
             customAccentHex: customAccentHex,
-            softwareIsDark: softwareIsDark)
+            softwareIsDark: softwareIsDark,
+            renderingMode: cardRenderingMode)
     }
 
     public init() {}
@@ -1187,7 +1194,7 @@ public final class AppSettings: ObservableObject {
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
              sidebarOrder, keyboardCardPanels, sidebarWidth,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeC6ScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -1196,7 +1203,7 @@ public final class AppSettings: ObservableObject {
              excerptImageRotate180, excerptBackgroundMode, excerptPushRawImage,
              excerptServerDitherType, excerptServerDitherKernel,
              oracleCanvasBoards, oracleCanvasBoardIndex,
-             excerptCanvasBoards, excerptCanvasBoardIndex
+             excerptCanvasBoards, excerptCanvasBoardIndex, weather, weatherSnapshot
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1356,6 +1363,9 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeBambuLabDeviceID, forKey: .activeBambuLabDeviceID)
         try container.encodeIfPresent(activeFormlabsDeviceID, forKey: .activeFormlabsDeviceID)
         try container.encodeIfPresent(activeAIMacScreenDeviceID, forKey: .activeAIMacScreenDeviceID)
+        try container.encodeIfPresent(activeC6ScreenDeviceID, forKey: .activeC6ScreenDeviceID)
+        try container.encode(weather, forKey: .weather)
+        try container.encodeIfPresent(weatherSnapshot, forKey: .weatherSnapshot)
         try container.encodeIfPresent(activeAWTRIXDeviceID, forKey: .activeAWTRIXDeviceID)
         try container.encodeIfPresent(activeM5ControllerDeviceID, forKey: .activeM5ControllerDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
@@ -1601,6 +1611,9 @@ extension AppSettings: Codable {
         activeBambuLabDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeBambuLabDeviceID) ?? activeBambuLabDeviceID
         activeFormlabsDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeFormlabsDeviceID) ?? activeFormlabsDeviceID
         activeAIMacScreenDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAIMacScreenDeviceID) ?? activeAIMacScreenDeviceID
+        activeC6ScreenDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeC6ScreenDeviceID)
+        weather = try container.decodeIfPresent(WeatherSettings.self, forKey: .weather) ?? WeatherSettings()
+        weatherSnapshot = try container.decodeIfPresent(WeatherSnapshot.self, forKey: .weatherSnapshot)
         activeAWTRIXDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAWTRIXDeviceID) ?? activeAWTRIXDeviceID
         activeM5ControllerDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeM5ControllerDeviceID) ?? activeM5ControllerDeviceID
         // 兼容早期把 AWTRIX 作为固定全局页面的版本：已有地址自动成为第一台受管设备。
@@ -1689,7 +1702,8 @@ public final class SettingsStore {
             applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         }
-        self.dataDirectory = applicationSupport.appendingPathComponent("LinxDisplay", isDirectory: true)
+        let folder = Bundle.main.bundleIdentifier == "com.lingxi.multiscreen.beta2" ? "LinxDisplayBeta2" : "LinxDisplay"
+        self.dataDirectory = applicationSupport.appendingPathComponent(folder, isDirectory: true)
     }
 
     public func load() -> AppSettings {

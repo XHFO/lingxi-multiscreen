@@ -129,6 +129,17 @@ enum AIMacFirmwareClockPreview {
                           color: secondary, in: context)
     }
 
+    /// Uses the same portable smooth-font renderer as the C6 firmware.
+    /// The original ESP8266 clock above retains its own legacy design.
+    static func drawC6Flip(in context: CGContext, now: Date,
+                          timeZone: TimeZone = .current) {
+        guard let image = C6LocalRenderer.clock(now: now, timeZone: timeZone) else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 240, height: 240))
+    }
+
     private static func calendarComponents(for date: Date,
                                            timeZone: TimeZone) -> DateComponents {
         var calendar = Calendar(identifier: .gregorian)

@@ -108,7 +108,7 @@ func decodeJPEG(_ data: Data) -> CGImage {
 // MARK: - 主题
 
 func testThemes() {
-    let themes: [CardTheme] = [.deepSpace, .minimalLight, .neonPurple, .amberTerminal]
+    let themes = CardTheme.allCases
     var backgrounds: [String] = []
     for theme in themes {
         let palette = ScreenThemes.get(theme)
@@ -116,7 +116,7 @@ func testThemes() {
         check(palette.accent != palette.secondaryAccent, "\(theme.title) accent 应区别于 secondaryAccent")
         check(palette.primaryText != palette.tertiaryText, "\(theme.title) primaryText 应区别于 tertiaryText")
     }
-    checkEqual(Set(backgrounds).count, 4, "四套主题背景色应各不相同")
+    checkEqual(Set(backgrounds).count, themes.count, "每套主题背景色应各不相同")
 }
 
 // MARK: - 渲染
@@ -415,7 +415,7 @@ func testCardRenderingSettings() throws {
         checkEqual(restored.cardRenderingMode, mode, "卡片渲染方式重启后保留-\(mode.title)")
     }
 
-    let expectedColorDevices: Set<DeviceType> = [.keyboard, .aiMacScreen]
+    let expectedColorDevices: Set<DeviceType> = [.keyboard, .aiMacScreen, .c6Screen]
     for type in DeviceType.allCases {
         checkEqual(CardRenderingMode.supports(type), expectedColorDevices.contains(type),
                    "卡片渲染模式仅应用于彩色屏幕-\(type.title)")
@@ -565,6 +565,62 @@ func testLiquidGlassRendering() throws {
     }
     settings.jpegQuality = 100
 
+    // 可选橙黑主题使用真实的设备渲染/编码路径；固定样本不是用户设备数据。
+    settings.cardTheme = .laserOrange
+    for tone in [BackgroundTone.dark, .light] {
+        settings.backgroundTone = tone
+        for mode in CardRenderingMode.allCases {
+            settings.cardRenderingMode = mode
+            let name = "laser-\(tone == .dark ? "dark" : "light")-\(mode == .classic ? "classic" : "glass")"
+            let keyboard = try LiquidGlassCardRenderer.renderKeyboard(settings: settings) {
+                try ScreenRenderer.renderBambuLab(printer, entities: printerEntities,
+                    image: artworkData, settings: settings, now: fixedDate, dataUpdatedAt: fixedDate)
+            }
+            checkEqual(decodeJPEG(keyboard.data).width, 142, "橙黑键盘推送可正常解码")
+            try export(decodeJPEG(keyboard.data), named: name + "-keyboard")
+            let palette = settings.resolvedPalette
+            let square = try LiquidGlassCardRenderer.renderImage(for: .c6Screen, mode: mode, palette: palette) {
+                ScreenRenderer.renderAIMacBambuCard(printer, entities: printerEntities,
+                    settings: settings, sampledAt: fixedDate, palette: palette)
+            }
+            checkEqual(square.width, 240, "橙黑C6卡片保持240像素")
+            checkEqual(try AIMacScreenSupport.encodeRGB565(square).count, 115200, "橙黑C6卡片可编码设备帧")
+            check(hasVisibleDetail(square), "橙黑C6卡片保留文字与图形")
+            try export(square, named: name + "-square")
+        }
+    }
+    settings.cardTheme = .deepSpace
+
+    // Inspect actual classic pixels, rather than asserting a hand-coded offset.
+    // Foreground ink is orange/red, while borders and backgrounds are neutral.
+    settings.cardTheme = .laserOrange
+    settings.backgroundTone = .dark
+    for state in ["printing", "paused", "idle", "finished", "error", "heating", "calibrating", "filament_change", "detecting"] {
+        var entities = printerEntities
+        entities[0].state = state
+        let image = ScreenRenderer.renderAIMacBambuCard(printer, entities: entities,
+            settings: settings, sampledAt: fixedDate, palette: settings.resolvedPalette)
+        let pixels = [UInt8](rgba(image))
+        func ink(_ x: Int, _ y: Int) -> Bool {
+            let i = (y * image.width + x) * 4
+            return pixels[i] > 150 && pixels[i + 1] < 135 && pixels[i + 2] < 110
+        }
+        let columns = (146..<220).filter { x in (17..<37).contains { ink(x, $0) } }
+        let gaps = zip(columns, columns.dropFirst()).filter { $1 - $0 >= 3 }
+        if let gap = gaps.max(by: { $0.1 - $0.0 < $1.1 - $1.0 }) {
+            let iconRows = (17..<37).filter { y in (146...gap.0).contains { ink($0, y) } }
+            let labelRows = (17..<37).filter { y in (gap.1..<220).contains { ink($0, y) } }
+            check(!iconRows.isEmpty && !labelRows.isEmpty, "Status symbol and label remain visible: \(state)")
+            if let firstIcon = iconRows.first, let lastIcon = iconRows.last,
+               let firstText = labelRows.first, let lastText = labelRows.last {
+                check(abs(Double(firstIcon + lastIcon - firstText - lastText) / 2) <= 1.5,
+                      "Status glyph and symbol centers align within 1.5 native pixels: \(state)")
+            }
+        } else { check(false, "Status symbol/label spacing remains measurable: \(state)") }
+        try export(image, named: "status-aligned-" + state)
+    }
+    settings.cardTheme = .deepSpace
+
     for tone in [BackgroundTone.light, .dark] {
         settings.backgroundTone = tone
         settings.cardRenderingMode = .classic
@@ -609,6 +665,12 @@ func testLiquidGlassRendering() throws {
         check(classicSquare === originalSquare, "AI Mac 经典模式保留原始图像-\(tone.title)")
         let glassSquare = try LiquidGlassCardRenderer.renderImage(
             for: .aiMacScreen, mode: .liquidGlass, palette: palette, render: makeSquare)
+        let c6Classic = try LiquidGlassCardRenderer.renderImage(
+            for: .c6Screen, mode: .classic, palette: palette) { originalSquare }
+        let c6Glass = try LiquidGlassCardRenderer.renderImage(
+            for: .c6Screen, mode: .liquidGlass, palette: palette, render: makeSquare)
+        check(c6Classic === originalSquare, "C6 电脑经典卡片保留 AI Mac 原始布局-\(tone.title)")
+        checkEqual(rgba(c6Glass), rgba(glassSquare), "C6 与 AI Mac 使用同一彩屏 Glass 外观-\(tone.title)")
         checkEqual(glassSquare.width, 240, "Liquid Glass AI Mac 保持方屏宽度-\(tone.title)")
         checkEqual(glassSquare.height, 240, "Liquid Glass AI Mac 保持方屏高度-\(tone.title)")
         check(hasVisibleDetail(glassSquare), "Liquid Glass AI Mac 保留打印机文字和图形-\(tone.title)")
@@ -699,7 +761,9 @@ func testLiquidGlassRendering() throws {
                        "键盘 Emoji 不受玻璃影响-\(tone.title)/\(layout.rawValue)")
             checkEqual(glassKeyboard.data, classicKeyboard.data,
                        "键盘 Emoji 最终 JPEG 保持一致-\(tone.title)/\(layout.rawValue)")
+            settings.cardRenderingMode = .classic
             let classicSquare = try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
+            settings.cardRenderingMode = .liquidGlass
             let glassSquare = try LiquidGlassCardRenderer.renderImage(
                 for: .aiMacScreen, mode: .liquidGlass, palette: settings.resolvedPalette) {
                     try AIMacScreenSupport.renderEmojiWallpaper(settings: settings)
@@ -5115,7 +5179,7 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 9, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 10, "设备类型数量")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
@@ -5412,6 +5476,23 @@ func testDeviceManagement() throws {
     checkEqual(target.cardRotationEnabled, true, "键盘套用-轮换开关")
     checkEqual(target.clockFontWeight, .medium, "键盘套用-时钟字重")
     checkEqual(target.emojiWallpaperLayout, .spiral, "键盘套用-Emoji壁纸布局")
+    // 屏幕控制入口归属键盘后，继续复用原有快照：切换设备不能串安全区或压缩质量。
+    let secondKeyboardSettings = AppSettings()
+    secondKeyboardSettings.safeAreaHeight = 80
+    secondKeyboardSettings.jpegQuality = 72
+    let secondKeyboard = DeviceSettings.capture(from: secondKeyboardSettings, type: .keyboard)
+    let savedKeyboards = try JSONDecoder().decode(
+        [DeviceSettings].self, from: JSONEncoder().encode([captured, secondKeyboard]))
+    savedKeyboards[1].apply(to: target, type: .keyboard)
+    checkEqual(target.safeAreaHeight, 80, "键盘屏幕控制-第二台安全区独立恢复")
+    checkEqual(target.jpegQuality, 72, "键盘屏幕控制-第二台JPEG质量独立恢复")
+    savedKeyboards[0].apply(to: target, type: .keyboard)
+    checkEqual(target.safeAreaHeight, 60, "键盘屏幕控制-第一台原安全区保持")
+    checkEqual(target.jpegQuality, 95, "键盘屏幕控制-第一台原JPEG质量保持")
+    DeviceSettings.capture(from: secondKeyboardSettings, type: .oracle)
+        .apply(to: target, type: .oracle)
+    checkEqual(target.safeAreaHeight, 60, "键盘屏幕控制-口袋先知不覆盖安全区")
+    checkEqual(target.jpegQuality, 95, "键盘屏幕控制-口袋先知不覆盖JPEG质量")
     let oraCap = DeviceSettings.capture(from: source, type: .oracle)
     checkEqual(oraCap.oracleCanvasModules, [12, 2], "先知快照-模块")
     checkEqual(oraCap.rand0ButtonTarget, .keyboard, "先知快照-按键控制")
@@ -5961,6 +6042,46 @@ func testMenuBarNamingPolicy() {
     print("  系统菜单栏设备命名通过")
 }
 
+func testMenuBarPreviewIsolation() {
+    let settings = AppSettings()
+    let primary = ManagedDevice(type: .keyboard, name: "工作键盘", settings: DeviceSettings())
+    var secondary = ManagedDevice(type: .keyboard, name: "测试键盘", settings: DeviceSettings())
+    secondary.settings.displayMode = .systemMonitor
+    var hidden = ManagedDevice(type: .oracle, name: "停用设备", settings: DeviceSettings())
+    hidden.isEnabled = false
+    let server = ManagedDevice(type: .homeAssistant, name: "服务器", settings: DeviceSettings())
+    let color = ManagedDevice(type: .c6Screen, name: "小屏幕", settings: DeviceSettings())
+    settings.devices = [primary, server, secondary, hidden, color]
+    settings.activeKeyboardDeviceID = primary.id
+    settings.displayMode = .nowPlaying
+    checkEqual(MenuBarPresentationPolicy.displayDevices(settings.devices).map(\.id),
+        [primary.id, secondary.id, color.id], "菜单只列已启用显示设备并保持原顺序")
+    var notifications = 0
+    settings.onChange = { notifications += 1 }
+    do {
+        let original = try JSONEncoder().encode(settings)
+        let inactiveCopy = try MenuBarPresentationPolicy.previewSettings(from: settings, device: secondary)
+        checkEqual(inactiveCopy.displayMode, .systemMonitor, "未活动键盘预览使用自己的配置")
+        checkEqual(inactiveCopy.activeKeyboardDeviceID, secondary.id, "预览副本指向目标设备")
+        inactiveCopy.displayMode = .pomodoro
+        inactiveCopy.devices.removeAll()
+        let activeCopy = try MenuBarPresentationPolicy.previewSettings(from: settings, device: primary)
+        checkEqual(activeCopy.displayMode, .nowPlaying, "活动设备预览读取尚未持久化的镜像")
+        let beforeObject = try JSONSerialization.jsonObject(with: original) as? NSDictionary
+        let afterObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? NSDictionary
+        check(beforeObject == afterObject, "预览不修改真实设置及设备列表")
+        checkEqual(notifications, 0, "预览不触发设置保存或自动推送回调")
+    } catch { check(false, "菜单预览副本失败：\(error)") }
+    check(MenuBarPreviewTarget.card(primary.id, .nowPlaying) != .card(secondary.id, .nowPlaying),
+        "同一功能的预览缓存按设备 UUID 隔离")
+    check(MenuBarPreviewTarget.card(primary.id, .nowPlaying) != .card(primary.id, .pomodoro),
+        "不同卡片预览缓存互不覆盖")
+    let boardID = UUID()
+    check(MenuBarPreviewTarget.board(primary.id, boardID) != .board(secondary.id, boardID),
+        "同名或复制画板预览按设备 UUID 隔离")
+    print("  菜单预览隔离通过")
+}
+
 // MARK: - 用量数据统一调取（Codex 用量 + 千问办公额度一次并行拉取）
 
 func testUsageDataAggregator() async {
@@ -6178,7 +6299,7 @@ func testAWTRIXStandalone() throws {
                "灵犀文字特殊映射不得覆盖其他 AWTRIX 应用的元数据标题")
 
     let allCards = AWTRIXCardPolicy.cards(apps: sidebarSource, settings: legacyAWTRIX)
-    checkEqual(allCards.map(\.name), ["lingxi_text", "lingxi_home", "Time", "Weather"],
+    checkEqual(allCards.map(\.name), ["lingxi_text", "lingxi_home", "lingxi_weather", "Time", "Weather"],
                "AWTRIX 卡片库包含文字、HA 与可展示的设备应用，去重并过滤后台模块")
     checkEqual(AWTRIXCardPolicy.visibleCards(apps: sidebarSource, settings: legacyAWTRIX).map(\.name),
                ["lingxi_text", "Time", "Weather"], "旧 AWTRIX 设备保留原入口且不强制增加未配置 HA")
@@ -6401,11 +6522,105 @@ if CommandLine.arguments.contains("--cc-switch-live") {
     dispatchMain()
 }
 
+func testC6FirmwarePackage() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources/Firmware")
+    let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("c6-manifest.json"))) as! [String: String]
+    checkEqual(manifest["version"], EmbeddedC6Firmware.version, "C6 manifest and application version agree")
+    let full = try Data(contentsOf: root.appendingPathComponent(EmbeddedC6Firmware.fullName))
+    let ota = try Data(contentsOf: root.appendingPathComponent(EmbeddedC6Firmware.otaName))
+    check(EmbeddedC6Firmware.validate(full, ota: false, sha256: manifest["full_sha256"] ?? ""), "C6 full image hash and chip validated")
+    check(EmbeddedC6Firmware.validate(ota, ota: true, sha256: manifest["ota_sha256"] ?? ""), "C6 OTA image hash and chip validated")
+    checkEqual(full.subdata(in: 0x20000..<full.count), ota, "C6 merged application equals OTA image")
+    let regions = try EmbeddedC6Firmware.flashRegions(from: full)
+    checkEqual(regions.map(\.address), [0, 0x8000, 0x10000, 0x20000], "C6 USB programming uses separate flash regions")
+    for region in regions {
+        let end = region.address + region.data.count
+        check(end <= 0x9000 || region.address >= 0x10000, "C6 USB programming never erases NVS or PHY sectors")
+        checkEqual(full.subdata(in: region.address..<end), region.data, "C6 flash region preserves image bytes")
+    }
+    check(!EmbeddedC6Firmware.validate(full, ota: false, sha256: String(repeating: "0", count: 64)), "C6 rejects incorrect firmware digest")
+    check((try? EmbeddedC6Firmware.flashRegions(from: Data())) == nil, "C6 rejects empty USB image")
+    var wrongChip = full; wrongChip[0x2000c] = 9
+    check((try? EmbeddedC6Firmware.flashRegions(from: wrongChip)) == nil, "C6 rejects another chip's application")
+}
+
 // macOS 27 的 cooperative executor 工作线程默认栈较小，vImage 在大型
 // CoreGraphics 离屏渲染中可能触发栈保护页。渲染回归测试固定在主线程运行，
 // 也与 AppKit/SwiftUI 的线程约束保持一致。
 Task { @MainActor in
     do {
+        if CommandLine.arguments.contains("--c6-merged-only") {
+            try testC6MergedCards()
+            failures.forEach { print("失败：\($0)") }
+            print("C6 mixed cards：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        try testC6FirmwarePackage()
+        try testC6WiFiProvisioning()
+        testProjectGuidanceAndGlassDefaults()
+        if CommandLine.arguments.contains("--glass-only") {
+            try testLiquidGlassRendering()
+            failures.forEach { print("失败：\($0)") }
+            print("Glass and guidance：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--c6-wifi-only") {
+            failures.forEach { print("失败：\($0)") }
+            print("C6 Wi-Fi：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--weather-only") {
+            try testWeatherCardVisuals()
+            failures.forEach { print("失败：\($0)") }
+            print("Weather cards：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--device-preview-only") {
+            try testDevicePreviewCorners()
+            failures.forEach { print("失败：\($0)") }
+            print("Device preview：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--c6-display-only") {
+            try testC6FlipClockAndOrientation()
+            try testC6SharedRenderer()
+            failures.forEach { print("失败：\($0)") }
+            print("C6 display：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--c6-standalone-only") {
+            try testC6MergedCards()
+            var c = C6StandaloneConfiguration()
+            check(c.isValid, "C6 default configuration valid")
+            c.enabled = true; c.clock = false; c.diagnostics = false
+            check(!c.isValid, "C6 refuses enabled empty rotation")
+            c.clock = true; c.rotation = 90
+            check(c.isValid, "C6 supports quarter-turn rotation")
+            c.rotation = 180; c.interval = 4
+            check(!c.isValid, "C6 bounds rotation interval")
+            c.interval = 15; c.brightness = 101
+            check(!c.isValid, "C6 bounds brightness")
+            c.brightness = 80
+            checkEqual(try JSONDecoder().decode(C6StandaloneConfiguration.self, from: JSONEncoder().encode(c)), c, "C6 configuration roundtrip")
+            for host in ["192.168.1.2", "10.0.0.5", "172.16.1.2", "192.168.4.1"] {
+                check((try? C6StandaloneClient(host: host)) != nil, "C6 accepts private IPv4")
+            }
+            for host in ["8.8.8.8", "https://192.168.1.2", "192.168.1.999", "192.168.1.2/path", "localhost"] {
+                check((try? C6StandaloneClient(host: host)) == nil, "C6 rejects unsafe endpoint")
+            }
+            print("C6 standalone: \(passed) passed, \(failures.count) failed")
+            failures.forEach { print($0) }
+            exit(failures.isEmpty ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--menu-bar-only") {
+            testMenuBarNamingPolicy()
+            testMenuBarPreviewIsolation()
+            failures.forEach { print("失败：\($0)") }
+            print("Menu bar：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--liquid-glass-only") {
             try await testLiquidGlassRendering()
             failures.forEach { print("失败：\($0)") }
@@ -6452,6 +6667,7 @@ Task { @MainActor in
         try testPraiseAndTaskFont()
         try testSidebarSettings()
         testMenuBarNamingPolicy()
+        testMenuBarPreviewIsolation()
         try testPomodoroCentering()
         try testGlobalShortcuts()
         try testAWTRIXStandalone()
@@ -6461,6 +6677,12 @@ Task { @MainActor in
         try testHomeAssistant()
         try testFormlabs()
         try testAIMacScreen()
+        try testC6FlipClockAndOrientation()
+        try testC6SharedRenderer()
+        try testC6MergedCards()
+        try testWeatherCardVisuals()
+        try testDevicePreviewCorners()
+        try testColorWiFiScreenSelectionPolicy()
         await testUsageDataAggregator()
         try testNowPlaying()
         try await testNowPlayingRequestCoordination()
@@ -6486,6 +6708,17 @@ Task { @MainActor in
 // MARK: - AI Mac 240×240 小屏幕
 
 func testAIMacScreen() throws {
+    let decoder = JSONDecoder()
+    let v2 = try decoder.decode(C6ButtonSnapshot.self, from: Data("{\"protocol\":2,\"device_id\":\"lingxi-c6-test\",\"boot_id\":7,\"sequence\":3,\"menu_active\":true,\"view_revision\":4}".utf8))
+    check(v2.isCompatible(protocol: 2, identity: "lingxi-c6-test"), "C6 菜单协议匹配当前设备")
+    check(!v2.isCompatible(protocol: 2, identity: "other-device"), "其他 C6 的按键状态不能暂停本机轮转")
+    check(!v2.isCompatible(protocol: 1, identity: nil), "不把新菜单事件误当旧协议翻页")
+    let old = try decoder.decode(C6ButtonSnapshot.self, from: Data("{\"boot_id\":7,\"sequence\":3}".utf8))
+    check(old.isCompatible(protocol: 1, identity: nil), "alpha9 旧按键协议保留")
+    check(!old.isCompatible(protocol: 2, identity: "lingxi-c6-test"), "新协议不接受缺失菜单字段")
+    for invalid in ["{\"boot_id\":-1,\"sequence\":3}", "{\"boot_id\":7,\"sequence\":3,\"menu_active\":1}", "{\"boot_id\":7}"] {
+        check((try? decoder.decode(C6ButtonSnapshot.self, from: Data(invalid.utf8))) == nil, "畸形按键响应不解除菜单暂停")
+    }
     checkEqual(DeviceCapabilityRegistry.all.count, DeviceType.allCases.count,
                "统一设备能力目录覆盖全部设备类型")
     let aiProfile = DeviceCapabilityRegistry.profile(for: .aiMacScreen)
@@ -6639,6 +6872,37 @@ func testAIMacScreen() throws {
     """.data(using: .utf8)!
     let rgbCapabilities = try AIMacScreenSupport.parseCapabilities(
         data: rgbInfo, host: "192.168.1.66")
+    let c6Info = String(data: rgbInfo, encoding: .utf8)!
+        .replacingOccurrences(of: "esp8266-ai-screen", with: "lingxi-esp32-c6-screen")
+        .data(using: .utf8)!
+    let c6Capabilities = try AIMacScreenSupport.parseCapabilities(data: c6Info, host: "192.168.1.67")
+    check(c6Capabilities.supportsLosslessRGB565, "C6 彩屏兼容无损推送")
+    check(c6Capabilities.nativeCardURL == nil && !c6Capabilities.prefersNativeCards, "旧 C6 固件不冒充混合轮转支持")
+    var hybridJSON = try JSONSerialization.jsonObject(with: c6Info) as! [String: Any]
+    hybridJSON["native_card_api"] = ["path": "/api/card", "version": 1, "prefer_native": true]
+    let hybridCapabilities = try AIMacScreenSupport.parseCapabilities(
+        data: JSONSerialization.data(withJSONObject: hybridJSON), host: "192.168.1.67")
+    checkEqual(hybridCapabilities.nativeCardURL?.absoluteString, "http://192.168.1.67/api/card", "本地卡片端点锁定同一设备")
+    check(hybridCapabilities.prefersNativeCards, "本地卡片优先支持混合轮转")
+    hybridJSON["native_card_api"] = ["path": "https://unrelated.test/api/card", "version": 1, "prefer_native": true]
+    let invalidHybrid = try AIMacScreenSupport.parseCapabilities(
+        data: JSONSerialization.data(withJSONObject: hybridJSON), host: "192.168.1.67")
+    check(invalidHybrid.nativeCardURL == nil && !invalidHybrid.prefersNativeCards, "拒绝跨设备或未知原生卡片端点")
+    var rotatedScreenSettings = AIMacScreenDeviceSettings()
+    check(!rotatedScreenSettings.rotate180, "小屏幕旋转默认关闭")
+    rotatedScreenSettings.rotate180 = true
+    let rotationRoundTrip = try JSONDecoder().decode(AIMacScreenDeviceSettings.self,
+        from: JSONEncoder().encode(rotatedScreenSettings))
+    check(rotationRoundTrip.rotate180, "小屏幕旋转独立保存")
+    let c6ButtonInfo = String(data: c6Info, encoding: .utf8)!
+        .replacingOccurrences(of: "\"brightness\":73", with: "\"button_api\":\"/api/button\",\"brightness\":73")
+        .data(using: .utf8)!
+    let c6ButtonCapabilities = try AIMacScreenSupport.parseCapabilities(data: c6ButtonInfo, host: "192.168.1.67")
+    checkEqual(c6ButtonCapabilities.buttonURL?.path, "/api/button", "C6 按键能力端点")
+    check(rgbCapabilities.buttonURL == nil, "旧 ESP8266 不启用额外按键轮询")
+    check(AIMacScreenDiscovery.discoveredDevice(from: c6Info, fallbackIP: "192.168.1.67") != nil,
+          "C6 彩屏允许扫描发现")
+    check(!AIMacScreenSupport.isSupportedDeviceIdentity("unrelated-screen"), "拒绝未知彩屏协议")
     check(rgbCapabilities.supportsLosslessRGB565, "能力接口识别 RGB565 无损模式")
     checkEqual(rgbCapabilities.rgb565UploadURL?.path, "/frame/rgb565",
                "能力接口使用固件声明的 RGB565 路径")
@@ -6665,6 +6929,13 @@ func testAIMacScreen() throws {
     check(rgbCapabilities.supportsNativeClock, "0.8.5 能力接口识别设备端实时时钟")
     checkEqual(rgbCapabilities.nativeClockURL?.path, "/api/clock",
                "设备端时钟使用固件声明的控制路径")
+    checkEqual(rgbCapabilities.nativeClockStyles, [0], "Legacy firmware advertises only the original clock")
+    var clockCapabilitiesJSON = try JSONSerialization.jsonObject(with: c6Info) as! [String: Any]
+    clockCapabilitiesJSON["native_clock_api"] = ["path": "/api/clock", "styles": [0, 1], "style": 1]
+    let styledClockCapabilities = try AIMacScreenSupport.parseCapabilities(
+        data: JSONSerialization.data(withJSONObject: clockCapabilitiesJSON), host: "192.168.1.67")
+    checkEqual(styledClockCapabilities.nativeClockStyles, [0, 1], "C6 explicitly advertises optional rounded clock")
+    checkEqual(styledClockCapabilities.nativeClockStyle, 1, "C6 active clock style can invalidate the refresh cache")
     check(rgbCapabilities.supportsNativeNowPlaying,
           "0.8.6 能力接口识别设备端实时播放进度")
     checkEqual(rgbCapabilities.nativeNowPlayingURL?.path, "/api/now-playing",
@@ -6676,6 +6947,11 @@ func testAIMacScreen() throws {
             timeZone: TimeZone(secondsFromGMT: 8 * 3600)!)
     }
     checkEqual(clockRequest?.httpMethod, "POST", "设备端时钟切换使用 POST 请求")
+    check(clockRequest?.url?.query?.contains("clock_style") == false, "ESP8266 clock requests remain unchanged")
+    let roundedClockRequest = AIMacScreenSupport.nativeClockRequest(
+        url: URL(string: "http://192.168.1.67/api/clock")!, now: clockSyncDate,
+        timeZone: TimeZone(secondsFromGMT: 28800)!, c6Style: .rounded)
+    check(roundedClockRequest?.url?.query?.contains("clock_style=1") == true, "C6 transmits clock style without sending per-second images")
     check(clockRequest?.url?.query?.contains("enabled=1") == true
           && clockRequest?.url?.query?.contains("epoch=1788888888") == true
           && clockRequest?.url?.query?.contains("tz=28800") == true,
@@ -7071,6 +7347,80 @@ func testAIMacScreen() throws {
     checkEqual(Array(green.prefix(2)), [0x07, 0xE0], "RGB565 纯绿大端字节序")
     checkEqual(Array(blue.prefix(2)), [0x00, 0x1F], "RGB565 纯蓝大端字节序")
     print("  AI Mac 240×240 小屏幕通过")
+}
+
+// MARK: - AI Mac / C6 共用编辑器的纯设备选择策略
+
+func testColorWiFiScreenSelectionPolicy() throws {
+    let settings = AppSettings()
+    var aiFields = DeviceSettings()
+    aiFields.aiMacScreen = AIMacScreenDeviceSettings(host: "192.168.1.10")
+    var c6Fields = DeviceSettings()
+    c6Fields.aiMacScreen = AIMacScreenDeviceSettings(host: "192.168.1.20")
+    var secondC6Fields = DeviceSettings()
+    secondC6Fields.aiMacScreen = AIMacScreenDeviceSettings(host: "192.168.1.30")
+    let ai = ManagedDevice(type: .aiMacScreen, name: "AI A", settings: aiFields)
+    let c6 = ManagedDevice(type: .c6Screen, name: "C6 B", settings: c6Fields)
+    let secondC6 = ManagedDevice(type: .c6Screen, name: "C6 C", settings: secondC6Fields)
+    let keyboard = ManagedDevice(type: .keyboard, name: "键盘", settings: DeviceSettings())
+    settings.devices = [keyboard, ai, c6, secondC6]
+    settings.activeAIMacScreenDeviceID = ai.id
+    settings.activeC6ScreenDeviceID = secondC6.id
+    var encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+    let before = try encoder.encode(settings)
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .aiMacScreen)?.id,
+               ai.id, "AI 与 C6 均有活动 ID 时，AI 编辑器仍选中 AI")
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen)?.id,
+               secondC6.id, "C6 编辑器使用 C6 的独立活动 ID")
+    checkEqual(ColorWiFiScreenSelectionPolicy.requestedType(for: ai.id, in: settings),
+               .aiMacScreen, "显式 AI 设备请求识别所属硬件类型")
+    checkEqual(ColorWiFiScreenSelectionPolicy.requestedType(for: c6.id, in: settings),
+               .c6Screen, "显式 C6 设备请求识别所属硬件类型")
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .aiMacScreen)?.id,
+               ai.id, "AI → C6 → AI 的纯解析不被另一类活动设备干涉")
+    checkEqual(try encoder.encode(settings), before, "纯选择策略不改写设备快照或两类活动 ID")
+
+    settings.activeC6ScreenDeviceID = nil
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen)?.id,
+               c6.id, "C6 活动 ID 缺失时回退该类首台已启用设备")
+    settings.activeC6ScreenDeviceID = UUID()
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen)?.id,
+               c6.id, "C6 活动 ID 失效时回退该类首台已启用设备")
+    settings.activeC6ScreenDeviceID = ai.id
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen)?.id,
+               c6.id, "C6 活动 ID 错指 AI 时不跨硬件选中错误设备")
+    settings.activeC6ScreenDeviceID = secondC6.id
+    settings.devices[3].isEnabled = false
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen)?.id,
+               c6.id, "活动 C6 被禁用时不作为编辑器目标")
+    check(ColorWiFiScreenSelectionPolicy.requestedType(for: secondC6.id, in: settings) == nil,
+          "禁用的设备不接受显式编辑请求")
+    settings.devices[3].isEnabled = true
+    settings.devices[1].isEnabled = false
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .aiMacScreen)?.id,
+               secondC6.id, "AI 家族全部禁用时回退可用 C6 家族的活动设备")
+    settings.devices.removeAll { $0.id == ai.id }
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .aiMacScreen)?.id,
+               secondC6.id, "AI 家族被删除后回退可用 C6 家族")
+    check(ColorWiFiScreenSelectionPolicy.requestedType(for: ai.id, in: settings) == nil,
+          "已删除设备不接受显式编辑请求")
+    checkEqual(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .keyboard)?.id,
+               secondC6.id, "非彩屏首选类型也只回退到已启用彩屏")
+    check(ColorWiFiScreenSelectionPolicy.requestedType(for: keyboard.id, in: settings) == nil,
+          "键盘不能被错误路由进共用彩屏编辑器")
+    let beforeInvalid = try encoder.encode(settings)
+    check(ColorWiFiScreenSelectionPolicy.requestedType(for: UUID(), in: settings) == nil,
+          "未知 UUID 不接受显式编辑请求")
+    checkEqual(try encoder.encode(settings), beforeInvalid, "无效编辑请求不更改任何保存数据")
+    for index in settings.devices.indices where settings.devices[index].type.isColorWiFiScreen {
+        settings.devices[index].isEnabled = false
+    }
+    check(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .c6Screen) == nil,
+          "所有彩屏禁用后编辑器没有隐式目标")
+    settings.devices = []
+    check(ColorWiFiScreenSelectionPolicy.device(in: settings, preferredType: .aiMacScreen) == nil,
+          "未添加任何设备时编辑器没有目标")
+    print("  AI Mac / C6 设备选择策略通过")
 }
 
 // MARK: - AI Mac 每设备色彩校准
@@ -9824,31 +10174,34 @@ func testHomeAssistant() throws {
     checkEqual(legacyCanvasFields.showImage, false, "旧画板配置缺画面字段回退关闭")
     // 8) 渲染差异：打印机卡片 / HA 卡片 / 完成庆祝卡 带画面时不同
     var pictureCardSettings = AppSettings()
+    // Footer falls back to `now` and shows seconds. These renders must share one
+    // timestamp so crossing a second cannot masquerade as an image-layout change.
+    let pictureCardNow = Date(timeIntervalSince1970: 1_735_689_600)
     let mappedPrinter = BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
                                              imageEntityID: "image.bambu_lab_a1_camera")
     let printerEntitiesForCard = [HAEntity(entityId: "sensor.a1_status", friendlyName: "A1 状态",
                                            state: "printing", unitOfMeasurement: nil)]
     let printerNoPicture = try ScreenRenderer.renderBambuLab(mappedPrinter,
                                                              entities: printerEntitiesForCard,
-                                                             settings: pictureCardSettings)
+                                                             settings: pictureCardSettings, now: pictureCardNow)
     let printerWithPicture = try ScreenRenderer.renderBambuLab(mappedPrinter,
                                                                entities: printerEntitiesForCard,
                                                                image: pictureData,
-                                                               settings: pictureCardSettings)
+                                                               settings: pictureCardSettings, now: pictureCardNow)
     check(printerNoPicture.data != printerWithPicture.data, "打印机卡片画面区块生效")
     var glowTaskCoverPrinter = mappedPrinter
     glowTaskCoverPrinter.imageSource = .taskCover
     let printerTaskCover = try ScreenRenderer.renderBambuLab(glowTaskCoverPrinter,
                                                              entities: printerEntitiesForCard,
                                                              image: pictureData,
-                                                             settings: pictureCardSettings)
+                                                             settings: pictureCardSettings, now: pictureCardNow)
     check(printerWithPicture.data != printerTaskCover.data,
           "摄像头实况画面应用主色光晕，任务封面不应用")
     let printerPictureHidden = try ScreenRenderer.renderBambuLab(
         BambuLabCardSettings(name: "A1", statusEntityID: "sensor.a1_status",
                              imageEntityID: "image.bambu_lab_a1_camera", showImage: false),
-        entities: printerEntitiesForCard, image: pictureData, settings: pictureCardSettings)
-    checkEqual(printerPictureHidden.data.count, printerNoPicture.data.count,
+        entities: printerEntitiesForCard, image: pictureData, settings: pictureCardSettings, now: pictureCardNow)
+    checkEqual(printerPictureHidden.data, printerNoPicture.data,
                "关闭画面开关后不渲染图片")
     let imageEntity = HAEntity(entityId: "image.bambu_lab_a1_camera", friendlyName: "A1 摄像头",
                                state: "captured", unitOfMeasurement: nil,

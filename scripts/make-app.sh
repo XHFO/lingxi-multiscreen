@@ -26,19 +26,18 @@ echo "==> swift build -c release（SDK ${SDK_VERSION}，最低 macOS ${MACOSX_DE
 swift build -c release --product LinxDisplayApp --disable-sandbox -debug-info-format none
 
 BIN=".build/release/LinxDisplayApp"
-APP_NAME="多屏灵犀"
+APP_NAME="多屏灵犀 2.0 测试版"
 EXEC_NAME="LingxiMultiScreen"
 FINAL_APP="$ROOT/dist/$APP_NAME.app"
+mkdir -p "$ROOT/dist"
 # Documents 可能由 File Provider 管理，直接在其中组装会被注入 Finder 扩展属性并破坏签名。
 # 先在本机临时目录完成全部组装与签名，再把成品移动到 dist。
 STAGE_ROOT="$(mktemp -d /private/tmp/lingxi-multiscreen-build.XXXXXX)"
 APP="$STAGE_ROOT/$APP_NAME.app"
 
 echo "==> 组装 $APP"
-# 旧包移入回收目录（避免 rm -rf 被安全策略拦截导致打包失败）
-if [ -d "$FINAL_APP" ]; then
-    mv -f "$FINAL_APP" "$ROOT/dist/.trash-$APP_NAME-$(date +%s)" 2>/dev/null || true
-fi
+# Keep the last runnable test app in place until the new staged bundle passes
+# resource and signature checks. A failed build must not remove the old app.
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
 chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
@@ -102,6 +101,27 @@ if [ "$M5_BOOT_MAGIC" != "e9" ] || [ "$M5_PARTITION_MAGIC" != "aa50" ] || [ "$M5
     exit 1
 fi
 mkdir -p "$APP/Contents/Resources/Firmware"
+for C6_NAME in lingxi-c6-2.0.0-full.bin lingxi-c6-2.0.0-ota.bin c6-manifest.json C6_FONT_LICENSE.txt C6_QR_LICENSE.txt; do
+    if [ ! -f "$ROOT/Resources/Firmware/$C6_NAME" ]; then
+        echo "错误：C6 内置资源缺失：$C6_NAME" >&2
+        exit 1
+    fi
+    cp "$ROOT/Resources/Firmware/$C6_NAME" "$APP/Contents/Resources/Firmware/"
+done
+for C6_KIND in full ota; do
+    C6_EXPECTED="$(plutil -extract "${C6_KIND}_sha256" raw "$ROOT/Resources/Firmware/c6-manifest.json")"
+    C6_ACTUAL="$(shasum -a 256 "$ROOT/Resources/Firmware/lingxi-c6-2.0.0-${C6_KIND}.bin" | awk '{print $1}')"
+    if [ "$C6_EXPECTED" != "$C6_ACTUAL" ]; then
+        echo "错误：C6 $C6_KIND 固件哈希不匹配" >&2
+        exit 1
+    fi
+done
+if [ "$(plutil -extract version raw "$ROOT/Resources/Firmware/c6-manifest.json")" != "2.0.0-alpha.20" ] \
+    || [ "$(xxd -p -l 2 -s 131084 "$ROOT/Resources/Firmware/lingxi-c6-2.0.0-full.bin")" != "0d00" ] \
+    || [ "$(xxd -p -l 2 -s 12 "$ROOT/Resources/Firmware/lingxi-c6-2.0.0-ota.bin")" != "0d00" ]; then
+    echo "错误：C6 固件版本或芯片不匹配" >&2
+    exit 1
+fi
 cp "$FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
 cp "$M5_FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
 cp "$FLASH_HELPER_SOURCE" "$APP/Contents/Resources/Firmware/"
@@ -118,19 +138,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleExecutable</key>
 	<string>LingxiMultiScreen</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.lingxi.multiscreen</string>
+	<string>com.lingxi.multiscreen.beta2</string>
 	<key>CFBundleName</key>
-	<string>多屏灵犀</string>
+	<string>多屏灵犀 2.0 测试版</string>
 	<key>CFBundleDisplayName</key>
-	<string>多屏灵犀</string>
+	<string>多屏灵犀 2.0 测试版</string>
 	<key>CFBundleIconFile</key>
 	<string>Icon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.5</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>12</string>
+	<string>31</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>
@@ -141,6 +161,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>用于接收灵犀68的 Fn + 旋钮事件，并在用户主动启用时将其转换为手动翻页。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于发现并连接灵犀键盘、口袋先知、摘录、AI Mac 小屏幕和 AWTRIX NG 等局域网设备。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>仅在刷机配网时获取附近 2.4 GHz Wi-Fi 的网络名称，方便选择 SSID；不获取、保存或上传地理位置。</string>
+	<key>NSLocationUsageDescription</key>
+	<string>仅在刷机配网时获取附近 2.4 GHz Wi-Fi 的网络名称，方便选择 SSID；不获取、保存或上传地理位置。</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>用于通过蓝牙连接 M5Stack StickS3 控制器，接收摇晃翻页与按键切换设备信号。</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
@@ -174,6 +198,10 @@ codesign --force --sign - "$APP/Contents/Resources/Firmware/lingxi-esptool"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
+if [ -d "$FINAL_APP" ]; then
+    ROLLBACK_ROOT="$(mktemp -d "$ROOT/dist/.rollback-beta2.XXXXXX")"
+    mv "$FINAL_APP" "$ROLLBACK_ROOT/$APP_NAME.app"
+fi
 mv "$APP" "$FINAL_APP"
 rmdir "$STAGE_ROOT"
 # File Provider 可能在移动到 dist 时立即给包根目录重新附加元数据；先尽量清理。

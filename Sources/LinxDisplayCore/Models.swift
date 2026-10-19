@@ -26,6 +26,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     case formlabs5 = 20
     /// AI Mac 彩色小屏专属的设备端实时桌面时钟。
     case aiMacClock = 21
+    case weather = 22
 
     /// 设置文件可能来自包含实验卡片的开发版。遇到当前版本不认识的编号时，
     /// 只回退当前显示页，不能让整份设备与画板配置解码失败。
@@ -82,6 +83,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
         case .aiMacClock: return "桌面时钟"
+        case .weather: return "天气"
         }
     }
 
@@ -95,6 +97,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .systemMonitor: return "gauge"
         case .nowPlaying: return "music.note"
         case .aiMacClock: return "clock"
+        case .weather: return "cloud.sun"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -171,6 +174,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case formlabs3 = 24
     case formlabs4 = 25
     case formlabs5 = 26
+    case weather = 27
 
     public var id: Int { rawValue }
 
@@ -203,6 +207,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .formlabs3: return "Formlabs 打印机 3"
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
+        case .weather: return "天气"
         }
     }
 
@@ -225,6 +230,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .sspai: return "newspaper"
         case .disk: return "internaldrive"
         case .homeAssistant: return "house"
+        case .weather: return "cloud.sun"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         }
@@ -334,7 +340,7 @@ public enum RuntimePerformancePolicy {
             return timeFormat.contains("s") ? 1 : 30
         case .excerptQuote, .sspai:
             return 30
-        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant, .aiMacClock,
+        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather,
              .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))
@@ -559,6 +565,7 @@ public enum CardTheme: Int, CaseIterable, Identifiable, Codable {
     case minimalLight = 1
     case neonPurple = 2
     case amberTerminal = 3
+    case laserOrange = 4
 
     public var id: Int { rawValue }
 
@@ -568,6 +575,7 @@ public enum CardTheme: Int, CaseIterable, Identifiable, Codable {
         case .minimalLight: return "明亮极简"
         case .neonPurple: return "霓虹紫"
         case .amberTerminal: return "琥珀终端"
+        case .laserOrange: return "激光橙黑"
         }
     }
 }
@@ -1189,7 +1197,7 @@ public enum Rand0ButtonTarget: Int, CaseIterable, Identifiable, Codable {
 // MARK: - 设备管理
 
 /// 设备类型
-public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
+public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable, Sendable {
     case keyboard = 0
     case oracle = 1
     case excerpt = 2
@@ -1199,6 +1207,7 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
     case aiMacScreen = 6
     case awtrix = 7
     case m5Controller = 8
+    case c6Screen = 9
 
     public var id: Int { rawValue }
 
@@ -1213,13 +1222,15 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .aiMacScreen: return "AI Mac 小屏幕"
         case .awtrix: return "AWTRIX NG"
         case .m5Controller: return "M5 StickS3 控制器"
+        case .c6Screen: return "XH Multiscreen C6"
         }
     }
 
     /// 设备类型级的试验状态；界面使用文字徽标呈现，不只依赖颜色。
     public var isBeta: Bool {
-        self == .m5Controller
+        self == .m5Controller || self == .c6Screen
     }
+    public var isColorWiFiScreen: Bool { self == .aiMacScreen || self == .c6Screen }
 }
 
 /// 新建画板的命名规则：空画板先显示“未命名”，第一次添加模块时才使用
@@ -1502,6 +1513,8 @@ public struct ExcerptCanvasBoard: Codable, Identifiable, Equatable {
 
 /// 单台设备的设置快照（仅设备相关字段；切换设备时整体捕获/套用，每台设备各自记住设置）
 public struct DeviceSettings: Codable, Equatable {
+    public var bambuDataSource: BambuDataSource?
+    public var bambuMQTT: BambuMQTTSettings?
     // 连接信息
     public var endpoint: String?
     public var rand0IP: String?
@@ -1702,6 +1715,7 @@ public struct DeviceSettings: Codable, Equatable {
     public var formlabsConnection: FormlabsConnectionSettings?
     /// ESP8266 AI Mac 240×240 小屏幕：每台设备独立保存，不经过全局镜像。
     public var aiMacScreen: AIMacScreenDeviceSettings?
+    public var c6AutomaticSync: Bool?
     /// AWTRIX NG：每台设备保存一份完整连接、显示和中文应用设置。
     public var awtrix: AWTRIXSettings?
     /// M5Stack StickS3 蓝牙控制器：独立保存配对与被控设备列表。
@@ -1880,7 +1894,7 @@ public struct DeviceSettings: Codable, Equatable {
         case .formlabs:
             // Formlabs 连接信息由 ManagedDevice.settings 直接持有；此处不从全局镜像覆盖。
             break
-        case .aiMacScreen:
+        case .aiMacScreen, .c6Screen:
             // 小屏幕设置直接保存在 ManagedDevice.settings 中。
             break
         case .awtrix:
@@ -2050,7 +2064,7 @@ public struct DeviceSettings: Codable, Equatable {
             if let v = bambuShowError { s.bambuShowError = v }
         case .formlabs:
             break
-        case .aiMacScreen:
+        case .aiMacScreen, .c6Screen:
             break
         case .awtrix:
             if let awtrix { s.awtrix = awtrix }
@@ -2096,6 +2110,7 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
         case .bambuLab: return "打印机 \(index + 1)"
         case .formlabs: return "Formlabs \(index + 1)"
         case .aiMacScreen: return "AI Mac 小屏幕 \(index + 1)"
+        case .c6Screen: return "XH Multiscreen C6 \(index + 1)"
         case .awtrix: return "AWTRIX NG \(index + 1)"
         case .m5Controller: return "M5 StickS3 控制器 \(index + 1)"
         default: return "\(type.title) \(index + 1)"

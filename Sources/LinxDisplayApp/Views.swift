@@ -1,4 +1,5 @@
 import AppKit
+import CoreBluetooth
 import LinxDisplayCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -109,6 +110,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case awtrixCardManagement
     case m5Controller
     case homeAssistant
+    case weather
     case bambuLab
     case bambuLab2
     case bambuLab3
@@ -126,9 +128,11 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case aiMacCard
     case aiMacCardManagement
     case aiMacControl
+    case c6Device
     case devices
     case buttonControl
     case cardRotation
+    case keyboardSettings
     case oracleBoardManagement
     case excerptBoardManagement
     case aiMacBoardManagement
@@ -141,7 +145,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     /// 主导航项（外观与设置置于底部）
     static var mainItems: [Panel] {
         [.qwenWork, .codex, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
-         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant,
+         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather,
          .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
          .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5,
          .devices, .oracleCanvas, .excerptCanvas]
@@ -197,6 +201,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .sspai: return .sspai
         case .emojiWallpaper: return .emojiWallpaper
         case .homeAssistant: return .homeAssistant
+        case .weather: return .weather
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
         case .bambuLab3: return .bambuLab3
@@ -230,6 +235,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .awtrixCardManagement: return "卡片管理"
         case .m5Controller: return "M5 StickS3 控制器"
         case .homeAssistant: return "Home Assistant"
+        case .weather: return "天气"
         case .bambuLab: return "Bambu Lab 打印机"
         case .bambuLab2: return "Bambu Lab 打印机 2"
         case .bambuLab3: return "Bambu Lab 打印机 3"
@@ -247,12 +253,14 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .aiMacCard: return "功能卡片"
         case .aiMacCardManagement: return "卡片管理"
         case .aiMacControl: return "屏幕控制"
+        case .c6Device: return "离线与同步"
         case .devices: return "设备管理"
         case .buttonControl: return "按键控制"
         case .cardRotation: return "卡片管理"
+        case .keyboardSettings: return "屏幕控制"
         case .oracleBoardManagement: return "口袋先知画板管理"
         case .excerptBoardManagement: return "摘录画板管理"
-        case .aiMacBoardManagement: return "AI Mac 画板管理"
+        case .aiMacBoardManagement: return "画板管理"
         case .oracleCanvas: return "口袋先知画板"
         case .excerptCanvas: return "摘录画板"
         }
@@ -277,6 +285,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .awtrixCardManagement: return "tray.full"
         case .m5Controller: return "gamecontroller"
         case .homeAssistant: return "house"
+        case .weather: return "cloud.sun"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         case .aiMacScreen: return "rectangle.stack"
@@ -286,9 +295,11 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .aiMacCard: return "square.grid.2x2"
         case .aiMacCardManagement: return "tray.full"
         case .aiMacControl: return "slider.horizontal.3"
+        case .c6Device: return "cpu"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
         case .cardRotation: return "tray.full"
+        case .keyboardSettings: return "slider.horizontal.3"
         case .oracleBoardManagement: return "rectangle.stack"
         case .excerptBoardManagement: return "rectangle.stack"
         case .aiMacBoardManagement: return "rectangle.stack"
@@ -305,8 +316,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
-             .cardRotation, .oracleBoardManagement, .excerptBoardManagement,
-             .aiMacBoardManagement: return nil
+             .cardRotation, .keyboardSettings, .oracleBoardManagement, .excerptBoardManagement,
+             .aiMacBoardManagement, .c6Device: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
         case .pomodoro: return .pomodoro
@@ -318,6 +329,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .sspai: return .sspai
         case .emojiWallpaper: return .emojiWallpaper
         case .homeAssistant: return .homeAssistant
+        case .weather: return .weather
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
         case .bambuLab3: return .bambuLab3
@@ -344,6 +356,7 @@ struct AWTRIXAppRoute: Equatable, Hashable {
     var isHomeAssistant: Bool {
         appName.caseInsensitiveCompare(AWTRIXCardPolicy.homeAssistantAppName) == .orderedSame
     }
+    var isWeather: Bool { appName.caseInsensitiveCompare(AWTRIXCardPolicy.weatherAppName) == .orderedSame }
 
     init(deviceID: UUID, appName: String, isBuiltInText: Bool = false) {
         self.deviceID = deviceID
@@ -791,6 +804,8 @@ struct SettingsView: View {
     @State private var dragAIMacBoards: [AIMacCanvasBoard]?
     @State private var draggedAIMacCard: DisplayMode?
     @State private var dragAIMacCards: [DisplayMode]?
+    @State private var draggedC6Card: C6CardDescriptor?
+    @State private var dragC6Cards: [C6CardDescriptor]?
     @State private var draggedAWTRIXApp: AWTRIXCardDescriptor?
     @State private var dragAWTRIXApps: [AWTRIXCardDescriptor]?
     @State private var draggedAWTRIXHAEntity: HAEntityRef?
@@ -801,10 +816,15 @@ struct SettingsView: View {
     @State private var deviceIDToDelete: UUID?
     /// 解除控制器配对前说明系统蓝牙记录不会被第三方应用删除。
     @State private var m5ControllerIDToUnpair: UUID?
-    /// 设备管理默认只读；只有用户明确点“编辑”的设备才开放输入、开关与操作按钮。
+    /// 点击设备卡片即进入编辑；离开设置面板后丢弃尚未应用的连接草稿。
     @State private var editingDeviceIDs: Set<UUID> = []
     /// 已添加设备默认收起为紧凑卡片；每台设备独立记住本次会话中的展开状态。
     @State private var expandedDeviceIDs: Set<UUID> = []
+    @State private var selectedAddDeviceType: DeviceType?
+    @State private var deviceSheetOpen = false
+    @State private var selectedManagedDeviceID: UUID?
+    @State private var highlightedDeviceID: UUID?
+    @State private var addingDeviceID: UUID?
     /// 恢复初始设定两步确认：第一步说明清除范围，第二步最终确认
     @State private var showResetConfirm1 = false
     @State private var showResetConfirm2 = false
@@ -975,7 +995,7 @@ struct SettingsView: View {
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .excerptBoardManagement, .aiMacBoardManagement,
-             .devices, .general, .awtrix, .awtrixCardManagement, .m5Controller:
+             .devices, .general, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -1041,12 +1061,11 @@ struct SettingsView: View {
                 if let mode = newValue.displayMode {
                     model.setMode(mode)
                 }
-                if newValue == .devices {
-                    Task { await model.ensureBambuEntityCatalog() }
-                }
                 // 两个独立画板均为双栏布局（左主内容 + 右侧边栏）：
                 // 窗口不够宽时自动放大到能完整显示，避免用户看不到右侧边栏
-                if newValue == .excerptCanvas || newValue == .oracleCanvas {
+                if newValue == .excerptCanvas || newValue == .oracleCanvas
+                    || newValue == .aiMacScreen || newValue == .aiMacCard
+                    || newValue == .aiMacControl || newValue == .c6Device {
                     ensureDeviceCanvasWindowWidth()
                 }
             }
@@ -1056,7 +1075,8 @@ struct SettingsView: View {
             .onChange(of: model.settings.displayMode) { newMode in
                 // 在设备管理中新建键盘时会给它写入默认的「灵犀画板」模式。
                 // 这是设备初始值，不是用户要求切换页面；继续留在设备管理中完成 IP 等配置。
-                if selected == .devices { return }
+                if selected == .devices || selected == .keyboardSettings || [.aiMacScreen, .aiMacCard, .aiMacCardManagement,
+                    .aiMacBoardManagement, .aiMacControl, .c6Device].contains(selected) { return }
                 if model.settings.cardRotationEnabled { return }
                 if let panel = Panel.from(displayMode: newMode), panel != selected {
                     selected = panel
@@ -1077,13 +1097,15 @@ struct SettingsView: View {
                 dragExcerptBoards = nil
                 draggedExcerptBoard = nil
             }
-            .onChange(of: model.activeDeviceID(for: .aiMacScreen)) { _ in
+            .onChange(of: model.activeColorScreenDeviceID) { _ in
                 dragAIMacBoards = nil
                 draggedAIMacBoard = nil
                 dragModules = nil
                 draggedModule = nil
                 dragAIMacCards = nil
                 draggedAIMacCard = nil
+                dragC6Cards = nil
+                draggedC6Card = nil
             }
             .onChange(of: model.activeDeviceID(for: .awtrix)) { _ in
                 dragAWTRIXApps = nil
@@ -1183,6 +1205,10 @@ struct SettingsView: View {
                             aiMacBoardManagementForm
                         } else if selected == .aiMacControl {
                             aiMacControlForm
+                        } else if selected == .c6Device {
+                            if let id = model.activeDeviceID(for: .c6Screen) {
+                                C6DeviceView(model: model, deviceID: id).padding(20)
+                            }
                         } else {
                             Form { panelContent(for: selected) }
                                 .formStyle(.grouped)
@@ -1233,11 +1259,15 @@ struct SettingsView: View {
     private func awtrixAppDisplayTitle(_ route: AWTRIXAppRoute) -> String {
         if route.isBuiltInText { return "灵犀文字" }
         if route.isHomeAssistant { return "Home Assistant" }
+        if route.isWeather { return "天气" }
         return model.awtrixAppInfo(deviceID: route.deviceID, name: route.appName)?.title
             ?? route.appName
     }
 
     private var currentPanelTitle: String {
+        if selected == .keyboardSettings {
+            return (model.activeDevice(for: .keyboard)?.name ?? "灵犀68") + " · 屏幕控制"
+        }
         if selected == .awtrix, let route = awtrixAppRoute {
             return awtrixAppDisplayTitle(route)
         }
@@ -1245,7 +1275,7 @@ struct SettingsView: View {
         if selected == .excerptCanvas { return model.excerptCanvasBoardName }
         if selected == .aiMacScreen { return model.aiMacCanvasBoardName }
         if selected == .aiMacCard {
-            return model.activeDeviceID(for: .aiMacScreen)
+            return model.activeColorScreenDeviceID
                 .map { model.menuTitle(for: model.aiMacScreenSettings(for: $0).cardMode) }
                 ?? selected.title
         }
@@ -1297,6 +1327,19 @@ struct SettingsView: View {
     // MARK: 各面板内容
 
     private var currentPanelStatus: String {
+        if selected == .c6Device {
+            guard let deviceID = model.activeDeviceID(for: .c6Screen) else {
+                return "尚未添加 C6"
+            }
+            return model.c6SyncStatuses[deviceID]
+                ?? model.aiMacScreenStatuses[deviceID]
+                ?? "等待首次配对"
+        }
+        if [.aiMacScreen, .aiMacCard, .aiMacCardManagement, .aiMacBoardManagement,
+            .aiMacControl, .aiMacDashboard, .aiMacClock, .aiMacCustomImage].contains(selected),
+           let id = model.activeColorScreenDeviceID {
+            return model.aiMacScreenStatuses[id] ?? "等待连接小屏幕"
+        }
         if selected == .m5Controller {
             guard model.m5ControllerConnected else {
                 switch model.m5BluetoothState {
@@ -1322,6 +1365,7 @@ struct SettingsView: View {
         switch panel {
         case .welcome: EmptyView() // 开始使用引导页由 detailColumn 的空设备状态渲染，此处无需内容
         case .general: generalForm
+        case .keyboardSettings: keyboardSettingsForm
         case .appearance: appearanceForm
         case .qwenWork: qwenWorkForm
         case .codex: codexForm
@@ -1342,6 +1386,7 @@ struct SettingsView: View {
         case .awtrixCardManagement: awtrixCardManagementForm
         case .m5Controller: m5ControllerForm
         case .homeAssistant: homeAssistantForm
+        case .weather: WeatherSettingsView(model: model)
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
         case .aiMacScreen: aiMacScreenForm
@@ -1351,6 +1396,10 @@ struct SettingsView: View {
         case .aiMacCard: aiMacCardForm
         case .aiMacCardManagement: aiMacCardManagementForm
         case .aiMacControl: aiMacControlForm
+        case .c6Device:
+            if let id = model.activeDeviceID(for: .c6Screen) {
+                C6DeviceView(model: model, deviceID: id)
+            }
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
         case .cardRotation: cardRotationForm
@@ -1383,7 +1432,7 @@ struct SettingsView: View {
     private var aiMacScreenForm: some View {
         HStack(alignment: .top, spacing: 0) {
             Form {
-                if let device = model.activeDevice(for: .aiMacScreen) {
+                if let device = model.activeColorScreenDevice {
                     let config = model.aiMacScreenSettings(for: device.id)
                     Section {
                         HStack(spacing: 8) {
@@ -1473,7 +1522,7 @@ struct SettingsView: View {
         }
         .padding(.bottom, 12)
         .onAppear {
-            if let id = model.activeDeviceID(for: .aiMacScreen) {
+            if let id = model.activeColorScreenDeviceID {
                 model.refreshAIMacScreenPreview(deviceID: id)
             }
         }
@@ -1484,7 +1533,7 @@ struct SettingsView: View {
     private func aiMacStandaloneModeForm(_ mode: AIMacScreenContentMode) -> some View {
         HStack(alignment: .top, spacing: 0) {
             Form {
-                if let device = model.activeDevice(for: .aiMacScreen) {
+                if let device = model.activeColorScreenDevice {
                     let config = model.aiMacScreenSettings(for: device.id)
                     Section {
                         LabeledContent("设备", value: device.name)
@@ -1516,6 +1565,12 @@ struct SettingsView: View {
                         }
                     } else if mode == .clock {
                         Section {
+                            if device.type == .c6Screen {
+                                Picker("时钟样式", selection: model.c6ClockStyleBinding(for: device.id)) {
+                                    ForEach(C6ClockStyle.allCases) { Text($0.title).tag($0) }
+                                }
+                                HelpIcon(text: "圆角粗数字参考工业仪表的数字造型。预览与 C6 本地使用同一套渲染；开启自动同步后，电脑断开仍保留此样式。需要更新内置 C6 固件，原翻页钟保留。")
+                            }
                             Text("显示适配 240 × 240 彩屏的桌面时钟与日期。")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -1565,7 +1620,7 @@ struct SettingsView: View {
         .padding(.bottom, 12)
         .onAppear {
             if model.backgroundServicesEnabled,
-               let id = model.activeDeviceID(for: .aiMacScreen) {
+               let id = model.activeColorScreenDeviceID {
                 model.activateAIMacScreenMode(mode, deviceID: id)
             }
         }
@@ -1573,14 +1628,27 @@ struct SettingsView: View {
 
     /// 统一卡片页面：左侧直接复用同一张功能卡片的设置组件，右侧使用目标设备原生
     /// 240×240 预览。修改设置不会切换灵犀 68 当前页面。
+    @ViewBuilder
     private var aiMacCardForm: some View {
+        if let device = model.activeColorScreenDevice, device.type == .c6Screen,
+           let card = model.selectedC6Card(for: device.id), card.nativeCard != nil {
+            c6NativeCardForm(card, deviceID: device.id)
+        } else {
+            aiMacSoftwareCardForm
+        }
+    }
+
+    private var aiMacSoftwareCardForm: some View {
         HStack(alignment: .top, spacing: 0) {
             Form {
-                if let device = model.activeDevice(for: .aiMacScreen) {
+                if let device = model.activeColorScreenDevice {
                     let config = model.aiMacScreenSettings(for: device.id)
                     Section {
                         LabeledContent("设备", value: device.name)
                         LabeledContent("功能卡片", value: model.menuTitle(for: config.cardMode))
+                        if device.type == .c6Screen {
+                            LabeledContent("来源", value: "电脑推送")
+                        }
                     } header: {
                         HStack(spacing: 4) {
                             Text(model.menuTitle(for: config.cardMode))
@@ -1624,9 +1692,14 @@ struct SettingsView: View {
         .padding(.bottom, 12)
         .onAppear {
             if model.backgroundServicesEnabled,
-               let id = model.activeDeviceID(for: .aiMacScreen) {
-                let mode = model.aiMacScreenSettings(for: id).cardMode
-                model.activateAIMacCard(mode, deviceID: id)
+               let id = model.activeColorScreenDeviceID {
+                if model.activeColorScreenDevice?.type == .c6Screen,
+                   let card = model.selectedC6Card(for: id) {
+                    model.activateC6Card(card, deviceID: id)
+                } else {
+                    let mode = model.aiMacScreenSettings(for: id).cardMode
+                    model.activateAIMacCard(mode, deviceID: id)
+                }
             }
         }
     }
@@ -1657,6 +1730,7 @@ struct SettingsView: View {
         case .sspai: sspaiForm
         case .emojiWallpaper: emojiWallpaperForm
         case .homeAssistant: aiMacHomeAssistantForm(deviceID: deviceID)
+        case .weather: WeatherSettingsView(model: model)
         case .bambuLab: bambuLabForm(for: .bambuLab)
         case .bambuLab2: bambuLabForm(for: .bambuLab2)
         case .bambuLab3: bambuLabForm(for: .bambuLab3)
@@ -1670,6 +1744,9 @@ struct SettingsView: View {
         case .aiMacClock:
             Section {
                 LabeledContent("运行方式", value: "小屏幕本机实时渲染")
+                if model.settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen {
+                    LabeledContent("时钟样式", value: model.c6SyncedConfigurations[deviceID]?.clockStyle.title ?? "读取设备设置后显示")
+                }
                 Text("软件只负责切换和校准时间；秒级走时、日期计算与画面绘制均由小屏幕完成，不再持续推送时钟图片。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1679,9 +1756,18 @@ struct SettingsView: View {
     }
 
     /// AI Mac 卡片管理与灵犀 68 使用同一种交互，但所有状态写入当前小屏幕设备快照。
+    @ViewBuilder
     private var aiMacCardManagementForm: some View {
+        if let device = model.activeColorScreenDevice, device.type == .c6Screen {
+            c6CardManagementForm(deviceID: device.id)
+        } else {
+            aiMacSoftwareCardManagementForm
+        }
+    }
+
+    private var aiMacSoftwareCardManagementForm: some View {
         Form {
-            if let device = model.activeDevice(for: .aiMacScreen) {
+            if let device = model.activeColorScreenDevice {
                 let config = model.aiMacScreenSettings(for: device.id)
                 Section {
                     LabeledContent("正在管理", value: device.name)
@@ -1769,6 +1855,174 @@ struct SettingsView: View {
         .padding(.bottom, 12)
     }
 
+    private func c6CardManagementForm(deviceID: UUID) -> some View {
+        Form {
+            let config = model.aiMacScreenSettings(for: deviceID)
+            Section {
+                LabeledContent("正在管理", value: model.settings.devices.first { $0.id == deviceID }?.name ?? C6ProjectResources.productName)
+                Label(model.c6SyncStatuses[deviceID] ?? "连接设备后合并本地卡片", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section("自动轮播") {
+                Toggle("卡片页面自动轮播", isOn: model.aiMacCardRotationBinding(for: deviceID))
+                if config.cardRotationEnabled {
+                    HStack {
+                        Text("轮换间隔")
+                        Spacer()
+                        Text(Self.rotationIntervalText(config.cardRotationMinutes))
+                            .foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Slider(value: model.aiMacCardRotationMinutesBinding(for: deviceID), in: 1...60, step: 1)
+                        .accessibilityLabel("卡片轮换间隔")
+                }
+            }
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal").foregroundStyle(.clear)
+                    Image(systemName: "square.grid.2x2").foregroundStyle(.clear).frame(width: 18)
+                    Text("卡片 / 来源")
+                    Spacer()
+                    Text("侧栏").frame(width: 44)
+                    Text("轮换").frame(width: 44)
+                }
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                let cards = dragC6Cards ?? model.c6CardList(for: deviceID)
+                if cards.isEmpty {
+                    Text("尚未添加卡片，从下方选择电脑推送或设备本地卡片。")
+                        .foregroundStyle(.secondary).padding(.horizontal, 12)
+                } else {
+                    reorderList(items: cards, dragged: $draggedC6Card, dragItems: $dragC6Cards,
+                                commit: { model.commitC6CardOrder($0, deviceID: deviceID) }) { card in
+                        c6CardManagementRow(card, deviceID: deviceID)
+                    }
+                }
+            } header: {
+                HStack(spacing: 4) {
+                    Text("卡片（拖拽排序）")
+                    HelpIcon(text: "电脑在线时，电脑推送和设备本地卡片使用同一份顺序与轮换列表。时钟只由设备本地渲染；隐藏卡片不会删除数据源或凭据。本地卡片的轮询资格同步到设备；断开电脑后按固件自身策略轮询，分组与排序可能不同。")
+                }
+            }
+            let hidden = model.c6HiddenCardList(for: deviceID)
+            if !hidden.isEmpty {
+                Section("添加到侧栏") {
+                    ForEach(hidden) { card in
+                        Button { model.setC6CardVisible(card, visible: true, deviceID: deviceID) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: card.icon).frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(card.title)
+                                    Text(card.sourceTitle).font(.system(size: 13)).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "plus.circle").foregroundStyle(Color.accentColor)
+                            }
+                            .padding(.vertical, 4)
+                        }.buttonStyle(.plain)
+                        .accessibilityLabel("添加\(card.sourceTitle)卡片：\(card.title)")
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped).padding(.bottom, 12)
+    }
+
+    private func c6CardManagementRow(_ card: C6CardDescriptor, deviceID: UUID) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary)
+            Image(systemName: card.icon).frame(width: 18)
+            Button {
+                model.activateC6Card(card, deviceID: deviceID)
+                selected = .aiMacCard
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(card.title).foregroundStyle(.primary)
+                    Text(card.sourceTitle).font(.system(size: 13)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("显示\(card.sourceTitle)卡片：\(card.title)")
+            Toggle("显示\(card.title)", isOn: Binding(get: { card.visible }, set: {
+                model.setC6CardVisible(card, visible: $0, deviceID: deviceID)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini).frame(width: 44)
+            .help("在这台设备的侧边栏显示“\(card.title)”")
+            Toggle("轮换\(card.title)", isOn: Binding(get: { card.participatesInRotation }, set: {
+                model.setC6CardRotation(card, enabled: $0, deviceID: deviceID)
+            }))
+            .labelsHidden().toggleStyle(.switch).controlSize(.mini).frame(width: 44)
+            .help("将“\(card.title)”加入这台设备的自动轮播")
+        }
+        .onDrag {
+            draggedC6Card = card
+            dragC6Cards = model.c6CardList(for: deviceID)
+            return NSItemProvider(object: card.id as NSString)
+        }
+    }
+
+    private func c6NativeCardForm(_ card: C6CardDescriptor, deviceID: UUID) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Form {
+                Section {
+                    LabeledContent("设备", value: model.settings.devices.first { $0.id == deviceID }?.name ?? C6ProjectResources.productName)
+                    LabeledContent("来源", value: card.sourceTitle)
+                    LabeledContent("运行方式", value: "设备本地实时渲染")
+                } header: {
+                    Label(card.title, systemImage: card.icon)
+                }
+                if card.nativeCard?.kind == "clock" {
+                    Section("时钟样式") {
+                        LabeledContent("设备样式", value: model.c6SyncedConfigurations[deviceID]?.clockStyle.title ?? "读取设备设置后显示")
+                        LabeledContent("主数字", value: model.c6SyncedConfigurations[deviceID]?.digitStyle.title ?? "读取设备设置后显示")
+                        HStack(spacing: 4) {
+                            Text("由设备持续走时")
+                            HelpIcon(text: "设备通过网络校时，本地渲染时钟样式、翻页动画、日期和秒级走时。电脑管理样式和切换卡片，不再推送时钟图片。")
+                        }
+                    }
+                }
+                Section("显示与轮播") {
+                    Toggle("在侧栏显示", isOn: Binding(get: {
+                        model.c6CardList(for: deviceID).contains { $0.id == card.id }
+                    }, set: { model.setC6CardVisible(card, visible: $0, deviceID: deviceID) }))
+                    Toggle("加入自动轮播", isOn: Binding(get: {
+                        model.c6CardRotationList(for: deviceID).contains { $0.id == card.id }
+                    }, set: { model.setC6CardRotation(card, enabled: $0, deviceID: deviceID) }))
+                    Button("立即在设备显示") { model.activateC6Card(card, deviceID: deviceID) }
+                        .keyboardShortcut(.return, modifiers: [.command])
+                }
+                Section("本地配置") {
+                    Button("打开设备本地设置") { selected = .c6Device }
+                    if let client = try? C6StandaloneClient(host: model.aiMacScreenSettings(for: deviceID).host) {
+                        Link("打开设备网页设置", destination: client.baseURL.appendingPathComponent("standalone"))
+                    }
+                    Label(model.aiMacScreenStatuses[deviceID] ?? "连接设备后显示本地画面", systemImage: "info.circle")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .formStyle(.grouped).frame(maxWidth: .infinity, alignment: .top)
+            Divider().padding(.vertical, 4)
+            Form {
+                Section {
+                    HStack { Spacer(); aiMacPreview; Spacer() }.padding(.vertical, 8)
+                    Label("设备实际画面", systemImage: "display")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    Button("刷新设备预览") {
+                        Task { await model.refreshC6NativeCardPreview(deviceID: deviceID) }
+                    }
+                } header: { Text("240 × 240 本地预览") }
+            }.formStyle(.grouped).frame(width: 300)
+        }
+        .padding(.bottom, 12)
+        .task(id: card.id) {
+            while model.isCurrentC6Card(deviceID: deviceID, card: card) && !Task.isCancelled {
+                await model.refreshC6NativeCardPreview(deviceID: deviceID)
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+            }
+        }
+    }
+
     private func aiMacCardManagementRow(_ mode: DisplayMode, deviceID: UUID) -> some View {
         let inRotation = model.aiMacCardRotationList(for: deviceID).contains(mode)
         return HStack(spacing: 10) {
@@ -1798,7 +2052,7 @@ struct SettingsView: View {
 
     private var aiMacPreview: some View {
         Group {
-            if let id = model.activeDeviceID(for: .aiMacScreen),
+            if let id = model.activeColorScreenDeviceID,
                let preview = model.aiMacScreenPreviews[id] {
                 Image(nsImage: preview).resizable().interpolation(.none)
             } else {
@@ -2002,7 +2256,11 @@ struct SettingsView: View {
             }
             m5BluetoothHint
             if model.m5RepairPhase == nil || model.m5RepairPhase == .scanning {
-                ForEach(model.m5DiscoveredControllers) { found in
+                ForEach(model.m5DiscoveredControllers.filter { found in
+                    model.m5RepairingControllerID != nil || !model.settings.devices.contains { device in
+                        UUID(uuidString: device.settings.m5Controller?.pairedPeripheralID ?? "") == found.id
+                    }
+                }) { found in
                     HStack {
                         Image(systemName: "gamecontroller")
                             .foregroundStyle(Color.accentColor)
@@ -2673,34 +2931,108 @@ struct SettingsView: View {
     /// 每台设备独立记住自己的画板与卡片设置；Home Assistant 服务器为全局唯一连接配置
     private var devicesForm: some View {
         Group {
-            ForEach(DeviceType.allCases) { type in
+          Section("添加设备") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
+                Button {
+                    selectedManagedDeviceID = nil
+                    addingDeviceID = nil
+                    selectedAddDeviceType = nil
+                    deviceSheetOpen = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("添加新设备", systemImage: "plus.circle.fill").font(.headline)
+                        Text("自动发现或按设备类型添加").foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, minHeight: 84, alignment: .leading).padding(12)
+                }.buttonStyle(.bordered)
+            }
+          }
+          Section("已添加设备") {
+            if model.settings.devices.isEmpty {
+                Text("尚未添加设备").foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
+                ForEach(model.settings.devices) { device in
+                    Button {
+                        selectedManagedDeviceID = device.id
+                        highlightedDeviceID = device.id
+                        addingDeviceID = nil
+                        expandedDeviceIDs.insert(device.id)
+                        editingDeviceIDs.insert(device.id)
+                        deviceSheetOpen = true
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(device.name, systemImage: device.type.capabilityProfile?.icon ?? "externaldrive")
+                                .font(.headline).lineLimit(2)
+                            Text(device.type.title).foregroundStyle(.secondary)
+                            Label(device.isEnabled ? "已启用" : "已停用",
+                                  systemImage: device.isEnabled ? "checkmark.circle" : "pause.circle")
+                                .font(.body).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, minHeight: 84, alignment: .leading).padding(12)
+                    }.buttonStyle(.bordered)
+                    .tint(highlightedDeviceID == device.id ? Color.accentColor : Color.secondary)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10).stroke(highlightedDeviceID == device.id ? Color.accentColor : Color.clear, lineWidth: 2)
+                    }
+                    .accessibilityLabel("设置设备：\(device.name)")
+                }
+            }
+          }
+        }
+        .sheet(isPresented: $deviceSheetOpen, onDismiss: {
+            editingDeviceIDs.removeAll()
+            connectionDrafts.removeAll()
+            bambuMatchDrafts.removeAll()
+            selectedManagedDeviceID = nil
+            model.m5StopScan()
+        }) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(addingDeviceID != nil ? "添加设备引导" : selectedManagedDeviceID.flatMap { id in
+                        model.settings.devices.first(where: { $0.id == id })?.name
+                    } ?? "添加新设备").font(.title2.weight(.semibold))
+                    Spacer()
+                    if addingDeviceID != nil {
+                        Button("完成添加") {
+                            addingDeviceID = nil
+                            deviceSheetOpen = false
+                        }.buttonStyle(.borderedProminent)
+                    }
+                    Button("关闭") { deviceSheetOpen = false }.keyboardShortcut(.cancelAction)
+                }.padding(20)
+                Divider()
+                Form { devicesEditorForm }.formStyle(.grouped)
+            }.frame(minWidth: 700, idealWidth: 780, minHeight: 560, idealHeight: 700)
+            .task(id: selectedManagedDeviceID) {
+                guard selectedManagedDeviceID == nil else { return }
+                await quietlyDiscoverDevices()
+            }
+        }
+    }
+
+    private var devicesEditorForm: some View {
+        Group {
+            if let id = addingDeviceID, let device = model.settings.devices.first(where: { $0.id == id }) {
+                Section("确认设备信息") {
+                    Label(device.type.title, systemImage: device.type.capabilityProfile?.icon ?? "externaldrive")
+                    Text("已自动填写可获取的设备信息。请确认名称和连接信息；无法获取的令牌、密码或访问码需自行填写。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if selectedManagedDeviceID == nil {
+                Section("选择设备类型") {
+                    deviceTypeGrid
+                }
+                if let type = selectedAddDeviceType {
+                    Section("选择\(type.title)") {
+                        discoveredDevicePicker(type)
+                    }
+                }
+            }
+            ForEach(DeviceType.allCases.filter { type in model.devices(for: type).contains { $0.id == selectedManagedDeviceID } }) { type in
                 Section {
-                    if type == .keyboard {
-                        lingxi68ManualAddInline
-                    }
-                    if type == .homeAssistant {
-                        homeAssistantDiscoveryInline
-                    }
-                    if type == .oracle {
-                        rand0DiscoveryInline
-                    }
-                    if type == .aiMacScreen {
-                        aiMacAddExistingDeviceInline
-                        DisclosureGroup("需要刷写一台新设备？") {
-                            aiMacFirmwareFlasherInline
-                                .padding(.top, 6)
-                        }
-                    }
-                    if type == .m5Controller {
-                        DisclosureGroup("需要刷写一台新控制器？") {
-                            m5FirmwareFlasherInline
-                                .padding(.top, 6)
-                        }
-                        m5ControllerDiscoveryInline
-                    }
-                    ForEach(model.devices(for: type)) { device in
-                        let isEditing = editingDeviceIDs.contains(device.id)
-                        DisclosureGroup(isExpanded: deviceExpandedBinding(device.id)) {
+                    ForEach(model.devices(for: type).filter { $0.id == selectedManagedDeviceID }) { device in
+                        let isEditing = true // 设置面板已由用户点击设备卡片打开，直接允许编辑。
+                        VStack(alignment: .leading, spacing: 12) {
                             VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 8) {
                                 TextField("设备名称", text: model.deviceNameBinding(for: device.id))
@@ -2709,15 +3041,6 @@ struct SettingsView: View {
                                 .disabled(!isEditing)
                                 .opacity(isEditing ? (device.isEnabled ? 1 : 0.5) : 0.5)
                                 Spacer()
-                                Button {
-                                    toggleDeviceEditing(device.id)
-                                } label: {
-                                    Label(isEditing ? "完成" : "编辑",
-                                          systemImage: isEditing ? "checkmark.circle.fill" : "pencil")
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .help(isEditing ? "完成并锁定这台设备的设置" : "解锁这台设备的设置")
                             }
                             // 连接信息按设备类型显示与编辑（键盘/先知只需 IP，摘录需 API Key 与序列号）
                             // 所有输入框统一固定宽度，与设备名称输入框对齐
@@ -2765,6 +3088,19 @@ struct SettingsView: View {
                                     bambuDeviceConfigInline(device.id)
                                 } else if type == .formlabs {
                                     formlabsDeviceConfigInline(device.id)
+                                } else if type == .c6Screen {
+                                    // 安装说明与刷机入口一起呈现；不触发强制引导或串口操作。
+                                    deviceConnectionField(device.id, label: "C6 IP 地址",
+                                        binding: model.aiMacScreenHostBinding(for: device.id), fieldWidth: 320)
+                                    Button("连接测试") { Task { await model.testAIMacScreenConnection(deviceID: device.id) } }
+                                    Text(model.aiMacScreenStatuses[device.id] ?? "尚未连接").foregroundStyle(.secondary)
+                                    C6StandaloneView(initialHost: model.aiMacScreenSettings(for: device.id).host,
+                                        deviceID: device.id, model: model,
+                                        pairingOnly: true,
+                                        allowsFirmwareUpdate: addingDeviceID != device.id,
+                                        onAuthorized: { model.authorizeC6Sync(deviceID: device.id, token: $0) })
+                                        .id(device.id.uuidString + model.aiMacScreenSettings(for: device.id).host)
+                                    C6FirmwareView()
                                 } else if type == .aiMacScreen {
                                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
@@ -2781,6 +3117,11 @@ struct SettingsView: View {
                                         Text(model.aiMacScreenStatuses[device.id] ?? "尚未测试")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
+                                    }
+                                    DisclosureGroup("ESP8266 小屏幕固件刷写") {
+                                        Text("此刷写工具仅适用于 ESP8266，不能用于 ESP32-C6。C6 测试固件需单独刷入。")
+                                            .foregroundStyle(.secondary)
+                                        aiMacFirmwareFlasherInline
                                     }
                                 } else if type == .awtrix {
                                     deviceConnectionField(device.id, label: "设备地址或 IP",
@@ -2811,6 +3152,10 @@ struct SettingsView: View {
                                     }
                                 } else if type == .m5Controller {
                                     m5ControllerDeviceConfigInline(device.id)
+                                    m5ControllerDiscoveryInline
+                                    DisclosureGroup("控制器固件刷写") {
+                                        m5FirmwareFlasherInline
+                                    }
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
                                                           binding: model.deviceDotApiKeyBinding(for: device.id),
@@ -2846,8 +3191,6 @@ struct SettingsView: View {
                             .opacity(isEditing ? 1 : 0.5)
                             }
                             .padding(.top, 10)
-                        } label: {
-                            deviceDisclosureHeader(device, type: type)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
@@ -2859,63 +3202,9 @@ struct SettingsView: View {
                                 .stroke(Color.secondary.opacity(0.16), lineWidth: 1))
                         .padding(.vertical, 2)
                     }
-                    if type == .bambuLab {
-                        VStack(alignment: .leading, spacing: 7) {
-                            HStack(spacing: 8) {
-                                Button("添加 \(type.title) 设备") {
-                                    expandNewDevice(model.addDevice(type: type))
-                                }
-                                .disabled(!model.settings.canAddDevice(of: type))
-                                Button {
-                                    guard let homeAssistantID = bambuDiscoveryHomeAssistantID else { return }
-                                    Task {
-                                        let existingIDs = Set(model.devices(for: .bambuLab).map(\.id))
-                                        await model.discoverAndAddBambuPrinters(
-                                            homeAssistantDeviceID: homeAssistantID)
-                                        let addedIDs = model.devices(for: .bambuLab).map(\.id)
-                                            .filter { !existingIDs.contains($0) }
-                                        expandedDeviceIDs.formUnion(addedIDs)
-                                    }
-                                } label: {
-                                    Label(model.bambuAutoDiscoveryBusy
-                                          ? "正在匹配…" : "扫描并匹配",
-                                          systemImage: "printer.filled.and.paper")
-                                }
-                                .disabled(model.bambuAutoDiscoveryBusy
-                                          || bambuDiscoveryHomeAssistantID == nil)
-                                .help(bambuDiscoveryHomeAssistantID == nil
-                                      ? "请先添加并配置 Home Assistant 服务器"
-                                      : "通过已添加的 Home Assistant 服务器扫描并自动创建 Bambu Lab 打印机设备")
-                                if model.bambuAutoDiscoveryBusy {
-                                    ProgressView().controlSize(.small)
-                                }
-                            }
-                            if let notice = model.settings.deviceLimitNotice(for: type) {
-                                Text(notice)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if !model.bambuAutoDiscoveryStatus.isEmpty {
-                                Text(model.bambuAutoDiscoveryStatus)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    } else if let notice = model.settings.deviceLimitNotice(for: type) {
-                        Text(notice)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if type != .aiMacScreen && type != .homeAssistant
-                                && type != .oracle && type != .keyboard
-                                && type != .m5Controller {
-                        Button("添加 \(type.title) 设备") {
-                            expandNewDevice(model.addDevice(type: type))
-                        }
-                    }
                 } header: {
                     HStack(spacing: 4) {
-                        Text(type.title)
+                        Text("已添加 · \(type.title)")
                         if type.isBeta {
                             BetaBadge()
                         }
@@ -2943,6 +3232,8 @@ struct SettingsView: View {
                     expandedDeviceIDs.remove(targetID)
                     discardDeviceDrafts(targetID)
                     model.removeDevice(id: targetID)
+                    deviceSheetOpen = false
+                    selectedManagedDeviceID = nil
                 }
                 deviceIDToDelete = nil
             }
@@ -2950,14 +3241,11 @@ struct SettingsView: View {
                 deviceIDToDelete = nil
             }
         }
-        .task {
-            if model.backgroundServicesEnabled { await model.ensureBambuEntityCatalog() }
-        }
-        .task {
-            if model.backgroundServicesEnabled { await model.scanHomeAssistantServers() }
-        }
-        .task {
-            if model.backgroundServicesEnabled { await model.scanRand0Devices() }
+        .task(id: selectedManagedDeviceID) {
+            if model.backgroundServicesEnabled,
+               model.settings.devices.first(where: { $0.id == selectedManagedDeviceID })?.type == .bambuLab {
+                await model.ensureBambuEntityCatalog()
+            }
         }
         .onDisappear { model.m5StopScan() }
         .onDisappear {
@@ -2965,6 +3253,148 @@ struct SettingsView: View {
             connectionDrafts.removeAll()
             bambuMatchDrafts.removeAll()
         }
+    }
+
+    private var deviceTypeGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
+            ForEach(DeviceType.allCases) { type in
+                let count = discoveredChoices(for: type).count
+                let available = model.settings.canAddDevice(of: type)
+                Button { selectAddDeviceType(type) } label: {
+                    VStack(spacing: 8) {
+                        Image(systemName: type.capabilityProfile?.icon ?? "externaldrive")
+                            .font(.system(size: 25, weight: .medium))
+                        Text(type.title).font(.body.weight(.medium)).multilineTextAlignment(.center)
+                        if count > 0 {
+                            Label("发现 \(count) 台", systemImage: "checkmark.circle.fill")
+                                .font(.body.weight(.semibold))
+                        } else {
+                            Text(available ? "手动添加" : "已达添加上限")
+                                .font(.body).foregroundStyle(.secondary)
+                        }
+                    }.frame(maxWidth: .infinity, minHeight: 106).padding(8)
+                }
+                .buttonStyle(.bordered)
+                .tint(count > 0 || selectedAddDeviceType == type ? Color.accentColor : Color.secondary)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(count > 0 ? Color.accentColor : Color.clear, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+                .disabled(!available)
+                .accessibilityLabel("添加\(type.title)\(count > 0 ? "，发现 \(count) 台" : "")")
+            }
+        }
+    }
+
+    private func discoveredChoices(for type: DeviceType) -> [DiscoveredDeviceChoice] {
+        guard model.settings.canAddDevice(of: type) else { return [] }
+        switch type {
+        case .homeAssistant:
+            return model.homeAssistantDiscoveredServices.filter { !model.isHomeAssistantAdded($0) }
+                .map { .homeAssistant($0) }
+        case .oracle:
+            return model.rand0DiscoveredDevices.filter { !model.isRand0DeviceAdded($0) }
+                .map { .oracle($0) }
+        case .aiMacScreen, .c6Screen:
+            return model.aiMacDiscoveredDevices.filter { $0.type == type && !model.isAIMacScreenAdded($0) }
+                .map { .aiMacScreen($0) }
+        case .m5Controller:
+            return model.m5DiscoveredControllers.filter { found in
+                !model.settings.devices.contains {
+                    UUID(uuidString: $0.settings.m5Controller?.pairedPeripheralID ?? "") == found.id
+                }
+            }.map { .controller($0) }
+        default: return []
+        }
+    }
+
+    private func selectAddDeviceType(_ type: DeviceType) {
+        let choices = discoveredChoices(for: type)
+        switch DeviceAdditionPolicy.route(canAdd: model.settings.canAddDevice(of: type),
+                                          discoveredCount: choices.count) {
+        case .unavailable: return
+        case .discovered:
+            if let choice = choices.first { addDiscoveredChoice(choice) }
+        case .chooseDevice:
+            selectedAddDeviceType = type
+        case .manual:
+            if type == .bambuLab, bambuDiscoveryHomeAssistantID != nil {
+                selectedAddDeviceType = type
+            } else {
+                model.m5StopScan()
+                expandNewDevice(model.addDevice(type: type))
+            }
+        }
+    }
+
+    @ViewBuilder private func discoveredDevicePicker(_ type: DeviceType) -> some View {
+        ForEach(discoveredChoices(for: type)) { choice in
+            Button { addDiscoveredChoice(choice) } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: type.capabilityProfile?.icon ?? "externaldrive")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(choice.name).font(.body.weight(.semibold))
+                        Text(choice.detail).font(.body).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }.buttonStyle(.bordered)
+        }
+        if type == .bambuLab {
+            Button {
+                guard let homeAssistantID = bambuDiscoveryHomeAssistantID else { return }
+                Task {
+                    let previous = Set(model.devices(for: .bambuLab).map(\.id))
+                    await model.discoverAndAddBambuPrinters(homeAssistantDeviceID: homeAssistantID)
+                    if let added = model.devices(for: .bambuLab).first(where: { !previous.contains($0.id) }) {
+                        expandNewDevice(added.id)
+                    }
+                }
+            } label: {
+                Label(model.bambuAutoDiscoveryBusy ? "正在匹配…" : "通过 Home Assistant 扫描并匹配",
+                      systemImage: "printer.filled.and.paper")
+            }.disabled(model.bambuAutoDiscoveryBusy || bambuDiscoveryHomeAssistantID == nil)
+            if !model.bambuAutoDiscoveryStatus.isEmpty {
+                Text(model.bambuAutoDiscoveryStatus).foregroundStyle(.secondary)
+            }
+        }
+        Button("手动添加\(type.title)") {
+            model.m5StopScan()
+            expandNewDevice(model.addDevice(type: type))
+        }.disabled(!model.settings.canAddDevice(of: type))
+    }
+
+    private func addDiscoveredChoice(_ choice: DiscoveredDeviceChoice) {
+        model.m5StopScan()
+        switch choice {
+        case .homeAssistant(let device):
+            expandNewDevice(model.addDiscoveredHomeAssistant(device))
+        case .oracle(let device):
+            expandNewDevice(model.addDiscoveredRand0Device(device))
+        case .aiMacScreen(let device):
+            if let id = model.addDiscoveredAIMacScreen(device) { expandNewDevice(id) }
+        case .controller(let device):
+            guard model.settings.canAddDevice(of: .m5Controller) else { return }
+            let id = model.addDevice(type: .m5Controller)
+            model.m5PairController(device)
+            model.deviceNameBinding(for: id).wrappedValue = device.name
+            expandNewDevice(id)
+        }
+    }
+
+    private func quietlyDiscoverDevices() async {
+        // 自动扫描不能触发首次蓝牙权限弹窗；未授权时由控制器设置中的操作发起申请。
+        if CBManager.authorization == .allowedAlways,
+           model.settings.canAddDevice(of: .m5Controller) { model.m5StartScan() }
+        defer { model.m5StopScan() }
+        async let ha: Void = model.scanHomeAssistantServers(force: true)
+        async let oracle: Void = model.scanRand0Devices(force: true)
+        async let screen: Void = model.scanAIMacScreens()
+        _ = await (ha, oracle, screen)
+        // 蓝牙发现窗口有界；离开添加入口时 SwiftUI 会取消此任务。
+        if !Task.isCancelled { try? await Task.sleep(nanoseconds: 8_000_000_000) }
     }
 
     private var bambuDiscoveryHomeAssistantID: UUID? {
@@ -3003,6 +3433,10 @@ struct SettingsView: View {
     }
 
     private func expandNewDevice(_ deviceID: UUID) {
+        selectedManagedDeviceID = deviceID
+        highlightedDeviceID = deviceID
+        addingDeviceID = deviceID
+        deviceSheetOpen = true
         withAnimation(.easeInOut(duration: 0.18)) {
             expandedDeviceIDs.insert(deviceID)
             editingDeviceIDs.insert(deviceID)
@@ -3066,211 +3500,6 @@ struct SettingsView: View {
     }
 
     /// Home Assistant 通过官方 Zeroconf 广播自动发现；只填入地址，令牌仍由用户本人提供。
-    private var homeAssistantDiscoveryInline: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("自动发现服务器", systemImage: "homekit")
-                    .font(.headline)
-                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的 Home Assistant。选择服务器后填写长期访问令牌；Bambu Lab 打印机扫描入口位于“Bambu Lab 打印机”设备添加按钮旁。")
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                Button {
-                    expandNewDevice(model.addDevice(type: .homeAssistant))
-                } label: {
-                    Label("手动添加", systemImage: "plus")
-                }
-                .disabled(!model.settings.canAddDevice(of: .homeAssistant))
-                Button {
-                    Task { await model.scanHomeAssistantServers(force: true) }
-                } label: {
-                    Label(model.homeAssistantDiscoveryBusy ? "正在查找…" : "重新扫描",
-                          systemImage: "arrow.clockwise")
-                }
-                .disabled(model.homeAssistantDiscoveryBusy)
-                if model.homeAssistantDiscoveryBusy {
-                    ProgressView().controlSize(.small)
-                }
-            }
-            if !model.homeAssistantDiscoveryStatus.isEmpty {
-                Text(model.homeAssistantDiscoveryStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if !model.homeAssistantDiscoveredServices.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(model.homeAssistantDiscoveredServices) { service in
-                        HStack(spacing: 10) {
-                            Image(systemName: "house.and.flag.fill")
-                                .frame(width: 22)
-                                .foregroundStyle(Color.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(service.name)
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text(service.serverURL)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            let added = model.isHomeAssistantAdded(service)
-                            Button(added ? "已选择" : "使用") {
-                                expandNewDevice(model.addDiscoveredHomeAssistant(service))
-                            }
-                            .disabled(added)
-                        }
-                        .padding(.vertical, 8)
-                        if service.id != model.homeAssistantDiscoveredServices.last?.id {
-                            Divider()
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .background(.quaternary.opacity(0.35),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    /// 已经联网的口袋先知可以直接扫描添加；手动输入 IP 始终作为备用入口。
-    private var rand0DiscoveryInline: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("添加已联网设备", systemImage: "wifi")
-                    .font(.headline)
-                HelpIcon(text: "自动查找与这台 Mac 位于同一局域网的口袋先知。扫描只确认设备身份，不会覆盖或改变屏幕内容。")
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                Button {
-                    expandNewDevice(model.addDevice(type: .oracle))
-                } label: {
-                    Label("手动添加", systemImage: "plus")
-                }
-                Button {
-                    Task { await model.scanRand0Devices(force: true) }
-                } label: {
-                    Label(model.rand0DiscoveryBusy ? "正在扫描…" : "重新扫描",
-                          systemImage: "arrow.clockwise")
-                }
-                .disabled(model.rand0DiscoveryBusy)
-                if model.rand0DiscoveryBusy {
-                    ProgressView().controlSize(.small)
-                }
-            }
-            if !model.rand0DiscoveryStatus.isEmpty {
-                Text(model.rand0DiscoveryStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if !model.rand0DiscoveredDevices.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(model.rand0DiscoveredDevices) { discovered in
-                        HStack(spacing: 10) {
-                            Image(systemName: "rectangle.on.rectangle.angled")
-                                .frame(width: 22)
-                                .foregroundStyle(Color.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(discovered.displayName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text(discovered.ip)
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            let added = model.isRand0DeviceAdded(discovered)
-                            Button(added ? "已添加" : "添加") {
-                                let id = model.addDiscoveredRand0Device(discovered)
-                                expandedDeviceIDs.insert(id)
-                            }
-                            .disabled(added)
-                        }
-                        .padding(.vertical, 8)
-                        if discovered.id != model.rand0DiscoveredDevices.last?.id {
-                            Divider()
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .background(.quaternary.opacity(0.35),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    /// 已经刷写并联网的小屏幕可直接手动添加或从当前局域网扫描，不依赖刷机流程。
-    private var aiMacAddExistingDeviceInline: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("添加已联网设备", systemImage: "wifi")
-                    .font(.headline)
-                HelpIcon(text: "适用于已经刷入兼容固件并连接 2.4 GHz Wi-Fi 的小屏幕。可手动填写 IP，也可扫描与这台 Mac 位于同一局域网的设备。")
-                Spacer()
-            }
-            HStack(spacing: 8) {
-                Button {
-                    expandNewDevice(model.addDevice(type: .aiMacScreen))
-                } label: {
-                    Label("手动添加", systemImage: "plus")
-                }
-                .disabled(!model.settings.canAddDevice(of: .aiMacScreen))
-
-                Button {
-                    Task { await model.scanAIMacScreens() }
-                } label: {
-                    Label(model.aiMacNetworkScanBusy ? "正在扫描…" : "重新扫描",
-                          systemImage: "arrow.clockwise")
-                }
-                .disabled(model.aiMacNetworkScanBusy)
-                if model.aiMacNetworkScanBusy {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
-            if !model.aiMacNetworkScanStatus.isEmpty {
-                Text(model.aiMacNetworkScanStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !model.aiMacDiscoveredDevices.isEmpty {
-                VStack(spacing: 0) {
-                    ForEach(model.aiMacDiscoveredDevices) { discovered in
-                        HStack(spacing: 10) {
-                            Image(systemName: "display")
-                                .frame(width: 22)
-                                .foregroundStyle(Color.accentColor)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(discovered.displayName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                Text("\(discovered.ip) · 固件 \(discovered.firmwareVersion)")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            let added = model.isAIMacScreenAdded(discovered)
-                            Button(added ? "已添加" : "添加") {
-                                if let id = model.addDiscoveredAIMacScreen(discovered) {
-                                    expandedDeviceIDs.insert(id)
-                                }
-                            }
-                            .disabled(added || !model.settings.canAddDevice(of: .aiMacScreen))
-                        }
-                        .padding(.vertical, 8)
-                        if discovered.id != model.aiMacDiscoveredDevices.last?.id {
-                            Divider()
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .background(.quaternary.opacity(0.35),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        }
-        .padding(.vertical, 8)
-    }
 
     /// AI Mac 小屏幕属于主应用的一种设备；首次使用时可在设备管理中完成固件准备，
     /// 无需安装 Python、esptool 或另一个独立应用。
@@ -3801,7 +4030,7 @@ struct SettingsView: View {
     /// 仅保留彩屏需要的设置，不展示墨水屏灰阶、抖动与插值选项。
     private var aiMacBoardManagementForm: some View {
         Form {
-            if let device = model.activeDevice(for: .aiMacScreen) {
+            if let device = model.activeColorScreenDevice {
                 let config = model.aiMacScreenSettings(for: device.id)
                 Section {
                     HStack(spacing: 8) {
@@ -3809,9 +4038,9 @@ struct SettingsView: View {
                         Text("正在管理")
                         HelpIcon(text: "每台 AI Mac 小屏幕分别保存画板、顺序、可见状态和自动轮播设置，不会与其他小屏幕串用。")
                         Spacer()
-                        if model.enabledDevices(for: .aiMacScreen).count > 1 {
+                        if model.enabledDevices(for: model.activeColorScreenType).count > 1 {
                             Picker("", selection: model.activeAIMacScreenBinding) {
-                                ForEach(model.enabledDevices(for: .aiMacScreen)) { item in
+                                ForEach(model.enabledDevices(for: model.activeColorScreenType)) { item in
                                     Text(item.name).tag(item.id)
                                 }
                             }
@@ -3906,7 +4135,7 @@ struct SettingsView: View {
     /// 与画板管理分离的设备连接与推送页，行为对齐灵犀68的独立控制页面。
     private var aiMacControlForm: some View {
         Form {
-            if let device = model.activeDevice(for: .aiMacScreen) {
+            if let device = model.activeColorScreenDevice {
                 let config = model.aiMacScreenSettings(for: device.id)
                 Section {
                     HStack(spacing: 8) {
@@ -3967,6 +4196,17 @@ struct SettingsView: View {
                         Task { await model.applyAIMacScreenBrightness(deviceID: device.id) }
                     }
                     .disabled(AIMacScreenSupport.normalizedHost(config.host).isEmpty)
+                    if device.type == .c6Screen {
+                        Picker("屏幕方向", selection: model.c6DisplayRotationBinding(deviceID: device.id)) {
+                            ForEach([0, 90, 180, 270], id: \.self) { Text("\($0)°").tag($0) }
+                        }.help("只旋转 C6 实际 LCD 输出，包含本地时钟和软件内容；预览与推送保持正向。90° 档位需要更新内置固件。")
+                    } else {
+                    Toggle("旋转 180°", isOn: model.aiMacRotationBinding(deviceID: device.id))
+                        .disabled(device.type != .c6Screen && (config.mode == .clock || (config.mode == .card && config.cardMode == .aiMacClock)))
+                        .help(device.type == .c6Screen
+                              ? "由 C6 固件旋转整屏显示，包含本地翻页钟和电脑推送内容。电脑预览和发送图片保持正向，不影响灵犀68或其他设备。"
+                              : "旋转这台小屏幕的软件推送画面，预览同步旋转，不影响其他设备。设备端原生桌面时钟暂不支持。")
+                    }
                 } header: {
                     HStack(spacing: 4) {
                         Text("屏幕与亮度")
@@ -4052,7 +4292,7 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
             Image(systemName: "rectangle.stack").font(.system(size: 12)).frame(width: 16)
             Button {
-                if let deviceID = model.activeDeviceID(for: .aiMacScreen) {
+                if let deviceID = model.activeColorScreenDeviceID {
                     model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
                     dragModules = nil
                     selected = .aiMacScreen
@@ -5723,7 +5963,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: 4) {
                     Text("卡片主题")
-                    HelpIcon(text: "卡片主题决定强调色基调（选择「跟随主题」时生效）；这些设置作用于推送到设备的卡片画面。")
+                    HelpIcon(text: "卡片主题决定强调色基调（选择「跟随主题」时生效）。「激光橙黑」提供工业橙黑配色，背景选择深色可保持黑底；浅色时使用高对比度深橙。兼容经典及 Liquid Glass 渲染，不替换默认玻璃配色，也不影响墨水屏。")
                 }
             }
             Picker(selection: model.backgroundToneBinding) {
@@ -5970,9 +6210,11 @@ struct SettingsView: View {
                     awtrixTextEditorSection(route)
                 } else if route.isHomeAssistant {
                     awtrixHomeAssistantSections(route)
+                } else if route.isWeather {
+                    Section("天气设置") { WeatherSettingsView(model: model) }
                 }
 
-                if (!route.isBuiltInText && !route.isHomeAssistant) || app?.config == true {
+                if (!route.isBuiltInText && !route.isHomeAssistant && !route.isWeather) || app?.config == true {
                     Section("应用设置") {
                     if app?.config == true {
                         if let configuration = model.awtrixAppConfiguration(
@@ -7040,6 +7282,12 @@ struct SettingsView: View {
         let statusEntities = useDefaultFilter ? defaultStatusEntities : allStatusEntities
         let configuredStatusID = model.bambuSettings(for: deviceID)?.statusEntityID ?? ""
         return VStack(alignment: .leading, spacing: 6) {
+            Picker("数据源", selection: model.bambuDataSourceBinding(deviceID)) {
+                ForEach(BambuDataSource.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented)
+            if model.bambuDataSourceBinding(deviceID).wrappedValue == .localMQTT {
+                bambuMQTTConfigInline(deviceID)
+            } else {
             // 自动匹配必须由打印状态实体确定打印机身份，再推导同一前缀下的其余字段。
             EntityDomainPicker(title: "打印状态实体（自动匹配）",
                                selection: bambuMatchDraftBinding(deviceID),
@@ -7106,8 +7354,35 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
             }
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    private func bambuMQTTConfigInline(_ id: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            deviceConnectionField(id, label: "打印机 IP", binding: model.bambuMQTTFieldBinding(id, key: \.host),
+                fieldWidth: 320, helpText: "电脑与打印机需在同一局域网，使用 TLS 8883。")
+            deviceConnectionField(id, label: "打印机序列号", binding: model.bambuMQTTFieldBinding(id, key: \.serial),
+                fieldWidth: 320, helpText: "序列号可在打印机或 Bambu Studio 的设备信息中查看。")
+            draftField(key: "\(id.uuidString)#MQTT访问码", label: "访问码",
+                binding: model.bambuMQTTAccessCodeBinding(id), fieldWidth: 320, secure: true,
+                helpText: "在打印机网络设置中查看。仅存入 macOS 钥匙串，不写入软件配置文件。原生 MQTT 不提供摄像头帧和任务封面。")
+            HStack {
+                Button("连接测试") { model.connectBambuMQTT(id) }
+                Text(model.bambuMQTTStatuses[id] ?? "尚未连接")
+                    .font(.body).foregroundStyle(.secondary)
+            }
+            if let fingerprint = model.bambuMQTTCertificates[id] {
+                GroupBox("确认打印机证书") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("首次连接需确认此 IP 属于你的打印机。此后固定证书，变更时需要重新确认。")
+                        Text(fingerprint).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        Button("信任此打印机证书并连接") { model.trustBambuMQTTCertificate(id) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 
     /// Bambu Lab 字段映射行（Popover 实体选择器；按打印机设备；未指定 = 隐藏该字段）
@@ -7248,23 +7523,15 @@ struct SettingsView: View {
         }
     }
 
-    private var generalForm: some View {
+    /// 屏幕参数沿用已有键盘快照；菜单栏目标与物理按键监听是键盘共用控制。
+    /// 只移动入口，不改持久化键名或重置用户已有配置。
+    private var keyboardSettingsForm: some View {
         Group {
         Section {
-            Picker(selection: model.menuBarTargetBinding()) {
-                Text("跟随当前活动键盘").tag("follow")
-                ForEach(model.enabledDevices(for: .keyboard)) { device in
-                    Text(device.name).tag("kb:\(device.id.uuidString)")
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("菜单栏切换目标键盘")
-                    HelpIcon(text: "菜单栏的「切换显示内容 / 立即推送」操作哪台键盘的判定依据：选「跟随当前活动键盘」时，作用于软件当前活动的键盘设备（侧栏中正在操作的那台）；选某台具体键盘时，执行前会先把活动键盘切到这台设备再操作，无论当前活动的是哪台。目标设备被禁用时回退到当前活动键盘。")
-                }
-            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text("顶部安全区")
+                    HelpIcon(text: "为键盘固件叠加的电量等系统 UI 预留顶部空间。按当前键盘独立保存，预览与推送使用同一设置。")
                     Spacer()
                     Text("\(model.settings.safeAreaHeight) px")
                         .foregroundStyle(.secondary)
@@ -7285,11 +7552,22 @@ struct SettingsView: View {
             }
         } header: {
             HStack(spacing: 4) {
-                Text("灵犀68 屏幕控制")
-                HelpIcon(text: "以下选项仅适用于灵犀68 键盘，不影响口袋先知与摘录。键盘 IP 地址等连接信息请在「设备管理」中按设备设置。")
+                Text("屏幕显示与推送")
+                HelpIcon(text: "仅适用于左侧当前选中的灵犀68 键盘；顶部安全区与 JPEG 质量按设备独立保存，不影响其他键盘或小屏幕。连接信息仍在「设备管理」中设置。")
             }
         }
         Section {
+            Picker(selection: model.menuBarTargetBinding()) {
+                Text("跟随当前活动键盘").tag("follow")
+                ForEach(model.enabledDevices(for: .keyboard)) { device in
+                    Text(device.name).tag("kb:\(device.id.uuidString)")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("菜单栏与快捷键目标")
+                    HelpIcon(text: "灵犀68 键盘共用的操作目标。选择跟随当前活动键盘，或固定一台键盘；全局上一页、下一页快捷键使用相同目标。目标设备被禁用时回退到当前活动键盘。")
+                }
+            }
             shortcutBindingRow("上一页", action: .keyboardPageUp)
             shortcutBindingRow("下一页", action: .keyboardPageDown)
             HStack {
@@ -7326,10 +7604,23 @@ struct SettingsView: View {
             }
         } header: {
             HStack(spacing: 4) {
-                Text("手动上下翻页快捷键")
-                HelpIcon(text: "可在系统任意界面手动切换灵犀68 的上一张或下一张卡片；作用目标与上方菜单栏目标键盘一致。")
+                Text("菜单栏与翻页控制")
+                HelpIcon(text: "以下控制为灵犀68 键盘共用设置，不是当前设备的独立参数。全局快捷键与 Fn + 旋钮翻页使用所选目标，不适用于其他设备类型。")
             }
         }
+        }
+        .confirmationDialog("恢复手动翻页快捷键？", isPresented: $showRestorePageShortcutsConfirm,
+                            titleVisibility: .visible) {
+            Button("恢复默认组合", role: .destructive) { model.resetKeyboardPageShortcuts() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("上一页、下一页将恢复为默认组合：⌃⌥↑ · ⌃⌥↓。")
+        }
+        .onDisappear { cancelShortcutRecording() }
+    }
+
+    private var generalForm: some View {
+        Group {
         Section {
             Picker(selection: model.clockFormatPresetBinding) {
                 Text("24 小时 · HH:mm").tag(0)
@@ -7513,14 +7804,6 @@ struct SettingsView: View {
             Text("高级")
         }
         }
-        .confirmationDialog("恢复手动翻页快捷键？", isPresented: $showRestorePageShortcutsConfirm,
-                            titleVisibility: .visible) {
-            Button("恢复默认组合", role: .destructive) { model.resetKeyboardPageShortcuts() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("上一页、下一页将恢复为默认组合：⌃⌥↑ · ⌃⌥↓。")
-        }
-        .onDisappear { cancelShortcutRecording() }
     }
 
     @ViewBuilder
@@ -8149,7 +8432,7 @@ struct Sidebar: View {
 
     /// 某台键盘设备侧栏的功能项：卡片管理入口 + 该设备自己的可见卡片（隐藏的卡片不在侧栏显示）
     private func keyboardPanels(for deviceID: UUID) -> [Panel] {
-        [.cardRotation] + model.keyboardCardList(for: deviceID)
+        [.cardRotation, .keyboardSettings] + model.keyboardCardList(for: deviceID)
     }
 
     /// 某台键盘设备是否没有任何卡片（空列表时显示去卡片管理的提示）
@@ -8159,7 +8442,10 @@ struct Sidebar: View {
 
     /// 新添加的小屏幕默认不展示全部功能卡片，由卡片管理引导用户按需开启。
     private func aiMacHasNoCards(_ deviceID: UUID) -> Bool {
-        model.aiMacCardList(for: deviceID).isEmpty
+        if model.settings.devices.first(where: { $0.id == deviceID })?.type == .c6Screen {
+            return model.c6CardList(for: deviceID).isEmpty
+        }
+        return model.aiMacCardList(for: deviceID).isEmpty
     }
 
     var body: some View {
@@ -8262,6 +8548,16 @@ struct Sidebar: View {
                                                    ? "尚未添加卡片，去卡片管理添加" : nil,
                                                aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id),
                                                aiMacCardModes: model.aiMacCardList(for: device.id)))
+        case .c6Screen:
+            return AnyView(deviceInstanceGroup(icon: "cpu", title: device.name,
+                                               isExpanded: deviceExpandedBinding(device.id),
+                                               panels: [.aiMacCardManagement, .aiMacBoardManagement,
+                                                        .aiMacControl, .c6Device],
+                                               switchType: .c6Screen, deviceID: device.id,
+                                               emptyHint: aiMacHasNoCards(device.id)
+                                                   ? "尚未添加卡片，去卡片管理添加" : nil,
+                                               aiMacBoards: model.visibleAIMacCanvasBoards(for: device.id),
+                                               c6Cards: model.c6CardList(for: device.id)))
         case .awtrix:
             return AnyView(deviceInstanceGroup(icon: "rectangle.grid.1x2", title: device.name,
                                                isExpanded: deviceExpandedBinding(device.id,
@@ -8311,6 +8607,7 @@ struct Sidebar: View {
                                      excerptBoards: [ExcerptCanvasBoard] = [],
                                      aiMacBoards: [AIMacCanvasBoard] = [],
                                      aiMacCardModes: [DisplayMode] = [],
+                                     c6Cards: [C6CardDescriptor] = [],
                                      awtrixApps: [AWTRIXCardDescriptor] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
@@ -8326,11 +8623,11 @@ struct Sidebar: View {
                     excerptBoardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else if panel == .aiMacBoardManagement,
-                          switchType == .aiMacScreen, let deviceID {
+                          switchType?.isColorWiFiScreen == true, let deviceID {
                     aiMacBoardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else if panel == .aiMacCardManagement,
-                          switchType == .aiMacScreen, let deviceID {
+                          switchType?.isColorWiFiScreen == true, let deviceID {
                     aiMacCardManagementSidebarRow(deviceID)
                         .padding(.leading, Self.submenuIndent)
                 } else if panel == .awtrixCardManagement,
@@ -8353,18 +8650,25 @@ struct Sidebar: View {
                             .padding(.leading, Self.submenuIndent + 14)
                     }
                 }
-                if panel == .aiMacBoardManagement, switchType == .aiMacScreen, let deviceID {
+                if panel == .aiMacBoardManagement, switchType?.isColorWiFiScreen == true, let deviceID {
                     ForEach(aiMacBoards) { board in
                         aiMacBoardSidebarRow(board, deviceID: deviceID)
                             .padding(.leading, Self.submenuIndent + 14)
                     }
                 }
-                if panel == .aiMacCardManagement, switchType == .aiMacScreen, let deviceID {
-                    ForEach(aiMacCardModes) { mode in
-                        aiMacCardSidebarRow(mode, deviceID: deviceID)
-                            // 功能卡片与「卡片管理」同属设备下的第二级，排列层级和
-                            // 灵犀键盘一致；不再额外缩进成难以辨认的第三级。
-                            .padding(.leading, Self.submenuIndent)
+                if panel == .aiMacCardManagement, switchType?.isColorWiFiScreen == true, let deviceID {
+                    if switchType == .c6Screen {
+                        ForEach(c6Cards) { card in
+                            c6CardSidebarRow(card, deviceID: deviceID)
+                                .padding(.leading, Self.submenuIndent)
+                        }
+                    } else {
+                        ForEach(aiMacCardModes) { mode in
+                            aiMacCardSidebarRow(mode, deviceID: deviceID)
+                                // 功能卡片与「卡片管理」同属设备下的第二级，排列层级和
+                                // 灵犀键盘一致；不再额外缩进成难以辨认的第三级。
+                                .padding(.leading, Self.submenuIndent)
+                        }
                     }
                 }
                 if panel == .awtrixCardManagement, switchType == .awtrix, let deviceID {
@@ -8376,10 +8680,10 @@ struct Sidebar: View {
             }
             if (switchType == .oracle && oracleBoards.isEmpty)
                 || (switchType == .excerpt && excerptBoards.isEmpty)
-                || (switchType == .aiMacScreen && aiMacBoards.isEmpty) {
+                || (switchType?.isColorWiFiScreen == true && aiMacBoards.isEmpty) {
                 Text(switchType == .oracle && deviceID.map({ !model.oracleCanvasBoards(for: $0).isEmpty }) == true
                      || switchType == .excerpt && deviceID.map({ !model.excerptCanvasBoards(for: $0).isEmpty }) == true
-                     || switchType == .aiMacScreen && deviceID.map({ !model.aiMacCanvasBoards(for: $0).isEmpty }) == true
+                     || switchType?.isColorWiFiScreen == true && deviceID.map({ !model.aiMacCanvasBoards(for: $0).isEmpty }) == true
                      ? "所有画板已隐藏" : "尚未创建画板")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
@@ -8392,7 +8696,7 @@ struct Sidebar: View {
                     if let switchType, let deviceID {
                         model.switchDevice(type: switchType, to: deviceID)
                     }
-                    selection = switchType == .aiMacScreen
+                    selection = switchType?.isColorWiFiScreen == true
                         ? .aiMacCardManagement : .cardRotation
                 } label: {
                     Label(emptyHint, systemImage: "plus.circle")
@@ -8491,7 +8795,7 @@ struct Sidebar: View {
     }
 
     private func aiMacBoardSidebarRow(_ board: AIMacCanvasBoard, deviceID: UUID) -> some View {
-        let isCurrent = model.activeDeviceID(for: .aiMacScreen) == deviceID
+        let isCurrent = model.activeColorScreenDeviceID == deviceID
             && model.isCurrentAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
         return Button {
             model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
@@ -8607,7 +8911,7 @@ struct Sidebar: View {
         let rotationOn = model.aiMacScreenSettings(for: deviceID).boardRotationEnabled
         return HStack(spacing: 8) {
             Button {
-                model.switchDevice(type: .aiMacScreen, to: deviceID)
+                model.selectColorScreen(deviceID: deviceID)
                 selection = .aiMacBoardManagement
             } label: {
                 HStack(spacing: 8) {
@@ -8642,7 +8946,7 @@ struct Sidebar: View {
         let rotationOn = model.aiMacScreenSettings(for: deviceID).cardRotationEnabled
         return HStack(spacing: 8) {
             Button {
-                model.switchDevice(type: .aiMacScreen, to: deviceID)
+                model.selectColorScreen(deviceID: deviceID)
                 selection = .aiMacCardManagement
             } label: {
                 HStack(spacing: 8) {
@@ -8673,14 +8977,44 @@ struct Sidebar: View {
         .contentShape(Rectangle())
     }
 
+    private func c6CardSidebarRow(_ card: C6CardDescriptor, deviceID: UUID) -> some View {
+        let current = model.activeColorScreenDeviceID == deviceID
+            && model.isCurrentC6Card(deviceID: deviceID, card: card)
+        let isSelected = current && selection == .aiMacCard
+        return Button {
+            if model.activeColorScreenDeviceID != deviceID {
+                model.selectColorScreen(deviceID: deviceID)
+            }
+            model.activateC6Card(card, deviceID: deviceID)
+            selection = .aiMacCard
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: card.icon).frame(width: 18, height: 18)
+                Text(card.title).lineLimit(1)
+                Spacer(minLength: 0)
+                Text(card.nativeCard == nil ? "电脑" : "本地")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+            .font(.system(size: 13))
+            .padding(.vertical, 6).padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+        .help("在这台设备显示“\(card.title)” · \(card.sourceTitle)")
+        .accessibilityLabel("\(card.title)，\(card.sourceTitle)")
+    }
+
     private func aiMacCardSidebarRow(_ mode: DisplayMode, deviceID: UUID) -> some View {
-        let current = model.activeDeviceID(for: .aiMacScreen) == deviceID
+        let current = model.activeColorScreenDeviceID == deviceID
             && model.isCurrentAIMacCard(deviceID: deviceID, mode: mode)
         let selected = current && selection == .aiMacCard
         let title = model.menuTitle(for: mode)
         return Button {
-            if model.activeDeviceID(for: .aiMacScreen) != deviceID {
-                model.switchDevice(type: .aiMacScreen, to: deviceID)
+            if model.activeColorScreenDeviceID != deviceID {
+                model.selectColorScreen(deviceID: deviceID)
             }
             model.activateAIMacCard(mode, deviceID: deviceID)
             selection = .aiMacCard
@@ -8984,7 +9318,10 @@ struct MiniSidebar: View {
                 deviceIconButton(icon: "quote.opening", title: "摘录", panel: .excerptBoardManagement)
             }
             if !model.enabledDevices(for: .aiMacScreen).isEmpty {
-                deviceIconButton(icon: "display", title: "AI Mac 小屏幕", panel: .aiMacBoardManagement)
+                deviceIconButton(icon: "display", title: "AI Mac 小屏幕", panel: .aiMacBoardManagement, type: .aiMacScreen)
+            }
+            if !model.enabledDevices(for: .c6Screen).isEmpty {
+                deviceIconButton(icon: "cpu", title: "XH Multiscreen C6", panel: .aiMacBoardManagement, type: .c6Screen)
             }
             if !model.enabledDevices(for: .awtrix).isEmpty {
                 deviceIconButton(icon: "rectangle.grid.1x2", title: "AWTRIX NG", panel: .awtrix)
@@ -9045,9 +9382,12 @@ struct MiniSidebar: View {
     }
 
     /// 设备图标按钮：点击进入该设备对应的画板页面
-    private func deviceIconButton(icon: String, title: String, panel: Panel) -> some View {
-        let isSelected = selection == panel
+    private func deviceIconButton(icon: String, title: String, panel: Panel, type: DeviceType? = nil) -> some View {
+        let isSelected = selection == panel && (type == nil || model.activeColorScreenType == type)
         return Button {
+            if let type, let id = model.activeDevice(for: type)?.id {
+                model.selectColorScreen(deviceID: id)
+            }
             if panel == .awtrix { awtrixAppRoute = nil }
             selection = panel
         } label: {
@@ -9099,14 +9439,6 @@ struct PreviewPanel: View {
         return image
     }()
 
-    /// 外观图中绿色显示区的实测位置（相对整张图归一化，左上原点）
-    private static let screenRect = CGRect(x: 0.19362, y: 0.33124, width: 0.61386, height: 0.60259)
-    /// 显示区圆角（相对图宽实测 49/909；素材圆角为正圆弧，故用 .circular 匹配）
-    private static let screenRadiusRatio: CGFloat = 0.05391
-    /// 键盘实际像素宽高比；预览必须保持方形像素，不跟随外观素材的测量误差拉伸。
-    private static let screenPixelRatio: CGFloat = 142.0 / 428.0
-    /// 叠加层向外微扩（相对图宽），盖住抗锯齿留下的绿边
-    private static let screenBleedRatio: CGFloat = 0.005
     /// 设备外观留白：上下左各 10pt，右侧贴住窗口右缘不留缝隙
     static let panelPadding: CGFloat = 10
     static let panelRightPadding: CGFloat = 0
@@ -9175,40 +9507,21 @@ struct PreviewPanel: View {
         // 顶部固定 10pt、右侧贴住面板右缘；若面板比理想宽度更宽，余量全部留在左侧
         let originX = size.width - Self.panelRightPadding - fitted.width
         let originY = Self.panelPadding
-        let screen = Self.screenRect
-        let bleed = max(fitted.width * Self.screenBleedRatio, 0.5)
         // 完整映射键盘真正接收的 142×428 JPEG。不可再把内部 124px 卡片放大后
         // 裁切安全区与画布边缘，否则软件里的布局、玻璃光效都会和实屏不同。
-        let screenW = fitted.width * screen.width + bleed * 2
-        let screenH = fitted.height * screen.height + bleed * 2
-        let viewport = Self.fitSize(ratio: Self.screenPixelRatio,
-                                    in: CGSize(width: screenW, height: screenH))
-        let radius = fitted.width * Self.screenRadiusRatio + bleed
+        let screen = LingxiKeyboardPreviewGeometry(frameSize: fitted)
         return ZStack {
             Image(nsImage: frame)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: fitted.width, height: fitted.height)
                 .position(x: originX + fitted.width / 2, y: originY + fitted.height / 2)
-            ZStack {
-                // 素材中量出的绿色开窗比 142:428 横向宽约 4%；黑底覆盖误差，
-                // 最终 JPEG 在其中严格等比居中，不以拉伸换取“铺满”。
-                RoundedRectangle(cornerRadius: radius, style: .circular).fill(.black)
-                Image(nsImage: image)
-                    .resizable()
-                    // 不再进行额外平滑；保留最终 JPEG 在实屏上的像素边缘。
-                    .interpolation(.none)
-                    .frame(width: viewport.width, height: viewport.height)
-            }
-                .frame(width: screenW, height: screenH)
-                .clipShape(RoundedRectangle(cornerRadius: radius, style: .circular))
-                .overlay {
-                    // 与设备黑色边框衔接，压住抗锯齿边缘
-                    RoundedRectangle(cornerRadius: radius, style: .circular)
-                        .stroke(Color.black.opacity(0.65), lineWidth: max(fitted.width * 0.004, 0.6))
-                }
-                .position(x: originX + fitted.width * screen.midX,
-                          y: originY + fitted.height * screen.midY)
+            // 从整个实体黑框等宽内缩，画面与黑框共用圆弧中心和一套几何数据。
+            DevicePreviewSurface(image: image,
+                bezelSize: screen.bezelRect.size,
+                borderWidth: screen.borderWidth, cornerRadius: screen.cornerRadius)
+                .position(x: originX + screen.bezelRect.midX,
+                          y: originY + screen.bezelRect.midY)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .overlay(alignment: .bottom) {
@@ -9238,10 +9551,10 @@ struct PreviewPanel: View {
             .interpolation(.high)
             .aspectRatio(contentMode: .fill)
             .frame(width: max(fitted.width, 1), height: max(fitted.height, 1))
-            .clipShape(RoundedRectangle(cornerRadius: max(fitted.width * 0.09, 6), style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: fitted.width * 0.075, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: max(fitted.width * 0.09, 6), style: .continuous)
-                    .stroke(.quaternary, lineWidth: 1)
+                RoundedRectangle(cornerRadius: fitted.width * 0.075, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 0.5)
             }
             .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
             .position(x: size.width / 2, y: size.height / 2)
@@ -9844,7 +10157,7 @@ struct HAEntityRef: Identifiable, Equatable {
 
 /// 「添加 Home Assistant 实体」入口：直接弹出 Popover 多选选择器（域分类 + 搜索 + 勾选批量添加）。
 /// 点击选择器内部任意元素不关闭（系统 Popover 保证），确认添加后批量回调。
-private struct HAEntityAdder: View {
+struct HAEntityAdder: View {
     let entities: [HAEntity]
     /// 已加入显示列表的实体（锁定勾选，再次打开可见）
     let alreadyAdded: Set<String>

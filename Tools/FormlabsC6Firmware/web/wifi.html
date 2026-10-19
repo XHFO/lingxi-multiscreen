@@ -1,0 +1,45 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>XH Multiscreen · Wi-Fi</title><style>/* PORTAL_STYLE */</style></head>
+<body><div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>XH Multiscreen</span></div><p class="model">Form Monitor<span>C6</span></p><nav aria-label="设置导航"><p class="nav-label">显示内容</p><a href="/standalone#preview">屏幕预览</a><a href="/standalone#printers">打印机</a><a href="/standalone#clock">翻页钟</a><a href="/standalone#weather">天气</a><p class="nav-label">设备</p><a href="/standalone">设备设置</a><a href="/standalone#sleep">自动休眠</a><a href="/standalone#firmware">固件更新</a><a href="/" aria-current="page">Wi-Fi 配网</a></nav></aside><main class="workspace">
+<header class="page-heading"><div><p class="eyebrow">FORM MONITOR C6</p><h1>Wi-Fi 配网</h1><p>仅支持 2.4 GHz Wi-Fi，不支持 5 GHz 或 6 GHz。</p></div><div class="header-controls"><label class="language-control"><span class="language-label" data-no-i18n><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>语言 / Language</span><select id="pageLanguage" aria-label="语言 / Language" aria-describedby="languageStatus"><option value="0" lang="zh-CN">中文</option><option value="1" lang="en">English</option></select></label><label class="appearance">网页外观<select id="appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label></div></header>
+<div class="language-feedback"><p id="languageStatus" class="hint" role="status" aria-live="polite">网页与小屏使用同一语言，切换后自动保存。</p><button id="languageRetry" type="button" hidden>重试同步</button></div>
+<p id="identity" class="hint" role="status">正在读取设备信息…</p>
+<section id="handoff" class="card" hidden><h2>Wi-Fi 已连接</h2><p>手机切回同一 Wi-Fi，扫描小屏上的新二维码进入后台。</p><p id="lanAddress"></p><a id="continueSetup" href="/standalone#printers">设备设置</a></section>
+<section class="card"><div class="card-heading"><h2>选择网络</h2><button id="scan" type="button">扫描附近 Wi-Fi</button></div><div id="networks" class="network-list"></div></section>
+<section class="card"><form id="wifiForm" autocomplete="off"><div class="grid"><label class="field wide">Wi-Fi 名称（SSID）<input id="ssid" required maxlength="32" autocomplete="off" spellcheck="false"></label><label class="field wide">Wi-Fi 密码<input id="password" type="password" autocomplete="new-password"><small>开放网络可留空；密码不会回显，也不保存到浏览器。</small></label></div><div class="actions"><button id="connect" class="primary" type="submit">保存并连接</button><button id="refresh" type="button">检查连接状态</button></div></form><p id="status" class="status" role="status" aria-live="polite">选择网络或填写 SSID，然后保存。</p></section>
+<footer class="footer">联网成功后，屏幕显示局域网 IP，配置热点自动关闭。请切回同一 Wi-Fi，再打开设备设置。</footer>
+</main></div><script>'use strict';
+/* PORTAL_I18N */
+setupAppearance();applyLanguage();
+const $=id=>document.getElementById(id),encoder=new TextEncoder();let busy=false,alive=true,pollTimer,languageChosen=false,statusSource='选择网络或填写 SSID，然后保存。';
+const setupLinks=new Map(Array.from(document.querySelectorAll('a[href^="/standalone"]'),link=>[link,link.getAttribute('href')]));
+let infoSnapshot;
+function renderIdentity(data){$('identity').textContent=(data.ip==='0.0.0.0'?t('等待联网'):data.ip)+' · '+data.fw;}
+$('pageLanguage').value=uiEnglish?1:0;
+function status(text){statusSource=text;$('status').textContent=t(text);}
+function controls(){for(const id of ['scan','ssid','password','connect','refresh','pageLanguage','languageRetry'])$(id).disabled=busy;}
+async function request(path,options={}){const r=await fetch(path,{cache:'no-store',...options,signal:AbortSignal.timeout(12000)});if(!r.ok)throw Error(uiEnglish?'Request failed ('+r.status+')':'请求失败（'+r.status+'）');return r;}
+function privateIP(ip){const bytes=String(ip).split('.');if(bytes.length!==4||bytes.some(b=>!/^\d{1,3}$/.test(b)||Number(b)>255))return false;const [a,b]=bytes.map(Number);return a===10||(a===192&&b===168)||(a===172&&b>=16&&b<=31);}
+async function info(){const data=await request('/api/info').then(r=>r.json());if(!alive)return false;infoSnapshot=data;if(!languageChosen){uiEnglish=data.language===1;$('pageLanguage').value=uiEnglish?1:0;}applyLanguage();if(!languageChosen)languageStatus('网页与小屏使用同一语言，切换后自动保存。');status(statusSource);renderIdentity(data);
+if(data.wifi_connected===true&&privateIP(data.ip)){
+for(const [link,path] of setupLinks)link.href='http://'+data.ip+path;
+$('lanAddress').textContent='http://'+data.ip+'/standalone';$('handoff').hidden=false;status('Wi-Fi 已连接。切回同一网络，扫描新二维码继续配置。');clearTimeout(pollTimer);return true;
+}return false;}
+async function waitForConnection(attempt=0){if(!alive)return;try{if(await info())return;}catch{/* AP can close before this response; screen QR remains available. */}if(!alive)return;if(attempt>=59){status('暂未确认联网。检查密码后重试；若热点已关闭，请查看屏幕的新二维码。');return;}pollTimer=setTimeout(()=>waitForConnection(attempt+1),1000);}
+async function switchLanguage(){
+    if(busy)return;
+    languageChosen=true;uiEnglish=$('pageLanguage').value==='1';applyLanguage();status(statusSource);if(infoSnapshot)renderIdentity(infoSnapshot);
+    busy=true;controls();languageStatus('正在同步小屏语言…');
+    try{const result=await saveDeviceLanguage(uiEnglish?1:0);if(!alive)return;if(infoSnapshot)Object.assign(infoSnapshot,{language:result.language,revision:result.revision});languageStatus('网页与小屏语言已同步');}
+    catch(e){if(alive)languageStatus(e.name==='AbortError'?t('网页已切换，小屏尚未同步，请重试'):e.message,true);}
+    finally{busy=false;if(alive)controls();}
+}
+$('pageLanguage').onchange=switchLanguage;$('languageRetry').onclick=switchLanguage;
+languageStatus('网页与小屏使用同一语言，切换后自动保存。');
+$('refresh').onclick=()=>info().catch(()=>status('连接超时，请检查设备网络。'));
+$('scan').onclick=async()=>{if(busy)return;busy=true;controls();status('正在扫描附近的 2.4 GHz 网络…');try{let data=await request('/api/wifi/scan?start=1').then(r=>r.json());for(let i=0;data.busy&&i<24&&alive;i++){await new Promise(resolve=>setTimeout(resolve,500));data=await request('/api/wifi/scan').then(r=>r.json());}if(!alive)return;if(data.busy||data.error)throw Error(t('扫描失败，请稍后重试或手动填写 SSID。'));$('networks').replaceChildren();for(const network of data.networks||[]){if(!network.ssid)continue;const button=document.createElement('button');button.type='button';const name=document.createElement('span');name.textContent=network.ssid;const signal=document.createElement('small');signal.textContent=network.rssi+' dBm';button.append(name,signal);button.onclick=()=>{if($('ssid').value!==network.ssid)$('password').value='';$('ssid').value=network.ssid;$('password').focus();};$('networks').append(button);}status(data.networks?.length?'请选择网络并填写密码。':'没有发现网络，可手动填写 SSID。');}catch(e){if(alive)status(e.message);}finally{busy=false;if(alive)controls();}};
+$('wifiForm').onsubmit=async event=>{event.preventDefault();if(busy)return;const ssid=$('ssid').value,password=$('password').value,n=encoder.encode(password).length;
+if(!ssid||encoder.encode(ssid).length>32||ssid.includes('\0'))return status('SSID 必须为 1–32 个 UTF-8 字节。');
+if(password.includes('\0')||!(n===0||(n>=8&&n<=63)||(n===64&&/^[0-9a-f]{64}$/i.test(password))))return status('密码应为 8–63 个字节，开放网络可留空。');
+busy=true;controls();clearTimeout(pollTimer);$('handoff').hidden=true;try{await request('/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-XH-WiFi':'1'},body:new URLSearchParams({ssid,password}).toString()});status('网络已保存，正在等待设备取得局域网 IP…');pollTimer=setTimeout(()=>waitForConnection(),1000);}catch(e){if(alive)status(e.message);}finally{$('password').value='';busy=false;if(alive)controls();}};
+$('ssid').oninput=()=>{$('password').value='';};window.addEventListener('pagehide',()=>{alive=false;$('password').value='';clearTimeout(pollTimer);});info().catch(()=>status('连接超时，请检查设备网络。'));
+</script></body></html>

@@ -40,9 +40,9 @@ public struct ImageApiClient {
 
     /// 240x240 RGB565 无损帧，每个像素为大端字节序。
     public func upload(rgb565: Data, endpoint: String,
-                       timeout: TimeInterval = 20) async throws -> Int {
+                       timeout: TimeInterval = 20, headers: [String: String] = [:]) async throws -> Int {
         try await upload(bytes: rgb565, contentType: "application/x-rgb565",
-                         endpoint: endpoint, timeout: timeout)
+                         endpoint: endpoint, timeout: timeout, headers: headers)
     }
 
     /// 无损 PNG 推送（无压缩痕迹；需键盘设备支持 PNG 解码）
@@ -57,7 +57,7 @@ public struct ImageApiClient {
     }
 
     private func upload(bytes: Data, contentType: String, endpoint: String,
-                        timeout: TimeInterval = 20) async throws -> Int {
+                        timeout: TimeInterval = 20, headers: [String: String] = [:]) async throws -> Int {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
@@ -68,6 +68,9 @@ public struct ImageApiClient {
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        for (key, value) in headers where key.hasPrefix("X-Lingxi-") {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
 
         let (data, response): (Data, URLResponse)
         do {

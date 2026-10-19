@@ -42,6 +42,8 @@ extension AppModel {
         let config = awtrixSettings(for: deviceID)
         if name.caseInsensitiveCompare(AWTRIXCardPolicy.homeAssistantAppName) == .orderedSame {
             await showAWTRIXHomeAssistant(deviceID: deviceID)
+        } else if name.caseInsensitiveCompare(AWTRIXCardPolicy.weatherAppName) == .orderedSame {
+            await pushAWTRIXWeather(deviceID: deviceID, showNow: true)
         } else if name.caseInsensitiveCompare(config.appName) == .orderedSame {
             await showAWTRIXText(deviceID: deviceID)
         } else {
@@ -146,6 +148,8 @@ extension AppModel {
                 if self.awtrixSnapshots[deviceID]?.apps.contains(where: { $0.name == target }) == true { continue }
                 if target == AWTRIXCardPolicy.homeAssistantAppName {
                     await self.pushAWTRIXHomeAssistant(deviceID: deviceID, showNow: false)
+                } else if target == AWTRIXCardPolicy.weatherAppName {
+                    await self.pushAWTRIXWeather(deviceID: deviceID, showNow: false)
                 } else if target == config.appName {
                     await self.pushAWTRIXTextUpdate(deviceID: deviceID, showIfRequested: false)
                 }
@@ -247,6 +251,46 @@ extension AppModel {
                 self.awtrixHASyncTasks[device.id] = nil
             }
         }
+    }
+
+    func scheduleAWTRIXWeatherSync(now: Date) {
+        guard !awtrixPreparingForQuit, let weather = settings.weatherSnapshot else { return }
+        for device in enabledDevices(for: .awtrix) {
+            let id = device.id
+            let wanted = awtrixVisibleCards(for: id).contains { $0.name == AWTRIXCardPolicy.weatherAppName }
+                || awtrixCardIsInLoop(AWTRIXCardPolicy.weatherAppName, deviceID: id)
+            guard wanted, awtrixWeatherTasks[id] == nil,
+                  awtrixWeatherLastAttempt[id].map({ now.timeIntervalSince($0) >= 60 }) ?? true,
+                  awtrixWeatherLastContent[id] != weather else { continue }
+            awtrixWeatherLastAttempt[id] = now
+            awtrixWeatherTasks[id] = Task { @MainActor [weak self] in
+                await self?.pushAWTRIXWeather(deviceID: id, showNow: false)
+                self?.awtrixWeatherTasks[id] = nil
+            }
+        }
+    }
+
+    func pushAWTRIXWeather(deviceID: UUID, showNow: Bool) async {
+        if settings.weatherSnapshot == nil { await refreshWeather() }
+        guard let weather = settings.weatherSnapshot, await waitForAWTRIXDevice(deviceID) else {
+            awtrixStatuses[deviceID] = "请先选择天气城市并更新天气"; return
+        }
+        let config = awtrixSettings(for: deviceID)
+        awtrixBusyIDs.insert(deviceID)
+        defer { awtrixBusyIDs.remove(deviceID) }
+        do {
+            let installed = awtrixSnapshots[deviceID]?.apps.contains { $0.name == AWTRIXCardPolicy.weatherAppName } == true
+            if awtrixWeatherLastContent[deviceID] != weather || !installed {
+                var content = config; content.appName = AWTRIXCardPolicy.weatherAppName
+                content.text = "\(weather.city) \(weather.description) \(Int(weather.temperature.rounded()))°C  \(Int(weather.low.rounded()))~\(Int(weather.high.rounded()))°C  \(weather.advice)"
+                content.palette = "Solid"; content.effect = ""; content.lastUploadedIcon = nil
+                _ = try await publishAWTRIXGeneratedContent(content, deviceID: deviceID)
+                guard awtrixDeviceStillMatches(config, deviceID: deviceID) else { return }
+                awtrixWeatherLastContent[deviceID] = weather
+            }
+            if showNow { try await activateAWTRIXCardForDisplay(AWTRIXCardPolicy.weatherAppName, deviceID: deviceID) }
+            awtrixStatuses[deviceID] = "天气已更新"
+        } catch { awtrixStatuses[deviceID] = Self.awtrixFriendly(error) }
     }
 
     /// 调用者持有设备锁。更新已有卡片不触碰设备轮播；新卡片默认不加入轮播。

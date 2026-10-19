@@ -92,6 +92,19 @@ public struct AIMacCanvasBoard: Codable, Identifiable, Equatable {
 
 /// 每台 AI Mac 小屏幕独立保存的连接与显示设置。
 public struct AIMacScreenDeviceSettings: Codable, Equatable {
+    public var rotate180: Bool = false
+    /// Only used by XH Multiscreen C6; legacy devices keep their own clock.
+    public var c6ClockStyle: C6ClockStyle? = nil
+    /// C6-only selection and playlist metadata. Native IDs are device-scoped,
+    /// never display names or transient printer array indices.
+    public var c6NativeCardID: String? = nil
+    public var c6NativeCardPanels: [String]? = nil
+    public var c6NativeCardRotationIDs: [String]? = nil
+    public var c6MergedCardOrder: [String]? = nil
+    /// Restart-safe desktop ownership checkpoint. The selection document has
+    /// no bearer token, HA token, MQTT access code or cloud client secret.
+    public var c6LastSyncedInputKey: String? = nil
+    public var c6LastSyncedSelection: C6StandaloneConfiguration? = nil
     public var host: String
     public var mode: AIMacScreenContentMode
     public var autoPush: Bool
@@ -123,6 +136,7 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     public var smartRotationReturnContentMode: AIMacScreenContentMode?
     public var smartRotationReturnCardModeRawValue: Int?
     public var smartRotationReturnPrinterDeviceID: UUID?
+    public var smartRotationReturnC6NativeCardID: String? = nil
     /// 这台小屏幕独立 Home Assistant 卡片的实体列表。nil 仅表示旧设置文件，
     /// 由应用首次读取时兼容原键盘选择；空数组表示用户明确未选择。
     public var haCardEntityIDs: [String]?
@@ -141,7 +155,14 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
                 cardRotationMinutes: Int = 5, haCardEntityIDs: [String]? = [],
                 smartRotationReturnContentMode: AIMacScreenContentMode? = nil,
                 smartRotationReturnCardModeRawValue: Int? = nil,
-                smartRotationReturnPrinterDeviceID: UUID? = nil) {
+                smartRotationReturnPrinterDeviceID: UUID? = nil,
+                c6NativeCardID: String? = nil,
+                c6NativeCardPanels: [String]? = nil,
+                c6NativeCardRotationIDs: [String]? = nil,
+                c6MergedCardOrder: [String]? = nil,
+                c6LastSyncedInputKey: String? = nil,
+                c6LastSyncedSelection: C6StandaloneConfiguration? = nil,
+                smartRotationReturnC6NativeCardID: String? = nil) {
         self.host = host
         self.mode = mode
         self.autoPush = autoPush
@@ -165,6 +186,13 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         self.smartRotationReturnContentMode = smartRotationReturnContentMode
         self.smartRotationReturnCardModeRawValue = smartRotationReturnCardModeRawValue
         self.smartRotationReturnPrinterDeviceID = smartRotationReturnPrinterDeviceID
+        self.c6NativeCardID = c6NativeCardID
+        self.c6NativeCardPanels = c6NativeCardPanels
+        self.c6NativeCardRotationIDs = c6NativeCardRotationIDs
+        self.c6MergedCardOrder = c6MergedCardOrder
+        self.c6LastSyncedInputKey = c6LastSyncedInputKey
+        self.c6LastSyncedSelection = c6LastSyncedSelection
+        self.smartRotationReturnC6NativeCardID = smartRotationReturnC6NativeCardID
         self.haCardEntityIDs = haCardEntityIDs
         clamp()
     }
@@ -211,12 +239,25 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
             }
         }
         if DisplayMode(rawValue: cardModeRawValue ?? -1) == nil { cardModeRawValue = nil }
+        c6NativeCardID = c6NativeCardID.flatMap(C6MergedCardPolicy.cleanNativeID)
+        smartRotationReturnC6NativeCardID = smartRotationReturnC6NativeCardID.flatMap(C6MergedCardPolicy.cleanNativeID)
+        c6NativeCardPanels = c6NativeCardPanels.map(C6MergedCardPolicy.cleanNativeIDs)
+        c6NativeCardRotationIDs = c6NativeCardRotationIDs.map(C6MergedCardPolicy.cleanNativeIDs)
+        c6MergedCardOrder = c6MergedCardOrder.map(C6MergedCardPolicy.cleanOrder)
+        if let key = c6LastSyncedInputKey,
+           key.utf8.count != 64 || !key.allSatisfy({ $0.isASCII && $0.isHexDigit }) {
+            c6LastSyncedInputKey = nil
+            c6LastSyncedSelection = nil
+        }
+        if c6LastSyncedSelection == nil { c6LastSyncedInputKey = nil }
         if smartRotationReturnContentMode == nil {
             smartRotationReturnContentMode = nil
             smartRotationReturnCardModeRawValue = nil
             smartRotationReturnPrinterDeviceID = nil
+            smartRotationReturnC6NativeCardID = nil
         } else if smartRotationReturnContentMode == .card,
-                  DisplayMode(rawValue: smartRotationReturnCardModeRawValue ?? -1) == nil {
+                  DisplayMode(rawValue: smartRotationReturnCardModeRawValue ?? -1) == nil,
+                  smartRotationReturnC6NativeCardID == nil {
             smartRotationReturnContentMode = nil
             smartRotationReturnCardModeRawValue = nil
             smartRotationReturnPrinterDeviceID = nil
@@ -230,11 +271,14 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case host, mode, autoPush, followSystemSleep, awakeBrightness, lyricsKeyboardDeviceID
         case pushIntervalSeconds, jpegQuality, customImagePath
-        case saturationPercent, contrastPercent
+        case saturationPercent, contrastPercent, rotate180, c6ClockStyle
+        case c6NativeCardID, c6NativeCardPanels, c6NativeCardRotationIDs, c6MergedCardOrder
+        case c6LastSyncedInputKey, c6LastSyncedSelection
         case canvasBoards, canvasBoardIndex, boardRotationEnabled, boardRotationMinutes
         case cardModeRawValue, cardPanels, cardRotationModes, cardRotationEnabled, cardRotationMinutes
         case smartRotationReturnContentMode, smartRotationReturnCardModeRawValue,
              smartRotationReturnPrinterDeviceID
+        case smartRotationReturnC6NativeCardID
         case haCardEntityIDs
     }
 
@@ -251,6 +295,16 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
         pushIntervalSeconds = try container.decodeIfPresent(Int.self, forKey: .pushIntervalSeconds) ?? 2
         jpegQuality = try container.decodeIfPresent(Int.self, forKey: .jpegQuality) ?? 82
         saturationPercent = try container.decodeIfPresent(Int.self, forKey: .saturationPercent) ?? 100
+        rotate180 = try container.decodeIfPresent(Bool.self, forKey: .rotate180) ?? false
+        c6ClockStyle = try container.decodeIfPresent(C6ClockStyle.self, forKey: .c6ClockStyle)
+        c6NativeCardID = try container.decodeIfPresent(String.self, forKey: .c6NativeCardID)
+        c6NativeCardPanels = try container.decodeIfPresent([String].self, forKey: .c6NativeCardPanels)
+        c6NativeCardRotationIDs = try container.decodeIfPresent([String].self, forKey: .c6NativeCardRotationIDs)
+        c6MergedCardOrder = try container.decodeIfPresent([String].self, forKey: .c6MergedCardOrder)
+        c6LastSyncedInputKey = try container.decodeIfPresent(String.self, forKey: .c6LastSyncedInputKey)
+        // A future/damaged optional checkpoint must not make the whole device
+        // settings profile unreadable. Fall back to safe first-sync planning.
+        c6LastSyncedSelection = try? container.decode(C6StandaloneConfiguration.self, forKey: .c6LastSyncedSelection)
         contrastPercent = try container.decodeIfPresent(Int.self, forKey: .contrastPercent) ?? 100
         customImagePath = try container.decodeIfPresent(String.self, forKey: .customImagePath)
         canvasBoards = try container.decodeIfPresent([AIMacCanvasBoard].self,
@@ -273,6 +327,8 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
             Int.self, forKey: .smartRotationReturnCardModeRawValue)
         smartRotationReturnPrinterDeviceID = try container.decodeIfPresent(
             UUID.self, forKey: .smartRotationReturnPrinterDeviceID)
+        smartRotationReturnC6NativeCardID = try container.decodeIfPresent(
+            String.self, forKey: .smartRotationReturnC6NativeCardID)
         haCardEntityIDs = try container.decodeIfPresent([String].self, forKey: .haCardEntityIDs)
         // 把旧版固定页面无损迁移到统一卡片模式。旧桌面时钟升级为设备端
         // 原生时钟卡片，避免继续按秒上传整张图片。
@@ -301,6 +357,7 @@ public struct AIMacScreenDeviceSettings: Codable, Equatable {
 }
 
 public struct AIMacScreenCapabilities: Equatable {
+    public var isC6 = false
     public let host: String
     public let jpegUploadURL: URL
     public let rgb565UploadURL: URL?
@@ -313,6 +370,20 @@ public struct AIMacScreenCapabilities: Equatable {
     public let brightnessLevel: Int?
     public let nativeClockURL: URL?
     public let nativeNowPlayingURL: URL?
+    public var buttonURL: URL? = nil
+    public var acceptsSoftwareFrames = true
+    public var nativeCardURL: URL? = nil
+    public var nativeCardVersion = 0
+    public var prefersNativeCards = false
+    public var interactionProtocol = 1
+    public var menuActive = false
+    public var deviceIdentity: String? = nil
+    /// C6 的屏幕方向由固件统一处理，电脑只传未翻转的原始画面。
+    public var rotationURL: URL? = nil
+    public var displayRotation: Int? = nil
+    public var nativeClockStyles: [Int] = [0]
+    public var nativeClockStyle: Int? = nil
+    public var c6StandaloneCapabilities = C6StandaloneCapabilities()
 
     public init(host: String, jpegUploadURL: URL, rgb565UploadURL: URL?,
                 activeMode: String? = nil, frameRevision: UInt64? = nil,
@@ -390,7 +461,7 @@ public enum AIMacScreenSupport {
         guard !host.isEmpty,
               let jpegURL = URL(string: "http://\(host)/image/upload"),
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["device"] as? String == "esp8266-ai-screen",
+              isSupportedDeviceIdentity(json["device"] as? String),
               let screen = json["screen"] as? [String: Any],
               screen["width"] as? Int == frameSize,
               screen["height"] as? Int == frameSize else {
@@ -427,7 +498,7 @@ public enum AIMacScreenSupport {
            let path = raw["path"] as? String, path.hasPrefix("/") {
             nativeNowPlayingURL = URL(string: "http://\(host)\(path)")
         }
-        return AIMacScreenCapabilities(host: host, jpegUploadURL: jpegURL,
+        var capabilities = AIMacScreenCapabilities(host: host, jpegUploadURL: jpegURL,
                                        rgb565UploadURL: rgb565URL,
                                        activeMode: activeMode,
                                        frameRevision: frameRevision,
@@ -435,6 +506,43 @@ public enum AIMacScreenSupport {
                                        brightnessLevel: brightnessLevel,
                                        nativeClockURL: nativeClockURL,
                                        nativeNowPlayingURL: nativeNowPlayingURL)
+        if json["device"] as? String == "lingxi-esp32-c6-screen",
+           json["button_api"] as? String == "/api/button" {
+            capabilities.buttonURL = URL(string: "http://\(host)/api/button")
+        }
+        capabilities.isC6 = json["device"] as? String == "lingxi-esp32-c6-screen"
+        if capabilities.isC6 { capabilities.c6StandaloneCapabilities = try C6StandaloneCapabilities.fromInfo(data) }
+        if capabilities.isC6, let api = json["native_clock_api"] as? [String: Any] {
+            capabilities.nativeClockStyles = api["styles"] as? [Int] ?? [0]
+            capabilities.nativeClockStyle = api["style"] as? Int
+        }
+        if capabilities.isC6, json["interaction_protocol"] as? Int == 2 {
+            capabilities.interactionProtocol = 2
+            capabilities.menuActive = json["menu_active"] as? Bool ?? false
+            capabilities.deviceIdentity = json["hostname"] as? String
+        }
+        if capabilities.isC6, let api = json["rotation_api"] as? [String: Any],
+           api["path"] as? String == "/api/rotation",
+           api["device_rendered"] as? Bool == true {
+            capabilities.rotationURL = URL(string: "http://\(host)/api/rotation")
+            if let rotation = json["rotation"] as? Int, [0, 90, 180, 270].contains(rotation) {
+                capabilities.displayRotation = rotation
+            }
+        }
+        capabilities.acceptsSoftwareFrames = json["accepts_software"] as? Bool ?? true
+        if capabilities.isC6, let api = json["native_card_api"] as? [String: Any],
+           api["path"] as? String == "/api/card", let version = api["version"] as? Int,
+           [1, 2].contains(version) {
+            capabilities.nativeCardURL = URL(string: "http://\(host)/api/card")
+            capabilities.nativeCardVersion = version
+            capabilities.prefersNativeCards = api["prefer_native"] as? Bool ?? false
+        }
+        return capabilities
+    }
+
+    /// Accept only explicit compatible firmware identities, not arbitrary HTTP displays.
+    public static func isSupportedDeviceIdentity(_ identity: String?) -> Bool {
+        identity == "esp8266-ai-screen" || identity == "lingxi-esp32-c6-screen"
     }
 
     /// 本地 hash 只说明“电脑上生成的图没变”，不能证明重启后的设备仍保存该图。
@@ -462,10 +570,31 @@ public enum AIMacScreenSupport {
         return request
     }
 
+    public static func displayRotationRequest(url: URL, rotate180: Bool) -> URLRequest? {
+        displayRotationRequest(url: url, rotation: rotate180 ? 180 : 0)
+    }
+    public static func displayRotationRequest(url: URL, rotation: Int) -> URLRequest? {
+        guard [0, 90, 180, 270].contains(rotation) else { return nil }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.queryItems = [URLQueryItem(name: "rotation", value: String(rotation))]
+        guard let target = components.url else { return nil }
+        var request = URLRequest(url: target)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 4
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return request
+    }
+
+    public static func needsSoftwareRotation(deviceType: DeviceType, rotate180: Bool,
+                                             isNativeClock: Bool) -> Bool {
+        deviceType == .aiMacScreen && rotate180 && !isNativeClock
+    }
+
     /// 切入设备端时钟时只发送一次校时和时区；之后的逐秒计算、排版与绘制
     /// 均在小屏幕固件内完成，不再依赖图片推送节拍。
     public static func nativeClockRequest(url: URL, now: Date,
-                                          timeZone: TimeZone = .current) -> URLRequest? {
+                                          timeZone: TimeZone = .current,
+                                          c6Style: C6ClockStyle? = nil) -> URLRequest? {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -476,6 +605,7 @@ public enum AIMacScreenSupport {
             URLQueryItem(name: "epoch", value: String(epoch)),
             URLQueryItem(name: "tz", value: String(offset))
         ]
+        if let c6Style { components.queryItems?.append(URLQueryItem(name: "clock_style", value: String(c6Style.rawValue))) }
         guard let target = components.url else { return nil }
         var request = URLRequest(url: target)
         request.httpMethod = "POST"
@@ -526,7 +656,8 @@ public enum AIMacScreenSupport {
     }
 
     public static func render(settings: AIMacScreenDeviceSettings,
-                              system: SystemSnapshot, now: Date = Date()) throws -> CGImage {
+                              system: SystemSnapshot, now: Date = Date(),
+                              c6FlipClock: Bool = false) throws -> CGImage {
         let size = frameSize
         guard let context = CGContext(data: nil, width: size, height: size,
                                       bitsPerComponent: 8, bytesPerRow: size * 4,
@@ -545,7 +676,14 @@ public enum AIMacScreenSupport {
         case .dashboard:
             drawDashboard(in: context, system: system, now: now)
         case .clock:
-            drawClock(in: context, now: now)
+            if c6FlipClock {
+                if let clock = C6LocalRenderer.clock(now: now, style: settings.c6ClockStyle ?? .flip,
+                    saturationPercent: settings.saturationPercent, contrastPercent: settings.contrastPercent) {
+                    context.interpolationQuality = .none
+                    context.draw(clock, in: CGRect(x: 0, y: 0, width: 240, height: 240))
+                }
+            }
+            else { drawClock(in: context, now: now) }
         case .customImage:
             try drawCustomImage(in: context, path: settings.customImagePath)
         }
@@ -644,7 +782,14 @@ public enum AIMacScreenSupport {
     /// 但按目标设备的原生尺寸重新排版，不缩放灵犀 68 的纵向成品图。
     public static func renderEmojiWallpaper(settings: AppSettings) throws -> CGImage {
         let size = frameSize
-        let palette = settings.resolvedPalette
+        // Emoji 壁纸始终使用经典配色，不受全局玻璃默认颜色影响。
+        let palette = ScreenThemes.resolved(
+            theme: settings.cardTheme,
+            backgroundTone: settings.backgroundTone,
+            customBackgroundHex: settings.customBackgroundHex,
+            accentTone: settings.accentTone,
+            customAccentHex: settings.customAccentHex,
+            softwareIsDark: settings.softwareIsDark)
         let emojis = Array(settings.emojiWallpaperText)
         let base = CGFloat(min(max(settings.emojiWallpaperSize, 20), 76))
         let gap = CGFloat(min(max(settings.emojiWallpaperSpacing, 0), 28))
@@ -873,5 +1018,25 @@ public enum AIMacScreenSupport {
                                        y: center.y - (ascent - descent) / 2)
         CTLineDraw(line, context)
         context.restoreGState()
+    }
+}
+
+/// C6 v2 exposes only software content-page presses; menu selection stays local.
+/// Strict decoding prevents malformed/mismatched devices from unpausing rotation.
+public struct C6ButtonSnapshot: Decodable, Equatable {
+    public let bootID: UInt64
+    public let sequence: UInt64
+    public let interactionProtocol: Int?
+    public let deviceID: String?
+    public let menuActive: Bool?
+    public let viewRevision: UInt64?
+    enum CodingKeys: String, CodingKey {
+        case bootID = "boot_id", sequence, interactionProtocol = "protocol"
+        case deviceID = "device_id", menuActive = "menu_active", viewRevision = "view_revision"
+    }
+    public func isCompatible(protocol expected: Int, identity: String?) -> Bool {
+        guard expected == 2 else { return interactionProtocol == nil || interactionProtocol == 1 }
+        return interactionProtocol == 2 && deviceID == identity && identity?.isEmpty == false
+            && menuActive != nil && viewRevision != nil
     }
 }

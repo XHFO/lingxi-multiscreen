@@ -493,6 +493,12 @@ public enum ScreenRenderer {
                                     bambuHeroLayout: Bool = true) throws -> RenderResult {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
+        if modules == [.weather], let weather = settings.weatherSnapshot {
+            WeatherSkyRenderer.draw(ctx, weather: weather,
+                bounds: CGRect(x: 0, y: 0, width: width, height: height),
+                coordinateHeight: CGFloat(height), safeArea: CGFloat(safe), now: now)
+            return try encode(ctx, quality: settings.jpegQuality)
+        }
         // 画板专用底色模式（手动深/浅色）覆盖默认调色板。
         // Liquid Glass 下封面取色与“智能封面背景”是两件事：即使用户
         // 保留手动主题背景，两道玻璃光晕也仍应来自当前专辑封面。
@@ -829,10 +835,13 @@ public enum ScreenRenderer {
         ctx.translateBy(x: 0, y: CGFloat(height) - CGFloat(ScreenRenderer.height))
 
         let inset: CGFloat = 8
-        let region = CGRect(x: inset, y: inset,
-                            width: CGFloat(width) - inset * 2,
-                            height: CGFloat(height) - inset * 2)
-        if !optimizeForEInk, ColorCardSceneCapture.isActive, modules != [.image] {
+        let immersiveWeather = !optimizeForEInk && modules == [.weather]
+            && settings.weatherSnapshot != nil && height >= 160 && width >= 110
+        let region = immersiveWeather
+            ? CGRect(x: 0, y: 0, width: width, height: height)
+            : CGRect(x: inset, y: inset, width: CGFloat(width) - inset * 2,
+                     height: CGFloat(height) - inset * 2)
+        if !optimizeForEInk, ColorCardSceneCapture.isActive, modules != [.image], !immersiveWeather {
             // 正方形画板原本没有整板卡片外壳。仅增加背后的玻璃层，保持所有
             // 模块的现有排版区域和字号，不挤占可用空间；纯图片画板不加遮罩。
             let glassBounds = region.insetBy(dx: -4, dy: -4)
@@ -1318,6 +1327,331 @@ public enum ScreenRenderer {
             : min(max((rowHeight - 6) * 0.67, 2), 4.5)
     }
 
+    /// 天气真实绘制使用的文本度量。保留一像素余量并复测缩放后的字形，
+    /// 避免浮点舍入把完整的「24°」误判成超宽再变成「2…」。
+    public static func weatherTextLayout(_ text: String, maxWidth: CGFloat, maxHeight: CGFloat,
+                                          preferredSize: CGFloat, minSize: CGFloat = 7,
+                                          bold: Bool = true, fontName: String? = nil)
+        -> (text: String, size: CGFloat, width: CGFloat, height: CGFloat, fits: Bool) {
+        let width = max(1, maxWidth - 1), height = max(1, maxHeight - 1)
+        let minimum = min(max(1, minSize), max(1, preferredSize))
+        var size = max(minimum, preferredSize)
+        func dimensions(_ size: CGFloat) -> (CGFloat, CGFloat) {
+            let font = CTFontCreateWithName((fontName ?? (bold ? "PingFangSC-Semibold" : "PingFangSC-Regular")) as CFString, size, nil)
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: font]))
+            let glyph = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+            let advance = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            return (max(advance, glyph.maxX) - min(0, glyph.minX),
+                    max(CTFontGetAscent(font) + CTFontGetDescent(font), glyph.height))
+        }
+        var measured = dimensions(size)
+        size = max(minimum, min(size, size * min(width / max(1, measured.0), height / max(1, measured.1))))
+        measured = dimensions(size)
+        while size > minimum && (measured.0 > width || measured.1 > height) {
+            size = max(minimum, size - 0.25)
+            measured = dimensions(size)
+        }
+        return (text, size, measured.0, measured.1, measured.0 <= maxWidth && measured.1 <= maxHeight)
+    }
+
+    public static let weatherTemperatureFontName = "HelveticaNeue-Medium"
+
+    /// 所有设备共用天气卡片：彩屏按天气分类取主题底色，墨水屏保持纯黑白。
+    /// 由实际可用区域决定横向/纵向主视觉，详情不足时省略建议而不压缩温度和图标。
+    private static func drawWeatherCard(_ ctx: CGContext, weather: WeatherSnapshot,
+                                        band: CGRect, colors: ScreenPalette,
+                                        monochrome: Bool, now: Date) {
+        guard band.width > 20, band.height > 28 else { return }
+        if !monochrome, band.width >= 110, band.height >= 160,
+           (band.height <= band.width * 1.5 || band.height >= 300) {
+            WeatherSkyRenderer.draw(ctx, weather: weather, bounds: band,
+                                    coordinateHeight: CGFloat(height), safeArea: 0, now: now)
+            return
+        }
+        let background = colors.background
+        let dark = 0.299 * background.0 + 0.587 * background.1 + 0.114 * background.2 < 0.45
+        let palette = weather.condition.palette(dark: dark, monochrome: monochrome)
+        let weatherColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        func color(_ hex: UInt32) -> CGColor {
+            // 主题值与 C6 固件 RGB565 共用 sRGB，不能隐式使用 DeviceRGB 的显示器 gamma。
+            CGColor(colorSpace: weatherColorSpace,
+                    components: [CGFloat((hex >> 16) & 0xFF) / 255,
+                                 CGFloat((hex >> 8) & 0xFF) / 255,
+                                 CGFloat(hex & 0xFF) / 255, 1])!
+        }
+        let foreground = color(palette.foreground)
+        let secondary = color(palette.secondary)
+        ctx.saveGState()
+        let radius = min(16, band.height * 0.1)
+        ctx.addPath(CGPath(roundedRect: rect(band), cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.clip()
+        if monochrome {
+            fillRound(ctx, rect(band), radius: radius, color: color(palette.background))
+        } else {
+            // 逐行 sRGB 插值与 C6 的 RGB565 天空完全采用同一色表；静态绘制不增加刷新频率。
+            let rows = max(1, Int(ceil(band.height)))
+            for row in 0..<rows {
+                ctx.setFillColor(color(palette.background(at: Double(row) / Double(max(1, rows - 1)))))
+                ctx.fill(rect(band.minX, band.minY + CGFloat(row), band.width,
+                              min(1, band.height - CGFloat(row))))
+            }
+        }
+        func cloud(in frame: CGRect, tint: CGColor, opacity: CGFloat) {
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: frame.minX + x * frame.width, y: rect(frame).maxY - y * frame.height)
+            }
+            let outline = CGMutablePath()
+            outline.move(to: point(0.19, 0.89))
+            outline.addCurve(to: point(0.10, 0.57), control1: point(0.01, 0.89), control2: point(-0.01, 0.65))
+            outline.addCurve(to: point(0.30, 0.52), control1: point(0.16, 0.46), control2: point(0.25, 0.46))
+            outline.addCurve(to: point(0.65, 0.17), control1: point(0.29, 0.22), control2: point(0.49, 0.07))
+            outline.addCurve(to: point(0.79, 0.48), control1: point(0.79, 0.22), control2: point(0.83, 0.36))
+            outline.addCurve(to: point(0.94, 0.59), control1: point(0.86, 0.41), control2: point(0.96, 0.47))
+            outline.addCurve(to: point(0.85, 0.89), control1: point(1.04, 0.75), control2: point(0.98, 0.89))
+            outline.addCurve(to: point(0.19, 0.89), control1: point(0.64, 0.93), control2: point(0.38, 0.93))
+            outline.closeSubpath()
+            let base = tint.converted(to: weatherColorSpace, intent: .defaultIntent, options: nil)?.components ?? [1, 1, 1, 1]
+            let darkCloud = palette.foreground == 0xF8FAFC
+            let top = CGColor(colorSpace: weatherColorSpace, components: [
+                base[0] + (1 - base[0]) * 0.14, base[1] + (1 - base[1]) * 0.14,
+                base[2] + (1 - base[2]) * 0.14, 1])!
+            let bottom = darkCloud ? color(0x35405B) : color(0xBDD1E2)
+            ctx.saveGState()
+            ctx.setAlpha(opacity)
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            ctx.setAlpha(1)
+            ctx.setShadow(offset: CGSize(width: 0, height: -frame.height * 0.05),
+                          blur: frame.height * 0.18, color: color(0x244766).copy(alpha: 0.12))
+            ctx.setFillColor(tint)
+            ctx.addPath(outline); ctx.fillPath()
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            ctx.saveGState()
+            ctx.addPath(outline); ctx.clip()
+            if let shading = CGGradient(colorsSpace: weatherColorSpace,
+                colors: [top, tint, bottom] as CFArray, locations: [0, 0.48, 1]) {
+                ctx.drawLinearGradient(shading, start: point(0.48, 0.12), end: point(0.48, 0.94),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restoreGState()
+            ctx.endTransparencyLayer()
+            ctx.restoreGState()
+        }
+        func sun(in frame: CGRect) {
+            // 长屏纵向布局给图标的是宽矩形，但太阳仍保持球体，不随容器拉扁。
+            let side = min(frame.width, frame.height)
+            let square = CGRect(x: frame.midX - side / 2, y: frame.midY - side / 2,
+                                width: side, height: side)
+            let target = rect(square), center = CGPoint(x: target.midX, y: target.midY)
+            ctx.saveGState()
+            if let halo = CGGradient(colorsSpace: weatherColorSpace,
+                colors: [color(0xFFEBA5).copy(alpha: 0.36)!, color(0xFFEBA5).copy(alpha: 0)!] as CFArray,
+                locations: [0, 1]) {
+                ctx.drawRadialGradient(halo, startCenter: center, startRadius: 0,
+                                       endCenter: center, endRadius: side * 0.68, options: [])
+            }
+            let disk = target.insetBy(dx: target.width * 0.14, dy: target.height * 0.14)
+            ctx.addEllipse(in: disk); ctx.clip()
+            if let sunlight = CGGradient(colorsSpace: weatherColorSpace,
+                colors: [color(0xFFF2AD), color(0xFFD761), color(0xFFBD43)] as CFArray,
+                locations: [0, 0.55, 1]) {
+                ctx.drawRadialGradient(sunlight,
+                    startCenter: CGPoint(x: disk.midX - disk.width * 0.17, y: disk.midY + disk.height * 0.18), startRadius: 0,
+                    endCenter: center, endRadius: disk.width * 0.56, options: [.drawsAfterEndLocation])
+            }
+            ctx.restoreGState()
+        }
+        if !monochrome {
+            let skyCloud = CGRect(x: band.maxX - band.width * 0.51,
+                                  y: band.minY + band.height * 0.12,
+                                  width: band.width * 0.65, height: min(62, band.width * 0.28))
+            switch weather.condition {
+            case .sunny, .cloudy:
+                let sunlight = color(0xFFEAA6)
+                let center = CGPoint(x: band.maxX - band.width * 0.17,
+                                     y: rect(band).maxY - band.height * 0.24)
+                if let glow = CGGradient(colorsSpace: weatherColorSpace,
+                    colors: [sunlight.copy(alpha: 0.32)!, sunlight.copy(alpha: 0)!] as CFArray,
+                    locations: [0, 1]) {
+                    ctx.drawRadialGradient(glow, startCenter: center, startRadius: 0,
+                                           endCenter: center, endRadius: band.width * 0.42, options: [])
+                }
+                if weather.condition == .cloudy {
+                    // 背景只保留远处云层；唯一的太阳在主视觉内半遮于云后，不与标头争抢。
+                    cloud(in: skyCloud.offsetBy(dx: -band.width * 0.12, dy: -band.height * 0.025),
+                          tint: color(palette.cloud), opacity: 0.20)
+                    cloud(in: skyCloud.offsetBy(dx: band.width * 0.10, dy: band.height * 0.035),
+                          tint: color(palette.cloud), opacity: 0.45)
+                }
+            case .fog:
+                for index in 0..<3 {
+                    let line = CGRect(x: band.minX + band.width * CGFloat(index) * 0.08,
+                                      y: band.minY + band.height * (0.20 + CGFloat(index) * 0.12),
+                                      width: band.width * 0.86, height: max(3, band.height * 0.022))
+                    fillRound(ctx, rect(line), radius: line.height / 2,
+                              color: color(palette.cloud).copy(alpha: 0.30)!)
+                }
+            case .overcast, .drizzle, .rain, .snow, .thunderstorm, .unknown:
+                cloud(in: skyCloud, tint: color(palette.cloud), opacity: 0.64)
+                cloud(in: skyCloud.offsetBy(dx: -band.width * 0.25, dy: -band.height * 0.045),
+                      tint: color(palette.cloud), opacity: 0.26)
+                if weather.condition == .rain || weather.condition == .drizzle {
+                    for index in 0..<5 {
+                        let x = band.maxX - band.width * (0.10 + CGFloat(index) * 0.062)
+                        let y = skyCloud.maxY + 9 + CGFloat(index % 2) * 8
+                        ctx.setStrokeColor(color(palette.cloud).copy(alpha: 0.55)!)
+                        ctx.setLineWidth(2)
+                        ctx.move(to: CGPoint(x: x, y: rect(band).maxY - (y - band.minY)))
+                        ctx.addLine(to: CGPoint(x: x - 4, y: rect(band).maxY - (y - band.minY) - 11))
+                        ctx.strokePath()
+                    }
+                } else if weather.condition == .snow {
+                    ctx.setStrokeColor(color(palette.cloud).copy(alpha: 0.70)!)
+                    ctx.setLineWidth(1.5)
+                    for index in 0..<4 {
+                        let x = band.maxX - band.width * (0.11 + CGFloat(index) * 0.08)
+                        let y = rect(band).maxY - band.height * (0.31 + CGFloat(index % 2) * 0.075)
+                        for angle in [0.0, Double.pi / 3, Double.pi * 2 / 3] {
+                            let dx = CGFloat(cos(angle)) * 4, dy = CGFloat(sin(angle)) * 4
+                            ctx.move(to: CGPoint(x: x - dx, y: y - dy))
+                            ctx.addLine(to: CGPoint(x: x + dx, y: y + dy))
+                            ctx.strokePath()
+                        }
+                    }
+                }
+            }
+        }
+        if monochrome {
+            strokeRound(ctx, rect(band.insetBy(dx: 0.5, dy: 0.5)), radius: radius,
+                        color: foreground, width: 1)
+        }
+        let padding = min(12, max(4, band.width * 0.05))
+        let inner = band.insetBy(dx: padding, dy: padding)
+        let gap = min(8, max(3, inner.height * 0.02))
+        func label(_ text: String, in frame: CGRect, preferred: CGFloat,
+                   minimum: CGFloat = 9, bold: Bool = true, color: CGColor, fontName: String? = nil) {
+            let layout = weatherTextLayout(text, maxWidth: frame.width, maxHeight: frame.height,
+                                           preferredSize: preferred, minSize: minimum, bold: bold, fontName: fontName)
+            drawText(ctx, layout.text, size: layout.size, bold: bold, color: color,
+                     in: rect(frame), align: .center, fontName: fontName)
+        }
+        func icon(in frame: CGRect) {
+            if !monochrome && weather.condition == .sunny {
+                sun(in: frame)
+                return
+            }
+            if !monochrome && weather.condition == .cloudy {
+                sun(in: CGRect(x: frame.minX - frame.width * 0.02, y: frame.minY - frame.height * 0.03,
+                               width: frame.width * 0.72, height: frame.height * 0.72))
+                cloud(in: CGRect(x: frame.minX + frame.width * 0.04, y: frame.minY + frame.height * 0.28,
+                                  width: frame.width * 0.94, height: frame.height * 0.65),
+                      tint: color(palette.cloud), opacity: 1)
+                return
+            }
+            guard let icon = symbolImage(weather.condition.symbolName,
+                                         pointSize: min(frame.width, frame.height),
+                                         color: monochrome ? foreground : color(palette.symbol)) else { return }
+            let target = rect(frame)
+            let scale = min(target.width / CGFloat(icon.width), target.height / CGFloat(icon.height))
+            let size = CGSize(width: CGFloat(icon.width) * scale, height: CGFloat(icon.height) * scale)
+            ctx.draw(icon, in: CGRect(x: target.midX - size.width / 2,
+                                     y: target.midY - size.height / 2, width: size.width, height: size.height))
+        }
+        // 多模块画板给天气的空间很小时，只保留状态与温度，不能硬塞完整详情。
+        if band.height < 80 {
+            let hasTitle = inner.height >= 36
+            let titleH: CGFloat = hasTitle ? 13 : 0
+            if hasTitle {
+                label(weather.city + " · " + weather.description,
+                      in: CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: titleH),
+                      preferred: 11, color: foreground)
+            }
+            let heroY = inner.minY + titleH + (hasTitle ? gap : 0)
+            let heroH = max(12, inner.maxY - heroY)
+            let iconSize = min(26, heroH, inner.width * 0.24)
+            let content = hasTitle ? String(format: "%.0f°", weather.temperature)
+                : String(format: "%.0f° · ", weather.temperature) + weather.description
+            let size = min(25, max(12, heroH * 0.8))
+            let textW = min(max(10, inner.width - iconSize - gap),
+                            measureTextWidth(content, size: size, bold: true))
+            let x = inner.midX - (textW + gap + iconSize) / 2
+            label(content, in: CGRect(x: x, y: heroY, width: textW, height: heroH),
+                  preferred: size, color: foreground, fontName: weatherTemperatureFontName)
+            icon(in: CGRect(x: x + textW + gap, y: heroY + (heroH - iconSize) / 2,
+                            width: iconSize, height: iconSize))
+            ctx.restoreGState()
+            return
+        }
+        let titleH = min(28, max(14, inner.height * 0.12))
+        let detailLineH = min(22, max(13, inner.height * 0.095))
+        let twoDetailRows = inner.width < 150 && inner.height > 110
+        let detailH = detailLineH * (twoDetailRows ? 2 : 1)
+        let adviceLineH = min(22, max(16, inner.height * 0.085))
+        let adviceH = inner.height >= 160 ? adviceLineH * 2 : 0
+        let footerH: CGFloat = inner.height >= 82 ? 12 : 0
+        let totalGaps = gap * (2 + (adviceH > 0 ? 1 : 0) + (footerH > 0 ? 1 : 0))
+        let heroH = max(18, inner.height - titleH - detailH - adviceH - footerH - totalGaps)
+        label(weather.city + " · " + weather.description,
+              in: CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: titleH),
+              preferred: min(20, max(12, titleH * 0.75)), color: foreground)
+        let hero = CGRect(x: inner.minX, y: inner.minY + titleH + gap,
+                          width: inner.width, height: heroH)
+        let temperature = String(format: "%.0f°", weather.temperature)
+        let iconFrame: CGRect
+        let temperatureFrame: CGRect
+        if inner.width < 150 && hero.height > 90 {
+            let iconH = min(56, hero.height * 0.42)
+            iconFrame = CGRect(x: hero.minX, y: hero.minY, width: hero.width, height: iconH)
+            temperatureFrame = CGRect(x: hero.minX, y: iconFrame.maxY + gap,
+                                      width: hero.width, height: max(18, hero.height - iconH - gap))
+        } else {
+            let iconSize = min(72, hero.height * 0.84, hero.width * 0.30)
+            let fontSize = min(64, max(18, hero.height * 0.8))
+            let availableTextW = max(20, hero.width - iconSize - gap)
+            let textWidth = min(availableTextW, measureTextWidth(temperature, size: fontSize, bold: true))
+            let groupWidth = textWidth + gap + iconSize
+            let x = hero.midX - groupWidth / 2
+            temperatureFrame = CGRect(x: x, y: hero.minY, width: textWidth, height: hero.height)
+            iconFrame = CGRect(x: temperatureFrame.maxX + gap, y: hero.midY - iconSize / 2,
+                               width: iconSize, height: iconSize)
+        }
+        label(temperature, in: temperatureFrame,
+              preferred: min(64, max(18, temperatureFrame.height * 0.8)), color: foreground,
+              fontName: weatherTemperatureFontName)
+        icon(in: iconFrame)
+        var y = hero.maxY + gap
+        let range = String(format: "%.0f–%.0f°", weather.low, weather.high)
+        let rain = "降雨 \(min(100, max(0, weather.rainProbability)))%"
+        let detailSize = min(17, max(10, detailLineH * 0.78))
+        if twoDetailRows {
+            for line in [range, rain] {
+                label(line, in: CGRect(x: inner.minX, y: y, width: inner.width, height: detailLineH),
+                      preferred: min(detailSize, 15), bold: monochrome, color: foreground)
+                y += detailLineH
+            }
+        } else {
+            label(range + "  " + rain,
+                  in: CGRect(x: inner.minX, y: y, width: inner.width, height: detailH),
+                  preferred: min(detailSize, 15), bold: monochrome, color: foreground)
+            y += detailH
+        }
+        if adviceH > 0 {
+            y += gap
+            for advice in [weather.clothing, weather.carWash] {
+                label(advice, in: CGRect(x: inner.minX, y: y, width: inner.width, height: adviceLineH),
+                      preferred: min(14, adviceLineH * 0.72), bold: monochrome, color: secondary)
+                y += adviceLineH
+            }
+        }
+        if footerH > 0 {
+            let stale = now.timeIntervalSince(weather.updatedAt) > 3 * 3600
+            let stamp = "\(stale ? "缓存 · " : "")\(formatDate(weather.updatedAt, "HH:mm")) · Open-Meteo"
+            label(stamp, in: CGRect(x: inner.minX, y: inner.maxY - footerH,
+                                   width: inner.width, height: footerH),
+                  preferred: 10, minimum: 7, bold: false, color: secondary)
+        }
+        ctx.restoreGState()
+    }
+
     /// 绘制单个画板模块（band 为 Skia 语义的横带）；imageOverlayOnly=true 时图像模块强制按叠加绘制；
     /// nowPlayingSmartBg=true 时正在播放模块用封面主色填充模块底（键盘画板整卡背景已是封面主色时由
     /// canvasCoverBgActive=true 跳过，避免出现色差圆角块）
@@ -1348,6 +1682,13 @@ public enum ScreenRenderer {
         let w = band.width
         let typography = canvasTypography()
         switch module {
+        case .weather:
+            guard let weather = settings.weatherSnapshot else {
+                drawText(ctx, "天气 · 请先选择城市", size: 14, bold: true, color: colors.primaryTextCG, in: rect(band), align: .center)
+                break
+            }
+            drawWeatherCard(ctx, weather: weather, band: band, colors: colors,
+                            monochrome: deviceCanvas && monochromeDeviceCanvas, now: now)
         case .homeAssistant:
             if deviceCanvas, !monochromeDeviceCanvas, band.width >= 140, band.height >= 56 {
                 drawSquareHomeAssistant(ctx, snapshot: ha, band: band, colors: colors)
@@ -4275,16 +4616,25 @@ public enum ScreenRenderer {
     // MARK: - SF Symbol 实体图标（HA 卡片/画板模块）
 
     /// SF Symbol → CGImage 缓存（模板符号按指定颜色着色；避免每帧重复渲染）
-    private static let symbolImageCache = NSCache<NSString, CGImage>()
+    private static let symbolImageCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 192
+        cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
 
     /// 取 SF Symbol 图像（指定点大小与颜色；无此符号回退 nil）
     private static func symbolImage(_ name: String, pointSize: CGFloat, color: CGColor) -> CGImage? {
-        let key = "\(name)#\(Int(pointSize))#\(color.alpha > 0.5 ? "1" : "0")" as NSString
+        // 颜色必须参与缓存：同一符号切换浅/深主题后不能复用上一次的文字色。
+        let nsColor = (NSColor(cgColor: color) ?? .black).usingColorSpace(.sRGB) ?? .black
+        let channels = [nsColor.redComponent, nsColor.greenComponent,
+                        nsColor.blueComponent, nsColor.alphaComponent]
+        let colorKey = channels.map { String(Int(($0 * 65535).rounded())) }.joined(separator: ",")
+        let key = "\(name)#\(Int((pointSize * 100).rounded()))#\(colorKey)" as NSString
         if let cached = symbolImageCache.object(forKey: key) { return cached }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
         guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(config) else { return nil }
-        let nsColor = NSColor(cgColor: color) ?? .black
         // 模板符号着色：sourceAtop 只给非透明像素染上指定颜色
         let tinted = NSImage(size: base.size)
         tinted.lockFocus()
@@ -4294,7 +4644,7 @@ public enum ScreenRenderer {
         tinted.unlockFocus()
         var rect = CGRect(origin: .zero, size: tinted.size)
         guard let cg = tinted.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
-        symbolImageCache.setObject(cg, forKey: key)
+        symbolImageCache.setObject(cg, forKey: key, cost: cg.bytesPerRow * cg.height)
         return cg
     }
 
@@ -4563,15 +4913,22 @@ public enum ScreenRenderer {
         fillRound(ctx, converted, radius: min(bounds.height / 2, 10), color: background)
         strokeRound(ctx, converted, radius: min(bounds.height / 2, 10), color: border, width: 1)
 
-        let labelSize = min(max(bounds.height * 0.56, 10), 14)
+        var labelSize = min(max(bounds.height * 0.56, 10), 14)
         let iconSide = min(max(bounds.height - 8, 12), 15)
-        let labelWidth = measureTextWidth(presentation.label, size: labelSize, bold: true)
+        let availableLabelWidth = max(10, bounds.width - iconSide - 12)
+        let naturalLabelWidth = measureTextWidth(presentation.label, size: labelSize, bold: true)
+        if naturalLabelWidth > availableLabelWidth {
+            labelSize = max(10, labelSize * availableLabelWidth / naturalLabelWidth)
+        }
+        let labelWidth = min(availableLabelWidth, measureTextWidth(presentation.label, size: labelSize, bold: true))
         let groupWidth = iconSide + 4 + labelWidth
         let groupX = bounds.midX - groupWidth / 2
         drawEntityIcon(ctx, symbol: presentation.symbol,
                        in: rect(groupX, bounds.midY - iconSide / 2, iconSide, iconSide),
                        color: color)
-        drawText(ctx, presentation.label, size: labelSize, bold: true, color: color,
+        // Symbols are centered in their frame; center the visible text glyphs as
+        // well, not the font's ascent/descent box (which drops Chinese labels).
+        drawGlyphCenteredText(ctx, presentation.label, size: labelSize, bold: true, color: color,
                  in: rect(groupX + iconSide + 4, bounds.minY,
                           min(labelWidth + 2, bounds.maxX - groupX - iconSide - 4), bounds.height),
                  align: .left)
@@ -5970,7 +6327,11 @@ public enum ScreenRenderer {
     public static func renderEmojiWallpaper(settings: AppSettings,
                                             now: Date = Date()) throws -> RenderResult {
         let ctx = createContext()
-        let colors = settings.resolvedPalette
+        // 完整壁纸不使用玻璃默认调色板，避免全局风格改变 Emoji 的背景或页脚。
+        let colors = ScreenThemes.resolved(theme: settings.cardTheme,
+            backgroundTone: settings.backgroundTone, customBackgroundHex: settings.customBackgroundHex,
+            accentTone: settings.accentTone, customAccentHex: settings.customAccentHex,
+            softwareIsDark: settings.softwareIsDark)
         if !ColorCardSceneCapture.background(ctx, palette: colors) {
             ctx.setFillColor(colors.backgroundCG)
             ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
