@@ -66,6 +66,8 @@ public enum CardCapabilityRegistry {
     public static let all: [CardCapability] = [
         .init(mode: .qwenWork, recipe: .modules([.qwenQuota]), requirements: [.quotas]),
         .init(mode: .codex, recipe: .modules([.codex]), requirements: [.quotas]),
+        .init(mode: .grokBot, recipe: .modules([.grokBot]), requirements: [.quotas]),
+        .init(mode: .cloudflare, recipe: .modules([.cloudflare]), requirements: [.quotas]),
         .init(mode: .pomodoro, recipe: .modules([.pomodoro]), requirements: [.pomodoro]),
         .init(mode: .systemMonitor,
               recipe: .modules([.cpu, .memory, .disk, .network, .uptime]),

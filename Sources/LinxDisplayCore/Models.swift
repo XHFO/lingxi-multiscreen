@@ -27,6 +27,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     /// AI Mac 彩色小屏专属的设备端实时桌面时钟。
     case aiMacClock = 21
     case weather = 22
+    case grokBot = 23
+    case cloudflare = 24
 
     /// 设置文件可能来自包含实验卡片的开发版。遇到当前版本不认识的编号时，
     /// 只回退当前显示页，不能让整份设备与画板配置解码失败。
@@ -84,6 +86,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .formlabs5: return "Formlabs 打印机 5"
         case .aiMacClock: return "桌面时钟"
         case .weather: return "天气"
+        case .grokBot: return "Grok Bot 用量"
+        case .cloudflare: return "Cloudflare 数据"
         }
     }
 
@@ -98,6 +102,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .nowPlaying: return "music.note"
         case .aiMacClock: return "clock"
         case .weather: return "cloud.sun"
+        case .grokBot: return "sparkles"
+        case .cloudflare: return "cloud.fill"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -175,6 +181,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case formlabs4 = 25
     case formlabs5 = 26
     case weather = 27
+    case grokBot = 28
+    case cloudflare = 29
 
     public var id: Int { rawValue }
 
@@ -208,6 +216,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .formlabs4: return "Formlabs 打印机 4"
         case .formlabs5: return "Formlabs 打印机 5"
         case .weather: return "天气"
+        case .grokBot: return "Grok Bot 用量"
+        case .cloudflare: return "Cloudflare 数据"
         }
     }
 
@@ -231,6 +241,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .disk: return "internaldrive"
         case .homeAssistant: return "house"
         case .weather: return "cloud.sun"
+        case .grokBot: return "sparkles"
+        case .cloudflare: return "cloud.fill"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         }
@@ -340,7 +352,7 @@ public enum RuntimePerformancePolicy {
             return timeFormat.contains("s") ? 1 : 30
         case .excerptQuote, .sspai:
             return 30
-        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather,
+        case .codex, .qwenWork, .grokBot, .cloudflare, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather,
              .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))

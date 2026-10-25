@@ -441,6 +441,19 @@ public final class AppSettings: ObservableObject {
     @Published public var haToken = "" {
         didSet { onChange() }
     }
+    /// Cursor 会话令牌或 access token。只保存在本机，日志与界面摘要不打印明文。
+    /// 留空时尝试读取尚未加密的本机 Cursor 登录；加密登录不会弹钥匙串。
+    @Published public var grokBotSessionToken = "" {
+        didSet { onChange() }
+    }
+    /// Cloudflare API 令牌。只保存在本机，不写入日志。
+    @Published public var cloudflareAPIToken = "" {
+        didSet { onChange() }
+    }
+    /// 可选的 Cloudflare 账号 ID。留空时使用令牌能看到的第一个账号。
+    @Published public var cloudflareAccountID = "" {
+        didSet { onChange() }
+    }
     /// Home Assistant：刷新间隔（分钟，全局唯一）
     @Published public var haRefreshMinutes = 5 {
         didSet { onChange() }
@@ -856,7 +869,7 @@ public final class AppSettings: ObservableObject {
         switch module {
         case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
         case .pomodoro, .weather: return 4
-        case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
+        case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .grokBot, .cloudflare, .homeAssistant, .bambuLab,
              .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return 4
         case .clock, .date, .text: return 2
@@ -1174,7 +1187,8 @@ public final class AppSettings: ObservableObject {
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
              keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled, awtrix,
-             haServerURL, haToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
+             haServerURL, haToken, grokBotSessionToken, cloudflareAPIToken, cloudflareAccountID,
+             haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
@@ -1294,6 +1308,9 @@ public final class AppSettings: ObservableObject {
         try container.encode(awtrix, forKey: .awtrix)
         try container.encode(haServerURL, forKey: .haServerURL)
         try container.encode(haToken, forKey: .haToken)
+        try container.encode(grokBotSessionToken, forKey: .grokBotSessionToken)
+        try container.encode(cloudflareAPIToken, forKey: .cloudflareAPIToken)
+        try container.encode(cloudflareAccountID, forKey: .cloudflareAccountID)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
         try container.encode(haEntityID, forKey: .haEntityID)
         try container.encode(haEntities, forKey: .haEntities)
@@ -1526,6 +1543,9 @@ extension AppSettings: Codable {
         awtrix.sanitize()
         haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
         haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
+        grokBotSessionToken = try container.decodeIfPresent(String.self, forKey: .grokBotSessionToken) ?? grokBotSessionToken
+        cloudflareAPIToken = try container.decodeIfPresent(String.self, forKey: .cloudflareAPIToken) ?? cloudflareAPIToken
+        cloudflareAccountID = try container.decodeIfPresent(String.self, forKey: .cloudflareAccountID) ?? cloudflareAccountID
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
         haEntityID = try container.decodeIfPresent(String.self, forKey: .haEntityID) ?? haEntityID
         haEntities = try container.decodeIfPresent([String].self, forKey: .haEntities) ?? haEntities

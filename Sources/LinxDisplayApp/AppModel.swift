@@ -61,6 +61,8 @@ private struct AIMacSmartRotationTarget: Equatable {
 public final class AppModel: ObservableObject {
     private let store: SettingsStore
     private let codex = CodexRateLimitClient()
+    private let grokBotClient = GrokBotUsageClient()
+    private let cloudflareClient = CloudflareUsageClient()
     private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
     private let nowPlayingClient = NowPlayingClient()
@@ -351,6 +353,17 @@ public final class AppModel: ObservableObject {
         fetchQuota: { [weak self] in
             guard let self else { throw QuotaError.unreachable }
             return try await self.quotaClient.fetch()
+        },
+        fetchGrokBot: { [weak self] in
+            guard let self else { return .notConfigured }
+            return await self.grokBotClient.fetch(sessionToken: self.settings.grokBotSessionToken)
+        },
+        fetchCloudflare: { [weak self] in
+            guard let self else { return .notConfigured }
+            let account = self.settings.cloudflareAccountID
+            return await self.cloudflareClient.fetch(
+                apiToken: self.settings.cloudflareAPIToken,
+                accountID: account.isEmpty ? nil : account)
         })
 
     /// 活动设置（普通存储属性而非 @Published：视图直接观察 AppSettings 自身
@@ -358,6 +371,8 @@ public final class AppModel: ObservableObject {
     public var settings: AppSettings
     @Published public var usage: UsageSnapshot = .empty
     @Published public var qwenQuota: QwenWorkQuota = .unavailable
+    @Published public var grokBotUsage: GrokBotUsageSnapshot = .notConfigured
+    @Published public var cloudflareUsage: CloudflareUsageSnapshot = .notConfigured
     /// Home Assistant 快照（实体列表 + 选中实体状态 + 错误信息）
     @Published public var haSnapshot: HASnapshot = .empty
     @Published public var formlabsSnapshots: [UUID: FormlabsSnapshot] = [:]
@@ -693,6 +708,8 @@ public final class AppModel: ObservableObject {
         pomodoro.reset()
         usage = .empty
         qwenQuota = .unavailable
+        grokBotUsage = .notConfigured
+        cloudflareUsage = .notConfigured
         formlabsSnapshots = [:]
         formlabsDiscoveredDevices = [:]
         formlabsConnectionStatus = [:]
@@ -3407,6 +3424,7 @@ public final class AppModel: ObservableObject {
             nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
             customText: settings.canvasText, settings: settings,
             codex: usage, qwenQuota: qwenQuota,
+            grokBot: grokBotUsage, cloudflare: cloudflareUsage,
             sspaiArticles: aiMacCanvasArticles(deviceID: deviceID, board: board),
             ha: haSnapshot.selecting(entityIDs: board.haEntityIDs),
             formlabsItems: formlabsCanvasItems(), now: now,
@@ -3503,6 +3521,7 @@ public final class AppModel: ObservableObject {
                 nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
                 customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
                 settings: settings, codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage, cloudflare: cloudflareUsage,
                 sspaiArticles: articles, ha: cardHA,
                 formlabsItems: formlabsCanvasItems(), now: now,
                 width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
@@ -5276,7 +5295,7 @@ public final class AppModel: ObservableObject {
             return
         }
         switch settings.displayMode {
-        case .codex, .qwenWork:
+        case .codex, .qwenWork, .grokBot, .cloudflare:
             let action = SyncPlanner.forCodex(
                 now: now, lastRefresh: lastQuotaRefresh, lastPush: lastPushAttempt,
                 refreshSeconds: settings.codexRefreshSeconds)
@@ -5375,7 +5394,8 @@ public final class AppModel: ObservableObject {
         }
         // 用量数据统一调取：任一画板（键盘/先知/摘录）含 Codex 或千问额度模块时，
         // 按统一刷新周期（codexRefreshSeconds）并行拉取一次，供所有功能共享（避免各自重复调用）
-        if settings.displayMode != .codex && settings.displayMode != .qwenWork,
+        if settings.displayMode != .codex && settings.displayMode != .qwenWork
+            && settings.displayMode != .grokBot && settings.displayMode != .cloudflare,
            canvasNeedsQuotaData, isQuotaDataStale(now: now) {
             let failures = await refreshUsageAndQuota()
             if !failures.isEmpty { status = failures.joined(separator: "；") }
@@ -6584,7 +6604,7 @@ public func setClockTimeFormat(_ format: String) {
             await refreshCurrentBambuEntities()
         }
         switch settings.displayMode {
-        case .codex, .qwenWork:
+        case .codex, .qwenWork, .grokBot, .cloudflare:
             await refreshData(upload: true, forceUpload: false)
         case .weather:
             if settings.weatherSnapshot == nil { await refreshWeather() }
@@ -6677,7 +6697,7 @@ public func setClockTimeFormat(_ format: String) {
                      settings.excerptCanvasModuleList,
                      allAIMacCanvasModules]
         return lists.contains { list in
-            list.contains { $0 == .codex || $0 == .qwenQuota }
+            list.contains { $0 == .codex || $0 == .qwenQuota || $0 == .grokBot || $0 == .cloudflare }
         } || activeAIMacCardModes.contains { mode in
             CardCapabilityRegistry.capability(for: mode)?.requirements.contains(.quotas) ?? false
         }
@@ -6719,6 +6739,12 @@ public func setClockTimeFormat(_ format: String) {
         // 来源切换发生在网络请求途中时，丢弃旧来源刚返回的结果。
         if let usage = outcome.usage, settings.codexUsageSource == requestedCodexSource {
             self.usage = usage
+        }
+        if let grok = outcome.grokBot {
+            grokBotUsage = grok
+        }
+        if let cloudflare = outcome.cloudflare {
+            cloudflareUsage = cloudflare
         }
         if let quota = outcome.quota {
             // 千问额度百分比：以基线为 100%，按 当前/基线 算剩余百分比。
@@ -7700,7 +7726,7 @@ public func setClockTimeFormat(_ format: String) {
         status = upload ? "正在刷新并推送…" : "正在刷新…"
         do {
             switch settings.displayMode {
-            case .codex, .qwenWork, .canvas:
+            case .codex, .qwenWork, .grokBot, .cloudflare, .canvas:
                 // 统一调取：一次并行拉取 Codex 用量 + 千问办公额度，缓存后供各功能共享
                 let failures = await refreshUsageAndQuota()
                 if settings.displayMode == .canvas {
@@ -7746,7 +7772,8 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     public func refresh() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork
+            || settings.displayMode == .grokBot || settings.displayMode == .cloudflare {
             await refreshData(upload: false, forceUpload: false)
         } else if settings.displayMode == .nowPlaying {
             do {
@@ -7799,7 +7826,8 @@ public func setClockTimeFormat(_ format: String) {
     // MARK: - 推送
 
     public func pushNow() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork
+            || settings.displayMode == .grokBot || settings.displayMode == .cloudflare {
             await refreshData(upload: true, forceUpload: true)
         } else {
             await push(force: true)
@@ -8193,6 +8221,7 @@ public func setClockTimeFormat(_ format: String) {
                                                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                 customText: settings.canvasText, settings: settings,
                                                 codex: usage, qwenQuota: qwenQuota,
+            grokBot: grokBotUsage, cloudflare: cloudflareUsage,
                                                 sspaiArticles: sspaiDisplayArticles(for: .oracle),
                                                 ha: haSnapshot(forCanvas: .oracle),
                                                 formlabsItems: formlabsCanvasItems(),
@@ -8235,6 +8264,7 @@ public func setClockTimeFormat(_ format: String) {
                                                  nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                  customText: settings.canvasText, settings: settings,
                                                  codex: usage, qwenQuota: qwenQuota,
+            grokBot: grokBotUsage, cloudflare: cloudflareUsage,
                                                  sspaiArticles: sspaiDisplayArticles(for: .excerpt),
                                                  ha: haSnapshot(forCanvas: .excerpt),
                                                  formlabsItems: formlabsCanvasItems(),
@@ -11694,6 +11724,7 @@ public func setClockTimeFormat(_ format: String) {
                     modules: oracle ? copy.oracleCanvasModuleList : copy.excerptCanvasModuleList,
                     system: system, nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                     customText: copy.canvasText, settings: copy, codex: usage, qwenQuota: qwenQuota,
+                    grokBot: grokBotUsage, cloudflare: cloudflareUsage,
                     sspaiArticles: Array(sspaiArticles.prefix(max(0, min(6, oracle ? copy.oracleSspaiCount : copy.excerptSspaiCount)))),
                     ha: haSnapshot.selecting(entityIDs: oracle ? copy.oracleCanvasHAEntityIDs : copy.excerptCanvasHAEntityIDs),
                     formlabsItems: formlabsCanvasItems(), now: Date(), width: width, height: height, palette: palette,
@@ -11771,6 +11802,10 @@ public func setClockTimeFormat(_ format: String) {
             return try ScreenRenderer.renderCustomImage(path: path, settings: settings)
         case .qwenWork:
             return try ScreenRenderer.renderQwenWork(qwenQuota, settings: settings)
+        case .grokBot:
+            return try ScreenRenderer.renderGrokBot(grokBotUsage, settings: settings)
+        case .cloudflare:
+            return try ScreenRenderer.renderCloudflare(cloudflareUsage, settings: settings)
         case .homeAssistant:
             let snapshot = previewSettings == nil ? haSnapshot : haSnapshot.selecting(
                 entityIDs: Self.haCardPerKeyboardEnabled ? settings.haCardEntityIDs : settings.haEntities)
@@ -11827,6 +11862,7 @@ public func setClockTimeFormat(_ format: String) {
                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                 customText: settings.canvasText, settings: settings,
                 codex: usage, qwenQuota: qwenQuota,
+            grokBot: grokBotUsage, cloudflare: cloudflareUsage,
                 sspaiArticles: sspaiDisplayArticles(for: .keyboard),
                 ha: previewSettings == nil ? haSnapshot(forCanvas: .keyboard)
                     : haSnapshot.selecting(entityIDs: settings.canvasHAEntityIDs),

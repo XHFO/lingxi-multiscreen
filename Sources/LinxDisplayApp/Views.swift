@@ -98,6 +98,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case appearance
     case qwenWork
     case codex
+    case grokBot
+    case cloudflare
     case pomodoro
     case system
     case nowPlaying
@@ -144,7 +146,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     /// 主导航项（外观与设置置于底部）
     static var mainItems: [Panel] {
-        [.qwenWork, .codex, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
+        [.qwenWork, .codex, .grokBot, .cloudflare, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
          .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather,
          .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
          .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5,
@@ -192,6 +194,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         switch displayMode {
         case .qwenWork: return .qwenWork
         case .codex: return .codex
+        case .grokBot: return .grokBot
+        case .cloudflare: return .cloudflare
         case .pomodoro: return .pomodoro
         case .systemMonitor: return .system
         case .nowPlaying: return .nowPlaying
@@ -223,6 +227,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .appearance: return "外观"
         case .qwenWork: return "千问办公额度"
         case .codex: return "Codex 用量"
+        case .grokBot: return "Grok Bot 用量"
+        case .cloudflare: return "Cloudflare 数据"
         case .pomodoro: return "番茄钟"
         case .system: return "系统监控"
         case .nowPlaying: return "正在播放"
@@ -273,6 +279,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .appearance: return "paintbrush"
         case .qwenWork: return "creditcard"
         case .codex: return "terminal"
+        case .grokBot: return "sparkles"
+        case .cloudflare: return "cloud.fill"
         case .pomodoro: return "timer"
         case .system: return "gauge"
         case .nowPlaying: return "music.note"
@@ -320,6 +328,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
              .aiMacBoardManagement, .c6Device: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
+        case .grokBot: return .grokBot
+        case .cloudflare: return .cloudflare
         case .pomodoro: return .pomodoro
         case .system: return .systemMonitor
         case .nowPlaying: return .nowPlaying
@@ -1369,6 +1379,8 @@ struct SettingsView: View {
         case .appearance: appearanceForm
         case .qwenWork: qwenWorkForm
         case .codex: codexForm
+        case .grokBot: grokBotForm
+        case .cloudflare: cloudflareForm
         case .pomodoro: pomodoroForm
         case .system: systemForm
         case .nowPlaying: nowPlayingForm
@@ -1719,6 +1731,8 @@ struct SettingsView: View {
             }
         case .qwenWork: qwenWorkForm
         case .codex: codexForm
+        case .grokBot: grokBotForm
+        case .cloudflare: cloudflareForm
         case .pomodoro: pomodoroForm
         case .systemMonitor: aiMacSystemForm(deviceID: deviceID)
         case .nowPlaying:
@@ -5570,14 +5584,6 @@ struct SettingsView: View {
         }
     }
 
-    /// 模块上下边距（紧凑度）滑杆绑定：显示手动设置值（0 = 自适应模式，滑杆归零即恢复自适应）
-    private func canvasMarginBinding(for module: CanvasModule) -> Binding<Double> {
-        Binding(
-            get: { Double(self.model.settings.manualCanvasMargin(for: module)) },
-            set: { self.model.settings.setCanvasMargin(Int($0), for: module) }
-        )
-    }
-
     /// 画板打印机模块的单个显示信息开关绑定（按画板归属读写：每台键盘/先知/摘录各自独立）
     private func canvasPrinterFieldBinding(_ module: CanvasModule, owner: AppModel.CanvasOwner,
                                            _ keyPath: WritableKeyPath<CanvasPrinterFields, Bool>) -> Binding<Bool> {
@@ -5656,26 +5662,18 @@ struct SettingsView: View {
     @ViewBuilder
     private func canvasModuleSettings(_ module: CanvasModule, owner: AppModel.CanvasOwner) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 7) {
+            if model.settings.manualCanvasMargin(for: module) > 0 {
                 HStack {
-                    Label("上下边距", systemImage: "arrow.up.and.down")
-                        .font(.system(size: 12, weight: .medium))
-                    HelpIcon(text: "0 为自适应；数值越大，模块越紧凑。自适应会按模块类型选择合适间距。")
+                    Text("此模块仍使用已保存的手动间距")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    if model.settings.manualCanvasMargin(for: module) == 0 {
-                        Text("自适应")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("\(model.settings.manualCanvasMargin(for: module))")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                    Button("改为自动") {
+                        model.settings.setCanvasMargin(0, for: module)
                     }
+                    .buttonStyle(.borderless)
                 }
-                Slider(value: canvasMarginBinding(for: module), in: 0...40, step: 1)
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.04)))
             switch module {
             case .clock, .date:
                 HStack(spacing: 4) {
@@ -5707,25 +5705,9 @@ struct SettingsView: View {
                         }
                     }
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text("歌名字号")
-                        HelpIcon(text: "画板内正在播放模块的字号；文字过宽时仍会自动收缩以保证完整显示。")
-                        Spacer()
-                        Text("\(model.settings.canvasNowPlayingTitleSize) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: model.canvasNowPlayingTitleSizeBinding, in: 7...24, step: 1)
-                    HStack {
-                        Text("歌手信息字号")
-                        Spacer()
-                        Text("\(model.settings.canvasNowPlayingArtistSize) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: model.canvasNowPlayingArtistSizeBinding, in: 6...20, step: 1)
-                }
+                Text("歌名和歌手会按模块宽度自动缩放，过长时换行或省略。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             case .image:
                 if owner == .keyboard {
                     Picker(selection: model.canvasImageModeBinding) {
@@ -5876,25 +5858,9 @@ struct SettingsView: View {
                 }
                 Slider(value: model.dynamicUploadBinding, in: 2...60, step: 1)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("歌名字号")
-                    HelpIcon(text: "推送到键盘的「正在播放」卡片字号；超宽时自动收缩以保证显示完整。")
-                    Spacer()
-                    Text("\(model.settings.nowPlayingTitleSize) pt")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Slider(value: model.nowPlayingTitleSizeBinding, in: 7...24, step: 1)
-                HStack {
-                    Text("歌手信息字号")
-                    Spacer()
-                    Text("\(model.settings.nowPlayingArtistSize) pt")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Slider(value: model.nowPlayingArtistSizeBinding, in: 6...20, step: 1)
-            }
+            Text("歌名和歌手会按屏幕宽度自动缩放；过长时换行，仍放不下再省略。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Toggle(isOn: model.nowPlayingFooterVisibleBinding) {
                 HStack(spacing: 4) {
                     Text("显示底部时间日期")
@@ -5902,25 +5868,9 @@ struct SettingsView: View {
                 }
             }
             if model.settings.nowPlayingFooterVisible {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text("时间字号")
-                        HelpIcon(text: "页脚时间与日期使用全局格式，可在「设置 → 时间与日期」调整。")
-                        Spacer()
-                        Text("\(model.settings.nowPlayingTimeSize) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: model.nowPlayingTimeSizeBinding, in: 10...40, step: 1)
-                    HStack {
-                        Text("日期字号")
-                        Spacer()
-                        Text("\(model.settings.nowPlayingDateSize) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: model.nowPlayingDateSizeBinding, in: 8...30, step: 1)
-                }
+                Text("底部时间与日期按默认字号自动适配宽度。格式在「设置 → 时间与日期」调整。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack(spacing: 4) {
                 Button("刷新") {
@@ -7882,21 +7832,76 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
+    private var grokBotForm: some View {
+        Section {
+            SecureField("Cursor 会话令牌（可选）", text: model.grokBotSessionTokenBinding)
+            Text("留空时会尝试读取本机尚未加密的 Cursor 登录。登录若已加密，请粘贴浏览器里的 WorkosCursorSessionToken。令牌只保存在本机，不会写入日志。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("这里显示的是 Cursor 账号上的 Grok Bot 每周额度，不是 Grok 网页或命令行的另一套用量。没有读到用量百分比时，卡片不会显示 0% 或 100%。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("刷新间隔", selection: model.refreshIntervalBinding) {
+                ForEach([60, 300, 600, 1800], id: \.self) { seconds in
+                    Text(Self.intervalTitle(seconds)).tag(seconds)
+                }
+            }
+            HStack {
+                Button("立即刷新") {
+                    Task { await model.refresh() }
+                }
+                Spacer()
+                Text(model.grokBotUsage.isAvailable
+                     ? "剩余 \(model.grokBotUsage.remainingPercent ?? 0)%"
+                     : (model.grokBotUsage.message.isEmpty ? "尚未读取" : model.grokBotUsage.message))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            if let plan = model.grokBotUsage.planLabel, !plan.isEmpty {
+                LabeledContent("套餐", value: plan)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var cloudflareForm: some View {
+        Section {
+            SecureField("Cloudflare API 令牌", text: model.cloudflareAPITokenBinding)
+            TextField("账号 ID（可选）", text: model.cloudflareAccountIDBinding)
+                .textFieldStyle(.roundedBorder)
+            Text("卡片显示今日（UTC）观测到的请求、带宽、缓存命中、威胁和 Workers 调用。这是分析数据，不是套餐剩余。读不到的字段显示「—」，没有权限的字段显示「无权限」，不会把缺失当成 0。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("刷新间隔", selection: model.refreshIntervalBinding) {
+                ForEach([60, 300, 600, 1800], id: \.self) { seconds in
+                    Text(Self.intervalTitle(seconds)).tag(seconds)
+                }
+            }
+            HStack {
+                Button("立即刷新") {
+                    Task { await model.refresh() }
+                }
+                Spacer()
+                Text(model.cloudflareUsage.showsMetrics
+                     ? "请求 \(model.cloudflareUsage.heroText)"
+                     : (model.cloudflareUsage.message.isEmpty ? "尚未读取" : model.cloudflareUsage.message))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var pomodoroForm: some View {
         Group {
             Section {
                 TextField("任务名称", text: model.taskNameBinding)
                     .textFieldStyle(.roundedBorder)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text("任务名字号")
-                        Spacer()
-                        Text("\(model.settings.pomodoroTaskFontSize) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: model.pomodoroTaskFontSizeBinding, in: 7...16, step: 1)
-                }
+                Text("任务名会按卡片宽度自动缩放，过长时收成省略号。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 editableMinutesRow("专注时长", binding: model.focusMinutesBinding)
                 editableMinutesRow("短休息", binding: model.shortBreakMinutesBinding)
                 editableMinutesRow("长休息", binding: model.longBreakMinutesBinding)
@@ -10227,6 +10232,18 @@ extension AppModel {
         return HexColor.string(from: red, green, blue)
     }
 
+    var grokBotSessionTokenBinding: Binding<String> {
+        Binding(get: { self.settings.grokBotSessionToken },
+                set: { self.settings.grokBotSessionToken = $0 })
+    }
+    var cloudflareAPITokenBinding: Binding<String> {
+        Binding(get: { self.settings.cloudflareAPIToken },
+                set: { self.settings.cloudflareAPIToken = $0 })
+    }
+    var cloudflareAccountIDBinding: Binding<String> {
+        Binding(get: { self.settings.cloudflareAccountID },
+                set: { self.settings.cloudflareAccountID = $0 })
+    }
     var codexCliPathBinding: Binding<String> {
         Binding(get: { self.settings.codexCliPath ?? "" },
                 set: {
