@@ -1922,7 +1922,7 @@ func testNowPlaying() throws {
     sizeSettings.nowPlayingTitleSize = 20
     sizeSettings.nowPlayingArtistSize = 16
     let sizeBig = try ScreenRenderer.renderNowPlaying(withArt, settings: sizeSettings)
-    check(sizeSmall.data != sizeBig.data, "歌名字号调整应改变渲染")
+    check(sizeSmall.data == sizeBig.data, "歌名字号滑杆不再改变渲染，改为自动适配")
     check(sizeBig.data.count <= ScreenRenderer.maximumFileSize, "大字号渲染大小")
 
     // 底部时间/日期：格式、字号自定义与隐藏布局
@@ -1933,7 +1933,7 @@ func testNowPlaying() throws {
     check(fmtResult.data != artResult.data, "底部时间/日期格式自定义应改变渲染")
     footerSettings.nowPlayingTimeSize = 36
     let bigTime = try ScreenRenderer.renderNowPlaying(withArt, settings: footerSettings)
-    check(bigTime.data != fmtResult.data, "底部时间字号调整应改变渲染")
+    check(bigTime.data == fmtResult.data, "底部时间字号滑杆不再改变渲染")
     footerSettings.nowPlayingTimeSize = 22
     footerSettings.nowPlayingFooterVisible = false
     let hiddenResult = try ScreenRenderer.renderNowPlaying(withArt, settings: footerSettings)
@@ -2026,8 +2026,8 @@ func testNowPlaying() throws {
     footerSettings.nowPlayingDateSize = 8
     let footerSmall = try ScreenRenderer.renderNowPlaying(.sample, settings: footerSettings)
     let labelSmall = footerLabelTop(footerSmall)
-    check(labelDefault > 0 && labelSmall > labelDefault + 8,
-          "字号调小后底部「当前时间」行应随之上移收紧（default=\(labelDefault) small=\(labelSmall)）")
+    check(labelDefault > 0 && labelSmall == labelDefault,
+          "底部时间字号改为自动适配后，滑杆不再移动页脚（default=\(labelDefault) small=\(labelSmall)）")
 
     // 进度合并：MediaRemote elapsed 停滞时保留本地推进值，防止进度条回跳
     let stale = NowPlayingInfo(title: "同一首歌", artist: "歌手", album: "专辑",
@@ -3147,7 +3147,7 @@ func testPraiseAndTaskFont() throws {
     let large = AppSettings(); large.pomodoroTaskFontSize = 16
     let rSmall = try ScreenRenderer.renderPomodoro(snap, settings: small)
     let rLarge = try ScreenRenderer.renderPomodoro(snap, settings: large)
-    check(rSmall.data != rLarge.data, "任务名字号 7/16 渲染应不同")
+    check(rSmall.data == rLarge.data, "任务名字号滑杆不再改变渲染，改为自动适配")
 
     // 设置往返
     let rt = AppSettings()
@@ -3474,11 +3474,11 @@ func testCanvasCustomization() throws {
     let npSizeBase = try render()
     s.canvasNowPlayingTitleSize = 18
     let npSizeTitle = try render()
-    check(npSizeBase.data != npSizeTitle.data, "画板歌名字号调整应改变渲染")
+    check(npSizeBase.data == npSizeTitle.data, "画板歌名字号滑杆不再改变渲染")
     s.canvasNowPlayingTitleSize = 12
     s.canvasNowPlayingArtistSize = 15
     let npSizeArtist = try render()
-    check(npSizeBase.data != npSizeArtist.data, "画板歌手字号调整应改变渲染")
+    check(npSizeBase.data == npSizeArtist.data, "画板歌手字号滑杆不再改变渲染")
 
     // 正在播放模块空间不足时自动转横向排布（侧边栏式封面居左）：
     // 高条带保持竖排大封面居中；多模块短条带自动横排、封面居左、中部无封面
@@ -6121,6 +6121,116 @@ func testUsageDataAggregator() async {
     print("  用量统一调取通过")
 }
 
+func testGrokBotAndCloudflareCards() async {
+    let payloadJSON = #"{"sub":"auth0|user_123"}"#.data(using: .utf8)!
+    let payload = payloadJSON.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    let jwt = "e30.\(payload).sig"
+    let cookie = GrokBotUsageClient.sessionCookieValue(from: jwt)
+    check(cookie?.contains("user_123%3A%3A") == true, "JWT 应转成账号 Cookie")
+    check(cookie?.contains(jwt) == true, "Cookie 保留原始 token")
+    let pasted = GrokBotUsageClient.sessionCookieValue(from: "WorkosCursorSessionToken=user::abc; Path=/")
+    check(pasted == "user%3A%3Aabc", "粘贴的 Cookie 去掉前缀并编码分隔符")
+    check(GrokBotUsageClient.sessionCookieValue(from: GrokBotUsageClient.sealedPrefix + "ciphertext") == nil,
+          "加密登录前缀不能当成可用令牌")
+
+    let liveBody = """
+    {"usagePercent":42.4,"hasNonZeroIncludedLimit":true,"grokPlanLabel":"Pro","availableBankedResetCount":2,"nextResetTimestampUtc":"2026-11-01T00:00:00Z"}
+    """.data(using: .utf8)!
+    let live = GrokBotUsageClient.interpret(statusCode: 200, body: liveBody, now: Date(timeIntervalSince1970: 1_700_000_000))
+    check(live.isAvailable, "完整周用量应可展示")
+    checkEqual(live.remainingPercent, 58 as Int?, "已用 42.4% 对应剩余 58%")
+    checkEqual(live.planLabel, "Pro", "套餐名称")
+    checkEqual(live.availableBankedResetCount, 2 as Int?, "可用重置次数")
+    check(live.resetDate != nil, "接口给出的重置时间应保留")
+
+    let missingPercent = """
+    {"hasNonZeroIncludedLimit":true,"grokPlanLabel":"Pro"}
+    """.data(using: .utf8)!
+    let unreadable = GrokBotUsageClient.interpret(statusCode: 200, body: missingPercent)
+    checkEqual(unreadable.state, .unreadable, "缺少 usagePercent 时不显示百分比")
+    check(unreadable.remainingPercent == nil, "缺少用量时不发明剩余百分比")
+
+    let pooled = """
+    {"usagePercent":10,"usesPooledEnterpriseAllowance":true,"hasNonZeroIncludedLimit":true}
+    """.data(using: .utf8)!
+    checkEqual(GrokBotUsageClient.interpret(statusCode: 200, body: pooled).state, .pooled,
+               "企业共享池不显示个人剩余")
+    let excluded = """
+    {"usagePercent":0,"includedLimitZero":true,"hasNonZeroIncludedLimit":false}
+    """.data(using: .utf8)!
+    let notIncluded = GrokBotUsageClient.interpret(statusCode: 200, body: excluded)
+    checkEqual(notIncluded.state, .notIncluded, "套餐不含额度时不画进度")
+    check(notIncluded.remainingPercent == nil, "不含额度时不把 0 当成剩余")
+    let zeroResets = """
+    {"usage_percent":15,"has_non_zero_included_limit":true,"available_banked_reset_count":0}
+    """.data(using: .utf8)!
+    let noReset = GrokBotUsageClient.interpret(statusCode: 200, body: zeroResets)
+    check(noReset.isAvailable && noReset.resetDate == nil, "没有重置时间字段时不推算下周")
+    check(noReset.availableBankedResetCount == nil, "0 次可用重置不展示")
+    checkEqual(GrokBotUsageClient.interpret(statusCode: 401, body: Data("{}".utf8)).state, .unauthorized,
+               "401 视为登录失效")
+
+    let graphql = """
+    {"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[{"sum":{"requests":1200}},{"sum":{"requests":40}}]}],"zones":[{"httpRequests1dGroups":[{"sum":{"requests":20000,"bytes":1048576,"cachedRequests":5000,"threats":3}}]}]}}}
+    """.data(using: .utf8)!
+    let parsed = try! JSONSerialization.jsonObject(with: graphql) as! [String: Any]
+    let cloud = CloudflareUsageClient.parseAnalytics(body: parsed, zoneCount: 2, accountName: "示例", now: Date(timeIntervalSince1970: 0))
+    checkEqual(cloud.state, .live, "分析数据解析为观测用量")
+    checkEqual(cloud.requests, 20000 as Double?, "站点请求按组合计")
+    checkEqual(cloud.workersRequests, 1240 as Double?, "Workers 调用按组合计")
+    checkEqual(cloud.threats, 3 as Double?, "威胁次数")
+    checkEqual(cloud.heroText, "2万", "请求数用紧凑中文单位")
+    checkEqual(cloud.text(for: .bytes), "1 MB", "带宽单位")
+    checkEqual(cloud.text(for: .cached), "25%", "缓存命中按请求占比")
+    let denied = """
+    {"errors":[{"message":"not authorized to access workers"}],"data":{"viewer":{"zones":[{"httpRequests1dGroups":[{"sum":{"requests":8,"bytes":10,"cachedRequests":0,"threats":0}}]}]}}}
+    """.data(using: .utf8)!
+    let partial = CloudflareUsageClient.parseAnalytics(
+        body: try! JSONSerialization.jsonObject(with: denied) as! [String: Any],
+        zoneCount: 1, accountName: nil)
+    checkEqual(partial.text(for: .workers), "无权限", "无权限字段不显示 0")
+    checkEqual(partial.heroText, "8", "有权限的请求数仍显示")
+
+    let settings = AppSettings()
+    let emptyGrok = try! ScreenRenderer.renderGrokBot(.notConfigured, settings: settings)
+    let liveGrok = try! ScreenRenderer.renderGrokBot(live, settings: settings)
+    check(emptyGrok.data != liveGrok.data, "未配置与真实周用量画面不同")
+    check(emptyGrok.data.count <= ScreenRenderer.maximumFileSize, "Grok 空状态不超过屏幕限制")
+    let emptyCloud = try! ScreenRenderer.renderCloudflare(.notConfigured, settings: settings)
+    let liveCloud = try! ScreenRenderer.renderCloudflare(cloud, settings: settings)
+    check(emptyCloud.data != liveCloud.data, "Cloudflare 空状态与观测数据画面不同")
+    checkEqual(liveCloud.image.width, 142, "Cloudflare 键盘卡宽度")
+    checkEqual(liveCloud.image.height, 428, "Cloudflare 键盘卡高度")
+    let square = ScreenRenderer.renderDeviceCanvas(
+        modules: [.cloudflare], system: .empty, nowPlaying: .placeholder,
+        pomodoro: PomodoroSnapshot(phase: .idle, effectivePhase: .focus, taskName: "",
+                                   remaining: 0, duration: 1500, completedFocusSessions: 0),
+        customText: "", settings: settings, cloudflare: cloud,
+        width: 240, height: 240, palette: settings.resolvedPalette, optimizeForEInk: false)
+    checkEqual(square.width, 240, "Cloudflare 方屏宽度")
+    check(CardCapabilityRegistry.modes(for: .keyboard).contains(.grokBot)
+          && CardCapabilityRegistry.modes(for: .keyboard).contains(.cloudflare),
+          "灵犀68 可以选择两张新卡片")
+    check(CardCapabilityRegistry.modes(for: .colorSquare, includesDeviceCanvas: false).contains(.grokBot)
+          && CardCapabilityRegistry.modes(for: .colorSquare, includesDeviceCanvas: false).contains(.cloudflare),
+          "方形彩屏沿用同一张用量卡片")
+
+    let agg = UsageDataAggregator(
+        fetchCodex: { _ in throw CodexError.notFound },
+        fetchQuota: { QwenWorkQuota.unavailable },
+        fetchGrokBot: { live },
+        fetchCloudflare: { .notConfigured })
+    let outcome = await agg.fetch(codexCliPath: nil)
+    check(outcome.usage == nil && outcome.grokBot == live && outcome.cloudflare == .notConfigured,
+          "单一来源失败不影响 Grok Bot 与 Cloudflare")
+    check(outcome.failures.contains { $0.hasPrefix("Codex：") }, "Codex 失败单独记录")
+    check(!outcome.failures.contains { $0.hasPrefix("Cloudflare：") }, "未配置不是失败")
+    print("  Grok Bot 与 Cloudflare 卡片通过")
+}
+
 // MARK: - AWTRIX NG 独立控制与中文点阵
 
 func testAWTRIXStandalone() throws {
@@ -6684,6 +6794,7 @@ Task { @MainActor in
         try testDevicePreviewCorners()
         try testColorWiFiScreenSelectionPolicy()
         await testUsageDataAggregator()
+        await testGrokBotAndCloudflareCards()
         try testNowPlaying()
         try await testNowPlayingRequestCoordination()
         testNowPlayingEventThrottleAndKeyboardTargets()

@@ -116,9 +116,12 @@ public enum ScreenRenderer {
                    accent: accent, colors: colors)
         drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
                  color: colors.borderCG)
-        drawText(ctx, snapshot.taskName.isEmpty ? "专注工作" : snapshot.taskName,
-                 size: CGFloat(settings.pomodoroTaskFontSize), bold: true, color: colors.primaryTextCG,
-                 in: rect(c.minX + 10, c.minY + 50, c.maxX - c.minX - 20, 34), align: .center)
+        let taskName = snapshot.taskName.isEmpty ? "专注工作" : snapshot.taskName
+        let taskWidth = max(c.maxX - c.minX - 20, 1)
+        drawText(ctx, taskName,
+                 size: adaptiveFontSize(taskName, maxSize: 13, minSize: 7, bold: true, maxWidth: taskWidth),
+                 bold: true, color: colors.primaryTextCG,
+                 in: rect(c.minX + 10, c.minY + 50, taskWidth, 34), align: .center)
 
         // 键盘番茄钟与电脑预览使用同一个可调间隔刻度，
         // 避免上传耗时使两端显示的倒计时不一致。
@@ -483,6 +486,8 @@ public enum ScreenRenderer {
                                     customText: String, settings: AppSettings,
                                     codex: UsageSnapshot = .empty,
                                     qwenQuota: QwenWorkQuota = .unavailable,
+                                    grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                    cloudflare: CloudflareUsageSnapshot = .notConfigured,
                                     sspaiArticles: [SspaiArticle] = [],
                                     ha: HASnapshot = .empty,
                                     formlabsItems: [FormlabsCanvasItem] = [],
@@ -590,7 +595,9 @@ public enum ScreenRenderer {
                 drawCanvasModule(ctx, module, band: bands[index], colors: colors,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota,
+                                 grokBot: grokBot, cloudflare: cloudflare,
+                                 sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
@@ -669,6 +676,7 @@ public enum ScreenRenderer {
             // 正在播放（含封面）需要更大高度：自适应/手动边距下都给予空间权重加成，
             // 避免封面被压得过小（仍不足时渲染层自动转横向排布）
             if m == .nowPlaying { return max(base * 1.4, 0.25) }
+            if m == .grokBot || m == .cloudflare { return max(base * 1.35, 0.3) }
             if m == .homeAssistant {
                 return base * homeAssistantCanvasHeightMultiplier(entityCount: haEntityCount)
             }
@@ -779,6 +787,8 @@ public enum ScreenRenderer {
                                           customText: String, settings: AppSettings,
                                           codex: UsageSnapshot = .empty,
                                           qwenQuota: QwenWorkQuota = .unavailable,
+                                          grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                          cloudflare: CloudflareUsageSnapshot = .notConfigured,
                                           sspaiArticles: [SspaiArticle] = [],
                                           ha: HASnapshot = .empty,
                                           formlabsItems: [FormlabsCanvasItem] = [],
@@ -868,7 +878,9 @@ public enum ScreenRenderer {
                 drawCanvasModule(ctx, module, band: bands[index], colors: canvasPalette,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota,
+                                 grokBot: grokBot, cloudflare: cloudflare,
+                                 sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
@@ -1660,6 +1672,8 @@ public enum ScreenRenderer {
                                          nowPlaying: NowPlayingInfo, pomodoro: PomodoroSnapshot,
                                          customText: String, settings: AppSettings,
                                          codex: UsageSnapshot, qwenQuota: QwenWorkQuota,
+                                         grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                         cloudflare: CloudflareUsageSnapshot = .notConfigured,
                                          sspaiArticles: [SspaiArticle], ha: HASnapshot, now: Date,
                                          formlabsItems: [FormlabsCanvasItem] = [],
                                          imageOverlayOnly: Bool = false,
@@ -2269,6 +2283,16 @@ public enum ScreenRenderer {
                               progress: qwenQuota.progress,
                               accent: accentOverride ?? colors.secondaryAccentCG, colors: colors,
                               showPercent: settings.qwenQuotaShowPercent)
+        case .grokBot:
+            drawGrokBotModule(ctx, band: band, snapshot: grokBot, colors: colors,
+                              accent: accentOverride ?? colors.accentCG, now: now,
+                              deviceCanvas: deviceCanvas,
+                              monochromeDeviceCanvas: monochromeDeviceCanvas)
+        case .cloudflare:
+            drawCloudflareModule(ctx, band: band, snapshot: cloudflare, colors: colors,
+                                 accent: accentOverride ?? colors.accentCG, now: now,
+                                 deviceCanvas: deviceCanvas,
+                                 monochromeDeviceCanvas: monochromeDeviceCanvas)
         case .network:
             let rowH = max(band.height / 2, 10)
             drawText(ctx, "↓ " + formatRate(system.downloadBytesPerSecond), size: typography.body, bold: true,
@@ -2362,7 +2386,7 @@ public enum ScreenRenderer {
 
                     // 歌名：自适应字号 + 断句换行（最多 2 行）；超长时不硬缩成小字，而是换行完整显示
                     let titleCapH = textAreaH * 0.6
-                    var titleSize = min(band.height * 0.36, CGFloat(settings.canvasNowPlayingTitleSize))
+                    var titleSize = min(band.height * 0.36, 12)
                     var titleLines: [String] = []
                     while titleSize >= 7 {
                         let wrapped = wrapText(title, maxWidth: textW, size: titleSize)
@@ -2384,7 +2408,7 @@ public enum ScreenRenderer {
                     let artistCapSize = max(titleSize * 0.72, 6)
                     var artistSize = min(artistCapSize,
                                          max(min(band.height * 0.24,
-                                                 CGFloat(settings.canvasNowPlayingArtistSize)), 6))
+                                                 9), 6))
                     var artistLines: [String] = []
                     while artistSize >= 6 {
                         let wrapped = wrapText(artist, maxWidth: textW, size: artistSize)
@@ -2455,12 +2479,12 @@ public enum ScreenRenderer {
                     }
                     let textTop = band.minY + 1 + coverSize + 2
                     let textBand = CGRect(x: band.minX, y: textTop, width: w, height: band.maxY - textTop)
-                    var ts = min(textBand.height * 0.5, CGFloat(settings.canvasNowPlayingTitleSize))
+                    var ts = min(textBand.height * 0.5, 12)
                     var tw = measureTextWidth(title, size: ts, bold: true)
                     if tw > w - 4 { ts = max(ts * (w - 4) / tw, 7); tw = measureTextWidth(title, size: ts, bold: true) }
                     drawText(ctx, title, size: ts, bold: true, color: primaryTextColor,
                              in: rect(band.minX, textTop, w, textBand.height * 0.55), align: .center)
-                    drawText(ctx, artist, size: max(min(textBand.height * 0.4, CGFloat(settings.canvasNowPlayingArtistSize)), 6), bold: false,
+                    drawText(ctx, artist, size: max(min(textBand.height * 0.4, 9), 6), bold: false,
                              color: secondaryTextColor,
                              in: rect(band.minX, textTop + textBand.height * 0.5, w, textBand.height * 0.5), align: .center)
                 }
@@ -2471,9 +2495,9 @@ public enum ScreenRenderer {
                 let h2 = max(band.height - h1, 6)
                 if Self.nowPlayingPrefersHorizontal(bandHeight: band.height, bandWidth: band.width,
                                                     title: title,
-                                                    titleSizeSetting: settings.canvasNowPlayingTitleSize) {
+                                                    titleSizeSetting: 12) {
                     var artistSize = max(min(band.height * 0.62,
-                                             CGFloat(settings.canvasNowPlayingArtistSize)), 6)
+                                             9), 6)
                     var artistW = measureTextWidth(artist, size: artistSize, bold: false)
                     let artistMaxW = w * 0.45
                     if artistW > artistMaxW {
@@ -2482,7 +2506,7 @@ public enum ScreenRenderer {
                     }
                     let titleMaxW = artist.isEmpty ? w : max(w - artistW - 8, 24)
                     var titleSize = max(min(band.height * 0.72,
-                                            CGFloat(settings.canvasNowPlayingTitleSize)), 7)
+                                            12), 7)
                     let titleW = measureTextWidth(title, size: titleSize, bold: true)
                     if titleW > titleMaxW {
                         titleSize = max(titleSize * titleMaxW / titleW, 7)
@@ -2500,13 +2524,13 @@ public enum ScreenRenderer {
                                  in: rect(band.maxX - artistW, textTop, artistW, glyphH), align: .right)
                     }
                 } else {
-                    var size = min(h1 * 0.75, CGFloat(settings.canvasNowPlayingTitleSize))
+                    var size = min(h1 * 0.75, 12)
                     if measureTextWidth(title, size: size, bold: true) > w - 4 {
                         size = max(size * (w - 4) / measureTextWidth(title, size: size, bold: true), 8)
                     }
                     drawText(ctx, title, size: size, bold: true, color: primaryTextColor,
                              in: rect(band.minX, band.minY, w, h1), align: .center)
-                    drawText(ctx, artist, size: max(min(h2 * 0.7, CGFloat(settings.canvasNowPlayingArtistSize)), 6), bold: false,
+                    drawText(ctx, artist, size: max(min(h2 * 0.7, 9), 6), bold: false,
                              color: secondaryTextColor,
                              in: rect(band.minX, band.minY + h1, w, h2), align: .center)
                 }
@@ -4546,12 +4570,13 @@ public enum ScreenRenderer {
                     }
                     continue
                 }
-                // 状态区宽：按状态文本自适应（右对齐贴右缘；最短 20、最长 55，保证名称区宽度）
+                // 状态区宽按文字收缩，上限约为整行的 58%，避免中等长度的值被固定 55px 截断。
+                let valueCap = max((contentX1 - contentX0) * 0.58, 20)
                 var vs: CGFloat = 11
-                while vs > 8 && measureTextWidth(value, size: vs, bold: true) > 55 {
+                while vs > 8 && measureTextWidth(value, size: vs, bold: true) > valueCap {
                     vs -= 0.5
                 }
-                let valueW = min(max(measureTextWidth(value, size: vs, bold: true) + 2, 20), 55)
+                let valueW = min(max(measureTextWidth(value, size: vs, bold: true) + 2, 20), valueCap)
                 // 名称区：左贴左缘，右侧为状态区预留（含 6pt 间距），两端对齐互不重叠
                 let nameMaxW = (contentX1 - contentX0) - valueW - 6
                 var nameSize: CGFloat = 10
@@ -5705,7 +5730,7 @@ public enum ScreenRenderer {
         let titleMaxW = c.maxX - c.minX - 20
         let titleLayout = nowPlayingTitleLines(title: info.title.isEmpty ? "未在播放" : info.title,
                                                maxWidth: titleMaxW,
-                                               maxSize: CGFloat(settings.nowPlayingTitleSize))
+                                               maxSize: 10)
         let extraTitleH: CGFloat = titleLayout.lines.count > 1 ? 14 : 0
         let infoTop = (footerVisible ? (top + 100) : (c.maxY - 15 - 70)) - extraTitleH
         let artSize: CGFloat = 92 - extraTitleH
@@ -5765,7 +5790,7 @@ public enum ScreenRenderer {
         // 信息区自上而下顺序排布：歌名块（可能两行）→ 歌手/专辑 → 进度条 → 时间，
         // 歌名折成两行时后续内容整体下移，不再被遮挡
         let subtitleY = infoTop + titleBlockH + 2
-        drawAdaptiveText(ctx, subtitle, maxSize: CGFloat(settings.nowPlayingArtistSize), minSize: 5.5,
+        drawAdaptiveText(ctx, subtitle, maxSize: 8, minSize: 5.5,
                          bold: false, color: colors.secondaryTextCG,
                          in: rect(c.minX + 10, subtitleY, c.maxX - c.minX - 20, 14), align: .center)
         // 进度条强调色：有封面时从封面主色生成（深色封面提亮、浅色封面加深），不跟随全局强调色
@@ -6008,8 +6033,8 @@ public enum ScreenRenderer {
                                         shadowAlpha: CGFloat = 0.55,
                                         shadowOffset: CGFloat = 0.9) {
         let bottom = c.maxY - 15
-        let preferredDateSize = CGFloat(settings.nowPlayingDateSize)
-        let preferredTimeSize = CGFloat(settings.nowPlayingTimeSize)
+        let preferredDateSize: CGFloat = 17
+        let preferredTimeSize: CGFloat = 22
         let footerTextWidth = max(c.maxX - c.minX - 10, 1)
         let timeText = clockTimeText(now, format: settings.timeFormat)
         let dateText = formatDate(now, settings.dateFormat)
@@ -6373,8 +6398,8 @@ public enum ScreenRenderer {
     private static func drawEmojiFooterBlur(_ ctx: CGContext, settings: AppSettings,
                                             now: Date, colors: ScreenPalette) {
         let bottom = CGFloat(height) - 15
-        let dateH = max(CGFloat(settings.nowPlayingDateSize) + 8, 18)
-        let timeH = max(CGFloat(settings.nowPlayingTimeSize) + 10, 24)
+        let dateH = max(17 + 8, 18)
+        let timeH = max(22 + 10, 24)
         let labelTop = bottom - dateH - timeH - 16
         let bandTop = labelTop - 36                       // 遮罩加大：淡入区在文字上方完成，覆盖更宽底部区域
         let bandH = CGFloat(height) - bandTop
@@ -7426,5 +7451,274 @@ public enum ScreenRenderer {
 
     private static func toGiB(_ bytes: UInt64) -> Double {
         Double(bytes) / 1024 / 1024 / 1024
+    }
+
+    // MARK: - Grok Bot / Cloudflare
+
+    public static func renderGrokBot(_ snapshot: GrokBotUsageSnapshot, settings: AppSettings,
+                                     now: Date = Date()) throws -> RenderResult {
+        let colors = settings.resolvedPalette
+        let ctx = createContext()
+        let safe = clampSafeArea(settings.safeAreaHeight)
+        let c = drawCanvas(ctx, safeArea: safe, colors: colors)
+        drawHeader(ctx, card: c, title: "GROK", badge: "每周",
+                   accent: colors.accentCG, colors: colors)
+        drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
+                 color: colors.borderCG)
+        let body = CGRect(x: c.minX + 8, y: c.minY + 46,
+                          width: c.width - 16, height: max(c.maxY - (c.minY + 54), 40))
+        drawGrokBotBody(ctx, snapshot: snapshot, in: body, colors: colors,
+                        accent: colors.accentCG, now: now)
+        return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    public static func renderCloudflare(_ snapshot: CloudflareUsageSnapshot, settings: AppSettings,
+                                        now: Date = Date()) throws -> RenderResult {
+        let colors = settings.resolvedPalette
+        let ctx = createContext()
+        let safe = clampSafeArea(settings.safeAreaHeight)
+        let c = drawCanvas(ctx, safeArea: safe, colors: colors)
+        let badge = "今日"
+        let badgeSize: CGFloat = 8
+        let badgeW = max(33, measureTextWidth(badge, size: badgeSize, bold: true) + 2)
+        let title = "CF 数据"
+        let titleX = c.minX + 22
+        let titleW = max(c.maxX - 10 - badgeW - titleX - 4, 36)
+        let dot = CGPoint(x: c.minX + 13.5, y: CGFloat(height) - (c.minY + 18.5))
+        ctx.setFillColor(colors.accentCG)
+        ctx.fillEllipse(in: CGRect(x: dot.x - 3.5, y: dot.y - 3.5, width: 7, height: 7))
+        drawAdaptiveText(ctx, title, maxSize: 8.5, minSize: 6, bold: true,
+                         color: colors.primaryTextCG,
+                         in: rect(titleX, c.minY + 8, titleW, 22), align: .left)
+        drawText(ctx, badge, size: badgeSize, bold: true, color: colors.accentCG,
+                 in: rect(c.maxX - 10 - badgeW, c.minY + 10, badgeW, 20), align: .right)
+        drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
+                 color: colors.borderCG)
+        let body = CGRect(x: c.minX + 8, y: c.minY + 46,
+                          width: c.width - 16, height: max(c.maxY - (c.minY + 54), 40))
+        drawCloudflareBody(ctx, snapshot: snapshot, in: body, colors: colors,
+                           accent: colors.accentCG, now: now)
+        return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    private static func drawGrokBotModule(_ ctx: CGContext, band: CGRect,
+                                          snapshot: GrokBotUsageSnapshot, colors: ScreenPalette,
+                                          accent: CGColor, now: Date,
+                                          deviceCanvas: Bool, monochromeDeviceCanvas: Bool) {
+        if deviceCanvas, !monochromeDeviceCanvas, band.width >= 180, band.height >= 180 {
+            drawSquareGrokBot(ctx, band: band, snapshot: snapshot, accent: accent,
+                              colors: colors, now: now)
+            return
+        }
+        if band.height >= 130 {
+            drawGrokBotBody(ctx, snapshot: snapshot, in: band.insetBy(dx: 4, dy: 2),
+                            colors: colors, accent: accent, now: now)
+            return
+        }
+        if snapshot.isAvailable, let remaining = snapshot.remainingPercent {
+            drawQuotaBand(ctx, band: band, label: "Grok", value: "\(remaining)%",
+                          progress: Double(remaining) / 100, accent: accent, colors: colors)
+        } else {
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未读取" : snapshot.message,
+                        maxSize: 11, minSize: 7, bold: true, color: colors.primaryTextCG,
+                        in: band.insetBy(dx: 4, dy: 2), maxLines: 3, align: .center)
+        }
+    }
+
+    private static func drawCloudflareModule(_ ctx: CGContext, band: CGRect,
+                                             snapshot: CloudflareUsageSnapshot, colors: ScreenPalette,
+                                             accent: CGColor, now: Date,
+                                             deviceCanvas: Bool, monochromeDeviceCanvas: Bool) {
+        if deviceCanvas, !monochromeDeviceCanvas, band.width >= 180, band.height >= 180 {
+            drawSquareCloudflare(ctx, band: band, snapshot: snapshot, accent: accent,
+                                 colors: colors, now: now)
+            return
+        }
+        if band.height >= 130 {
+            drawCloudflareBody(ctx, snapshot: snapshot, in: band.insetBy(dx: 4, dy: 2),
+                               colors: colors, accent: accent, now: now)
+            return
+        }
+        let value = snapshot.showsMetrics ? snapshot.heroText : "—"
+        drawQuotaBand(ctx, band: band, label: "请求", value: value,
+                      progress: 0, accent: accent, colors: colors)
+    }
+
+    private static func drawGrokBotBody(_ ctx: CGContext, snapshot: GrokBotUsageSnapshot,
+                                        in area: CGRect, colors: ScreenPalette,
+                                        accent: CGColor, now: Date) {
+        guard area.width > 20, area.height > 24 else { return }
+        let captionH: CGFloat = area.height >= 150 ? 18 : 0
+        if captionH > 0 {
+            drawText(ctx, "本周剩余", size: 10, bold: true, color: colors.secondaryTextCG,
+                     in: rect(area.minX, area.minY, area.width, captionH), align: .center)
+        }
+        let heroH = min(max(area.height * 0.28, 36), 78)
+        let hero = CGRect(x: area.minX, y: area.minY + captionH, width: area.width, height: heroH)
+        if snapshot.isAvailable, let remaining = snapshot.remainingPercent {
+            let heroText = "\(remaining)%"
+            drawAdaptiveText(ctx, heroText, maxSize: min(heroH * 0.72, 40), minSize: 16,
+                             bold: true, color: colors.primaryTextCG, in: rect(hero), align: .center)
+            let barY = hero.maxY + 2
+            if area.maxY - barY > 28 {
+                drawProgress(ctx, rect(area.minX + 4, barY, area.width - 8, 7),
+                             progress: Double(remaining) / 100, accent: accent, background: colors.borderCG)
+            }
+        } else {
+            drawAdaptiveText(ctx, "—", maxSize: min(heroH * 0.7, 36), minSize: 18,
+                             bold: true, color: colors.primaryTextCG,
+                             in: rect(hero.minX, hero.minY, hero.width, hero.height * 0.62), align: .center)
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未读取" : snapshot.message,
+                        maxSize: 10, minSize: 7, bold: false, color: colors.secondaryTextCG,
+                        in: CGRect(x: hero.minX, y: hero.minY + hero.height * 0.58,
+                                   width: hero.width, height: hero.height * 0.42),
+                        maxLines: 2, align: .center)
+        }
+        var rows: [(String, String)] = []
+        rows.append(("套餐", snapshot.planLabel ?? "—"))
+        if let reset = snapshot.resetDate {
+            rows.append(("重置", formatDate(reset, "M/d HH:mm")))
+        } else if snapshot.isAvailable {
+            rows.append(("重置", "未提供"))
+        }
+        if let banked = snapshot.availableBankedResetCount {
+            rows.append(("可用重置", "\(banked) 次"))
+        }
+        let rowsTop = hero.maxY + (snapshot.isAvailable ? 16 : 6)
+        let footH: CGFloat = area.height >= 170 ? 16 : 0
+        let rowsRect = CGRect(x: area.minX, y: rowsTop, width: area.width,
+                              height: max(area.maxY - rowsTop - footH, 0))
+        if rowsRect.height >= 18 {
+            drawMetricRows(ctx, rows: rows, in: rowsRect, colors: colors, accent: accent)
+        }
+        if footH > 0 {
+            let stamp = snapshot.sampledAt ?? now
+            drawAdaptiveText(ctx, "采样 \(formatDate(stamp, "HH:mm"))",
+                             maxSize: 8, minSize: 6, bold: false, color: colors.tertiaryTextCG,
+                             in: rect(area.minX, area.maxY - footH, area.width, footH), align: .center)
+        }
+    }
+
+    private static func drawCloudflareBody(_ ctx: CGContext, snapshot: CloudflareUsageSnapshot,
+                                           in area: CGRect, colors: ScreenPalette,
+                                           accent: CGColor, now: Date) {
+        guard area.width > 20, area.height > 24 else { return }
+        let captionH: CGFloat = area.height >= 140 ? 16 : 0
+        if captionH > 0 {
+            let caption = snapshot.accountName.map { "\($0) · \(CloudflareUsageSnapshot.windowLabel)" }
+                ?? CloudflareUsageSnapshot.windowLabel
+            drawAdaptiveText(ctx, caption, maxSize: 9, minSize: 7, bold: true,
+                             color: colors.secondaryTextCG,
+                             in: rect(area.minX, area.minY, area.width, captionH), align: .center)
+        }
+        let heroH = min(max(area.height * 0.24, 32), 70)
+        let hero = CGRect(x: area.minX, y: area.minY + captionH, width: area.width, height: heroH)
+        drawText(ctx, "请求", size: 9, bold: false, color: colors.tertiaryTextCG,
+                 in: rect(hero.minX, hero.minY, hero.width, 14), align: .center)
+        let heroValue = snapshot.showsMetrics ? snapshot.heroText : "—"
+        drawAdaptiveText(ctx, heroValue, maxSize: min(heroH * 0.62, 34), minSize: 14,
+                         bold: true, color: colors.primaryTextCG,
+                         in: rect(hero.minX, hero.minY + 14, hero.width, hero.height - 14), align: .center)
+        if !snapshot.showsMetrics {
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未读取" : snapshot.message,
+                        maxSize: 9, minSize: 7, bold: false, color: colors.secondaryTextCG,
+                        in: CGRect(x: area.minX, y: hero.maxY, width: area.width, height: 28),
+                        maxLines: 2, align: .center)
+        }
+        let noteH: CGFloat = area.height >= 160 ? 28 : 14
+        let rowsTop = hero.maxY + (snapshot.showsMetrics ? 6 : 30)
+        let rowsRect = CGRect(x: area.minX, y: rowsTop, width: area.width,
+                              height: max(area.maxY - rowsTop - noteH - 2, 18))
+        drawMetricRows(ctx, rows: snapshot.metricRows, in: rowsRect, colors: colors, accent: accent)
+        let zone = snapshot.zoneCount.map { "\($0) 个站点" } ?? "站点 —"
+        let stamp = snapshot.sampledAt.map { formatDate($0, "HH:mm") } ?? formatDate(now, "HH:mm")
+        let note = snapshot.showsMetrics
+            ? "\(zone) · \(stamp) · 观测用量"
+            : "\(zone) · 观测用量，不是套餐剩余"
+        drawWrapped(ctx, note, maxSize: 8, minSize: 6, bold: false, color: colors.tertiaryTextCG,
+                    in: CGRect(x: area.minX, y: area.maxY - noteH, width: area.width, height: noteH),
+                    maxLines: area.height >= 160 ? 2 : 1, align: .center)
+    }
+
+    private static func drawSquareGrokBot(_ ctx: CGContext, band: CGRect,
+                                          snapshot: GrokBotUsageSnapshot, accent: CGColor,
+                                          colors: ScreenPalette, now: Date) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+        drawText(ctx, "GROK BOT", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, 110, 23), align: .left)
+        drawAdaptiveText(ctx, "每周", maxSize: 10, minSize: 8, bold: true, color: accent,
+                         in: rect(inner.maxX - 58, inner.minY + 9, 46, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+        let body = CGRect(x: inner.minX + 8, y: inner.minY + 40,
+                          width: inner.width - 16, height: inner.height - 48)
+        drawGrokBotBody(ctx, snapshot: snapshot, in: body, colors: colors, accent: accent, now: now)
+    }
+
+    private static func drawSquareCloudflare(_ ctx: CGContext, band: CGRect,
+                                             snapshot: CloudflareUsageSnapshot, accent: CGColor,
+                                             colors: ScreenPalette, now: Date) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+        drawText(ctx, "CLOUDFLARE", size: 15, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, inner.width - 78, 23), align: .left)
+        drawAdaptiveText(ctx, "今日", maxSize: 10, minSize: 8, bold: true, color: accent,
+                         in: rect(inner.maxX - 52, inner.minY + 9, 40, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+        let body = CGRect(x: inner.minX + 8, y: inner.minY + 40,
+                          width: inner.width - 16, height: inner.height - 48)
+        drawCloudflareBody(ctx, snapshot: snapshot, in: body, colors: colors, accent: accent, now: now)
+    }
+
+    private static func drawMetricRows(_ ctx: CGContext, rows: [(String, String)],
+                                       in area: CGRect, colors: ScreenPalette, accent: CGColor) {
+        guard !rows.isEmpty, area.height > 8, area.width > 16 else { return }
+        let gap: CGFloat = area.height > 120 ? 4 : 2
+        let rowH = max((area.height - gap * CGFloat(rows.count - 1)) / CGFloat(rows.count), 14)
+        var y = area.minY
+        for (label, value) in rows {
+            if y + 12 > area.maxY { break }
+            let height = min(rowH, area.maxY - y)
+            let labelW = min(max(area.width * 0.42, 36), area.width * 0.5)
+            let valueX = area.minX + labelW + 4
+            let valueW = max(area.maxX - valueX, 20)
+            drawAdaptiveText(ctx, label, maxSize: min(height * 0.46, 12), minSize: 7,
+                             bold: false, color: colors.secondaryTextCG,
+                             in: rect(area.minX, y, labelW, height), align: .left)
+            drawAdaptiveText(ctx, value, maxSize: min(height * 0.55, 15), minSize: 8,
+                             bold: true, color: value == "无权限" ? colors.tertiaryTextCG : accent,
+                             in: rect(valueX, y, valueW, height), align: .right)
+            y += height + gap
+        }
+    }
+
+    private static func drawWrapped(_ ctx: CGContext, _ text: String, maxSize: CGFloat, minSize: CGFloat,
+                                    bold: Bool, color: CGColor, in area: CGRect, maxLines: Int,
+                                    align: NSTextAlignment) {
+        guard area.width > 8, area.height > 8, maxLines > 0 else { return }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        var size = maxSize
+        var lines = wrapText(cleaned, maxWidth: area.width, size: size, bold: bold)
+        while size > minSize, lines.count > maxLines {
+            size -= 0.5
+            lines = wrapText(cleaned, maxWidth: area.width, size: size, bold: bold)
+        }
+        let overflow = lines.count > maxLines
+        lines = Array(lines.prefix(maxLines))
+        if overflow, var last = lines.last {
+            if !last.hasSuffix("…") { last += "…" }
+            lines[lines.count - 1] = last
+        }
+        let lineH = min(area.height / CGFloat(lines.count), size * 1.3)
+        for (index, line) in lines.enumerated() {
+            drawText(ctx, line, size: size, bold: bold, color: color,
+                     in: rect(area.minX, area.minY + CGFloat(index) * lineH, area.width, lineH),
+                     align: align)
+        }
     }
 }
