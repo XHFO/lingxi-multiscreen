@@ -6,8 +6,10 @@ import LinxDisplayCore
 struct C6DeviceView: View {
     @ObservedObject var model: AppModel
     let deviceID: UUID
+    @Environment(\.controlCenterHasExternalPreview) private var hasExternalPreview
 
     private var isOfflinePreview: Bool { model.c6OfflineSimulationIDs.contains(deviceID) }
+    @State private var confirmOverride = false
     private var deviceName: String {
         model.settings.devices.first { $0.id == deviceID }?.name ?? C6ProjectResources.productName
     }
@@ -30,10 +32,41 @@ struct C6DeviceView: View {
                         .disabled(isOfflinePreview)
                     Label(model.c6SyncStatuses[deviceID] ?? "等待局域网连接", systemImage: "arrow.triangle.2.circlepath")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let conflict = model.c6SyncConflicts[deviceID] {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(conflict.message, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(conflict.kind == .homeAssistant
+                                 ? "Home Assistant 服务器地址与设备上保存的不一致。可保留设备配置，或用电脑端设备管理中的服务器覆盖设备。"
+                                 : "同一台打印机在两边绑定了不同数据源或云端账号。可保留设备配置，或用电脑端当前选择覆盖设备。")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Button("保留设备配置") {
+                                    model.resolveC6SyncConflictKeepDevice(deviceID: deviceID)
+                                }
+                                Button("用电脑端覆盖", role: .destructive) { confirmOverride = true }
+                                .disabled(isOfflinePreview)
+                            }
+                        }
+                        .padding(8)
+                        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    if let remote = model.c6SyncedConfigurations[deviceID] {
+                        Label(remote.localFirst
+                              ? "在线时：本地卡片优先（可与电脑推送混合轮转）；离线约 30 秒后仅本地轮询。"
+                              : "在线时：以电脑推送卡片为主；本地时钟/天气等仅在卡片管理启用时参与。离线约 30 秒后独立运行。",
+                              systemImage: remote.localFirst ? "square.stack.3d.up" : "desktopcomputer")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } header: {
                     HStack(spacing: 4) {
                         Text("电脑与设备同步")
-                        HelpIcon(text: "在侧边栏卡片页选择实体和打印机显示内容，在天气页设置城市。局域网连接后自动保存到这台 C6，电脑断开约 30 秒后独立显示。最多 6 个状态实体、3 台打印机；离线优先使用静态任务缩略图。")
+                        HelpIcon(text: "在侧边栏卡片页选择实体和打印机显示内容，在天气页设置城市。局域网连接后自动保存到这台 C6，电脑断开约 30 秒后独立显示。最多 6 个状态实体、3 台打印机；离线优先使用静态任务缩略图。若出现来源冲突，请在本页选择保留设备或覆盖，不会静默改写。")
                     }
                 }
                 C6StandaloneView(initialHost: model.aiMacScreenSettings(for: deviceID).host,
@@ -63,12 +96,17 @@ struct C6DeviceView: View {
                     }
                     C6ProjectGuideEntry()
                 }
+                if hasExternalPreview {
+                    Section("屏幕预览") { previewControls }
+                }
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(minWidth: 320, maxWidth: .infinity, alignment: .top)
 
-            Divider().padding(.vertical, 4)
-            ScrollView {
+            if !hasExternalPreview {
+              Divider().padding(.vertical, 4)
+              ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         Text("屏幕预览").font(.headline)
@@ -91,37 +129,53 @@ struct C6DeviceView: View {
                         }.frame(width: 240, height: 240)
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
                     }
-                    Button { refreshPreview() } label: { Label("刷新预览", systemImage: "arrow.clockwise") }
-                        .disabled(model.c6OfflineSimulationBusyIDs.contains(deviceID))
-                    Text(isOfflinePreview ? "读取设备实际画面，每 2 秒更新。" : "使用与设备推送相同的卡片渲染，不代表设备已接收。")
-                        .font(.callout)
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Divider()
-                    HStack(spacing: 4) {
-                        Toggle("模拟软件离线", isOn: Binding(
-                            get: { isOfflinePreview },
-                            set: { enabled in Task { await model.setC6OfflineSimulation(deviceID: deviceID, enabled: enabled) } }))
-                        HelpIcon(text: "仅暂停这台 C6 的软件画面、心跳与配置同步，保留 Wi-Fi 以及设备独立订阅。预览读取设备真实画面。关闭后恢复原数据源优先级并补发软件首帧，不影响其他设备，也不清除配置。此状态不保存；应用退出后，临时控制最多 45 秒自动失效。")
-                    }.disabled(model.c6OfflineSimulationBusyIDs.contains(deviceID))
-                    if model.c6OfflineSimulationBusyIDs.contains(deviceID) {
-                        ProgressView("正在切换运行方式…").controlSize(.small)
-                    }
-                    Label(model.aiMacScreenStatuses[deviceID] ?? "需要先连接并同步显示设置。", systemImage: "info.circle")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if let backendURL {
-                        Link(destination: backendURL) { Label("打开设备网页设置", systemImage: "arrow.up.right.square") }
-                    }
+                    previewControls
                 }.padding(20)
             }
             .frame(width: 300)
+            }
         }
         .padding(.bottom, 12)
       }
+        .confirmationDialog("用电脑端覆盖设备来源？", isPresented: $confirmOverride, titleVisibility: .visible) {
+            Button("覆盖并写入设备", role: .destructive) {
+                model.resolveC6SyncConflictUseDesktop(deviceID: deviceID)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将把电脑端当前的 Home Assistant / 打印机数据源写入这台 C6，并替换设备上冲突的来源。设备独有的时钟样式、休眠与离线轮询设置会尽量保留。")
+        }
         .task { model.refreshAIMacScreenPreview(deviceID: deviceID) }
         .task(id: model.c6OfflineSimulationIDs.contains(deviceID)) {
             while model.c6OfflineSimulationIDs.contains(deviceID) && !Task.isCancelled {
                 await model.refreshC6OfflinePreview(deviceID: deviceID)
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+            }
+        }
+    }
+
+    /// These controls remain available when the enclosing workspace owns the preview.
+    private var previewControls: some View {
+        Group {
+            Button { refreshPreview() } label: { Label("刷新预览", systemImage: "arrow.clockwise") }
+                .disabled(model.c6OfflineSimulationBusyIDs.contains(deviceID))
+            Text(isOfflinePreview ? "读取设备实际画面，每 2 秒更新。" : "使用与设备推送相同的卡片渲染，不代表设备已接收。")
+                .font(.callout)
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Divider()
+            HStack(spacing: 4) {
+                Toggle("模拟软件离线", isOn: Binding(
+                    get: { isOfflinePreview },
+                    set: { enabled in Task { await model.setC6OfflineSimulation(deviceID: deviceID, enabled: enabled) } }))
+                HelpIcon(text: "仅暂停这台 C6 的软件画面、心跳与配置同步，保留 Wi-Fi 以及设备独立订阅。预览读取设备真实画面。关闭后恢复原数据源优先级并补发软件首帧，不影响其他设备，也不清除配置。此状态不保存；应用退出后，临时控制最多 45 秒自动失效。")
+            }.disabled(model.c6OfflineSimulationBusyIDs.contains(deviceID))
+            if model.c6OfflineSimulationBusyIDs.contains(deviceID) {
+                ProgressView("正在切换运行方式…").controlSize(.small)
+            }
+            Label(model.aiMacScreenStatuses[deviceID] ?? "需要先连接并同步显示设置。", systemImage: "info.circle")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let backendURL {
+                Link(destination: backendURL) { Label("打开设备网页设置", systemImage: "arrow.up.right.square") }
             }
         }
     }

@@ -1428,7 +1428,7 @@ func testMigration() throws {
     // 模拟原版 (.NET/Avalonia) 的 PascalCase 设置文件
     let originalSettings = """
     {
-      "Endpoint": "http://192.168.100.170/image/upload",
+      "Endpoint": "http://192.0.2.170/image/upload",
       "CodexRefreshSeconds": 300,
       "DynamicUploadSeconds": 2,
       "SafeAreaHeight": 56,
@@ -1459,7 +1459,7 @@ func testMigration() throws {
 
     let store = SettingsStore(dataDirectory: base)
     let settings = store.load()
-    checkEqual(settings.endpoint, "http://192.168.100.170/image/upload", "迁移 endpoint")
+    checkEqual(settings.endpoint, "http://192.0.2.170/image/upload", "迁移 endpoint")
     checkEqual(settings.displayMode, .systemMonitor, "迁移显示模式（2=系统监控）")
     checkEqual(settings.cardTheme, .amberTerminal, "迁移主题（3=琥珀终端）")
     checkEqual(settings.jpegQuality, 94, "迁移 JPEG 质量")
@@ -1591,14 +1591,14 @@ func testQuotaLiveFetch() async {
 }
 
 func testEndpointBuilder() {
-    checkEqual(EndpointBuilder.host(from: "http://192.168.100.170/image/upload"),
-               "192.168.100.170", "提取主机")
+    checkEqual(EndpointBuilder.host(from: "http://192.0.2.170/image/upload"),
+               "192.0.2.170", "提取主机")
     checkEqual(EndpointBuilder.host(from: "http://192.168.1.5:8080/image/upload"),
                "192.168.1.5:8080", "提取主机含端口")
-    checkEqual(EndpointBuilder.endpoint(fromHost: "192.168.100.170"),
-               "http://192.168.100.170/image/upload", "IP 拼端点")
-    checkEqual(EndpointBuilder.endpoint(fromHost: "http://192.168.100.170/image/upload"),
-               "http://192.168.100.170/image/upload", "粘贴完整地址归一化")
+    checkEqual(EndpointBuilder.endpoint(fromHost: "192.0.2.170"),
+               "http://192.0.2.170/image/upload", "IP 拼端点")
+    checkEqual(EndpointBuilder.endpoint(fromHost: "http://192.0.2.170/image/upload"),
+               "http://192.0.2.170/image/upload", "粘贴完整地址归一化")
     checkEqual(EndpointBuilder.endpoint(fromHost: ""), "", "空输入")
     print("  键盘 IP 端点拼接通过")
 }
@@ -3881,7 +3881,7 @@ func testCanvasOracleExcerpt() async throws {
     rt.excerptCanvasModules = [CanvasModule.excerptText.rawValue, CanvasModule.clock.rawValue]
     rt.dotApiKey = "test-key"
     rt.dotDeviceId = "9C9E6E3B6E74"
-    rt.rand0IP = "192.168.100.170"
+    rt.rand0IP = "192.0.2.170"
     rt.oracleAutoPushEnabled = true
     rt.oracleAutoPushMinutes = 45
     rt.oracleBoardRotationEnabled = true
@@ -3898,7 +3898,7 @@ func testCanvasOracleExcerpt() async throws {
     checkEqual(decoded.excerptCanvasModuleList, [.excerptText, .clock], "摘录画板模块列表往返")
     checkEqual(decoded.dotApiKey, "test-key", "Dot API Key 往返")
     checkEqual(decoded.dotDeviceId, "9C9E6E3B6E74", "Dot 设备序列号往返")
-    checkEqual(decoded.rand0IP, "192.168.100.170", "Rand/0 IP 往返")
+    checkEqual(decoded.rand0IP, "192.0.2.170", "Rand/0 IP 往返")
     checkEqual(decoded.oracleAutoPushEnabled, true, "先知定时推送开关往返")
     checkEqual(decoded.oracleAutoPushMinutes, 45, "先知定时推送间隔往返")
     checkEqual(decoded.oracleBoardRotationEnabled, true, "先知画板轮换开关往返")
@@ -5179,13 +5179,16 @@ func testEmojiWallpaper() throws {
 
 func testDeviceManagement() throws {
     // 设备类型
-    checkEqual(DeviceType.allCases.count, 10, "设备类型数量")
+    checkEqual(DeviceType.allCases.count, 11, "设备类型数量")
+    checkEqual(DeviceType.readPico.rawValue, 10, "Pico 使用新增稳定设备类型")
+    check(DeviceType.readPico.isManagementOnly, "Pico 保持独立设备管理能力")
+    check(!DeviceType.readPico.isColorWiFiScreen, "Pico 不加入普通彩屏卡片推送")
     checkEqual(DeviceType.keyboard.title, "灵犀68 键盘", "设备类型标题-键盘")
     checkEqual(DeviceType.oracle.title, "口袋先知", "设备类型标题-先知")
     checkEqual(DeviceType.excerpt.title, "摘录", "设备类型标题-摘录")
     checkEqual(DeviceType.homeAssistant.title, "Home Assistant", "设备类型标题-HA")
     checkEqual(DeviceType.bambuLab.title, "Bambu Lab 打印机", "设备类型标题-Bambu")
-    checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "设备类型标题-AI Mac")
+    checkEqual(DeviceType.aiMacScreen.title, "ESP8266 天气时钟", "设备类型标题-AI Mac")
     checkEqual(DeviceType.awtrix.title, "AWTRIX NG", "设备类型标题-AWTRIX")
     checkEqual(DeviceType.m5Controller.title, "M5 StickS3 控制器", "设备类型标题-StickS3")
     check(DeviceType.m5Controller.isBeta, "StickS3 设备类型标记 Beta")
@@ -6444,7 +6447,7 @@ func testAWTRIXStandalone() throws {
 
     let settings = AppSettings()
     var persisted = AWTRIXSettings()
-    persisted.baseURL = "http://192.168.100.144"
+    persisted.baseURL = "http://192.0.2.144"
     persisted.appName = "lingxi_text"
     persisted.text = "黄悦博"
     persisted.palette = "Ocean"
@@ -6614,6 +6617,17 @@ Task { @MainActor in
             failures.forEach { print($0) }
             exit(failures.isEmpty ? 0 : 1)
         }
+        if CommandLine.arguments.contains("--control-center-only") {
+            testDeviceControlCenterPolicy()
+            try testDeviceControlCenterLayout()
+            testControlCenterHASelectionPolicy()
+            try await testNowPlayingControl()
+            testHASourcePreviewCachePolicy()
+            testMenuBarPreviewIsolation()
+            failures.forEach { print("失败：\($0)") }
+            print("Control center：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--menu-bar-only") {
             testMenuBarNamingPolicy()
             testMenuBarPreviewIsolation()
@@ -6666,6 +6680,10 @@ Task { @MainActor in
         try testDeviceManagement()
         try testPraiseAndTaskFont()
         try testSidebarSettings()
+        testDeviceControlCenterPolicy()
+        try testDeviceControlCenterLayout()
+        testControlCenterHASelectionPolicy()
+        testHASourcePreviewCachePolicy()
         testMenuBarNamingPolicy()
         testMenuBarPreviewIsolation()
         try testPomodoroCentering()
@@ -6685,6 +6703,7 @@ Task { @MainActor in
         try testColorWiFiScreenSelectionPolicy()
         await testUsageDataAggregator()
         try testNowPlaying()
+        try await testNowPlayingControl()
         try await testNowPlayingRequestCoordination()
         testNowPlayingEventThrottleAndKeyboardTargets()
         await testNowPlayingLiveFetch()
@@ -6729,9 +6748,9 @@ func testAIMacScreen() throws {
     checkEqual(AppSettings.deviceLimits[.aiMacScreen], aiProfile?.maximumInstances,
                "设备数量上限由能力目录统一提供")
     check(DeviceType.allCases.contains(.aiMacScreen), "AI Mac 小屏幕设备类型存在")
-    checkEqual(DeviceType.aiMacScreen.title, "AI Mac 小屏幕", "AI Mac 小屏幕设备标题")
+    checkEqual(DeviceType.aiMacScreen.title, "ESP8266 天气时钟", "AI Mac 小屏幕设备标题")
     checkEqual(ManagedDevice.defaultName(for: .aiMacScreen, index: 0),
-               "AI Mac 小屏幕 1", "AI Mac 小屏幕默认名称")
+               "小电视 1", "AI Mac 小屏幕默认名称")
     checkEqual(AIMacScreenDeviceSettings().mode, .canvas,
                "新 AI Mac 小屏幕默认进入彩色画板模式")
     check(AIMacScreenDeviceSettings().followSystemSleep,
@@ -6822,7 +6841,7 @@ func testAIMacScreen() throws {
     let scanned = AIMacScreenDiscovery.discoveredDevice(
         from: scanInfo, fallbackIP: "192.168.31.99")
     checkEqual(scanned?.ip, "192.168.31.88", "扫描结果优先使用设备自报 IP")
-    checkEqual(scanned?.displayName, "AI Mac 123456", "扫描结果生成易读设备名称")
+    checkEqual(scanned?.displayName, "小电视 123456", "扫描结果生成易读设备名称")
     checkEqual(scanned?.firmwareVersion, "0.8.1-wifi-portal-fix",
                "扫描结果保留固件版本")
     let wrongScreen = """

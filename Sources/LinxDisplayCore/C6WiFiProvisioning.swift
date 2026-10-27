@@ -5,8 +5,8 @@ public enum C6FlashNetworkMode: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .preserve: return "保留设备现有网络配置（无需密码）"
-        case .replace: return "写入新的 2.4 GHz Wi-Fi 配置"
+        case .preserve: return String(localized: "保留设备现有网络配置（无需密码）")
+        case .replace: return String(localized: "写入新的 2.4 GHz Wi-Fi 配置")
         }
     }
 }

@@ -9,7 +9,7 @@ public enum CardRenderingMode: String, CaseIterable, Identifiable, Codable, Send
 
     public var title: String {
         switch self {
-        case .classic: return "经典"
+        case .classic: return String(localized: "经典")
         case .liquidGlass: return "Liquid Glass"
         }
     }

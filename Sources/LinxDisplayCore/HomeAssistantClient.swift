@@ -60,9 +60,9 @@ public enum BambuCardLayout: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .standard: return "标准"
-        case .compact: return "紧凑"
-        case .large: return "大字"
+        case .standard: return String(localized: "标准")
+        case .compact: return String(localized: "紧凑")
+        case .large: return String(localized: "大字")
         }
     }
 }
@@ -76,8 +76,8 @@ public enum BambuThemeAccent: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .global: return "跟随全局"
-        case .bambuLab: return "Bambu Lab 强调色"
+        case .global: return String(localized: "跟随全局")
+        case .bambuLab: return String(localized: "Bambu Lab 强调色")
         }
     }
 }
@@ -91,8 +91,8 @@ public enum BambuImageSource: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .camera: return "摄像头"
-        case .taskCover: return "任务图片"
+        case .camera: return String(localized: "摄像头")
+        case .taskCover: return String(localized: "任务图片")
         }
     }
 }
@@ -106,8 +106,8 @@ public enum BambuTimeDisplayMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .remaining: return "剩余时间"
-        case .endTime: return "结束时间"
+        case .remaining: return String(localized: "剩余时间")
+        case .endTime: return String(localized: "结束时间")
         }
     }
 }

@@ -1,0 +1,8 @@
+"NSInputMonitoringUsageDescription" = "Used to receive Linx68 Fn + knob events and, when you enable it, turn them into manual page turns.";
+"NSLocalNetworkUsageDescription" = "Used to connect to devices on your local network, and—when you turn it on—to let your phone scan a code for WeChat Reading authorization.";
+"NSLocationWhenInUseUsageDescription" = "Used only during flashing/Wi‑Fi setup to read nearby 2.4 GHz Wi‑Fi names so you can pick an SSID. Location is not collected, stored, or uploaded.";
+"NSLocationUsageDescription" = "Used only during flashing/Wi‑Fi setup to read nearby 2.4 GHz Wi‑Fi names so you can pick an SSID. Location is not collected, stored, or uploaded.";
+"NSBluetoothAlwaysUsageDescription" = "Used to connect to an M5Stack StickS3 controller over Bluetooth for shake-to-turn-page and button device switching.";
+"NSBluetoothPeripheralUsageDescription" = "Used to connect to an M5Stack StickS3 controller over Bluetooth for shake-to-turn-page and button device switching.";
+"CFBundleDisplayName" = "Multiscreen Linx 2.0 Beta";
+"CFBundleName" = "Multiscreen Linx 2.0 Beta";

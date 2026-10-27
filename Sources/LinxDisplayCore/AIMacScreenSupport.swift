@@ -18,11 +18,11 @@ public enum AIMacScreenContentMode: String, CaseIterable, Codable, Identifiable 
 
     public var title: String {
         switch self {
-        case .canvas: return "AI Mac 画板"
-        case .card: return "功能卡片"
-        case .dashboard: return "系统仪表盘"
-        case .clock: return "桌面时钟"
-        case .customImage: return "自定义图片"
+        case .canvas: return String(localized: "小电视画板")
+        case .card: return String(localized: "功能卡片")
+        case .dashboard: return String(localized: "系统仪表盘")
+        case .clock: return String(localized: "桌面时钟")
+        case .customImage: return String(localized: "自定义图片")
         }
     }
 }
@@ -418,7 +418,7 @@ public enum AIMacScreenSupportError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidHost: return "请先填写小屏幕的 IP 地址。"
-        case .invalidDevice: return "已连接，但目标不是兼容的 AI Mac 240×240 固件。"
+        case .invalidDevice: return "已连接，但目标不是兼容的 ESP8266 天气时钟 240×240 固件。"
         case .imageTooLarge(let size): return "图片压缩后仍有 \(size) 字节，超过旧固件 24KB 上限。"
         case .encodeFailed: return "无法生成 240×240 画面。"
         case .noCustomImage: return "请先选择一张图片。"

@@ -5,7 +5,7 @@ import CryptoKit
 
 public enum BambuDataSource: String, Codable, CaseIterable {
     case homeAssistant, localMQTT
-    public var title: String { self == .localMQTT ? "局域网 MQTT" : "Home Assistant" }
+    public var title: String { self == .localMQTT ? String(localized: "局域网 MQTT") : "Home Assistant" }
 }
 
 public struct BambuMQTTSettings: Codable, Equatable {
@@ -40,28 +40,12 @@ public struct BambuMQTTSettings: Codable, Equatable {
 }
 
 public enum BambuMQTTSecretStore {
-    private static let service = "net.xhfo.lingxi.bambu-mqtt"
+    private static let subdirectory = "bambu-mqtt-credentials"
     public static func read(deviceID: UUID) -> String {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: deviceID.uuidString,
-            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        SealedCredentialStore.read(account: deviceID.uuidString, subdirectory: subdirectory)
     }
     @discardableResult public static func save(_ value: String, deviceID: UUID) -> Bool {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: deviceID.uuidString]
-        if value.isEmpty {
-            let status = SecItemDelete(query as CFDictionary)
-            return status == errSecSuccess || status == errSecItemNotFound
-        }
-        let changes = [kSecValueData as String: Data(value.utf8)]
-        let status = SecItemUpdate(query as CFDictionary, changes as CFDictionary)
-        if status == errSecSuccess { return true }
-        guard status == errSecItemNotFound else { return false }
-        return SecItemAdd(query.merging(changes) { _, b in b } as CFDictionary, nil) == errSecSuccess
+        SealedCredentialStore.save(value, account: deviceID.uuidString, subdirectory: subdirectory)
     }
 }
 

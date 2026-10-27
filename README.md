@@ -4,34 +4,31 @@
 
 ## 2.0 开发测试分支
 
-本分支 `test/2.0-c6-alpha20` 基于正式版 1.5.5，保存 **2.0.0 测试版（31）** 的源码与内置通用 C6 **2.0.0-alpha.20** 固件，不是正式发布。稳定版继续位于 [`main`](https://github.com/XHFO/lingxi-multiscreen/tree/main) 与 [Releases](https://github.com/XHFO/lingxi-multiscreen/releases)。下方界面截图仍为已归档的历史正式版，不冒充本次测试版截图。
+当前进度：**2.0.0 测试版（build86，2026-10-27）**，开发源码位于 `test/2.0-c6-alpha20`。分支名沿用早期 C6 里程碑，当前已包含完整多设备软件、Pico 管理与中控面板。稳定版继续位于 [`main`](https://github.com/XHFO/lingxi-multiscreen/tree/main) 与 [Releases](https://github.com/XHFO/lingxi-multiscreen/releases)。下方历史界面截图来自 1.5.4，不代表当前测试版。
 
-- 新增独立的 Waveshare ESP32-C6-LCD-1.3 设备类型（240×240、4 MB），保留 ESP8266 AI Mac 的设备身份与固件边界。
-- 电脑推送与 C6 本地卡片统一管理显示、轮换和排序；侧边栏、菜单栏与 BOOT 翻页使用同一在线列表。
-- C6 时钟由固件本地校时、演算和渲染，沿用设备样式，不再由电脑推送时钟图片。需将设备更新至本分支内置的 alpha.20；预览读取当前设备真实画面。
-- 支持 C6 独立 Home Assistant、Bambu Lab 局域网 MQTT／HA 来源、Formlabs 云 API 与天气；电脑断开后恢复本地轮询。各设备、品牌、账号与数据源隔离，网页设置与电脑设置按实际变更合并。
-- 包含独立 Formlabs 专用固件的源码、网页及主机测试；该型号不包含通用 C6 的全部功能，不会自动替换软件内的通用固件。
+- **原生中控面板**：设备和数据源混合排列，可添加、隐藏、排序和自定义分组；支持 1×1、2×1、1×2、2×2、2×3 网格，自动回填空位并随窗口适配。
+- **设备详情与预览**：侧栏收起时从卡片展开悬浮详情，展开时进入常规详情；持续显示设备预览，Pico、口袋先知、摘录、键盘与 M5 使用对应外壳。
+- **共享数据源卡片**：正在播放包含上一曲、播放／暂停、下一曲与封面取色；Home Assistant 可选实体；打印机显示可用实况与任务照片；Cloudflare 和天气以原生图表展示。
+- **Pico 完整管理**：图书、字体、笔记、应用、画稿、设备设置、灵犀画板、图片锁屏、固件与备份集成到主程序。内置 Pico `0.39.0-dev68` 和九个 TF 应用包，包安装由用户明确触发。
+- **灵犀画板**：复用共享模块和独立轮播，支持原生 16 灰阶、横竖布局、USB 串口画板直传与局域网推送；文件管理保留独立的 TF 传输流程。
+- **C6 与既有设备**：保留通用 C6 `2.0.0-alpha.20` 的本地／电脑混合轮换和独立 Formlabs 固件边界，以及口袋先知、摘录、键盘、ESP8266、AWTRIX、M5 的原有能力。
+- **系统交互**：原生 Liquid Glass、中英文界面、统一主题与浮层背景；修复卡片圆角残影、配置入口混淆及网格空洞。
 
-构建测试 App：安装 Xcode Command Line Tools 后运行 `bash scripts/make-app.sh`，输出到 `dist/多屏灵犀 2.0 测试版.app`。测试版使用独立 Bundle ID 和数据目录，不导入正式版设备。仓库不包含用户设置、账号令牌、Wi-Fi 密码、本地回退包或构建缓存。
+构建完整测试 App：安装 Xcode Command Line Tools 后运行 `bash scripts/make-app.sh`，输出到 `dist/多屏灵犀 2.0 测试版.app`。最低 macOS 26，Apple 芯片。测试版使用独立 Bundle ID 和 `LinxDisplayBeta2` 数据目录；不会自动导入正式版设备。
 
-完整变更、构建及验证边界见 [C6 2.0 开发记录](docs/C6-STANDALONE-2.0.md)、[通用 C6 固件说明](Tools/WaveshareC6Firmware/README.md) 与 [Formlabs 专用固件说明](Tools/FormlabsC6Firmware/README.md)。自动化测试与包校验不等于物理屏幕、真实云账号或长时间稳定性验收。不要将实验固件的 HTTP 配置接口暴露到公网。
+构建缓存异常时可使用独立目录：`LINGXI_SWIFT_BUILD_PATH=/private/tmp/lingxi-build bash scripts/make-app.sh`。不要在同一构建目录同时运行多个 Swift 构建。
 
-## 未来规划
+[当前进度与验证记录](docs/2.0-PROGRESS.md) · [Pico 管理说明](docs/READ-PICO-MANAGER.md) · [Cloudflare 数据源](docs/CLOUDFLARE-ANALYTICS.md) · [C6 开发记录](docs/C6-STANDALONE-2.0.md)
 
-### 2.0：独立运行与混合卡片（开发测试中）
+## 后续验证
 
-当前测试进度：**App 2.0.0（build 31）／通用 C6 固件 2.0.0-alpha.20**。以下能力已进入测试分支，尚未作为正式版发布：
+2.0 仍为先行测试版。当前提交包含本地构建及自动化回归结果，真实账号权限、不同硬件版本、无线／USB 重连和长时间运行仍需持续验证。Pico 内置固件校验不等于本次已经刷入设备；请按对应型号与分区检查后操作。不要将实验固件的 HTTP 配置接口暴露到公网。
 
-- **C6 独立运行**：新增独立的 Waveshare ESP32-C6-LCD-1.3 设备类型，可脱离电脑获取 Home Assistant 实体、Bambu Lab 局域网 MQTT／HA、Formlabs 云 API 与低频更新的天气信息。
-- **电脑与本地卡片混合轮换**：统一管理显示、排序和轮换；时钟始终由设备本地实时渲染，电脑断开后恢复固件本地轮询，电脑独有卡片仍可在连接时使用。
-- **配置同步与设备隔离**：同步电脑与网页设置，保留网页侧未被电脑修改的选项；按设备、品牌和数据来源隔离配置，支持 USB 刷写与 OTA 更新。
-- **外观与显示控制**：增加可选主题、时钟与主数字样式、屏幕旋转及自动休眠设置，并提供设备实际画面预览。
-
-[查看 2.0 测试分支与构建说明](https://github.com/XHFO/lingxi-multiscreen/tree/test/2.0-c6-alpha20) · [查看开发记录与验证范围](https://github.com/XHFO/lingxi-multiscreen/blob/test/2.0-c6-alpha20/docs/C6-STANDALONE-2.0.md)
-
-自动化回归与内置固件资源校验已通过；alpha.20 的实际屏幕、在线混合轮换、按键翻页、断线恢复、真实云账号及长期稳定性仍待验收。当前入口提供开发源码与内置固件，不是正式安装包下载；稳定版继续使用 [Releases](https://github.com/XHFO/lingxi-multiscreen/releases) 中的 1.5.5。
+仓库同步开发源码、测试、内置资源和进度文档；不包含本机账号配置、令牌、资料库、用户截图、构建缓存或本地回退包。本次不创建正式 Release，稳定版仍为 1.5.5。
 
 ## 项目来源
+
+新增设备的 Mac 端开发沿用最新 2.0 测试主线，当前公开基线为 `test/2.0-c6-alpha20`。新增设备管理集成到完整主程序，保留已有设备和混合卡片能力；独立工作台包仅用于专项调试。小纸 Pico 的图书、应用、设备设置与画布管理见[使用与开发说明](docs/READ-PICO-MANAGER.md)。
 
 本项目最初基于 [NCZkevin/LinxDisplayWindows](https://github.com/NCZkevin/LinxDisplayWindows) 开发，将其移植为 macOS 原生 SwiftUI 版本，并在此基础上做了大量功能增加与重构（多设备管理、卡片管理、墨水屏画板、按键控制、口袋先知多画板等）。感谢原作者的贡献。
 

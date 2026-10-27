@@ -483,6 +483,7 @@ public enum ScreenRenderer {
                                     customText: String, settings: AppSettings,
                                     codex: UsageSnapshot = .empty,
                                     qwenQuota: QwenWorkQuota = .unavailable,
+                                    grokBot: GrokBotUsageSnapshot = .notConfigured,
                                     sspaiArticles: [SspaiArticle] = [],
                                     ha: HASnapshot = .empty,
                                     formlabsItems: [FormlabsCanvasItem] = [],
@@ -490,7 +491,8 @@ public enum ScreenRenderer {
                                     palette: ScreenPalette? = nil,
                                     printerFields: [Int: CanvasPrinterFields] = [:],
                                     artworkImage: CGImage? = nil,
-                                    bambuHeroLayout: Bool = true) throws -> RenderResult {
+                                    bambuHeroLayout: Bool = true,
+                                    readingExcerpt: ReadPicoReadingCard? = nil) throws -> RenderResult {
         let ctx = createContext()
         let safe = clampSafeArea(settings.safeAreaHeight)
         if modules == [.weather], let weather = settings.weatherSnapshot {
@@ -590,7 +592,7 @@ public enum ScreenRenderer {
                 drawCanvasModule(ctx, module, band: bands[index], colors: colors,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
@@ -604,7 +606,7 @@ public enum ScreenRenderer {
                                  singleModuleCanvas: modules.count == 1,
                                  // 键盘上的灵犀画板空间最窄：不再把“打印中/空闲/暂停”等
                                  // 状态作为超大背景字；独立卡片和另外两种设备画板不受影响。
-                                 hideBambuLargeStatusText: true)
+                                 hideBambuLargeStatusText: true, readingExcerpt: readingExcerpt)
             }
         }
         return try encode(ctx, quality: settings.jpegQuality)
@@ -779,6 +781,7 @@ public enum ScreenRenderer {
                                           customText: String, settings: AppSettings,
                                           codex: UsageSnapshot = .empty,
                                           qwenQuota: QwenWorkQuota = .unavailable,
+                                          grokBot: GrokBotUsageSnapshot = .notConfigured,
                                           sspaiArticles: [SspaiArticle] = [],
                                           ha: HASnapshot = .empty,
                                           formlabsItems: [FormlabsCanvasItem] = [],
@@ -797,7 +800,14 @@ public enum ScreenRenderer {
                                           bambuHeroLayout: Bool = false,
                                           showBambuCamera: Bool = true,
                                           nowPlayingSmartBackground: Bool = false,
-                                          nowPlayingShowCover: Bool? = nil) -> CGImage {
+                                          nowPlayingShowCover: Bool? = nil,
+                                          rasterScale: CGFloat = 1,
+                                          readingExcerpt: ReadPicoReadingCard? = nil,
+                                          nativeEInkLegibility: Bool = false) -> CGImage {
+        // Render familiar board coordinates directly into high-resolution pixels; never upscale a low-res bitmap.
+        // 同一模块布局在高分辨率上下文直接绘制，字体和矢量保留原生像素精度。
+        let scale = rasterScale.isFinite ? min(max(rasterScale, 1), 8) : 1
+        let logicalWidth = CGFloat(width) / scale, logicalHeight = CGFloat(height) / scale
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: width * 4,
                                   space: CGColorSpaceCreateDeviceRGB(),
@@ -832,15 +842,16 @@ public enum ScreenRenderer {
         }
         // 模块绘制助手统一按键盘画板高度（428）做 Skia→CG 翻转；
         // 平移 CTM 使同一套坐标正确落到当前尺寸的画布上
-        ctx.translateBy(x: 0, y: CGFloat(height) - CGFloat(ScreenRenderer.height))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: 0, y: logicalHeight - CGFloat(ScreenRenderer.height))
 
         let inset: CGFloat = 8
         let immersiveWeather = !optimizeForEInk && modules == [.weather]
-            && settings.weatherSnapshot != nil && height >= 160 && width >= 110
+            && settings.weatherSnapshot != nil && logicalHeight >= 160 && logicalWidth >= 110
         let region = immersiveWeather
-            ? CGRect(x: 0, y: 0, width: width, height: height)
-            : CGRect(x: inset, y: inset, width: CGFloat(width) - inset * 2,
-                     height: CGFloat(height) - inset * 2)
+            ? CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight)
+            : CGRect(x: inset, y: inset, width: logicalWidth - inset * 2,
+                     height: logicalHeight - inset * 2)
         if !optimizeForEInk, ColorCardSceneCapture.isActive, modules != [.image], !immersiveWeather {
             // 正方形画板原本没有整板卡片外壳。仅增加背后的玻璃层，保持所有
             // 模块的现有排版区域和字号，不挤占可用空间；纯图片画板不加遮罩。
@@ -865,10 +876,15 @@ public enum ScreenRenderer {
                 return CGColor(red: accent.0, green: accent.1, blue: accent.2, alpha: 1)
             }
             for (index, module) in modules.enumerated() {
+                if nativeEInkLegibility, module == .cloudflare {
+                    drawCloudflareAnalytics(ctx, band: bands[index], colors: canvasPalette,
+                                            settings: settings, now: now, nativeEInkPixelScale: scale)
+                    continue
+                }
                 drawCanvasModule(ctx, module, band: bands[index], colors: canvasPalette,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
@@ -885,7 +901,7 @@ public enum ScreenRenderer {
                                  bambuHeroLayout: bambuHeroLayout,
                                  showBambuCamera: showBambuCamera,
                                  singleModuleCanvas: modules.count == 1,
-                                 monochromeDeviceCanvas: optimizeForEInk)
+                                 monochromeDeviceCanvas: optimizeForEInk, readingExcerpt: readingExcerpt)
             }
         }
         var result = ctx.makeImage() ?? placeholderCanvas()
@@ -1660,6 +1676,7 @@ public enum ScreenRenderer {
                                          nowPlaying: NowPlayingInfo, pomodoro: PomodoroSnapshot,
                                          customText: String, settings: AppSettings,
                                          codex: UsageSnapshot, qwenQuota: QwenWorkQuota,
+                                         grokBot: GrokBotUsageSnapshot = .notConfigured,
                                          sspaiArticles: [SspaiArticle], ha: HASnapshot, now: Date,
                                          formlabsItems: [FormlabsCanvasItem] = [],
                                          imageOverlayOnly: Bool = false,
@@ -1678,7 +1695,8 @@ public enum ScreenRenderer {
                                          compactBambuSummary: Bool = false,
                                          singleModuleCanvas: Bool = false,
                                          hideBambuLargeStatusText: Bool = false,
-                                         monochromeDeviceCanvas: Bool = true) {
+                                         monochromeDeviceCanvas: Bool = true,
+                                         readingExcerpt: ReadPicoReadingCard? = nil) {
         let w = band.width
         let typography = canvasTypography()
         switch module {
@@ -2583,6 +2601,19 @@ public enum ScreenRenderer {
                          color: colors.secondaryTextCG,
                          in: rect(band.minX, band.minY, w, band.height), align: .center)
             }
+        case .grokBot:
+            drawGrokBotModule(ctx, band: band, snapshot: grokBot, colors: colors,
+                              accent: accentOverride ?? colors.accentCG, now: now,
+                              deviceCanvas: deviceCanvas, monochromeDeviceCanvas: monochromeDeviceCanvas)
+        case .cloudflare:
+            drawCloudflareAnalytics(ctx, band: band, colors: colors, settings: settings, now: now)
+        case .readingExcerpt:
+            if let readingExcerpt {
+                drawReadingExcerptBand(ctx, card: readingExcerpt, band: band, colors: colors)
+            } else {
+                drawQuoteBand(ctx, title: "阅读摘录", body: "请在小纸 Pico 的笔记与摘录中同步记录，并授权此设备显示。",
+                              band: band, colors: colors)
+            }
         case .oracleText:
             drawQuoteBand(ctx, title: "先知", body: rotatingOracleText(now), band: band, colors: colors)
         case .excerptText:
@@ -3054,6 +3085,690 @@ public enum ScreenRenderer {
                          in: rect(titleX, y + CGFloat(li) * lineH, titleW, lineH), align: .left)
             }
         }
+    }
+
+    /// Display-only whitespace projection; the Mac library retains original multiline text.
+    /// Separate regions keep an explicitly authorized annotation visible with a long quote.
+    private static func drawCloudflareAnalytics(_ ctx: CGContext, band: CGRect, colors: ScreenPalette,
+                                                settings: AppSettings, now: Date,
+                                                nativeEInkPixelScale: CGFloat? = nil) {
+        if let scale = nativeEInkPixelScale {
+            drawCloudflareNativeEInk(ctx, band: band, colors: colors, settings: settings,
+                                    now: now, pixelScale: scale)
+            return
+        }
+        guard band.width >= 16, band.height >= 12 else { return }
+        let language = settings.cloudflare.displayLanguage
+        func timestamp(_ value: Date, _ pattern: String) -> String {
+            let formatter = DateFormatter()
+            formatter.locale = language.locale; formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.dateFormat = pattern
+            return formatter.string(from: value)
+        }
+        guard let snapshot = settings.cloudflareSnapshot, snapshot.matches(settings.cloudflare) else {
+            drawQuoteBand(ctx, title: "Cloudflare", body: language.text("请配置网站统计并更新数据", "Choose a source and refresh"), band: band, colors: colors)
+            return
+        }
+        ctx.saveGState(); ctx.clip(to: rect(band)); defer { ctx.restoreGState() }
+        let name = settings.cloudflare.hostname.isEmpty ? settings.cloudflare.zoneName : settings.cloudflare.hostname
+        let title = name.isEmpty ? "Cloudflare" : settings.cloudflare.domainLetterCase.display(name)
+        let refreshMinutes = min(max(settings.cloudflare.refreshMinutes, 5), 60)
+        let stale = now.timeIntervalSince(snapshot.sampledAt) > Double(refreshMinutes * 120)
+        let requests = CloudflareAnalyticsSnapshot.countText(snapshot.requests, language: language)
+        let traffic = CloudflareAnalyticsSnapshot.bytesText(snapshot.bytes, language: language)
+        let accent = CGColor(red: 1, green: 97.0 / 255, blue: 1.0 / 255, alpha: 1)
+        let period = snapshot.period == .day ? language.text("24小时", "24H")
+            : (snapshot.period == .week ? language.text("7天", "7D") : language.text("30天", "30D"))
+        let requestLabel = language.text("请求", "REQ"), trafficLabel = language.text("流量", "TRAFFIC")
+        let cached = stale ? language.text(" · 缓存", " · CACHED") : ""
+        var y = band.minY
+        /// HIG roles on keyboard pixels: separate by weight + size + contrast + group whitespace.
+        /// Narrow tall cards (Lingxi68 ~142pt) must use compact type — height alone is not density.
+        enum CFTextRole { case headline, section, rowLabel, rowValue, chrome }
+        func roleColor(_ role: CFTextRole) -> CGColor {
+            switch role {
+            case .headline, .rowValue: return colors.primaryTextCG
+            case .section: return colors.secondaryTextCG
+            case .rowLabel, .chrome: return colors.tertiaryTextCG
+            }
+        }
+        func roleBold(_ role: CFTextRole) -> Bool {
+            switch role {
+            case .headline, .rowValue: return true
+            case .section, .rowLabel, .chrome: return false
+            }
+        }
+        func space(_ amount: CGFloat) {
+            guard amount > 0, y + amount <= band.maxY else { return }
+            y += amount
+        }
+        func line(_ text: String, size: CGFloat, role: CFTextRole, height: CGFloat) {
+            guard y + height <= band.maxY + 0.01 else { return }
+            drawText(ctx, text, size: size, bold: roleBold(role), color: roleColor(role),
+                     in: rect(band.minX, y, band.width, height), align: .left)
+            y += height
+        }
+        func drawAutoBlock(_ text: String, maxSize: CGFloat, minSize: CGFloat, role: CFTextRole,
+                           maxLines: Int, maxHeight: CGFloat) {
+            guard maxHeight >= minSize, band.width > 4, !text.isEmpty else { return }
+            let bold = roleBold(role)
+            let color = roleColor(role)
+            var size = maxSize
+            var lines: [String] = []
+            while size >= minSize {
+                let wrapped = wrapText(text, maxWidth: band.width, size: size, bold: bold)
+                let needed = CGFloat(min(wrapped.count, maxLines)) * size * 1.18
+                if wrapped.count <= maxLines, needed <= maxHeight + 0.5 {
+                    lines = wrapped
+                    break
+                }
+                size -= 0.5
+            }
+            if lines.isEmpty {
+                size = minSize
+                lines = Array(wrapText(text, maxWidth: band.width, size: size, bold: bold).prefix(maxLines))
+            }
+            let lineH = min(size * 1.18, maxHeight / CGFloat(max(lines.count, 1)))
+            let blockH = lineH * CGFloat(lines.count)
+            guard y + blockH <= band.maxY + 0.5 else { return }
+            for (index, value) in lines.enumerated() {
+                drawText(ctx, value, size: size, bold: bold, color: color,
+                         in: rect(band.minX, y + CGFloat(index) * lineH, band.width, lineH), align: .left)
+            }
+            y += blockH
+        }
+        /// Numbers dominate: value ≥ label+2pt, primary Semibold vs tertiary Regular.
+        func drawRegionRow(rank: Int, name: String, value: String, labelSize: CGFloat, valueSize: CGFloat, rowHeight: CGFloat) {
+            guard y + rowHeight <= band.maxY + 0.01, band.width > 20 else { return }
+            let row = CGRect(x: band.minX, y: y, width: band.width, height: rowHeight)
+            var vSize = valueSize
+            while vSize > 8, measureTextWidth(value, size: vSize, bold: true) > band.width * 0.46 {
+                vSize -= 0.5
+            }
+            let valueWidth = min(max(measureTextWidth(value, size: vSize, bold: true) + 3, 26), band.width * 0.5)
+            let labelWidth = max(band.width - valueWidth - 8, 20)
+            let label = "\(rank)  " + name
+            var lSize = min(labelSize, vSize - 2)
+            var labelLines = wrapText(label, maxWidth: labelWidth, size: lSize, bold: false)
+            while lSize > 6, (labelLines.count > 1 || CGFloat(labelLines.count) * lSize * 1.12 > rowHeight) {
+                lSize -= 0.5
+                labelLines = wrapText(label, maxWidth: labelWidth, size: lSize, bold: false)
+            }
+            labelLines = Array(labelLines.prefix(1)) // one line — keep rows calm
+            drawText(ctx, labelLines.first ?? label, size: lSize, bold: false, color: roleColor(.rowLabel),
+                     in: rect(row.minX, row.minY, labelWidth, rowHeight), align: .left)
+            drawText(ctx, value, size: vSize, bold: true, color: roleColor(.rowValue),
+                     in: rect(row.maxX - valueWidth, row.minY, valueWidth, rowHeight), align: .right)
+            y += rowHeight
+        }
+        /// Stacked metric: quiet caption label above dominant number (clearer than side-by-side on narrow cards).
+        func drawStackedMetric(_ label: String, _ value: String, labelSize: CGFloat, valueSize: CGFloat,
+                               labelH: CGFloat, valueH: CGFloat) {
+            guard y + labelH + valueH <= band.maxY + 0.01 else { return }
+            drawText(ctx, label, size: labelSize, bold: false, color: roleColor(.rowLabel),
+                     in: rect(band.minX, y, band.width, labelH), align: .left)
+            y += labelH
+            var size = valueSize
+            while size > 9, measureTextWidth(value, size: size, bold: true) > band.width {
+                size -= 0.5
+            }
+            drawText(ctx, value, size: size, bold: true, color: roleColor(.rowValue),
+                     in: rect(band.minX, y, band.width, valueH), align: .left)
+            y += valueH
+        }
+        func drawInlineMetric(_ label: String, _ value: String, labelSize: CGFloat, valueSize: CGFloat, height: CGFloat) {
+            guard y + height <= band.maxY + 0.01, band.width > 8 else { return }
+            let gap: CGFloat = 5
+            let labelWidth = min(measureTextWidth(label, size: labelSize, bold: false) + 2, band.width * 0.32)
+            drawText(ctx, label, size: labelSize, bold: false, color: roleColor(.rowLabel),
+                     in: rect(band.minX, y, labelWidth, height), align: .left)
+            let valueBox = rect(band.minX + labelWidth + gap, y, max(8, band.width - labelWidth - gap), height)
+            var size = valueSize
+            while size > 8, measureTextWidth(value, size: size, bold: true) > valueBox.width {
+                size -= 0.5
+            }
+            drawText(ctx, value, size: size, bold: true, color: roleColor(.rowValue),
+                     in: valueBox, align: .left)
+            y += height
+        }
+
+        // Ultra-dense strip: numbers only.
+        if band.height < 76 {
+            if band.height < 28 {
+                drawInlineMetric(requestLabel, requests,
+                                 labelSize: min(6.5, band.height * 0.35),
+                                 valueSize: min(10, band.height * 0.6),
+                                 height: min(14, band.height))
+            } else {
+                drawAutoBlock(title, maxSize: 8, minSize: 6, role: .headline,
+                              maxLines: 1, maxHeight: min(14, band.height * 0.28))
+                space(3)
+                drawInlineMetric(requestLabel, requests, labelSize: 6.5, valueSize: 10, height: 13)
+                if y + 12 <= band.maxY {
+                    drawInlineMetric(trafficLabel, traffic, labelSize: 6.5, valueSize: 9, height: 12)
+                }
+                if band.height >= 44, y + 10 <= band.maxY {
+                    space(2)
+                    line(period + cached + " · " + timestamp(snapshot.sampledAt, "HH:mm"),
+                         size: 6, role: .chrome, height: 10)
+                }
+            }
+            return
+        }
+
+        // Narrow keyboard cards are visually compact even when tall (e.g. 142×428).
+        let narrow = band.width < 200
+        let compact = narrow || band.height < 160
+        let dualMetrics = !compact && band.width >= 200
+
+        // 1) Chrome — Caption2, lowest contrast, tight.
+        line("CLOUDFLARE / " + period + cached, size: compact ? 6 : 7.5,
+             role: .chrome, height: compact ? 10 : 12)
+        space(compact ? 4 : 6)
+
+        // 2) Headline domain — dominant; cap lines on narrow so it doesn't fight metrics.
+        drawAutoBlock(title,
+                      maxSize: compact ? 11 : 20,
+                      minSize: compact ? 8 : 11,
+                      role: .headline,
+                      maxLines: compact ? 2 : 3,
+                      maxHeight: compact ? 28 : 52)
+        space(compact ? 8 : 10)
+
+        // 3) Primary metrics — numbers clearly larger/heavier than their labels.
+        if dualMetrics {
+            let metricWidth = (band.width - 16) / 2
+            let blockTop = y
+            for (index, metric) in [(requestLabel, requests), (trafficLabel, traffic)].enumerated() {
+                let x = band.minX + CGFloat(index) * (metricWidth + 16)
+                drawText(ctx, metric.0, size: 7, bold: false, color: roleColor(.rowLabel),
+                         in: rect(x, blockTop, metricWidth, 12), align: .left)
+                let compactValue = index == 0
+                    ? snapshot.requests.formatted(.number.notation(.compactName).precision(.significantDigits(3)).locale(language.locale)) : metric.1
+                let candidates = [metric.1, compactValue]
+                let value = candidates.first { measureTextWidth($0, size: 26, bold: true) <= metricWidth } ?? compactValue
+                let measured = measureTextWidth(value, size: 26, bold: true)
+                let size = min(26, max(14, 26 * metricWidth / max(measured, 1)))
+                drawText(ctx, value, size: size, bold: true, color: roleColor(.rowValue),
+                         in: rect(x, blockTop + 14, metricWidth, 32), align: .left)
+            }
+            y = blockTop + 50
+        } else if compact {
+            // Stacked: label above number — strongest scan path on 142pt-wide keyboard cards.
+            drawStackedMetric(requestLabel, requests, labelSize: 6.5, valueSize: 16, labelH: 10, valueH: 20)
+            space(6)
+            drawStackedMetric(trafficLabel, traffic, labelSize: 6.5, valueSize: 14, labelH: 10, valueH: 18)
+        } else {
+            drawInlineMetric(requestLabel, requests, labelSize: 8, valueSize: 20, height: 28)
+            space(4)
+            drawInlineMetric(trafficLabel, traffic, labelSize: 8, valueSize: 16, height: 24)
+        }
+
+        let footerHeight: CGFloat = compact ? 10 : 13
+        let chartHeight: CGFloat = (!compact && band.height >= 200 && snapshot.trend.count > 1)
+            ? min(56, max(30, band.height * 0.14)) : 0
+        let chartReserve = chartHeight > 0 ? chartHeight + 8 : 0
+        // Group break before ranking / map — whitespace is hierarchy.
+        space(compact ? 12 : 14)
+
+        let remaining = band.maxY - y - footerHeight - chartReserve
+        let captionHeight: CGFloat = compact ? 10 : 12
+        let rankingReserve: CGFloat = snapshot.regions.isEmpty ? 0 : (compact ? 12 : 14) + (compact ? 15 : 20)
+        if settings.cloudflare.presentation == .worldMap, band.width >= 120, remaining >= 52 + captionHeight + rankingReserve + 6 {
+            let maximumMapHeight = band.width * CGFloat(CloudflareWorldDots.rows) / CGFloat(CloudflareWorldDots.columns)
+            let mapHeight = min(maximumMapHeight, remaining - captionHeight - rankingReserve - 8)
+            let map = CGRect(x: band.minX, y: y, width: band.width, height: mapHeight)
+            CloudflareWorldMap.draw(ctx, in: rect(map), regions: snapshot.regions,
+                                    byTraffic: settings.cloudflare.rankByTraffic,
+                                    ink: colors.primaryTextCG, accent: accent)
+            y = map.maxY + 4
+            let coverage = CloudflareWorldMap.coverage(regions: snapshot.regions, byTraffic: settings.cloudflare.rankByTraffic)
+            let extra = coverage.unmapped > 0 ? language.text(" · 另有 \(coverage.unmapped) 个地区", " · +\(coverage.unmapped) REGIONS") : ""
+            drawAutoBlock(language.text("全球热区 · ", "GLOBAL / ") + (settings.cloudflare.rankByTraffic ? trafficLabel : requestLabel)
+                    + language.text("  低 → 高", "  LOW → HIGH") + extra,
+                 maxSize: 6.5, minSize: 6, role: .chrome,
+                 maxLines: 2, maxHeight: captionHeight + 8)
+            space(compact ? 8 : 10)
+        }
+
+        let rowH: CGFloat = compact ? 15 : 22
+        let headerH: CGFloat = compact ? 12 : 14
+        let rows = max(0, min(compact ? 4 : 5, Int((band.maxY - y - footerHeight - chartReserve - headerH) / rowH)))
+        if rows > 0 {
+            // Section: secondary Regular, clearly below headline, above quiet row labels.
+            line(language.text(settings.cloudflare.rankByTraffic ? "地区流量排行" : "地区请求排行", "TOP REGIONS"),
+                 size: compact ? 7 : 9, role: .section, height: headerH)
+            space(compact ? 3 : 4)
+            for (index, region) in snapshot.rankedRegions(byTraffic: settings.cloudflare.rankByTraffic).prefix(rows).enumerated() {
+                let text = settings.cloudflare.rankByTraffic
+                    ? CloudflareAnalyticsSnapshot.bytesText(region.bytes, language: language)
+                    : CloudflareAnalyticsSnapshot.countText(region.requests, language: language)
+                drawRegionRow(rank: index + 1, name: language.regionName(region.code), value: text,
+                              labelSize: compact ? 7 : 9,
+                              valueSize: compact ? 10 : 13,
+                              rowHeight: rowH)
+            }
+        }
+        if chartHeight > 0 {
+            let chart = CGRect(x: band.minX + 2, y: band.maxY - footerHeight - chartHeight - 4,
+                               width: max(0, band.width - 4), height: chartHeight)
+            let points = cloudflareTrendPoints(snapshot, chart: chart, byTraffic: settings.cloudflare.rankByTraffic)
+            if points.count > 1 {
+                ctx.setStrokeColor(accent); ctx.setLineWidth(1.4)
+                for (index, point) in points.enumerated() {
+                    let flipped = CGPoint(x: point.x, y: CGFloat(height) - point.y)
+                    if index == 0 { ctx.move(to: flipped) } else { ctx.addLine(to: flipped) }
+                }
+                ctx.strokePath()
+            }
+        }
+        y = band.maxY - footerHeight
+        line("Cloudflare · " + timestamp(snapshot.sampledAt, "HH:mm"), size: compact ? 5.5 : 7,
+             role: .chrome, height: footerHeight)
+    }
+
+    /// Pico typography is measured in final panel pixels, independent of the board's density setting.
+    /// Short multi-module bands reduce information rather than shrinking Chinese text below readable sizes.
+    /// Sizes below are physical panel pixels, independent of the board's logical raster scale.
+    /// Dense bands omit secondary details instead of reducing legibility on the e-paper panel.
+    private static func drawCloudflareNativeEInk(_ ctx: CGContext, band: CGRect, colors: ScreenPalette,
+                                                 settings: AppSettings, now: Date, pixelScale: CGFloat) {
+        let scale = max(1, pixelScale.isFinite ? pixelScale : 1)
+        let w = band.width * scale, h = band.height * scale
+        guard w >= 80, h >= 44 else { return }
+        let language = settings.cloudflare.displayLanguage
+        func timestamp(_ value: Date, _ pattern: String) -> String {
+            let formatter = DateFormatter()
+            formatter.locale = language.locale; formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.dateFormat = pattern
+            return formatter.string(from: value)
+        }
+        ctx.saveGState(); ctx.clip(to: rect(band)); defer { ctx.restoreGState() }
+        // Native panel tones stay on the 16-gray ramp. Whitespace and shared baselines carry
+        // the hierarchy; the pushed bitmap has no decorative cards or pretend touch controls.
+        let dark = (colors.primaryTextCG.components?.first ?? 0) > 0.5
+        let surface = CGColor(gray: dark ? 0 : 1, alpha: 1)
+        let panel = CGColor(gray: dark ? 17.0 / 255 : 238.0 / 255, alpha: 1)
+        let ink = CGColor(gray: dark ? 1 : 0, alpha: 1)
+        let secondary = CGColor(gray: dark ? 204.0 / 255 : 68.0 / 255, alpha: 1)
+        let divider = CGColor(gray: dark ? 85.0 / 255 : 187.0 / 255, alpha: 1)
+        let chartFill = CGColor(gray: dark ? 34.0 / 255 : 221.0 / 255, alpha: 1)
+        func bounds(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> CGRect {
+            rect(band.minX + x / scale, band.minY + y / scale, width / scale, height / scale)
+        }
+        func text(_ value: String, x: CGFloat = 0, y: CGFloat, width: CGFloat? = nil,
+                  size: CGFloat, bold: Bool = false, row: CGFloat,
+                  color: CGColor? = nil, align: NSTextAlignment = .left,
+                  fontName: String? = nil, tracking: CGFloat = 0) {
+            let available = min(width ?? (w - x), w - x)
+            guard x >= 0, available > 0, y >= 0, y + row <= h + 0.01 else { return }
+            drawGlyphCenteredText(ctx, value, size: size / scale, bold: bold, color: color ?? ink,
+                     in: bounds(x, y, available, row), align: align,
+                     fontName: fontName, tracking: tracking / scale)
+        }
+        func line(_ x1: CGFloat, _ y1: CGFloat, _ x2: CGFloat, _ y2: CGFloat,
+                  color: CGColor? = nil, thickness: CGFloat = 1.5) {
+            ctx.setStrokeColor(color ?? divider); ctx.setLineWidth(thickness / scale)
+            ctx.move(to: CGPoint(x: band.minX + x1 / scale, y: CGFloat(height) - band.minY - y1 / scale))
+            ctx.addLine(to: CGPoint(x: band.minX + x2 / scale, y: CGFloat(height) - band.minY - y2 / scale))
+            ctx.strokePath()
+        }
+        func box(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat,
+                 fill: CGColor, outline: Bool = false, radius: CGFloat = 18) {
+            let path = CGPath(roundedRect: bounds(x, y, width, height),
+                              cornerWidth: radius / scale, cornerHeight: radius / scale, transform: nil)
+            ctx.addPath(path); ctx.setFillColor(fill); ctx.fillPath()
+            if outline {
+                ctx.addPath(path); ctx.setStrokeColor(divider); ctx.setLineWidth(1.5 / scale); ctx.strokePath()
+            }
+        }
+        func middleDomain(_ value: String, width: CGFloat, size: CGFloat, tracking: CGFloat) -> String {
+            func measured(_ candidate: String) -> CGFloat {
+                // Match the wordmark's display face; keeping the recognizable domain suffix
+                // matters more than shrinking a long host until it becomes unreadable.
+                let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, size / scale, nil)
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: candidate,
+                    attributes: [.font: font, .kern: tracking / scale]))
+                return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) * scale
+            }
+            guard measured(value) > width else { return value }
+            let characters = Array(value)
+            let labels = value.split(separator: ".")
+            let commonSecondLevels: Set<String> = ["ac", "co", "com", "edu", "gov", "net", "org"]
+            let suffixLabels = labels.count >= 3 && labels.last?.count == 2
+                && commonSecondLevels.contains(String(labels[labels.count - 2]).lowercased()) ? 3 : 2
+            let recognizableSuffix = labels.suffix(suffixLabels).joined(separator: ".").count
+            var low = 0, high = max(0, characters.count - 1), best = "…"
+            while low <= high {
+                let count = (low + high) / 2
+                let trailing = min(count, max(recognizableSuffix, count / 2)), leading = count - trailing
+                let candidate = String(characters.prefix(leading)) + "…" + String(characters.suffix(trailing))
+                if measured(candidate) <= width - 2 {
+                    best = candidate; low = count + 1
+                } else { high = count - 1 }
+            }
+            return best
+        }
+        func number(_ value: Double, bytes: Bool, width: CGFloat, size: CGFloat) -> (String, CGFloat) {
+            let full = bytes ? CloudflareAnalyticsSnapshot.bytesText(value, language: language) : CloudflareAnalyticsSnapshot.countText(value, language: language)
+            let compact = bytes ? full : value.formatted(.number.notation(.compactName).precision(.significantDigits(3)).locale(language.locale))
+            for candidate in [full, compact, value.isFinite && value >= 0 ? String(format: "%.2e", value) : "—"] {
+                let measured = measureTextWidth(candidate, size: size / scale, bold: true) * scale
+                let fitted = measured > 0 ? min(size, size * max(1, width - 4) / measured) : size
+                if fitted >= min(size, 36) { return (candidate, fitted) }
+            }
+            return ("—", 32)
+        }
+        ctx.setFillColor(surface); ctx.fill(bounds(0, 0, w, h))
+        let name = settings.cloudflare.hostname.isEmpty ? settings.cloudflare.zoneName : settings.cloudflare.hostname
+        let title = name.isEmpty ? language.text("网站流量", "SITE ANALYTICS") : settings.cloudflare.domainLetterCase.display(name)
+        let fullPage = w >= 500 && h >= 480
+        let landscape = fullPage && w >= 850 && w > h
+        let titleSize: CGFloat = fullPage ? (landscape ? 64 : 76) : 36
+        let titleRow: CGFloat = fullPage ? (landscape ? 76 : 90) : 48
+        let titleY: CGFloat = fullPage ? 40 : 0
+        let periodCode = settings.cloudflare.period == .day ? language.text("24小时", "24H")
+            : (settings.cloudflare.period == .week ? language.text("7天", "7D") : language.text("30天", "30D"))
+        if fullPage {
+            text("CLOUDFLARE", y: 0, width: w * 0.65, size: 28, row: 34,
+                 color: secondary, fontName: "HelveticaNeue-Medium", tracking: 1.2)
+        }
+        if h >= 144 {
+            text(middleDomain(title, width: w, size: titleSize, tracking: fullPage ? -1.5 : -0.5), y: titleY,
+                 size: titleSize, bold: true, row: titleRow,
+                 fontName: "HelveticaNeue-Bold", tracking: fullPage ? -1.5 : -0.5)
+        }
+        guard let snapshot = settings.cloudflareSnapshot, snapshot.matches(settings.cloudflare) else {
+            if fullPage {
+                text(periodCode, x: w * 0.65, y: 0, width: w * 0.35, size: 28, row: 34,
+                     color: secondary, align: .right, fontName: "HelveticaNeue-Medium")
+                line(0, 156, w, 156)
+                text(language.text("暂无网站统计", "Awaiting site data"), y: 192, size: 40, bold: true, row: 62)
+                text(language.text("在多屏灵犀选择数据源并更新", "Choose a source in Lingxi, then refresh."), y: 274, size: 28, row: 44, color: secondary)
+                text(language.text("更新后，设备会保留两种方向的看板。", "Both display orientations are saved offline."), y: 320,
+                     size: 28, row: 44, color: secondary)
+            } else {
+                text(language.text("暂无网站统计", "Awaiting site data"), y: h >= 144 ? 52 : 0, size: 32, row: 44)
+            }
+            return
+        }
+        let stale = now.timeIntervalSince(snapshot.sampledAt) > Double(min(max(settings.cloudflare.refreshMinutes, 5), 60) * 120)
+        let period = periodCode + (stale ? language.text(" · 缓存", " · CACHED") : "")
+        let coverage = CloudflareWorldMap.coverage(regions: snapshot.regions, byTraffic: settings.cloudflare.rankByTraffic)
+        let byTraffic = settings.cloudflare.rankByTraffic
+        let metricName = byTraffic ? "流量" : "请求"
+        let requestLabel = language.text("请求", "REQ"), trafficLabel = language.text("流量", "TRAFFIC")
+        if !fullPage {
+            let top: CGFloat = h >= 144 ? 52 : 0
+            let labelWidth = min(language == .english ? 144 : 116, w * 0.44)
+            func summary(_ label: String, _ value: Double, bytes: Bool, y: CGFloat) {
+                text(label, y: y, width: labelWidth, size: 28, row: 44, color: secondary)
+                let result = number(value, bytes: bytes, width: w - labelWidth, size: 40)
+                text(result.0, x: labelWidth, y: y, width: w - labelWidth,
+                     size: result.1, bold: true, row: 44, align: .right)
+            }
+            summary(requestLabel, snapshot.requests, bytes: false, y: top)
+            summary(trafficLabel, snapshot.bytes, bytes: true, y: top + 48)
+            if h >= top + 144 { text(period, y: top + 100, size: 28, row: 40, color: secondary) }
+            if h >= 360, w >= 280 {
+                ranking(x: 0, y: top + 160, width: w, height: h - top - 212, maximumRows: 8)
+                text(language.text("更新 ", "UPDATED ") + timestamp(snapshot.sampledAt, "HH:mm"), y: h - 40,
+                     size: 28, row: 40, color: secondary)
+            }
+            return
+        }
+        text(period, x: w * 0.65, y: 0, width: w * 0.35, size: 28, row: 34,
+             color: secondary, align: .right, fontName: "HelveticaNeue-Medium")
+        let metricY: CGFloat = landscape ? 126 : 154
+        let metricHeight: CGFloat = landscape ? 104 : 124
+        let gap: CGFloat = 32, metricWidth = (w - gap) / 2
+        func metric(_ label: String, value: Double, bytes: Bool, x: CGFloat) {
+            text(label, x: x, y: metricY, width: metricWidth, size: 28, row: 34,
+                 color: secondary, fontName: "HelveticaNeue-Medium", tracking: 1.0)
+            let result = number(value, bytes: bytes, width: metricWidth, size: landscape ? 60 : 72)
+            let valueY = metricY + 42, valueRow: CGFloat = landscape ? 62 : 78
+            if bytes, let separator = result.0.lastIndex(of: " ") {
+                let numeral = String(result.0[..<separator]), unit = String(result.0[result.0.index(after: separator)...])
+                let unitSize: CGFloat = 28
+                let unitWidth = measureTextWidth(unit, fontName: "HelveticaNeue-Medium", size: unitSize / scale) * scale + 4
+                let numberWidth = max(1, metricWidth - unitWidth - 10)
+                let measured = measureTextWidth(numeral, fontName: "HelveticaNeue-Bold", size: result.1 / scale) * scale
+                let numberSize = max(36, min(result.1, result.1 * numberWidth / max(measured, 1)))
+                let visibleNumberWidth = measureTextWidth(numeral, fontName: "HelveticaNeue-Bold", size: numberSize / scale) * scale
+                text(numeral, x: x, y: valueY, width: min(numberWidth, visibleNumberWidth + 1), size: numberSize, bold: true, row: valueRow,
+                     fontName: "HelveticaNeue-Bold", tracking: -0.8)
+                // Match the unit's bottom to the number's visible baseline while keeping it
+                // readable in final panel pixels, rather than letting MB dominate the metric.
+                let numberFont = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, numberSize, nil)
+                let unitFont = CTFontCreateWithName("HelveticaNeue-Medium" as CFString, unitSize, nil)
+                let numberCap = CTFontGetCapHeight(numberFont), unitCap = CTFontGetCapHeight(unitFont)
+                let unitY = valueY + valueRow / 2 + (numberCap - unitCap) / 2 - 20
+                text(unit, x: x + visibleNumberWidth + 10, y: unitY, width: unitWidth,
+                     size: unitSize, row: 40, fontName: "HelveticaNeue-Medium")
+            } else {
+                text(result.0, x: x, y: valueY, width: metricWidth,
+                     size: result.1, bold: true, row: valueRow, fontName: "HelveticaNeue-Bold", tracking: -0.8)
+            }
+        }
+        metric(requestLabel, value: snapshot.requests, bytes: false, x: 0)
+        metric(trafficLabel, value: snapshot.bytes, bytes: true, x: metricWidth + gap)
+        let contentTop = metricY + metricHeight + (landscape ? 20 : 24)
+        line(0, contentTop - 12, w, contentTop - 12)
+        let footerY = h - 40
+        func map(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) {
+            guard width >= 300, height >= 188 else { return }
+            text(language.text("全球" + metricName + "分布", "GLOBAL / " + (byTraffic ? trafficLabel : requestLabel)), x: x, y: y, width: width,
+                 size: 28, row: 38)
+            CloudflareWorldMap.draw(ctx, in: bounds(x, y + 50, width, height - 102),
+                                    regions: snapshot.regions, byTraffic: byTraffic,
+                                    ink: ink, accent: ink, highContrast: true)
+            text(language.text("国家 / 地区聚合", "COUNTRY / REGION"), x: x, y: y + height - 42,
+                 width: width - 268, size: 28, row: 36, color: secondary)
+            text(language.text("低", "LOW"), x: x + width - 252, y: y + height - 46, width: 76,
+                 size: 28, row: 36, color: secondary, fontName: language == .english ? "HelveticaNeue-Medium" : nil)
+            for index in 0..<4 {
+                // Use the map's exact compositing path in both appearances before 16-gray quantization.
+                ctx.setFillColor(ink.copy(alpha: 0.74 + 0.26 * CGFloat(index) / 3) ?? ink)
+                ctx.fillEllipse(in: bounds(x + width - 176 + CGFloat(index) * 22, y + height - 32, 10, 10))
+            }
+            text(language.text("高", "HIGH"), x: x + width - 80, y: y + height - 46, width: 80,
+                 size: 28, row: 36, color: secondary, align: .right,
+                 fontName: language == .english ? "HelveticaNeue-Medium" : nil)
+        }
+        func ranking(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, maximumRows: Int) {
+            guard height >= 100 else { return }
+            text(language.text("地区排行", "TOP REGIONS"), x: x, y: y, width: width - 144, size: 28, row: 42)
+            text(byTraffic ? trafficLabel : requestLabel, x: x + width - 144, y: y, width: 144,
+                 size: 28, row: 42, color: secondary, align: .right, fontName: "HelveticaNeue-Medium")
+            let regions = snapshot.rankedRegions(byTraffic: byTraffic)
+            let rowHeight: CGFloat = landscape ? 52 : 56
+            let rowCount = min(maximumRows, max(0, Int((height - 44) / rowHeight)))
+            let peak = max(regions.map { byTraffic ? $0.bytes : $0.requests }.filter { $0.isFinite && $0 >= 0 }.max() ?? 0, 1)
+            if regions.isEmpty {
+                text(language.text("暂无地区数据", "No regional data"), x: x, y: y + 52, width: width, size: 28, row: 42, color: secondary)
+            }
+            for (index, region) in regions.prefix(rowCount).enumerated() {
+                let rowY = y + 44 + CGFloat(index) * rowHeight
+                let value = byTraffic ? region.bytes : region.requests
+                let formatted = number(value, bytes: byTraffic, width: min(164, width * 0.42), size: 32)
+                let valueWidth = max(88, measureTextWidth(formatted.0, size: formatted.1 / scale, bold: true) * scale + 4)
+                text(String(format: "%02d", index + 1), x: x, y: rowY, width: 36, size: 28, row: 40,
+                     color: secondary, fontName: "HelveticaNeue-Medium")
+                text(language.regionName(region.code), x: x + 44, y: rowY, width: max(24, width - 56 - valueWidth), size: 32, row: 40)
+                text(formatted.0, x: x + width - valueWidth, y: rowY, width: valueWidth,
+                     size: formatted.1, bold: true, row: 40, align: .right)
+                box(x + 44, rowY + 44, width - 44, 3, fill: panel, radius: 1.5)
+                if value.isFinite, value > 0 {
+                    // Bars compare against the top region; adaptive regional sums need not equal the total.
+                    box(x + 44, rowY + 44, (width - 44) * CGFloat(min(value / peak, 1)), 3,
+                        fill: ink, radius: 1.5)
+                }
+            }
+        }
+        func trend(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) {
+            guard height >= 150, width >= 300 else { return }
+            text(language.text(metricName + "趋势", "TREND"), x: x, y: y, width: width * 0.48, size: 28, row: 42)
+            text(byTraffic ? trafficLabel : requestLabel, x: x + width * 0.48, y: y, width: width * 0.52,
+                 size: 28, row: 42, color: secondary, align: .right, fontName: "HelveticaNeue-Medium")
+            let plot = CGRect(x: band.minX + (x + 2) / scale, y: band.minY + (y + 52) / scale,
+                              width: (width - 4) / scale, height: (height - 96) / scale)
+            let points = cloudflareTrendPoints(snapshot, chart: plot, byTraffic: byTraffic)
+            guard points.count > 1 else {
+                text(language.text("趋势数据不足", "Not enough trend data"), x: x, y: y + 52, width: width, size: 28, row: 42, color: secondary)
+                return
+            }
+            let baseline = CGFloat(Self.height) - plot.maxY
+            line(x, y + 52, x + width, y + 52, thickness: 1)
+            line(x, y + height - 44, x + width, y + height - 44, thickness: 1)
+            ctx.setFillColor(chartFill)
+            ctx.move(to: CGPoint(x: points[0].x, y: baseline))
+            for point in points { ctx.addLine(to: CGPoint(x: point.x, y: CGFloat(Self.height) - point.y)) }
+            ctx.addLine(to: CGPoint(x: points[points.count - 1].x, y: baseline)); ctx.closePath(); ctx.fillPath()
+            ctx.setStrokeColor(ink); ctx.setLineWidth(3 / scale); ctx.setLineJoin(.round)
+            for (index, point) in points.enumerated() {
+                let flipped = CGPoint(x: point.x, y: CGFloat(Self.height) - point.y)
+                if index == 0 { ctx.move(to: flipped) } else { ctx.addLine(to: flipped) }
+            }
+            ctx.strokePath()
+            let dateFormat = snapshot.period == .day ? "MM/dd HH:mm" : "MM/dd"
+            text(timestamp(snapshot.start, dateFormat), x: x, y: y + height - 36,
+                 width: width / 2, size: 28, row: 36, color: secondary)
+            text(timestamp(snapshot.end, dateFormat), x: x + width / 2, y: y + height - 36,
+                 width: width / 2, size: 28, row: 36, color: secondary, align: .right)
+        }
+        let available = footerY - contentTop - 16
+        if landscape, settings.cloudflare.presentation == .worldMap, available >= 300 {
+            let mapWidth = w * 0.60
+            map(x: 0, y: contentTop, width: mapWidth, height: available)
+            let sideX = mapWidth + 26, sideWidth = w - sideX
+            let trendHeight: CGFloat = available >= 300 ? 150 : 0
+            let rankHeight = available - (trendHeight > 0 ? trendHeight + 10 : 0)
+            ranking(x: sideX, y: contentTop, width: sideWidth, height: rankHeight, maximumRows: 5)
+            if trendHeight > 0 {
+                trend(x: sideX, y: contentTop + rankHeight + 10, width: sideWidth, height: trendHeight)
+            }
+        } else {
+            let trendHeight: CGFloat = available >= 430 ? 184 : 0
+            let mainHeight = available - (trendHeight > 0 ? trendHeight + 22 : 0)
+            if settings.cloudflare.presentation == .worldMap, mainHeight >= 340 {
+                let mapHeight = min(340, max(188, mainHeight - 290))
+                map(x: 0, y: contentTop, width: w, height: mapHeight)
+                ranking(x: 0, y: contentTop + mapHeight + 22, width: w,
+                        height: mainHeight - mapHeight - 22, maximumRows: 5)
+            } else {
+                ranking(x: 0, y: contentTop, width: w, height: mainHeight, maximumRows: 8)
+            }
+            if trendHeight > 0 { trend(x: 0, y: contentTop + mainHeight + 22, width: w, height: trendHeight) }
+        }
+        line(0, footerY - 4, w, footerY - 4)
+        text(language.text("Cloudflare · 更新 ", "Cloudflare · UPDATED ") + timestamp(snapshot.sampledAt, "HH:mm"),
+             y: footerY, width: coverage.unmapped > 0 ? w * 0.65 : w, size: 28, row: 40, color: secondary)
+        if coverage.unmapped > 0 {
+            text(language.text("另有 \(coverage.unmapped) 个地区", "+\(coverage.unmapped) REGIONS"), x: w * 0.65, y: footerY, width: w * 0.35,
+                 size: 28, row: 40, color: secondary, align: .right)
+        }
+    }
+
+    /// Time buckets retain their actual position; missing hours or days never collapse the time axis.
+    private static func cloudflareTrendPoints(_ snapshot: CloudflareAnalyticsSnapshot, chart: CGRect,
+                                              byTraffic: Bool) -> [CGPoint] {
+        let duration = snapshot.end.timeIntervalSince(snapshot.start)
+        guard duration.isFinite, duration > 0, chart.width > 0, chart.height > 0 else { return [] }
+        let formatter = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let values: [(Date, Double)] = snapshot.trend.compactMap { row in
+            let text = row.time.count == 10 ? row.time + "T00:00:00Z" : row.time
+            guard let time = formatter.date(from: text) ?? fractional.date(from: text),
+                  time >= snapshot.start, time <= snapshot.end else { return nil }
+            let value = byTraffic ? row.bytes : row.requests
+            return value.isFinite && value >= 0 ? (time, value) : nil
+        }.sorted { $0.0 < $1.0 }
+        let peak = max(values.map(\.1).max() ?? 0, 1)
+        return values.map { time, value in
+            CGPoint(x: chart.minX + chart.width * CGFloat(time.timeIntervalSince(snapshot.start) / duration),
+                    y: chart.maxY - chart.height * CGFloat(value / peak))
+        }
+    }
+
+    private static func drawReadingExcerptBand(_ ctx: CGContext, card: ReadPicoReadingCard,
+                                               band: CGRect, colors: ScreenPalette) {
+        func compact(_ text: String) -> String {
+            text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }
+        let quote = compact(card.body), annotation = card.note.map(compact) ?? ""
+        let source = compact(card.sourceTitle)
+        guard !annotation.isEmpty else {
+            drawQuoteBand(ctx, title: nil, body: quote, band: band, colors: colors, source: source)
+            return
+        }
+        // In very short combined-board rows, prioritize the authorized annotation
+        // rather than silently retaining only the first lines of its quotation.
+        if band.height < 26 {
+            drawReadingExcerptText(ctx, "批注：" + annotation, bounds: band,
+                                   color: colors.primaryTextCG, bold: false)
+            return
+        }
+        let sourceHeight: CGFloat = source.isEmpty || band.height < 58 ? 0 : min(max(band.height * 0.10, 10), 16)
+        let gap: CGFloat = band.height >= 58 ? 6 : 2
+        let contentHeight = max(band.height - sourceHeight - gap, 2)
+        let quoteHeight = contentHeight * 0.55
+        let noteHeight = contentHeight - quoteHeight
+        drawReadingExcerptText(ctx, quote,
+            bounds: CGRect(x: band.minX, y: band.minY, width: band.width, height: quoteHeight),
+            color: colors.primaryTextCG, bold: true)
+        let noteTop = band.minY + quoteHeight + gap
+        if gap >= 6 {
+            drawLine(ctx, x1: band.minX + 6, y1: noteTop - gap / 2,
+                     x2: band.maxX - 6, y2: noteTop - gap / 2, color: colors.borderCG)
+        }
+        drawReadingExcerptText(ctx, "批注：" + annotation,
+            bounds: CGRect(x: band.minX, y: noteTop, width: band.width, height: noteHeight),
+            color: colors.primaryTextCG, bold: false)
+        if sourceHeight > 0 {
+            drawAdaptiveText(ctx, "—— " + source, maxSize: min(sourceHeight * 0.62, 9), minSize: 5.5,
+                             bold: false, color: colors.secondaryTextCG,
+                             in: rect(band.minX, band.maxY - sourceHeight, band.width, sourceHeight), align: .center)
+        }
+    }
+
+    /// Bounded reading-card text only; explicit newlines were normalized above, so
+    /// CTLine cannot drop the next paragraph of an authorized annotation.
+    private static func drawReadingExcerptText(_ ctx: CGContext, _ text: String, bounds: CGRect,
+                                               color: CGColor, bold: Bool) {
+        guard !text.isEmpty, bounds.width > 0, bounds.height > 0 else { return }
+        let width = max(bounds.width - 8, 1)
+        let minimumSize = bounds.height < 11 ? max(3, bounds.height * 0.65) : CGFloat(6.5)
+        let maximumLines = max(1, min(12, Int(bounds.height / 9)))
+        let advance: CGFloat = 1.4
+        var size = min(22, max(minimumSize, bounds.height * 0.4))
+        var lines: [String] = []
+        while size >= minimumSize {
+            let wrapped = wrapText(text, maxWidth: width, size: size, bold: bold)
+            if wrapped.count <= maximumLines, CGFloat(wrapped.count) * size * advance <= bounds.height {
+                lines = wrapped; break
+            }
+            size -= 0.5
+        }
+        if lines.isEmpty {
+            size = minimumSize
+            let wrapped = wrapText(text, maxWidth: width, size: size, bold: bold)
+            let count = max(1, min(maximumLines, Int(bounds.height / (size * advance))))
+            lines = Array(wrapped.prefix(count))
+            if wrapped.count > count, !lines.isEmpty { lines[lines.count - 1] += "…" }
+        }
+        let lineHeight = min(size * advance, bounds.height / CGFloat(lines.count))
+        let top = bounds.minY + max(0, (bounds.height - CGFloat(lines.count) * lineHeight) / 2)
+        // drawText uses the full ascent+descent to place its baseline. Compensate
+        // only this clipped block so punctuation/descenders remain inside its rows.
+        let font = CTFontCreateWithName((bold ? "PingFangSC-Semibold" : "PingFangSC-Regular") as CFString, size, nil)
+        let baselineOffset = CTFontGetDescent(font)
+        ctx.saveGState()
+        ctx.clip(to: rect(bounds))
+        for (index, line) in lines.enumerated() {
+            drawText(ctx, line, size: size, bold: bold, color: color,
+                     in: rect(bounds.minX, top + CGFloat(index) * lineHeight - baselineOffset, bounds.width, lineHeight), align: .center)
+        }
+        ctx.restoreGState()
     }
 
     /// 语录模块排版：title 非空且横带足够高时先画小标题再画正文；
@@ -7297,20 +8012,26 @@ public enum ScreenRenderer {
     private static func drawGlyphCenteredText(_ ctx: CGContext, _ text: String,
                                               size: CGFloat, bold: Bool,
                                               color: CGColor, in bounds: CGRect,
-                                              align: NSTextAlignment) {
-        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
-        let font = CTFontCreateWithName(fontName as CFString, size, nil)
+                                              align: NSTextAlignment,
+                                              fontName: String? = nil,
+                                              tracking: CGFloat = 0) {
+        let resolvedFont = fontName ?? (bold ? "PingFangSC-Semibold" : "PingFangSC-Regular")
+        let font = CTFontCreateWithName(resolvedFont as CFString, size, nil)
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: font, .foregroundColor: color
+            .font: font, .foregroundColor: color, .kern: tracking
         ]
+        func width(_ value: String) -> CGFloat {
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: value, attributes: attributes))
+            return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        }
         var content = text
         while content.count > 1,
-              measureTextWidth(content, size: size, bold: bold) > bounds.width {
+              width(content) > bounds.width {
             content.removeLast()
         }
         if content != text {
             while content.count > 1,
-                  measureTextWidth(content + "…", size: size, bold: bold) > bounds.width {
+                  width(content + "…") > bounds.width {
                 content.removeLast()
             }
             content += "…"
@@ -7427,4 +8148,180 @@ public enum ScreenRenderer {
     private static func toGiB(_ bytes: UInt64) -> Double {
         Double(bytes) / 1024 / 1024 / 1024
     }
+
+
+    /// 多行自适应文本（Grok Bot 等卡片用）：在 maxSize…minSize 间收缩字号，按 maxLines 折行。
+    private static func drawWrapped(_ ctx: CGContext, _ text: String,
+                                    maxSize: CGFloat, minSize: CGFloat, bold: Bool,
+                                    color: CGColor, in bounds: CGRect, maxLines: Int,
+                                    align: NSTextAlignment) {
+        guard !text.isEmpty, bounds.width > 4, bounds.height > 4, maxLines > 0 else { return }
+        let width = max(bounds.width - 2, 1)
+        var size = maxSize
+        var lines: [String] = []
+        while size >= minSize {
+            let wrapped = wrapText(text, maxWidth: width, size: size, bold: bold)
+            if wrapped.count <= maxLines,
+               CGFloat(wrapped.count) * size * 1.25 <= bounds.height {
+                lines = wrapped
+                break
+            }
+            size -= 0.5
+        }
+        if lines.isEmpty {
+            size = minSize
+            let wrapped = wrapText(text, maxWidth: width, size: size, bold: bold)
+            lines = Array(wrapped.prefix(maxLines))
+            if wrapped.count > maxLines, !lines.isEmpty {
+                lines[lines.count - 1] = String(lines[lines.count - 1].prefix(max(1, lines[lines.count - 1].count - 1))) + "…"
+            }
+        }
+        let lineH = min(size * 1.25, bounds.height / CGFloat(max(lines.count, 1)))
+        let blockH = CGFloat(lines.count) * lineH
+        let top = bounds.minY + max(0, (bounds.height - blockH) / 2)
+        for (index, line) in lines.enumerated() {
+            drawText(ctx, line, size: size, bold: bold, color: color,
+                     in: rect(bounds.minX, top + CGFloat(index) * lineH, bounds.width, lineH),
+                     align: align)
+        }
+    }
+
+    /// 标签/数值成对列表：左标签右数值，行高随可用高度均分。
+    private static func drawMetricRows(_ ctx: CGContext, rows: [(String, String)],
+                                       in area: CGRect, colors: ScreenPalette, accent: CGColor) {
+        guard !rows.isEmpty, area.width > 20, area.height > 12 else { return }
+        let rowH = min(max(area.height / CGFloat(rows.count), 14), 24)
+        let usable = min(CGFloat(rows.count) * rowH, area.height)
+        let top = area.minY + max(0, (area.height - usable) / 2)
+        for (index, pair) in rows.enumerated() {
+            let y = top + CGFloat(index) * rowH
+            let row = CGRect(x: area.minX, y: y, width: area.width, height: rowH)
+            let labelW = min(max(area.width * 0.38, 48), 90)
+            drawText(ctx, pair.0, size: min(rowH * 0.55, 11), bold: false,
+                     color: colors.secondaryTextCG,
+                     in: rect(row.minX + 2, row.minY, labelW, row.height), align: .left)
+            let valueX = row.minX + labelW + 4
+            let valueW = max(row.maxX - valueX - 2, 20)
+            drawAdaptiveText(ctx, pair.1, maxSize: min(rowH * 0.62, 13), minSize: 8,
+                             bold: true, color: colors.primaryTextCG,
+                             in: rect(valueX, row.minY, valueW, row.height), align: .right)
+            _ = accent // keep signature compatible with call sites / future accent bars
+        }
+    }
+
+    // MARK: - Grok Bot weekly usage (ported from PR #1 e422f2f)
+    public static func renderGrokBot(_ snapshot: GrokBotUsageSnapshot, settings: AppSettings,
+                                     now: Date = Date()) throws -> RenderResult {
+        let colors = settings.resolvedPalette
+        let ctx = createContext()
+        let safe = clampSafeArea(settings.safeAreaHeight)
+        let c = drawCanvas(ctx, safeArea: safe, colors: colors)
+        drawHeader(ctx, card: c, title: "GROK", badge: "每周",
+                   accent: colors.accentCG, colors: colors)
+        drawLine(ctx, x1: c.minX + 9, y1: c.minY + 38, x2: c.maxX - 9, y2: c.minY + 38,
+                 color: colors.borderCG)
+        let body = CGRect(x: c.minX + 8, y: c.minY + 46,
+                          width: c.width - 16, height: max(c.maxY - (c.minY + 54), 40))
+        drawGrokBotBody(ctx, snapshot: snapshot, in: body, colors: colors,
+                        accent: colors.accentCG, now: now)
+        return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    private static func drawGrokBotModule(_ ctx: CGContext, band: CGRect,
+                                          snapshot: GrokBotUsageSnapshot, colors: ScreenPalette,
+                                          accent: CGColor, now: Date,
+                                          deviceCanvas: Bool, monochromeDeviceCanvas: Bool) {
+        if deviceCanvas, !monochromeDeviceCanvas, band.width >= 180, band.height >= 180 {
+            drawSquareGrokBot(ctx, band: band, snapshot: snapshot, accent: accent,
+                              colors: colors, now: now)
+            return
+        }
+        if band.height >= 130 {
+            drawGrokBotBody(ctx, snapshot: snapshot, in: band.insetBy(dx: 4, dy: 2),
+                            colors: colors, accent: accent, now: now)
+            return
+        }
+        if snapshot.isAvailable, let remaining = snapshot.remainingPercent {
+            drawQuotaBand(ctx, band: band, label: "Grok", value: "\(remaining)%",
+                          progress: Double(remaining) / 100, accent: accent, colors: colors)
+        } else {
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未读取" : snapshot.message,
+                        maxSize: 11, minSize: 7, bold: true, color: colors.primaryTextCG,
+                        in: band.insetBy(dx: 4, dy: 2), maxLines: 3, align: .center)
+        }
+    }
+
+    private static func drawGrokBotBody(_ ctx: CGContext, snapshot: GrokBotUsageSnapshot,
+                                        in area: CGRect, colors: ScreenPalette,
+                                        accent: CGColor, now: Date) {
+        guard area.width > 20, area.height > 24 else { return }
+        let captionH: CGFloat = area.height >= 150 ? 18 : 0
+        if captionH > 0 {
+            drawText(ctx, "本周剩余", size: 10, bold: true, color: colors.secondaryTextCG,
+                     in: rect(area.minX, area.minY, area.width, captionH), align: .center)
+        }
+        let heroH = min(max(area.height * 0.28, 36), 78)
+        let hero = CGRect(x: area.minX, y: area.minY + captionH, width: area.width, height: heroH)
+        if snapshot.isAvailable, let remaining = snapshot.remainingPercent {
+            let heroText = "\(remaining)%"
+            drawAdaptiveText(ctx, heroText, maxSize: min(heroH * 0.72, 40), minSize: 16,
+                             bold: true, color: colors.primaryTextCG, in: rect(hero), align: .center)
+            let barY = hero.maxY + 2
+            if area.maxY - barY > 28 {
+                drawProgress(ctx, rect(area.minX + 4, barY, area.width - 8, 7),
+                             progress: Double(remaining) / 100, accent: accent, background: colors.borderCG)
+            }
+        } else {
+            drawAdaptiveText(ctx, "—", maxSize: min(heroH * 0.7, 36), minSize: 18,
+                             bold: true, color: colors.primaryTextCG,
+                             in: rect(hero.minX, hero.minY, hero.width, hero.height * 0.62), align: .center)
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未读取" : snapshot.message,
+                        maxSize: 10, minSize: 7, bold: false, color: colors.secondaryTextCG,
+                        in: CGRect(x: hero.minX, y: hero.minY + hero.height * 0.58,
+                                   width: hero.width, height: hero.height * 0.42),
+                        maxLines: 2, align: .center)
+        }
+        var rows: [(String, String)] = []
+        rows.append(("套餐", snapshot.planLabel ?? "—"))
+        if let reset = snapshot.resetDate {
+            rows.append(("重置", formatDate(reset, "M/d HH:mm")))
+        } else if snapshot.isAvailable {
+            rows.append(("重置", "未提供"))
+        }
+        if let banked = snapshot.availableBankedResetCount {
+            rows.append(("可用重置", "\(banked) 次"))
+        }
+        let rowsTop = hero.maxY + (snapshot.isAvailable ? 16 : 6)
+        let footH: CGFloat = area.height >= 170 ? 16 : 0
+        let rowsRect = CGRect(x: area.minX, y: rowsTop, width: area.width,
+                              height: max(area.maxY - rowsTop - footH, 0))
+        if rowsRect.height >= 18 {
+            drawMetricRows(ctx, rows: rows, in: rowsRect, colors: colors, accent: accent)
+        }
+        if footH > 0 {
+            let stamp = snapshot.sampledAt ?? now
+            drawAdaptiveText(ctx, "采样 \(formatDate(stamp, "HH:mm"))",
+                             maxSize: 8, minSize: 6, bold: false, color: colors.tertiaryTextCG,
+                             in: rect(area.minX, area.maxY - footH, area.width, footH), align: .center)
+        }
+    }
+
+    private static func drawSquareGrokBot(_ ctx: CGContext, band: CGRect,
+                                          snapshot: GrokBotUsageSnapshot, accent: CGColor,
+                                          colors: ScreenPalette, now: Date) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+        drawText(ctx, "GROK BOT", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, 110, 23), align: .left)
+        drawAdaptiveText(ctx, "每周", maxSize: 10, minSize: 8, bold: true, color: accent,
+                         in: rect(inner.maxX - 58, inner.minY + 9, 46, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+        let body = CGRect(x: inner.minX + 8, y: inner.minY + 40,
+                          width: inner.width - 16, height: inner.height - 48)
+        drawGrokBotBody(ctx, snapshot: snapshot, in: body, colors: colors, accent: accent, now: now)
+    }
+
+
 }

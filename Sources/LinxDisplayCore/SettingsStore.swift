@@ -97,6 +97,10 @@ public final class AppSettings: ObservableObject {
     @Published public var sidebarWidth = 168 {
         didSet { onChange() }
     }
+    /// Desktop-only arrangement; never captured into device settings or push payloads.
+    @Published public var controlCenterLayout = DeviceControlCenterLayout() {
+        didSet { onControlCenterLayoutChange() }
+    }
     @Published public var backgroundTone: BackgroundTone = .system {
         didSet { onChange() }
     }
@@ -442,6 +446,11 @@ public final class AppSettings: ObservableObject {
         didSet { onChange() }
     }
     /// Home Assistant：刷新间隔（分钟，全局唯一）
+    /// Cursor 仪表盘会话令牌（可选）。留空时 Grok Bot 卡尝试本机 state.vscdb 未加密 access token。
+    @Published public var grokBotSessionToken = "" {
+        didSet { onChange() }
+    }
+
     @Published public var haRefreshMinutes = 5 {
         didSet { onChange() }
     }
@@ -597,12 +606,133 @@ public final class AppSettings: ObservableObject {
     @Published public var weather = WeatherSettings() { didSet { onChange() } }
     /// Cached readings are data, not credentials; recovered immediately on startup/offline.
     @Published public var weatherSnapshot: WeatherSnapshot? { didSet { onChange() } }
+    /// Compatibility projection used by existing cards and refresh services.
+    /// Direct edits are immediately written back to the selected source.
+    @Published public var cloudflare = CloudflareAnalyticsSettings() {
+        didSet { synchronizeCloudflareProjection() }
+    }
+    @Published public var cloudflareSnapshot: CloudflareAnalyticsSnapshot? {
+        didSet {
+            guard !cloudflareSyncInFlight else { return }
+            // An old asynchronous response must not replace the selected website's cached data.
+            if let snapshot = cloudflareSnapshot, !snapshot.matches(cloudflare) {
+                cloudflareSyncInFlight = true
+                cloudflareSnapshot = oldValue.flatMap { $0.matches(cloudflare) ? $0 : nil }
+                cloudflareSyncInFlight = false
+            }
+            synchronizeCloudflareProjection()
+        }
+    }
+    @Published public private(set) var cloudflareSources: [CloudflareAnalyticsSource] = []
+    @Published public private(set) var cloudflareSourceID: UUID?
+    private var cloudflareSyncInFlight = false
+
+    public var activeCloudflareSource: CloudflareAnalyticsSource? {
+        cloudflareSources.first { $0.id == cloudflareSourceID }
+    }
+
+    /// Add a source without sharing credentials unless its configuration explicitly references them.
+    @discardableResult public func addCloudflareSource(name: String,
+        configuration: CloudflareAnalyticsSettings, snapshot: CloudflareAnalyticsSnapshot? = nil,
+        select: Bool = true) -> UUID {
+        let source = CloudflareAnalyticsSource(name: name, configuration: configuration, snapshot: snapshot)
+        cloudflareSyncInFlight = true
+        cloudflareSources.append(source)
+        if select || activeCloudflareSource == nil { applyCloudflareSource(source) }
+        cloudflareSyncInFlight = false
+        onChange()
+        return source.id
+    }
+
+    @discardableResult public func selectCloudflareSource(_ id: UUID) -> Bool {
+        guard let source = cloudflareSources.first(where: { $0.id == id }) else { return false }
+        guard cloudflareSourceID != id else { return true }
+        cloudflareSyncInFlight = true
+        applyCloudflareSource(source)
+        cloudflareSyncInFlight = false
+        onChange()
+        return true
+    }
+
+    @discardableResult public func updateCloudflareSource(_ source: CloudflareAnalyticsSource) -> Bool {
+        guard let index = cloudflareSources.firstIndex(where: { $0.id == source.id }) else { return false }
+        let normalized = CloudflareAnalyticsSource(id: source.id, name: source.name,
+            configuration: source.configuration, snapshot: source.snapshot)
+        cloudflareSyncInFlight = true
+        cloudflareSources[index] = normalized
+        if cloudflareSourceID == normalized.id { applyCloudflareSource(normalized) }
+        cloudflareSyncInFlight = false
+        onChange()
+        return true
+    }
+
+    /// Removing a source never deletes a sealed credential file: another source may reference it.
+    @discardableResult public func removeCloudflareSource(_ id: UUID) -> Bool {
+        guard cloudflareSources.contains(where: { $0.id == id }) else { return false }
+        cloudflareSyncInFlight = true
+        cloudflareSources.removeAll { $0.id == id }
+        if cloudflareSourceID == id { applyCloudflareSource(cloudflareSources.first) }
+        cloudflareSyncInFlight = false
+        onChange()
+        return true
+    }
+
+    private func applyCloudflareSource(_ source: CloudflareAnalyticsSource?) {
+        cloudflareSourceID = source?.id
+        cloudflare = source?.configuration ?? CloudflareAnalyticsSettings()
+        cloudflareSnapshot = source?.snapshot.flatMap { $0.matches(cloudflare) ? $0 : nil }
+    }
+
+    private func synchronizeCloudflareProjection() {
+        guard !cloudflareSyncInFlight else { return }
+        cloudflareSyncInFlight = true
+        if let snapshot = cloudflareSnapshot, !snapshot.matches(cloudflare) { cloudflareSnapshot = nil }
+        if let index = cloudflareSources.firstIndex(where: { $0.id == cloudflareSourceID }) {
+            cloudflareSources[index].configuration = cloudflare
+            cloudflareSources[index].snapshot = cloudflareSnapshot
+        } else if hasCloudflareConfiguration(cloudflare) {
+            // Legacy clients can still configure their first source through the old property.
+            let source = CloudflareAnalyticsSource(name: "", configuration: cloudflare, snapshot: cloudflareSnapshot)
+            cloudflareSources.append(source)
+            cloudflareSourceID = source.id
+        }
+        cloudflareSyncInFlight = false
+        onChange()
+    }
+
+    private func hasCloudflareConfiguration(_ configuration: CloudflareAnalyticsSettings) -> Bool {
+        [configuration.zoneID, configuration.zoneName, configuration.hostname]
+            .contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    /// New source records are authoritative; an explicit empty list must not resurrect deleted sources.
+    private func restoreCloudflareSources(_ sources: [CloudflareAnalyticsSource]?, activeID: UUID?,
+        legacyConfiguration: CloudflareAnalyticsSettings, legacySnapshot: CloudflareAnalyticsSnapshot?) {
+        cloudflareSyncInFlight = true
+        var restored = sources ?? (hasCloudflareConfiguration(legacyConfiguration)
+            ? [CloudflareAnalyticsSource(name: "", configuration: legacyConfiguration, snapshot: legacySnapshot)] : [])
+        var seen = Set<UUID>()
+        for index in restored.indices {
+            while !seen.insert(restored[index].id).inserted { restored[index].id = UUID() }
+        }
+        cloudflareSources = restored
+        applyCloudflareSource(restored.first(where: { $0.id == activeID }) ?? restored.first)
+        if restored.isEmpty, !hasCloudflareConfiguration(legacyConfiguration) {
+            // Keep unconfigured preferences and a possible saved credential reference without a fake source.
+            cloudflare = legacyConfiguration
+        }
+        cloudflareSyncInFlight = false
+    }
     /// 当前活动 AWTRIX NG 设备 ID。
     @Published public var activeAWTRIXDeviceID: UUID? {
         didSet { onChange() }
     }
     /// 当前活动 M5Stack StickS3 蓝牙控制器设备 ID。
     @Published public var activeM5ControllerDeviceID: UUID? {
+        didSet { onChange() }
+    }
+    /// 当前选择的小纸 Pico；每台设备分别保存管理地址，不经过全局显示设置。
+    @Published public var activeReadPicoDeviceID: UUID? {
         didSet { onChange() }
     }
 
@@ -854,8 +984,8 @@ public final class AppSettings: ObservableObject {
     /// 纯文字紧凑模块给最小间距；用户手动设置过则覆盖默认值
     public func defaultCanvasMargin(for module: CanvasModule) -> Int {
         switch module {
-        case .nowPlaying, .image, .sspai, .oracleText, .excerptText: return 6
-        case .pomodoro, .weather: return 4
+        case .nowPlaying, .image, .sspai, .oracleText, .excerptText, .readingExcerpt: return 6
+        case .pomodoro, .weather, .cloudflare, .grokBot: return 4
         case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
              .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return 4
@@ -1005,6 +1135,8 @@ public final class AppSettings: ObservableObject {
     public var deviceSyncInFlight = false
 
     /// 任一属性变更后调用（用于触发持久化）。
+    /// Local desktop arrangement must not trigger rendering, device configuration or network pushes.
+    public var onControlCenterLayoutChange: () -> Void = {}
     public var onChange: () -> Void = {}
 
     /// 应用到键盘卡片画面的最终调色板（所选主题 + 背景底色/强调色覆盖）
@@ -1174,7 +1306,7 @@ public final class AppSettings: ObservableObject {
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
              keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled, awtrix,
-             haServerURL, haToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
+             haServerURL, haToken, grokBotSessionToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
@@ -1192,9 +1324,9 @@ public final class AppSettings: ObservableObject {
              excerptAutoPushEnabled, excerptAutoPushMinutes,
              excerptBoardRotationEnabled, excerptBoardRotationMinutes,
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
-             sidebarOrder, keyboardCardPanels, sidebarWidth,
+             sidebarOrder, keyboardCardPanels, sidebarWidth, controlCenterLayout,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
-             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeC6ScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID,
+             devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeC6ScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID, activeReadPicoDeviceID,
              oracleCanvasModules, excerptCanvasModules,
              oracleImageRotate180,
              oracleDisplayMode, oracleGrayAlgorithm, oracleDitherKernel,
@@ -1203,7 +1335,8 @@ public final class AppSettings: ObservableObject {
              excerptImageRotate180, excerptBackgroundMode, excerptPushRawImage,
              excerptServerDitherType, excerptServerDitherKernel,
              oracleCanvasBoards, oracleCanvasBoardIndex,
-             excerptCanvasBoards, excerptCanvasBoardIndex, weather, weatherSnapshot
+             excerptCanvasBoards, excerptCanvasBoardIndex, weather, weatherSnapshot, cloudflare, cloudflareSnapshot,
+             cloudflareSources, cloudflareSourceID
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1294,6 +1427,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(awtrix, forKey: .awtrix)
         try container.encode(haServerURL, forKey: .haServerURL)
         try container.encode(haToken, forKey: .haToken)
+        try container.encode(grokBotSessionToken, forKey: .grokBotSessionToken)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
         try container.encode(haEntityID, forKey: .haEntityID)
         try container.encode(haEntities, forKey: .haEntities)
@@ -1348,6 +1482,7 @@ public final class AppSettings: ObservableObject {
         try container.encode(sidebarOrder, forKey: .sidebarOrder)
         try container.encodeIfPresent(keyboardCardPanels, forKey: .keyboardCardPanels)
         try container.encode(sidebarWidth, forKey: .sidebarWidth)
+        try container.encode(controlCenterLayout, forKey: .controlCenterLayout)
         try container.encode(dotApiKey, forKey: .dotApiKey)
         try container.encode(dotDeviceId, forKey: .dotDeviceId)
         try container.encode(rand0IP, forKey: .rand0IP)
@@ -1366,8 +1501,13 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(activeC6ScreenDeviceID, forKey: .activeC6ScreenDeviceID)
         try container.encode(weather, forKey: .weather)
         try container.encodeIfPresent(weatherSnapshot, forKey: .weatherSnapshot)
+        try container.encode(cloudflare, forKey: .cloudflare)
+        try container.encodeIfPresent(cloudflareSnapshot, forKey: .cloudflareSnapshot)
+        try container.encode(cloudflareSources, forKey: .cloudflareSources)
+        try container.encodeIfPresent(cloudflareSourceID, forKey: .cloudflareSourceID)
         try container.encodeIfPresent(activeAWTRIXDeviceID, forKey: .activeAWTRIXDeviceID)
         try container.encodeIfPresent(activeM5ControllerDeviceID, forKey: .activeM5ControllerDeviceID)
+        try container.encodeIfPresent(activeReadPicoDeviceID, forKey: .activeReadPicoDeviceID)
         try container.encode(oracleCanvasModules, forKey: .oracleCanvasModules)
         try container.encode(excerptCanvasModules, forKey: .excerptCanvasModules)
         try container.encode(oracleImageRotate180, forKey: .oracleImageRotate180)
@@ -1526,6 +1666,7 @@ extension AppSettings: Codable {
         awtrix.sanitize()
         haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
         haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
+        grokBotSessionToken = try container.decodeIfPresent(String.self, forKey: .grokBotSessionToken) ?? grokBotSessionToken
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
         haEntityID = try container.decodeIfPresent(String.self, forKey: .haEntityID) ?? haEntityID
         haEntities = try container.decodeIfPresent([String].self, forKey: .haEntities) ?? haEntities
@@ -1593,6 +1734,7 @@ extension AppSettings: Codable {
         cardRotationMinutes = try container.decodeIfPresent(Int.self, forKey: .cardRotationMinutes) ?? cardRotationMinutes
         cardRotationModes = try container.decodeIfPresent([Int].self, forKey: .cardRotationModes) ?? cardRotationModes
         sidebarWidth = try container.decodeIfPresent(Int.self, forKey: .sidebarWidth) ?? sidebarWidth
+        controlCenterLayout = (try? container.decode(DeviceControlCenterLayout.self, forKey: .controlCenterLayout)) ?? DeviceControlCenterLayout()
         dotApiKey = try container.decodeIfPresent(String.self, forKey: .dotApiKey) ?? dotApiKey
         dotDeviceId = try container.decodeIfPresent(String.self, forKey: .dotDeviceId) ?? dotDeviceId
         rand0IP = try container.decodeIfPresent(String.self, forKey: .rand0IP) ?? rand0IP
@@ -1614,8 +1756,14 @@ extension AppSettings: Codable {
         activeC6ScreenDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeC6ScreenDeviceID)
         weather = try container.decodeIfPresent(WeatherSettings.self, forKey: .weather) ?? WeatherSettings()
         weatherSnapshot = try container.decodeIfPresent(WeatherSnapshot.self, forKey: .weatherSnapshot)
+        let legacyCloudflare = try container.decodeIfPresent(CloudflareAnalyticsSettings.self, forKey: .cloudflare) ?? cloudflare
+        let legacyCloudflareSnapshot = try container.decodeIfPresent(CloudflareAnalyticsSnapshot.self, forKey: .cloudflareSnapshot)
+        restoreCloudflareSources(try container.decodeIfPresent([CloudflareAnalyticsSource].self, forKey: .cloudflareSources),
+            activeID: try? container.decode(UUID.self, forKey: .cloudflareSourceID),
+            legacyConfiguration: legacyCloudflare, legacySnapshot: legacyCloudflareSnapshot)
         activeAWTRIXDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeAWTRIXDeviceID) ?? activeAWTRIXDeviceID
         activeM5ControllerDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeM5ControllerDeviceID) ?? activeM5ControllerDeviceID
+        activeReadPicoDeviceID = try container.decodeIfPresent(UUID.self, forKey: .activeReadPicoDeviceID)
         // 兼容早期把 AWTRIX 作为固定全局页面的版本：已有地址自动成为第一台受管设备。
         if !awtrix.baseURL.isEmpty, !devices.contains(where: { $0.type == .awtrix }) {
             var snapshot = DeviceSettings()
@@ -1723,6 +1871,15 @@ public final class SettingsStore {
 
     public func save(_ settings: AppSettings) {
         try? write(settings, to: settingsURL)
+    }
+
+    /// Explicit user actions use this path so an unwritable settings file cannot look saved.
+    public func saveChecked(_ settings: AppSettings) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(settings)
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        try data.write(to: settingsURL, options: .atomic)
     }
 
     public func loadPomodoro() -> PomodoroState {

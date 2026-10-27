@@ -126,17 +126,19 @@ struct C6StandaloneView: View {
               Text("优先多屏灵犀软件").tag(false)
               Text("固件本地卡片优先 · 混合轮转").tag(true)
             }.help("本地优先：固件中对应的天气、Home Assistant 和同一台打印机卡片替代软件卡片，其他卡片继续由电脑推送。电脑在线时，在本设备的卡片管理统一安排顺序和轮转；断开约 30 秒后恢复固件独立轮询，分组与排序可能不同。需要更新内置 C6 固件。")
-            Toggle("翻页钟动态翻页", isOn: $config.flipAnimation)
-              .disabled(config.clockStyle != .flip)
-              .help("只在时分数字变化时执行短暂翻页；关闭可减少动态效果。")
-            Picker("桌面时钟样式", selection: $config.clockStyle) {
-              ForEach(C6ClockStyle.allCases) { style in Text(style.title).tag(style) }
+            DisclosureGroup("时钟、方向与状态（高级）") {
+              Toggle("翻页钟动态翻页", isOn: $config.flipAnimation)
+                .disabled(config.clockStyle != .flip)
+                .help("只在时分数字变化时执行短暂翻页；关闭可减少动态效果。")
+              Picker("桌面时钟样式", selection: $config.clockStyle) {
+                ForEach(C6ClockStyle.allCases) { style in Text(style.title).tag(style) }
+              }
+              .help("时钟由设备通过网络校时并在本地实时渲染；电脑只切换卡片和管理样式，不发送时钟图片。样式保存到这台设备，自动同步不会覆盖。")
+              Toggle("设备状态页", isOn: $config.diagnostics)
+              Picker("屏幕方向", selection: $config.rotation) {
+                ForEach([0, 90, 180, 270], id: \.self) { angle in Text("\(angle)°").tag(angle).disabled(!capabilities.rotations.contains(angle)) }
+              }.help("只在固件输出到 LCD 时旋转，电脑预览和发送的图片保持正向。90° 档位需要更新内置固件。")
             }
-            .help("时钟由设备通过网络校时并在本地实时渲染；电脑只切换卡片和管理样式，不发送时钟图片。样式保存到这台设备，自动同步不会覆盖。")
-            Toggle("设备状态页", isOn: $config.diagnostics)
-            Picker("屏幕方向", selection: $config.rotation) {
-              ForEach([0, 90, 180, 270], id: \.self) { angle in Text("\(angle)°").tag(angle).disabled(!capabilities.rotations.contains(angle)) }
-            }.help("只在固件输出到 LCD 时旋转，电脑预览和发送的图片保持正向。90° 档位需要更新内置固件。")
             DisclosureGroup("语言、数字与休眠") {
               Picker("设备界面语言", selection: $config.language) {
                 ForEach(C6Language.allCases) { Text($0.title).tag($0) }

@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workspaceDisplayObservers: [NSObjectProtocol] = []
     private var distributedDisplayObservers: [NSObjectProtocol] = []
     private var awtrixQuitRestorePending = false
+    private var standalonePico = false
 
     private enum AWTRIXMenuAction {
         case showCard(UUID, String)
@@ -40,6 +41,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Native design preview uses the production SwiftUI types in an isolated
+        // window, without constructing AppModel or starting device connections.
+        if Bundle.main.object(forInfoDictionaryKey: "PicoNativeDesignPreview") as? Bool == true {
+            standalonePico = true
+            NSApp.setActivationPolicy(.regular)
+            setupEditMenu()
+            let item = NSMenuItem()
+            let menu = NSMenu()
+            let quit = menu.addItem(withTitle: String(localized: "退出原生预览"), action: #selector(quitApp), keyEquivalent: "q")
+            quit.target = self
+            item.submenu = menu
+            NSApp.mainMenu?.insertItem(item, at: 0)
+            MainActor.assumeIsolated { openNativePicoDesignWindow() }
+            return
+        }
+        // 候选包可独立验收 Pico 工作台，不初始化主软件的配置与后台连接。
+        // Candidate bundles can exercise Pico without loading the main app's settings or services.
+        standalonePico = Bundle.main.object(forInfoDictionaryKey: "ReadPicoStandaloneWorkbench") as? Bool == true
+        if standalonePico {
+            NSApp.setActivationPolicy(.regular)
+            setupEditMenu()
+            let applicationItem = NSMenuItem()
+            let applicationMenu = NSMenu()
+            let quit = applicationMenu.addItem(withTitle: String(localized: "退出小纸 Pico 候选版"), action: #selector(quitApp), keyEquivalent: "q")
+            quit.target = self
+            applicationItem.submenu = applicationMenu
+            NSApp.mainMenu?.insertItem(applicationItem, at: 0)
+            openStandalonePicoWindow()
+            return
+        }
         let model = AppModel()
         self.model = model
         model.onAppearanceChanged = { [weak self] in
@@ -58,31 +89,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         openMainWindow()
         NSApp.activate(ignoringOtherApps: true)
+        UIAuditCapture.runIfRequested()
     }
 
     /// 挂载标准「编辑」菜单（LSUIElement 应用无系统菜单栏，若不挂载，
     /// 文本框的 Cmd+C/V/X/全选等快捷键将失效；菜单不显示但 keyEquivalent 仍路由）
     private func setupEditMenu() {
         let mainMenu = NSMenu()
+        // The first menu must be the application menu; otherwise macOS presents
+        // Edit as the app menu and the main window has no standard Quit shortcut.
+        if !standalonePico {
+            let applicationItem = NSMenuItem()
+            let applicationMenu = NSMenu(title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Multiscreen Linx")
+            applicationItem.submenu = applicationMenu
+            let quit = applicationMenu.addItem(withTitle: String(localized: "退出 多屏灵犀"), action: #selector(quitApp), keyEquivalent: "q")
+            quit.target = self
+            mainMenu.addItem(applicationItem)
+        }
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
-        let editMenu = NSMenu(title: "编辑")
+        let editMenu = NSMenu(title: String(localized: "编辑"))
         editMenuItem.submenu = editMenu
-        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(withTitle: String(localized: "撤销"), action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: String(localized: "重做"), action: Selector(("redo:")), keyEquivalent: "Z")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: String(localized: "剪切"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: String(localized: "拷贝"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: String(localized: "粘贴"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: String(localized: "全选"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        if !standalonePico {
+            let viewItem = NSMenuItem()
+            let viewMenu = NSMenu(title: String(localized: "显示"))
+            viewItem.submenu = viewMenu
+            mainMenu.addItem(viewItem)
+            let center = viewMenu.addItem(withTitle: String(localized: "中控面板"), action: #selector(showControlCenter), keyEquivalent: "1")
+            center.target = self
+            let sidebar = viewMenu.addItem(withTitle: String(localized: "显示或隐藏侧边栏"), action: #selector(toggleMainSidebar), keyEquivalent: "s")
+            sidebar.keyEquivalentModifierMask = [.control, .command]
+            sidebar.target = self
+        }
         NSApp.mainMenu = mainMenu
     }
 
+    @objc private func showControlCenter() {
+        openMainWindow()
+        NotificationCenter.default.post(name: Notification.Name("LingxiShowControlCenter"), object: nil)
+    }
+
+    @objc private func toggleMainSidebar() {
+        openMainWindow()
+        NotificationCenter.default.post(name: Notification.Name("LingxiToggleSidebar"), object: nil)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false // 关闭窗口后继续在菜单栏运行
+        standalonePico // 主软件关闭窗口后继续在菜单栏运行。/ The main app stays in the menu bar.
+    }
+
+    private func openStandalonePicoWindow() {
+        let window = ToolbarlessMainWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1020, height: 820),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        window.title = String(localized: "小纸 Pico · 多屏灵犀候选版")
+        window.contentMinSize = NSSize(width: 880, height: 720)
+        window.contentView = NSHostingView(rootView: ReadPicoWorkbenchView(onClose: { [weak window] in window?.performClose(nil) }))
+        let controller = NSWindowController(window: window)
+        windowController = controller
+        controller.showWindow(nil)
+        centerOnMainScreen(window)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func openNativePicoDesignWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1220, height: 860),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        window.title = String(localized: "多屏灵犀 · Pico 原生工作区预览")
+        window.contentMinSize = NSSize(width: 920, height: 680)
+        window.contentView = NSHostingView(rootView: PicoNativeWorkspace())
+        let controller = NSWindowController(window: window)
+        windowController = controller
+        controller.showWindow(nil)
+        centerOnMainScreen(window)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ReadPicoFirmwareFlasher.prepareForApplicationTermination() else {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "正在完成小纸 Pico 固件操作")
+            alert.informativeText = String(localized: "写入、校验和启动完成前，请保持应用运行和 USB 连接。完成后即可退出。")
+            alert.addButton(withTitle: String(localized: "继续等待"))
+            alert.runModal()
+            return .terminateCancel
+        }
+        guard ReadPicoDraftGuard.prepareForApplicationTermination() else { return .terminateCancel }
         guard let model else { return .terminateNow }
         guard model.hasAWTRIXManualDisplayToRestore || model.hasC6SoftwareControlToRelease else { return .terminateNow }
         guard !awtrixQuitRestorePending else { return .terminateLater }
@@ -111,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ReadPicoFirmwareFlasher.cancelAllOperations()
         model?.prepareForTermination()
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceDisplayObservers.forEach(workspaceCenter.removeObserver)
@@ -203,21 +307,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupMenuBar() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "多屏灵犀")
-        item.button?.toolTip = "多屏灵犀 · 点击切换显示内容"
+        item.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: String(localized: "多屏灵犀"))
+        item.button?.toolTip = String(localized: "多屏灵犀 · 点击切换显示内容")
 
         let menu = NSMenu()
         menu.delegate = self
         menu.autoenablesItems = false
 
-        let openItem = menu.addItem(withTitle: "打开面板…", action: #selector(openMainWindow), keyEquivalent: ",")
+        let openItem = menu.addItem(withTitle: String(localized: "打开面板…"), action: #selector(openMainWindow), keyEquivalent: ",")
         openItem.target = self
 
         menu.addItem(.separator())
 
-        let pushItem = menu.addItem(withTitle: "立即推送", action: #selector(pushNow), keyEquivalent: "")
+        let pushItem = menu.addItem(withTitle: String(localized: "立即推送"), action: #selector(pushNow), keyEquivalent: "")
         pushItem.target = self
-        let refreshItem = menu.addItem(withTitle: "刷新数据", action: #selector(refreshNow), keyEquivalent: "")
+        let refreshItem = menu.addItem(withTitle: String(localized: "刷新数据"), action: #selector(refreshNow), keyEquivalent: "")
         refreshItem.target = self
 
         menu.addItem(.separator())
@@ -231,9 +335,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pomodoroSubmenu.delegate = self
         let toggleItem = NSMenuItem(title: "", action: #selector(pomodoroToggle), keyEquivalent: "")
         toggleItem.target = self
-        let skipItem = NSMenuItem(title: "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))", action: #selector(pomodoroSkip), keyEquivalent: "")
+        let skipItem = NSMenuItem(title: String(localized: "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))"), action: #selector(pomodoroSkip), keyEquivalent: "")
         skipItem.target = self
-        let resetItem = NSMenuItem(title: "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))", action: #selector(pomodoroReset), keyEquivalent: "")
+        let resetItem = NSMenuItem(title: String(localized: "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))"), action: #selector(pomodoroReset), keyEquivalent: "")
         resetItem.target = self
         let statusItemLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         statusItemLabel.isEnabled = false
@@ -242,14 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pomodoroSubmenu.addItem(resetItem)
         pomodoroSubmenu.addItem(.separator())
         pomodoroSubmenu.addItem(statusItemLabel)
-        let pomodoroEntry = NSMenuItem(title: "番茄钟控制", action: nil, keyEquivalent: "")
+        let pomodoroEntry = NSMenuItem(title: String(localized: "番茄钟控制"), action: nil, keyEquivalent: "")
         pomodoroEntry.submenu = pomodoroSubmenu
         menu.addItem(pomodoroEntry)
         self.pomodoroSubmenu = pomodoroSubmenu
 
         menu.addItem(.separator())
 
-        let quitItem = menu.addItem(withTitle: "退出 多屏灵犀", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = menu.addItem(withTitle: String(localized: "退出 多屏灵犀"), action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
 
         item.menu = menu
@@ -267,8 +371,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let items = self.pomodoroSubmenu?.items ?? []
                 if items.count >= 5 {
                     items[0].title = "\(model.pomodoroAction)  \(GlobalHotkeyManager.shortcutHint(for: .togglePomodoro))"
-                    items[1].title = "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))"
-                    items[2].title = "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))"
+                    items[1].title = String(localized: "跳过  \(GlobalHotkeyManager.shortcutHint(for: .skipPomodoro))")
+                    items[2].title = String(localized: "重置  \(GlobalHotkeyManager.shortcutHint(for: .resetPomodoro))")
                     items[4].title = model.pomodoroStatus
                 }
             }
@@ -392,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if submenu.items.contains(where: { previewTargets[$0] != nil }) {
                 let view = MenuBarScreenPreview(imageAreaHeight: device.type == .keyboard ? 300 : device.type == .awtrix ? 76 : 184)
                 previewViews[submenu] = view
-                let header = NSMenuItem(title: "画面预览", action: nil, keyEquivalent: "")
+                let header = NSMenuItem(title: String(localized: "画面预览"), action: nil, keyEquivalent: "")
                 header.isEnabled = false
                 header.view = view
                 submenu.insertItem(header, at: 0)
@@ -401,7 +505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             addEmptyHintIfNeeded(to: submenu, title: "尚未添加可见卡片或画板")
         }
         if deviceMenuEntries.isEmpty {
-            let hint = NSMenuItem(title: "尚未添加显示设备", action: nil, keyEquivalent: "")
+            let hint = NSMenuItem(title: String(localized: "尚未添加显示设备"), action: nil, keyEquivalent: "")
             hint.isEnabled = false
             root.insertItem(hint, at: 5)
             deviceMenuEntries.append(hint)

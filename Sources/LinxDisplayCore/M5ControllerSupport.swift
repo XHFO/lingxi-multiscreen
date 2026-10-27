@@ -268,12 +268,12 @@ public enum M5MediaControlAction: UInt16, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .playPause: return "播放 / 暂停"
-        case .previousTrack: return "上一曲"
-        case .nextTrack: return "下一曲"
-        case .volumeDown: return "音量减"
-        case .volumeUp: return "音量加"
-        case .mute: return "静音"
+        case .playPause: return String(localized: "播放 / 暂停")
+        case .previousTrack: return String(localized: "上一曲")
+        case .nextTrack: return String(localized: "下一曲")
+        case .volumeDown: return String(localized: "音量减")
+        case .volumeUp: return String(localized: "音量加")
+        case .mute: return String(localized: "静音")
         }
     }
 
@@ -298,8 +298,8 @@ public enum M5MediaControlCard: String, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .playback: return "播放控制"
-        case .volume: return "音量控制"
+        case .playback: return String(localized: "播放控制")
+        case .volume: return String(localized: "音量控制")
         }
     }
 
@@ -341,9 +341,9 @@ public enum M5MacShortcutGroup: String, Codable, CaseIterable, Identifiable {
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .presentation: return "演示翻页器"
+        case .presentation: return String(localized: "演示翻页器")
         case .vibeCoding: return "Vibe Coding"
-        case .custom: return "自定义快捷键"
+        case .custom: return String(localized: "自定义快捷键")
         }
     }
 }

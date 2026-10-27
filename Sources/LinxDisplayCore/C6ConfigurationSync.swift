@@ -1,6 +1,18 @@
 import Foundation
 import Darwin
 
+/// Pending desktop↔device origin conflict for one C6. Shown in the device page
+/// until the user keeps the device document or explicitly overrides from Mac.
+public struct C6SyncOriginConflict: Equatable, Sendable {
+    public enum Kind: String, Equatable, Sendable { case homeAssistant, printer }
+    public var kind: Kind
+    public var message: String
+    public var inputKey: String
+    public init(kind: Kind, message: String, inputKey: String) {
+        self.kind = kind; self.message = message; self.inputKey = inputKey
+    }
+}
+
 /// Desktop additions and device-owned local cards share one configuration.
 /// Removing a desktop image card never deletes an independently configured source.
 public enum C6ConfigurationSync {
@@ -187,6 +199,50 @@ public enum C6ConfigurationSync {
         }
         return result
     }
+    /// Explicit user choice after an origin conflict banner: desktop data-source
+    /// origins replace the device document. Automatic sync keeps using the safer
+    /// `applyingChanges` path that refuses to cross origins without confirmation.
+    public static func overridingOrigins(_ selection: C6StandaloneConfiguration,
+                                         into remote: C6StandaloneConfiguration) -> C6StandaloneConfiguration {
+        var result = remote
+        result.brightness = selection.brightness
+        result.saturationPercent = selection.saturationPercent
+        result.contrastPercent = selection.contrastPercent
+        result.theme = selection.theme
+        result.clock = remote.clock || selection.clock
+        if selection.ha.enabled {
+            result.ha = selection.ha
+            result.ha.tokenSet = false
+            result.ha.entities = selection.ha.entities
+        }
+        if selection.weather {
+            result.weather = true
+            result.latitude = selection.latitude
+            result.longitude = selection.longitude
+            result.weatherCity = selection.weatherCity
+            result.weatherMinutes = selection.weatherMinutes
+        }
+        for selected in selection.printers {
+            var item = selected
+            item.accessCodeSet = false
+            item.formCredentialsSet = false
+            if let index = result.printers.firstIndex(where: { $0.identity == item.identity }) {
+                item.rotate = result.printers[index].rotate
+                item.cardStyle = result.printers[index].cardStyle
+                result.printers[index] = item
+            } else {
+                result.printers.append(item)
+            }
+        }
+        // After an HA origin change, drop leftover HA printers that the desktop did not select.
+        if selection.ha.enabled, hasHomeAssistantOriginConflict(selection: selection, remote: remote) {
+            result.printers.removeAll { printer in
+                printer.sourceHA && !selection.printers.contains(where: { $0.identity == printer.identity })
+            }
+        }
+        return result
+    }
+
     public static func merging(_ selection: C6StandaloneConfiguration,
                                into remote: C6StandaloneConfiguration) -> C6StandaloneConfiguration {
         // The caller checks this before preparing credentials. Returning the

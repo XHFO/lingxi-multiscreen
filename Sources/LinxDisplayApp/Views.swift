@@ -95,12 +95,15 @@ extension Panel {
 
 enum Panel: String, CaseIterable, Identifiable, Hashable {
     case welcome
+    case controlCenter
+    case controlCenterSource
     case appearance
     case qwenWork
     case codex
     case pomodoro
     case system
     case nowPlaying
+    case wallpaperLibrary
     case customImage
     case canvas
     case excerptQuote
@@ -111,6 +114,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case m5Controller
     case homeAssistant
     case weather
+    case grokBot
+    case cloudflare
     case bambuLab
     case bambuLab2
     case bambuLab3
@@ -129,6 +134,15 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case aiMacCardManagement
     case aiMacControl
     case c6Device
+    case readPicoDevice
+    case readPicoApps
+    case readPicoFonts
+    case readPicoNotes
+    case readPicoDrawings
+    case readPicoSettings
+    case readPicoInformation
+    case readPicoLockScreen
+    case readPicoFirmware
     case devices
     case buttonControl
     case cardRotation
@@ -142,10 +156,32 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    static var readPicoItems: [Panel] {
+        [.readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
+         .readPicoInformation, .readPicoLockScreen, .readPicoFirmware]
+    }
+
+    var readPicoSection: ReadPicoDeviceSection? {
+        switch self {
+        case .readPicoDevice: return .books
+        case .readPicoFonts: return .fonts
+        case .readPicoNotes: return .notes
+        case .readPicoApps: return .apps
+        case .readPicoDrawings: return .drawings
+        case .readPicoSettings: return .settings
+        case .readPicoInformation: return .information
+        case .readPicoLockScreen: return .lockScreen
+        case .readPicoFirmware: return .firmware
+        default: return nil
+        }
+    }
+
+    var isReadPico: Bool { readPicoSection != nil }
+
     /// 主导航项（外观与设置置于底部）
     static var mainItems: [Panel] {
-        [.qwenWork, .codex, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
-         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather,
+        [.qwenWork, .codex, .grokBot, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
+         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather, .grokBot, .cloudflare,
          .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
          .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5,
          .devices, .oracleCanvas, .excerptCanvas]
@@ -202,6 +238,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .emojiWallpaper: return .emojiWallpaper
         case .homeAssistant: return .homeAssistant
         case .weather: return .weather
+        case .grokBot: return .grokBot
+        case .cloudflare: return .cloudflare
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
         case .bambuLab3: return .bambuLab3
@@ -218,56 +256,72 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
-        case .welcome: return "开始使用"
-        case .general: return "设置"
-        case .appearance: return "外观"
-        case .qwenWork: return "千问办公额度"
-        case .codex: return "Codex 用量"
-        case .pomodoro: return "番茄钟"
-        case .system: return "系统监控"
-        case .nowPlaying: return "正在播放"
-        case .customImage: return "自定义图片"
-        case .canvas: return "灵犀画板"
-        case .excerptQuote: return "摘录语录"
-        case .sspai: return "少数派推荐"
-        case .emojiWallpaper: return "Emoji 壁纸"
-        case .awtrix: return "显示设置"
-        case .awtrixCardManagement: return "卡片管理"
-        case .m5Controller: return "M5 StickS3 控制器"
+        case .controlCenterSource: return String(localized: "数据源")
+        case .controlCenter: return String(localized: "中控面板")
+        case .welcome: return String(localized: "开始使用")
+        case .general: return String(localized: "设置")
+        case .appearance: return String(localized: "外观")
+        case .qwenWork: return String(localized: "千问办公额度")
+        case .codex: return String(localized: "Codex 用量")
+        case .pomodoro: return String(localized: "番茄钟")
+        case .system: return String(localized: "系统监控")
+        case .nowPlaying: return String(localized: "正在播放")
+        case .wallpaperLibrary: return String(localized: "壁纸库")
+        case .customImage: return String(localized: "自定义图片")
+        case .canvas: return String(localized: "灵犀画板")
+        case .excerptQuote: return String(localized: "摘录语录")
+        case .sspai: return String(localized: "少数派推荐")
+        case .emojiWallpaper: return String(localized: "Emoji 壁纸")
+        case .awtrix: return String(localized: "显示设置")
+        case .awtrixCardManagement: return String(localized: "卡片管理")
+        case .m5Controller: return String(localized: "M5 StickS3 控制器")
         case .homeAssistant: return "Home Assistant"
-        case .weather: return "天气"
-        case .bambuLab: return "Bambu Lab 打印机"
-        case .bambuLab2: return "Bambu Lab 打印机 2"
-        case .bambuLab3: return "Bambu Lab 打印机 3"
-        case .bambuLab4: return "Bambu Lab 打印机 4"
-        case .bambuLab5: return "Bambu Lab 打印机 5"
-        case .formlabs: return "Formlabs 打印机"
-        case .formlabs2: return "Formlabs 打印机 2"
-        case .formlabs3: return "Formlabs 打印机 3"
-        case .formlabs4: return "Formlabs 打印机 4"
-        case .formlabs5: return "Formlabs 打印机 5"
-        case .aiMacScreen: return "AI Mac 画板"
-        case .aiMacDashboard: return "系统仪表盘"
-        case .aiMacClock: return "桌面时钟"
-        case .aiMacCustomImage: return "自定义图片"
-        case .aiMacCard: return "功能卡片"
-        case .aiMacCardManagement: return "卡片管理"
-        case .aiMacControl: return "屏幕控制"
-        case .c6Device: return "离线与同步"
-        case .devices: return "设备管理"
-        case .buttonControl: return "按键控制"
-        case .cardRotation: return "卡片管理"
-        case .keyboardSettings: return "屏幕控制"
-        case .oracleBoardManagement: return "口袋先知画板管理"
-        case .excerptBoardManagement: return "摘录画板管理"
-        case .aiMacBoardManagement: return "画板管理"
-        case .oracleCanvas: return "口袋先知画板"
-        case .excerptCanvas: return "摘录画板"
+        case .weather: return String(localized: "天气")
+        case .grokBot: return String(localized: "Grok Bot 用量")
+        case .cloudflare: return String(localized: "Cloudflare 网站统计")
+        case .bambuLab: return String(localized: "Bambu Lab 打印机")
+        case .bambuLab2: return String(localized: "Bambu Lab 打印机 2")
+        case .bambuLab3: return String(localized: "Bambu Lab 打印机 3")
+        case .bambuLab4: return String(localized: "Bambu Lab 打印机 4")
+        case .bambuLab5: return String(localized: "Bambu Lab 打印机 5")
+        case .formlabs: return String(localized: "Formlabs 打印机")
+        case .formlabs2: return String(localized: "Formlabs 打印机 2")
+        case .formlabs3: return String(localized: "Formlabs 打印机 3")
+        case .formlabs4: return String(localized: "Formlabs 打印机 4")
+        case .formlabs5: return String(localized: "Formlabs 打印机 5")
+        case .aiMacScreen: return String(localized: "小电视画板")
+        case .aiMacDashboard: return String(localized: "系统仪表盘")
+        case .aiMacClock: return String(localized: "桌面时钟")
+        case .aiMacCustomImage: return String(localized: "自定义图片")
+        case .aiMacCard: return String(localized: "功能卡片")
+        case .aiMacCardManagement: return String(localized: "卡片管理")
+        case .aiMacControl: return String(localized: "屏幕控制")
+        case .c6Device: return String(localized: "离线与同步")
+        case .readPicoDevice: return String(localized: "图书")
+        case .readPicoFonts: return String(localized: "字体")
+        case .readPicoNotes: return String(localized: "笔记")
+        case .readPicoApps: return String(localized: "应用")
+        case .readPicoDrawings: return String(localized: "画板原稿")
+        case .readPicoSettings: return String(localized: "设备设置")
+        case .readPicoInformation: return String(localized: "灵犀画板")
+        case .readPicoLockScreen: return String(localized: "图片锁屏")
+        case .readPicoFirmware: return String(localized: "固件与备份")
+        case .devices: return String(localized: "设备管理")
+        case .buttonControl: return String(localized: "按键控制")
+        case .cardRotation: return String(localized: "卡片管理")
+        case .keyboardSettings: return String(localized: "屏幕控制")
+        case .oracleBoardManagement: return String(localized: "口袋先知画板管理")
+        case .excerptBoardManagement: return String(localized: "摘录画板管理")
+        case .aiMacBoardManagement: return String(localized: "画板管理")
+        case .oracleCanvas: return String(localized: "口袋先知画板")
+        case .excerptCanvas: return String(localized: "摘录画板")
         }
     }
 
     var icon: String {
         switch self {
+        case .controlCenterSource: return "network"
+        case .controlCenter: return "square.grid.2x2"
         case .welcome: return "shippingbox"
         case .general: return "gearshape"
         case .appearance: return "paintbrush"
@@ -276,6 +330,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .pomodoro: return "timer"
         case .system: return "gauge"
         case .nowPlaying: return "music.note"
+        case .wallpaperLibrary: return "photo.on.rectangle.angled"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -286,6 +341,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .m5Controller: return "gamecontroller"
         case .homeAssistant: return "house"
         case .weather: return "cloud.sun"
+        case .grokBot: return "sparkles"
+        case .cloudflare: return "chart.bar.xaxis"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         case .aiMacScreen: return "rectangle.stack"
@@ -296,6 +353,15 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .aiMacCardManagement: return "tray.full"
         case .aiMacControl: return "slider.horizontal.3"
         case .c6Device: return "cpu"
+        case .readPicoDevice: return "book.closed"
+        case .readPicoFonts: return "textformat"
+        case .readPicoNotes: return "note.text"
+        case .readPicoApps: return "square.grid.2x2"
+        case .readPicoDrawings: return "scribble.variable"
+        case .readPicoSettings: return "slider.horizontal.3"
+        case .readPicoInformation: return "rectangle.on.rectangle"
+        case .readPicoLockScreen: return "photo"
+        case .readPicoFirmware: return "arrow.triangle.2.circlepath"
         case .devices: return "externaldrive"
         case .buttonControl: return "appletvremote.gen4"
         case .cardRotation: return "tray.full"
@@ -311,13 +377,15 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     /// 选择该面板时对应的显示模式（设置/外观/设备管理/按键控制/独立画板/开始使用无对应键盘显示模式）
     var displayMode: DisplayMode? {
         switch self {
-        case .welcome, .general, .appearance, .awtrix, .awtrixCardManagement,
+        case .controlCenterSource, .controlCenter, .welcome, .general, .appearance, .wallpaperLibrary, .awtrix, .awtrixCardManagement,
              .m5Controller: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .cardRotation, .keyboardSettings, .oracleBoardManagement, .excerptBoardManagement,
-             .aiMacBoardManagement, .c6Device: return nil
+             .aiMacBoardManagement, .c6Device, .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps,
+             .readPicoDrawings, .readPicoSettings, .readPicoInformation,
+             .readPicoLockScreen, .readPicoFirmware: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
         case .pomodoro: return .pomodoro
@@ -330,6 +398,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .emojiWallpaper: return .emojiWallpaper
         case .homeAssistant: return .homeAssistant
         case .weather: return .weather
+        case .grokBot: return .grokBot
+        case .cloudflare: return .cloudflare
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
         case .bambuLab3: return .bambuLab3
@@ -579,7 +649,7 @@ private let formlabsDeveloperDocsURL = URL(string: "https://formlabs.com/support
 
 /// 严格按 StickS3 固件的 135×240 布局绘制：46px 双行头部、三张固定高度卡片和
 /// 22px 操作提示。软件预览与实机使用相同的菜单顺序、间距和颜色层级。
-private struct M5ControllerScreenPreview: View {
+struct M5ControllerScreenPreview: View {
     let info: M5ControllerInfo
     let connected: Bool
     let secured: Bool
@@ -768,8 +838,14 @@ private struct M5ControllerDevicePreview: View {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     /// NavigationSplitView 侧栏列可见性
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var selected: Panel
+    @State private var controlCenterDataSource: DeviceControlCenterDataSource.Destination?
+    @State private var floatingControlCenterDevice: ControlCenterFloatingDeviceRoute?
+    @State private var closingControlCenterDevice = false
+    @State private var inlineControlCenterDeviceID: UUID?
     @State private var showClearHistoryConfirm = false
     @State private var expandedModule: CanvasModule?
     // 拖拽排序状态：拖动中仅更新本地列表，松手后统一提交设置
@@ -822,6 +898,7 @@ struct SettingsView: View {
     @State private var expandedDeviceIDs: Set<UUID> = []
     @State private var selectedAddDeviceType: DeviceType?
     @State private var deviceSheetOpen = false
+    @StateObject private var readPicoNavigation = ReadPicoDeviceNavigation()
     @State private var selectedManagedDeviceID: UUID?
     @State private var highlightedDeviceID: UUID?
     @State private var addingDeviceID: UUID?
@@ -877,16 +954,17 @@ struct SettingsView: View {
         self.model = model
         // 版本日志默认展开当前版本（最新一条），历史版本折叠
         _expandedReleaseNotes = State(initialValue: Set(ReleaseNotes.all.prefix(1).map(\.id)))
-        // 首次使用（无任何设备）直接进入「开始使用」引导页；已有设备时跟随当前显示模式
-        if DeviceOnboardingPolicy.shouldShow(for: model.settings.devices) {
-            _selected = State(initialValue: .welcome)
-        } else {
-            _selected = State(initialValue: Panel.from(displayMode: model.settings.displayMode) ?? .general)
-        }
+        // The overview is the common entry for all device families, including first use.
+        _selected = State(initialValue: .controlCenter)
     }
 
     var body: some View {
         mainContent
+            .modifier(LingxiSoftwareAppearanceSurface(settings: model.settings))
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LingxiShowControlCenter"))) { _ in
+                requestPicoNavigation { selected = .controlCenter }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LingxiToggleSidebar"))) { _ in toggleSidebar() }
             .alert("恢复初始设定？", isPresented: $showResetConfirm1) {
                 Button("取消", role: .cancel) {}
                 Button("继续", role: .destructive) { showResetConfirm2 = true }
@@ -907,7 +985,7 @@ struct SettingsView: View {
                 Text(shortcutConflictText)
             }
             .confirmationDialog(
-                "确认刷入 AI Mac 小屏幕固件？",
+                "确认刷入 ESP8266 天气时钟固件？",
                 isPresented: $showAIMacFlashConfirmation,
                 titleVisibility: .visible
             ) {
@@ -990,12 +1068,15 @@ struct SettingsView: View {
     /// 无设备时一律不显示预览（引导页/设备管理阶段无需预览）；按键控制页只有被控目标是灵犀68 键盘时才显示键盘预览
     private var hidesPreviewPanel: Bool {
         if model.settings.devices.isEmpty { return true }
+        if selected == .nowPlaying, controlCenterDataSource == .nowPlaying { return true }
         switch selected {
         case .oracleCanvas, .excerptCanvas, .oracleBoardManagement, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .excerptBoardManagement, .aiMacBoardManagement,
-             .devices, .general, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device:
+             .controlCenterSource, .controlCenter, .devices, .general, .wallpaperLibrary, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device,
+             .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
+             .readPicoInformation, .readPicoLockScreen, .readPicoFirmware:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -1007,7 +1088,7 @@ struct SettingsView: View {
 
     /// 无设备时可正常使用的面板（设备管理 / 外观 / 设置）
     private func worksWithoutDevices(_ panel: Panel) -> Bool {
-        panel == .devices || panel == .appearance || panel == .general
+        panel == .nowPlaying || panel == .controlCenterSource || panel == .controlCenter || panel == .devices || panel == .appearance || panel == .general || panel == .wallpaperLibrary
     }
 
     /// 首次使用/已删光全部设备时的引导页：引导用户到设备管理添加设备
@@ -1039,9 +1120,11 @@ struct SettingsView: View {
             // 侧栏列最大宽度随窗口宽度动态收缩，保证详情区永远放得下——
             // 预览面板任何窗口尺寸下都完整展示、绝不被裁切（与旧版自适应行为一致）
             let previewNeed: CGFloat = hidesPreviewPanel ? 0 : PreviewPanel.preferredWidth(forHeight: geo.size.height)
-            let detailNeed: CGFloat = selected == .m5Controller ? 620 : 380 + previewNeed + 2
-            NavigationSplitView(columnVisibility: $columnVisibility) {
+            let detailNeed: CGFloat = selected.isReadPico || selected == .wallpaperLibrary ? 660 : (selected == .m5Controller ? 620 : 380 + previewNeed + 2)
+            NavigationSplitView(columnVisibility: guardedColumnVisibility) {
                 sidebarColumn(windowWidth: geo.size.width)
+                    .disabled(floatingControlCenterDevice != nil)
+                    .accessibilityHidden(floatingControlCenterDevice != nil)
                     // 图标模式最窄 82
                     .navigationSplitViewColumnWidth(min: 82,
                                                     ideal: CGFloat(model.settings.sidebarWidth),
@@ -1058,7 +1141,17 @@ struct SettingsView: View {
             // windowToolbar，避免产生没有实际用途的二级入口。
             .toolbarVisibility(.hidden, for: .windowToolbar)
             .onChange(of: selected) { newValue in
-                if let mode = newValue.displayMode {
+                if controlCenterDataSource == .nowPlaying, newValue != .nowPlaying {
+                    controlCenterDataSource = nil
+                }
+                // Navigation initiated by an existing workspace (for example Remove Device)
+                // leaves the floating context rather than retaining a stale overlay.
+                if let device = hostedControlCenterDevice,
+                   !floatingDevicePages(for: device).contains(newValue) {
+                    clearFloatingControlCenterDevice()
+                }
+                if let mode = newValue.displayMode,
+                   !(newValue == .nowPlaying && controlCenterDataSource == .nowPlaying) {
                     model.setMode(mode)
                 }
                 // 两个独立画板均为双栏布局（左主内容 + 右侧边栏）：
@@ -1073,15 +1166,48 @@ struct SettingsView: View {
             // 但自动轮换开启时键盘按轮换池循环推送，侧栏不跟随（避免用户操作中途界面被切走）。
             // 关闭自动轮换后，点击侧栏项才会切换显示。
             .onChange(of: model.settings.displayMode) { newMode in
+                guard !hasExternalPersistentPreview else { return }
+                guard controlCenterDataSource != .nowPlaying else { return }
                 // 在设备管理中新建键盘时会给它写入默认的「灵犀画板」模式。
                 // 这是设备初始值，不是用户要求切换页面；继续留在设备管理中完成 IP 等配置。
-                if selected == .devices || selected == .keyboardSettings || [.aiMacScreen, .aiMacCard, .aiMacCardManagement,
-                    .aiMacBoardManagement, .aiMacControl, .c6Device].contains(selected) { return }
+                if selected == .controlCenter || selected == .controlCenterSource || selected.isReadPico || selected == .wallpaperLibrary || selected == .devices || selected == .keyboardSettings || [.aiMacScreen, .aiMacCard, .aiMacCardManagement,
+                    .aiMacBoardManagement, .aiMacControl, .c6Device, .readPicoDevice].contains(selected) { return }
                 if model.settings.cardRotationEnabled { return }
                 if let panel = Panel.from(displayMode: newMode), panel != selected {
                     selected = panel
                 }
             }
+            .onChange(of: floatingControlCenterActiveDeviceID) { id in
+                guard let device = hostedControlCenterDevice, id != device.id else { return }
+                if inlineControlCenterDeviceID != nil, let id,
+                   let next = model.settings.devices.first(where: { $0.id == id }),
+                   next.type == device.type, floatingDevicePages(for: next).contains(selected) {
+                    // Main-sidebar selection already chose this device's page.
+                    // Keep the normal workspace and bind its preview to that ID.
+                    inlineControlCenterDeviceID = id
+                    return
+                }
+                // An external menu command changed the physical editing target. Dismiss
+                // this presentation before an old header can edit the new active device.
+                // Reader drafts remain in their device-owned navigation session.
+                clearFloatingControlCenterDevice()
+                selected = .controlCenter
+            }
+            .onChange(of: columnVisibility) { visibility in
+                if visibility != .detailOnly { promoteFloatingDeviceToInline() }
+            }
+            .onChange(of: selectedReadPicoDeviceID, initial: true) { _, id in
+                readPicoNavigation.setActiveDevice(id)
+            }
+            .background {
+                if let drafts = readPicoNavigation.activeDrafts {
+                    // Keep both the departure prompt and window-close delegate
+                    // outside the editor subtree that changes presentation.
+                    Color.clear.frame(width: 0, height: 0)
+                        .modifier(ReadPicoDraftProtection(drafts: drafts, managesLifecycle: false))
+                }
+            }
+            .onDisappear { readPicoNavigation.setActiveDevice(nil) }
             // 切换操作设备时丢弃进行中的拖拽临时列表：否则上一台键盘的排序可能被提交到新设备
             .onChange(of: model.activeDeviceID(for: .keyboard)) { _ in
                 dragPanels = nil
@@ -1096,6 +1222,9 @@ struct SettingsView: View {
             .onChange(of: model.activeDeviceID(for: .excerpt)) { _ in
                 dragExcerptBoards = nil
                 draggedExcerptBoard = nil
+            }
+            .onChange(of: model.activeDeviceID(for: .readPico)) { id in
+                if selected.isReadPico && id == nil { selected = .devices }
             }
             .onChange(of: model.activeColorScreenDeviceID) { _ in
                 dragAIMacBoards = nil
@@ -1122,6 +1251,78 @@ struct SettingsView: View {
                 if let route = awtrixAppRoute, !ids.contains(route.deviceID) {
                     awtrixAppRoute = nil
                 }
+                if selected.isReadPico, model.activeDeviceID(for: .readPico) == nil {
+                    selected = .devices
+                }
+                if let id = floatingControlCenterDevice?.device.id ?? inlineControlCenterDeviceID,
+                   !ids.contains(id) {
+                    clearFloatingControlCenterDevice()
+                    selected = .controlCenter
+                }
+            }
+        }
+    }
+
+    private var guardedPanelSelection: Binding<Panel> {
+        Binding(get: { selected }, set: { next in
+            guard next != selected else { return }
+            if selected.isReadPico, next.isReadPico { selected = next }
+            else { requestPicoNavigation { selected = next } }
+        })
+    }
+
+    private var selectedReadPicoDeviceID: UUID? {
+        selected.isReadPico ? model.activeDeviceID(for: .readPico) : nil
+    }
+
+    private func requestPicoNavigation(_ action: @escaping () -> Void) {
+        readPicoNavigation.request(from: selected.isReadPico
+                                   ? model.activeDeviceID(for: .readPico) : nil, action: action)
+    }
+
+    private func requestPicoPage(_ panel: Panel, _ deviceID: UUID?, _ action: @escaping () -> Void) {
+        readPicoNavigation.requestPage(from: selected.isReadPico ? model.activeDeviceID(for: .readPico) : nil,
+                                       to: deviceID, action: action)
+    }
+
+    /// Navigation replaces native scroll/form hosts. An inherited sidebar or
+    /// card-layout animation must not crossfade their opaque backing surfaces.
+    private func updateWorkspaceWithoutAnimation(_ update: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, update)
+    }
+
+    private func openReadPicoDevice(_ id: UUID) {
+        requestPicoNavigation {
+            model.switchDevice(type: .readPico, to: id)
+            selectedManagedDeviceID = nil
+            addingDeviceID = nil
+            deviceSheetOpen = false
+            selected = .readPicoDevice
+        }
+    }
+
+    @ViewBuilder private var readPicoDeviceWorkspace: some View {
+        if let device = model.activeDevice(for: .readPico) {
+            ReadPicoManagedDeviceView(model: model, device: device,
+                                      drafts: readPicoNavigation.drafts(for: device.id),
+                                      section: selected.readPicoSection ?? .books, onBack: {
+                requestPicoNavigation { selected = .devices }
+            }, onRemove: {
+                requestPicoNavigation {
+                    readPicoNavigation.remove(device.id)
+                    model.removeDevice(id: device.id)
+                    selected = .devices
+                }
+            }).id(device.id)
+        } else {
+            ContentUnavailableView {
+                Label("尚未添加小纸 Pico", systemImage: "book.closed")
+            } description: {
+                Text("在设备管理中添加阅读器，即可管理图书、应用和设备设置。")
+            } actions: {
+                Button("前往设备管理") { selected = .devices }
             }
         }
     }
@@ -1131,20 +1332,23 @@ struct SettingsView: View {
         GeometryReader { geo in
             Group {
                 if geo.size.width <= 96 {
-                    MiniSidebar(selection: $selected,
+                    MiniSidebar(selection: guardedPanelSelection,
                                 awtrixAppRoute: $awtrixAppRoute,
-                                model: model)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                                model: model, onNavigate: requestPicoNavigation,
+                                onPicoNavigate: requestPicoPage)
+                        .transition(.identity)
                 } else {
-                    Sidebar(selection: $selected,
+                    Sidebar(selection: guardedPanelSelection,
                             awtrixAppRoute: $awtrixAppRoute,
-                            model: model)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                            model: model, onNavigate: requestPicoNavigation,
+                            onPicoNavigate: requestPicoPage)
+                        .transition(.identity)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            // 跨越 96pt 模式切换阈值时用带弹跳的 spring 衔接（跳入/跳出感），拖拽过程本身不逐帧动画
-            .animation(.spring(response: 0.32, dampingFraction: 0.6), value: geo.size.width <= 96)
+            // The native split view already moves the column. Replacing its two
+            // representations atomically avoids overlapping translucent sidebars.
+            .animation(nil, value: geo.size.width <= 96)
             .onChange(of: geo.size.width) { newWidth in
                 persistSidebarWidth(newWidth, windowWidth: windowWidth)
             }
@@ -1164,71 +1368,127 @@ struct SettingsView: View {
         model.setSidebarWidth(w)
     }
 
-    /// 详情列：顶部栏 + 主内容滚动区 + 实时预览面板
+    /// The dashboard stays mounted while its device workspace expands above it.
     private var detailColumn: some View {
-        HStack(spacing: 0) {
-            // 两个独立画板均为双栏（主内容 + 右侧边栏）：窗口自动放大容纳，保持纯纵向滚动
-            // （横向滚动会干扰右侧边栏 TextField 的键盘焦点：Cmd+V/Tab 失效）
-            VStack(spacing: 0) {
-                headerBar
-                Divider()
-                if selected == .m5Controller {
-                    // StickS3 使用独立双栏：左侧 Form 自己滚动，右侧预览保持固定。
-                    // 不再嵌套到通用 ScrollView，避免双重滚动和预览被带走。
-                    m5ControllerWorkspace
-                        .id(selected.rawValue)
-                } else {
-                    ScrollView([.vertical]) {
-                        if model.settings.devices.isEmpty && !worksWithoutDevices(selected) {
-                            emptyDevicesOnboarding
-                        } else if selected == .excerptCanvas {
-                            excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
-                        } else if selected == .oracleCanvas {
-                            oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
-                        } else if selected == .aiMacScreen {
-                            aiMacScreenForm
-                        } else if selected == .aiMacDashboard {
-                            aiMacStandaloneModeForm(.dashboard)
-                        } else if selected == .aiMacClock {
-                            aiMacStandaloneModeForm(.clock)
-                        } else if selected == .aiMacCustomImage {
-                            aiMacStandaloneModeForm(.customImage)
-                        } else if selected == .aiMacCard {
-                            aiMacCardForm
-                        } else if selected == .aiMacCardManagement {
-                            aiMacCardManagementForm
-                        } else if selected == .oracleBoardManagement {
-                            oracleBoardManagementForm
-                        } else if selected == .excerptBoardManagement {
-                            excerptBoardManagementForm
-                        } else if selected == .aiMacBoardManagement {
-                            aiMacBoardManagementForm
-                        } else if selected == .aiMacControl {
-                            aiMacControlForm
-                        } else if selected == .c6Device {
-                            if let id = model.activeDeviceID(for: .c6Screen) {
-                                C6DeviceView(model: model, deviceID: id).padding(20)
-                            }
-                        } else {
-                            Form { panelContent(for: selected) }
-                                .formStyle(.grouped)
-                                .padding(.bottom, 12)
-                        }
+        detailColumnBase
+            // Keep page replacement and presentation migration out of the
+            // split-view width animation; the floating shell animates separately.
+            .animation(nil, value: selected)
+            .animation(nil, value: inlineControlCenterDeviceID)
+            .animation(nil, value: columnVisibility == .detailOnly)
+            .allowsHitTesting(floatingControlCenterDevice == nil)
+            .accessibilityHidden(floatingControlCenterDevice != nil)
+            .overlay {
+                if let route = floatingControlCenterDevice {
+                    ControlCenterFloatingWorkspace(route: route,
+                                                   deviceName: model.settings.devices.first { $0.id == route.device.id }?.name ?? route.device.name,
+                                                   isClosing: closingControlCenterDevice,
+                                                   onClose: closeFloatingControlCenterDevice,
+                                                   onCloseCompleted: { finishClosingFloatingControlCenterDevice(route.presentationID) }) {
+                        floatingDeviceWorkspace(for: route.device)
                     }
-                    .scrollContentBackground(.hidden)
-                    // 面板切换时重建滚动视图，确保每次打开都从页面顶部开始。
-                    .id(selected.rawValue + "|" + (awtrixAppRoute?.key ?? ""))
+                    .id(route.presentationID)
+                    .transition(.identity)
+                    .zIndex(20)
                 }
             }
-            .frame(minWidth: 300, maxWidth: .infinity) // 空间不足时中间区先让位，预览保持完整
+            .sheet(isPresented: $showPrinterAlertPreview) {
+                PrinterAlertPreviewSheet(model: model)
+            }
+    }
 
-            if !hidesPreviewPanel {
+    private var detailColumnBase: some View {
+        VStack(spacing: 0) {
+            if columnVisibility != .detailOnly {
+                expandedHeaderBar
                 Divider()
-                PreviewPanel(model: model) // 宽度按面板自身高度×设备外观比例反推，四边留白固定
+            }
+            if selected == .controlCenter || floatingControlCenterDevice != nil {
+                DeviceControlCenterView(model: model, onOpen: openFloatingControlCenterDevice,
+                                        onOpenDataSource: openControlCenterDataSource, onAdd: addControlCenterDevice)
+            } else if let device = hostedControlCenterDevice, inlineControlCenterDeviceID != nil {
+                floatingDeviceWorkspace(for: device, showsPageNavigation: columnVisibility == .detailOnly)
+                    .accessibilityIdentifier("control-center-inline-device-workspace")
+            } else {
+                selectedDeviceWorkspace
             }
         }
-        .sheet(isPresented: $showPrinterAlertPreview) {
-            PrinterAlertPreviewSheet(model: model)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if columnVisibility == .detailOnly {
+                VStack(spacing: 0) {
+                    compactNavigationBar
+                    Divider()
+                }
+            }
+        }
+    }
+
+    /// Used by both standard navigation and the expanded control-center workspace.
+    private var selectedDeviceWorkspace: some View {
+        HStack(spacing: 0) {
+            selectedWorkspaceContent
+                .frame(minWidth: 300, maxWidth: .infinity)
+            if !hidesPreviewPanel {
+                Divider()
+                PreviewPanel(model: model).clipped()
+            }
+        }
+    }
+
+    @ViewBuilder private var selectedWorkspaceContent: some View {
+        if selected == .controlCenterSource {
+            controlCenterSourceWorkspace
+        } else if selected == .m5Controller {
+            // StickS3 使用独立双栏：左侧 Form 自己滚动，右侧预览保持固定。
+            // 不再嵌套到通用 ScrollView，避免双重滚动和预览被带走。
+            m5ControllerWorkspace
+                .id(selected.rawValue)
+        } else if selected.isReadPico {
+            readPicoDeviceWorkspace
+        } else if selected == .wallpaperLibrary {
+            SharedWallpaperLibraryView()
+        } else {
+            ScrollView([.vertical]) {
+                if model.settings.devices.isEmpty && !worksWithoutDevices(selected) {
+                    emptyDevicesOnboarding
+                } else if selected == .excerptCanvas {
+                    excerptCanvasForm // 摘录画板：主内容 + 右侧设备边栏两栏布局
+                } else if selected == .oracleCanvas {
+                    oracleCanvasForm // 口袋先知画板：主内容 + 右侧预览边栏两栏布局
+                } else if selected == .aiMacScreen {
+                    aiMacScreenForm
+                } else if selected == .aiMacDashboard {
+                    aiMacStandaloneModeForm(.dashboard)
+                } else if selected == .aiMacClock {
+                    aiMacStandaloneModeForm(.clock)
+                } else if selected == .aiMacCustomImage {
+                    aiMacStandaloneModeForm(.customImage)
+                } else if selected == .aiMacCard {
+                    aiMacCardForm
+                } else if selected == .aiMacCardManagement {
+                    aiMacCardManagementForm
+                } else if selected == .oracleBoardManagement {
+                    oracleBoardManagementForm
+                } else if selected == .excerptBoardManagement {
+                    excerptBoardManagementForm
+                } else if selected == .aiMacBoardManagement {
+                    aiMacBoardManagementForm
+                } else if selected == .aiMacControl {
+                    aiMacControlForm
+                } else if selected == .c6Device {
+                    if let id = model.activeDeviceID(for: .c6Screen) {
+                        C6DeviceView(model: model, deviceID: id).padding(20)
+                    }
+                } else {
+                    Form { panelContent(for: selected) }
+                        .formStyle(.grouped)
+                        .controlCenterHostedFormSurface()
+                        .padding(.bottom, 12)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            // 面板切换时重建滚动视图，确保每次打开都从页面顶部开始。
+            .id(selected.rawValue + "|" + (awtrixAppRoute?.key ?? ""))
         }
     }
 
@@ -1243,7 +1503,7 @@ struct SettingsView: View {
         guard window.frame.width < width else { return }
         var frame = window.frame
         frame.size.width = width
-        window.setFrame(frame, display: true, animate: true)
+        window.setFrame(frame, display: true, animate: !reduceMotion)
     }
 
     // MARK: 顶部栏（直接展开/收起按钮 + 标题 + 状态）
@@ -1265,6 +1525,14 @@ struct SettingsView: View {
     }
 
     private var currentPanelTitle: String {
+        if inlineControlCenterDeviceID != nil, let device = hostedControlCenterDevice {
+            return device.name + " · " + selected.title
+        }
+        if selected == .controlCenterSource {
+            return model.controlCenterDataSources().first { $0.destination == controlCenterDataSource }?.title ?? String(localized: "数据源")
+        }
+        if selected == .wallpaperLibrary { return selected.title }
+        if selected.isReadPico { return (model.activeDevice(for: .readPico)?.name ?? "小纸 Pico") + " · " + selected.title }
         if selected == .keyboardSettings {
             return (model.activeDevice(for: .keyboard)?.name ?? "灵犀68") + " · 屏幕控制"
         }
@@ -1282,16 +1550,437 @@ struct SettingsView: View {
         return keyboardPanelTitle(selected)
     }
 
-    private var headerBar: some View {
+    private var compactNavigationBar: some View {
+        // A single control row keeps the capsules equally inset on both sides.
+        // Device status stays available in the navigation tooltip and device workspace.
+        compactNavigationControls
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+    }
+
+    private func toggleSidebar() {
+        guard permitsPicoPresentationChange() else { return }
+        let next: NavigationSplitViewVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+        if next != .detailOnly {
+            // Move the existing editor before animating the native column width.
+            // Reparenting inside that animation crossfades entire Form hosts.
+            guard promoteFloatingDeviceToInline() else { return }
+        }
+        if reduceMotion { updateWorkspaceWithoutAnimation { columnVisibility = next } }
+        else { withAnimation(.easeInOut(duration: 0.2)) { columnVisibility = next } }
+    }
+
+    private var compactNavigationControls: some View {
+        HStack(spacing: 12) {
+            compactNavigationCircle("sidebar.left", title: "展开侧边栏", action: toggleSidebar)
+            compactNavigation
+                .layoutPriority(1)
+            compactNavigationCircle("plus", title: "添加设备", action: addControlCenterDevice)
+                .accessibilityIdentifier("compact-add-device")
+            compactNavigationCircle("paintbrush", title: "外观") {
+                requestPicoNavigation { selected = .appearance }
+            }.accessibilityIdentifier("compact-appearance")
+            compactNavigationCircle("gearshape", title: "设置") {
+                requestPicoNavigation { selected = .general }
+            }.accessibilityIdentifier("compact-settings")
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private func compactNavigationCircle(_ symbol: String, title: LocalizedStringKey,
+                                                       action: @escaping () -> Void) -> some View {
+        let button = Button(action: action) {
+            Image(systemName: symbol)
+                .font(.body.weight(.medium))
+                .frame(width: 40, height: 40)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .frame(width: 40, height: 40)
+        .help(title).accessibilityLabel(title)
+        if reduceTransparency {
+            button
+                .background(Color(nsColor: .controlBackgroundColor), in: Circle())
+                .overlay(Circle().strokeBorder(Color.primary.opacity(0.25), lineWidth: 1))
+        } else {
+            button.glassEffect(.regular.interactive(), in: Circle())
+        }
+    }
+
+    private var compactNavigationMenu: some View {
+        Menu {
+            Section("总览") {
+                Button { requestPicoNavigation { selected = .controlCenter } } label: {
+                    Label("中控面板", systemImage: "square.grid.2x2")
+                }
+            }
+            Menu {
+                let screens = model.settings.devices.filter { DeviceControlCenterPolicy.hasDisplay($0.type) }
+                Section("屏幕设备") {
+                    if screens.isEmpty {
+                        Text("暂无屏幕设备")
+                    } else {
+                        ForEach(screens) { device in
+                            Button { openControlCenterDevice(device.id) } label: {
+                                Label(device.name, systemImage: device.type.capabilityProfile?.icon ?? "externaldrive")
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button { requestPicoNavigation { selected = .devices } } label: {
+                    Label("设备管理", systemImage: "externaldrive")
+                }
+            } label: {
+                Label("设备", systemImage: "display")
+            }
+            Menu {
+                let sources = model.controlCenterDataSources()
+                if sources.isEmpty {
+                    Text("暂无数据源")
+                } else {
+                    ForEach(sources) { source in
+                        Button { openControlCenterDataSource(source.destination) } label: {
+                            Label(source.title, systemImage: source.symbolName)
+                        }
+                    }
+                }
+            } label: {
+                Label("数据源", systemImage: "square.stack.3d.up")
+            }
+            Section("软件") {
+                Button { requestPicoNavigation { selected = .wallpaperLibrary } } label: {
+                    Label("壁纸库", systemImage: "photo.on.rectangle.angled")
+                }
+            }
+        } label: {
+            Label(currentPanelTitle, systemImage: selected.icon)
+                .font(.body.weight(.medium))
+                .lineLimit(1).truncationMode(.middle)
+                .padding(.horizontal, 14)
+                .frame(height: 40)
+        }
+        .menuStyle(.borderlessButton)
+        // Apply the height to Menu itself; the native menu can ignore a label-only frame.
+        .frame(minWidth: 100, maxWidth: 280, minHeight: 40, maxHeight: 40)
+        .accessibilityLabel("快速导航")
+        .accessibilityValue(currentPanelTitle)
+        .help(currentPanelStatus.isEmpty ? currentPanelTitle : currentPanelTitle + " — " + currentPanelStatus)
+    }
+
+    @ViewBuilder private var compactNavigation: some View {
+        if reduceTransparency {
+            compactNavigationMenu.background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 1))
+        } else { compactNavigationMenu.glassEffect(.regular.interactive(), in: Capsule()) }
+    }
+
+    private func addControlCenterDevice() {
+        requestPicoNavigation {
+            selected = .devices
+            selectedManagedDeviceID = nil; addingDeviceID = nil; selectedAddDeviceType = nil
+            deviceSheetOpen = true
+        }
+    }
+
+    private func openControlCenterDataSource(_ destination: DeviceControlCenterDataSource.Destination) {
+        if case let .managedDevice(id) = destination { openFloatingControlCenterDevice(id, nil); return }
+        requestPicoNavigation {
+            if destination == .nowPlaying {
+                clearFloatingControlCenterDevice()
+                controlCenterDataSource = .nowPlaying
+                selected = .nowPlaying
+                return
+            }
+            controlCenterDataSource = destination
+            selected = .controlCenterSource
+        }
+    }
+
+    @ViewBuilder private var controlCenterSourceWorkspace: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Button { selected = .controlCenter; controlCenterDataSource = nil } label: {
+                Label("返回中控面板", systemImage: "chevron.left")
+            }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            switch controlCenterDataSource {
+            case let .cloudflare(id):
+                if let source = model.settings.cloudflareSources.first(where: { $0.id == id }) {
+                    CloudflareSourceEditor(model: model, source: source, compact: true) {
+                        selected = .controlCenter; controlCenterDataSource = nil
+                    }.id(id)
+                } else {
+                    ContentUnavailableView("数据源已移除", systemImage: "network")
+                }
+            case .weather:
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Label("共享天气", systemImage: "cloud.sun").font(.title2.weight(.semibold))
+                        WeatherSettingsView(model: model)
+                    }.frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            default:
+                ContentUnavailableView("数据源已移除", systemImage: "network")
+            }
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func openControlCenterDevice(_ id: UUID) {
+        // Compact-menu and dashboard opens share identity cleanup and the same
+        // sidebar-aware presentation; neither path falls back to the old sheet.
+        openFloatingControlCenterDevice(id, nil)
+    }
+
+    private func routeControlCenterDevice(_ id: UUID, usesSheet: Bool) {
+            guard let device = model.settings.devices.first(where: { $0.id == id }) else { return }
+            switch DeviceControlCenterPolicy.destination(for: device) {
+            case .keyboard:
+                model.switchDevice(type: .keyboard, to: id); selected = .keyboardSettings
+            case .oracle:
+                model.switchDevice(type: .oracle, to: id); selected = .oracleBoardManagement
+            case .excerpt:
+                model.switchDevice(type: .excerpt, to: id); selected = .excerptBoardManagement
+            case .colorScreen:
+                model.selectColorScreen(deviceID: id); selected = .aiMacControl
+            case .c6:
+                model.selectColorScreen(deviceID: id); selected = .c6Device
+            case .awtrix:
+                model.switchDevice(type: .awtrix, to: id); awtrixAppRoute = nil; selected = .awtrixCardManagement
+            case .pico:
+                model.switchDevice(type: .readPico, to: id); selected = .readPicoSettings
+            case .controller:
+                model.switchDevice(type: .m5Controller, to: id); selected = .m5Controller
+            case .deviceSettings:
+                selected = .devices
+                selectedManagedDeviceID = id; highlightedDeviceID = id; addingDeviceID = nil
+                expandedDeviceIDs.insert(id); editingDeviceIDs.insert(id); deviceSheetOpen = usesSheet
+            }
+    }
+
+    private func openFloatingControlCenterDevice(_ id: UUID, _ sourceFrame: CGRect?) {
+        requestPicoNavigation {
+            guard let device = model.settings.devices.first(where: { $0.id == id }) else { return }
+            clearFloatingControlCenterDevice()
+            if columnVisibility != .detailOnly {
+                inlineControlCenterDeviceID = id
+                routeControlCenterDevice(id, usesSheet: false)
+                return
+            }
+            let preview = model.controlCenterPreview(for: device)
+            closingControlCenterDevice = false
+            floatingControlCenterDevice = ControlCenterFloatingDeviceRoute(
+                device: device, sourceFrame: sourceFrame, previewImage: preview.image)
+            routeControlCenterDevice(id, usesSheet: false)
+        }
+    }
+
+    private func closeFloatingControlCenterDevice() {
+        guard floatingControlCenterDevice != nil, !closingControlCenterDevice else { return }
+        requestPicoNavigation {
+            closingControlCenterDevice = true
+        }
+    }
+
+    private func finishClosingFloatingControlCenterDevice(_ presentationID: UUID) {
+        // The shell owns animation completion; stale completions cannot remove
+        // another route opened by an external navigation command in the meantime.
+        guard closingControlCenterDevice,
+              floatingControlCenterDevice?.presentationID == presentationID else { return }
+        updateWorkspaceWithoutAnimation {
+            clearFloatingControlCenterDevice()
+            selected = .controlCenter
+        }
+    }
+
+    private var guardedColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(get: { columnVisibility }, set: { visibility in
+            guard visibility != columnVisibility, permitsPicoPresentationChange() else { return }
+            columnVisibility = visibility
+        })
+    }
+
+    private func permitsPicoPresentationChange() -> Bool {
+        let id = hostedControlCenterDevice?.type == .readPico
+            ? hostedControlCenterDevice?.id : selectedReadPicoDeviceID
+        guard let id else { return true }
+        let drafts = readPicoNavigation.drafts(for: id)
+        guard !drafts.model.busy, !drafts.externalBusy, !drafts.presentationBusy, !drafts.lockScreen.rendering,
+              !drafts.isHandlingDeparture, drafts.childDeparture == nil else {
+            drafts.model.report("请先完成或取消当前设备操作，再离开页面。", error: true)
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func promoteFloatingDeviceToInline() -> Bool {
+        guard let route = floatingControlCenterDevice else { return true }
+        // Every migration entry point, including system sidebar commands, shares
+        // this gate: transient firmware/import/auth operations belong to the view.
+        guard permitsPicoPresentationChange() else { return false }
+        // Retain the actual editor's physical ID, field drafts, pending operations,
+        // and reader session; removing the floating shell is not a departure.
+        updateWorkspaceWithoutAnimation {
+            inlineControlCenterDeviceID = route.device.id
+            floatingControlCenterDevice = nil
+            closingControlCenterDevice = false
+        }
+        return true
+    }
+
+    private func clearFloatingControlCenterDevice() {
+        floatingControlCenterDevice = nil
+        inlineControlCenterDeviceID = nil
+        closingControlCenterDevice = false
+        editingDeviceIDs.removeAll()
+        connectionDrafts.removeAll()
+        bambuMatchDrafts.removeAll()
+        selectedManagedDeviceID = nil
+        model.m5StopScan()
+    }
+
+    private var hasExternalPersistentPreview: Bool {
+        floatingControlCenterDevice != nil || inlineControlCenterDeviceID != nil
+    }
+
+    private var hostedControlCenterDevice: ManagedDevice? {
+        guard let id = floatingControlCenterDevice?.device.id ?? inlineControlCenterDeviceID else { return nil }
+        return model.settings.devices.first { $0.id == id } ?? floatingControlCenterDevice?.device
+    }
+
+    private var floatingControlCenterActiveDeviceID: UUID? {
+        guard let device = hostedControlCenterDevice else { return nil }
+        if DeviceControlCenterPolicy.destination(for: device) == .deviceSettings {
+            // The device editor is already keyed by its physical ID, including
+            // disabled profiles and account-based data sources.
+            return device.id
+        }
+        if device.type.isColorWiFiScreen { return model.activeColorScreenDeviceID }
+        return model.activeDeviceID(for: device.type)
+    }
+
+    private func floatingDevicePages(for device: ManagedDevice) -> [Panel] {
+        switch DeviceControlCenterPolicy.destination(for: device) {
+        case .keyboard:
+            return [.keyboardSettings, .cardRotation, .buttonControl] + model.keyboardCardList(for: device.id)
+        case .oracle: return [.oracleBoardManagement, .oracleCanvas]
+        case .excerpt: return [.excerptBoardManagement, .excerptCanvas]
+        case .colorScreen:
+            return [.aiMacControl, .aiMacBoardManagement, .aiMacScreen, .aiMacCardManagement,
+                    .aiMacCard, .aiMacDashboard, .aiMacClock, .aiMacCustomImage]
+        case .c6: return [.c6Device]
+        case .awtrix: return [.awtrixCardManagement, .awtrix]
+        case .pico: return Panel.readPicoItems
+        case .controller: return [.m5Controller]
+        case .deviceSettings: return [.devices]
+        }
+    }
+
+    @ViewBuilder private func floatingDeviceWorkspace(for device: ManagedDevice, showsPageNavigation: Bool = true) -> some View {
+        GeometryReader { geometry in
+            // Use the saved grid combination, not transient source geometry, which
+            // may be unavailable while the dashboard lays out after launch.
+            let cardSize = model.settings.controlCenterLayout.size(for: "device:" + device.id.uuidString)
+            let horizontal = cardSize.columnSpan > cardSize.rowSpan
+            let previewWidth = min(430, max(240, geometry.size.width * 0.28))
+            let editorWidth = horizontal ? geometry.size.width : geometry.size.width - previewWidth
+            if horizontal {
+                VStack(spacing: 0) {
+                    ControlCenterFloatingLivePreview(model: model, deviceID: device.id,
+                                                    picoDrafts: device.type == .readPico ? readPicoNavigation.drafts(for: device.id) : nil,
+                                                    previewLockScreen: selected == .readPicoLockScreen)
+                        .frame(height: min(300, max(180, geometry.size.height * 0.34)))
+                        .accessibilityIdentifier("control-center-preview-top")
+                    Divider()
+                    floatingDeviceEditor(for: device, availableWidth: editorWidth, showsPageNavigation: showsPageNavigation)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    floatingDeviceEditor(for: device, availableWidth: editorWidth, showsPageNavigation: showsPageNavigation)
+                    Divider()
+                    ControlCenterFloatingLivePreview(model: model, deviceID: device.id,
+                                                    picoDrafts: device.type == .readPico ? readPicoNavigation.drafts(for: device.id) : nil,
+                                                    previewLockScreen: selected == .readPicoLockScreen)
+                        .frame(width: previewWidth)
+                        .accessibilityIdentifier("control-center-preview-trailing")
+                }
+            }
+        }
+        .environment(\.controlCenterHasExternalPreview, true)
+    }
+
+    private func floatingDeviceEditor(for device: ManagedDevice, availableWidth: CGFloat, showsPageNavigation: Bool) -> some View {
+            let pages = floatingDevicePages(for: device)
+            return HStack(spacing: 0) {
+                if showsPageNavigation && pages.count > 1 && availableWidth >= 1040 {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("页面").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 12).padding(.bottom, 8)
+                            ForEach(pages) { page in
+                                Button { selectFloatingDevicePage(page) } label: {
+                                    Label(page.title, systemImage: page.icon)
+                                        .font(.body.weight(selected == page ? .semibold : .regular))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 12).padding(.vertical, 10)
+                                        .contentShape(RoundedRectangle(cornerRadius: 9))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(selected == page ? Color.accentColor : Color.primary)
+                                .background(selected == page ? Color.accentColor.opacity(0.12) : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 9))
+                                .accessibilityAddTraits(selected == page ? .isSelected : [])
+                                .accessibilityIdentifier("control-center-page-" + page.rawValue)
+                            }
+                        }.padding(14)
+                    }.frame(width: 190)
+                    Divider()
+                }
+                VStack(spacing: 0) {
+                    if showsPageNavigation && pages.count > 1 && availableWidth < 1040 {
+                        HStack {
+                            Picker("页面", selection: Binding(get: { selected }, set: selectFloatingDevicePage)) {
+                                ForEach(pages) { page in Label(page.title, systemImage: page.icon).tag(page) }
+                            }.pickerStyle(.menu).frame(maxWidth: 300)
+                            Spacer()
+                        }.padding(.horizontal, 18).padding(.vertical, 12)
+                        Divider()
+                    }
+                    if selected == .devices {
+                        Form {
+                            if inlineControlCenterDeviceID != nil {
+                                Section {
+                                    Button {
+                                        clearFloatingControlCenterDevice()
+                                        selected = .devices
+                                    } label: { Label("设备管理", systemImage: "chevron.left") }
+                                }
+                            }
+                            devicesEditorForm
+                        }.formStyle(.grouped)
+                        .controlCenterHostedFormSurface()
+                    } else {
+                        selectedWorkspaceContent
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+    }
+
+    private func selectFloatingDevicePage(_ page: Panel) {
+        // Page transitions use the same draft/busy-operation guard as the main sidebar.
+        requestPicoPage(page, hostedControlCenterDevice?.id) {
+            updateWorkspaceWithoutAnimation { selected = page }
+        }
+    }
+
+    private var expandedHeaderBar: some View {
         HStack(spacing: 10) {
             // 不使用 NavigationSplitView 自动注入的系统 sidebarToggle：macOS 27
             // 会把它折叠进“更多工具栏项目”，形成额外二级菜单。按钮固定在详情
             // 标题栏内，窄侧栏时也不会与透明标题栏下的窗口控制按钮重叠。
             let sidebarIsCollapsed = columnVisibility == .detailOnly
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    columnVisibility = sidebarIsCollapsed ? .all : .detailOnly
-                }
+                toggleSidebar()
             } label: {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 13, weight: .medium))
@@ -1327,6 +2016,9 @@ struct SettingsView: View {
     // MARK: 各面板内容
 
     private var currentPanelStatus: String {
+        if selected == .controlCenter || selected == .controlCenterSource { return "" }
+        if selected == .wallpaperLibrary { return "" }
+        if selected.isReadPico { return "" }
         if selected == .c6Device {
             guard let deviceID = model.activeDeviceID(for: .c6Screen) else {
                 return "尚未添加 C6"
@@ -1363,6 +2055,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func panelContent(for panel: Panel) -> some View {
         switch panel {
+        case .controlCenterSource, .controlCenter: EmptyView() // Native collection/source workspace owns scrolling.
         case .welcome: EmptyView() // 开始使用引导页由 detailColumn 的空设备状态渲染，此处无需内容
         case .general: generalForm
         case .keyboardSettings: keyboardSettingsForm
@@ -1372,6 +2065,7 @@ struct SettingsView: View {
         case .pomodoro: pomodoroForm
         case .system: systemForm
         case .nowPlaying: nowPlayingForm
+        case .wallpaperLibrary: EmptyView() // Owns its native gallery scrolling in detailColumn.
         case .customImage: customImageForm
         case .canvas: canvasForm
         case .excerptQuote: excerptQuoteForm
@@ -1387,6 +2081,8 @@ struct SettingsView: View {
         case .m5Controller: m5ControllerForm
         case .homeAssistant: homeAssistantForm
         case .weather: WeatherSettingsView(model: model)
+        case .grokBot: grokBotForm
+        case .cloudflare: CloudflareAnalyticsSettingsView(model: model)
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
         case .aiMacScreen: aiMacScreenForm
@@ -1400,6 +2096,9 @@ struct SettingsView: View {
             if let id = model.activeDeviceID(for: .c6Screen) {
                 C6DeviceView(model: model, deviceID: id)
             }
+        case .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
+             .readPicoInformation, .readPicoLockScreen, .readPicoFirmware:
+            EmptyView() // Own scrolling and navigation in the embedded device detail.
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
         case .cardRotation: cardRotationForm
@@ -1429,6 +2128,28 @@ struct SettingsView: View {
         }
     }
 
+
+    private var grokBotForm: some View {
+        Form {
+            SecureField("Cursor 会话令牌（可选）", text: model.grokBotSessionTokenBinding)
+            Text("显示 Cursor 账号上的 Grok Bot 每周额度（不是 Grok 网页/CLI）。读不到用量百分比时不会显示 0% 或 100%。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent("状态") {
+                Text(model.grokBotUsage.isAvailable
+                     ? "剩余 \(model.grokBotUsage.remainingPercent ?? 0)%"
+                     : (model.grokBotUsage.message.isEmpty ? "尚未读取" : model.grokBotUsage.message))
+            }
+            if let plan = model.grokBotUsage.planLabel, !plan.isEmpty {
+                LabeledContent("套餐") { Text(plan) }
+            }
+            Button("立即刷新") {
+                Task { await model.refreshData(upload: false, forceUpload: false) }
+            }
+        }
+        .controlCenterHostedFormSurface()
+    }
+
     private var aiMacScreenForm: some View {
         HStack(alignment: .top, spacing: 0) {
             Form {
@@ -1447,7 +2168,7 @@ struct SettingsView: View {
                     } header: {
                         HStack(spacing: 4) {
                             Text("当前画板")
-                            HelpIcon(text: "本页编辑当前 AI Mac 彩色画板的模块。画板创建、排序、显示和自动轮换在“AI Mac 画板管理”中设置。")
+                            HelpIcon(text: "本页编辑当前 小电视彩色画板的模块。画板创建、排序、显示和自动轮换在“小电视画板管理”中设置。")
                         }
                     }
 
@@ -1482,43 +2203,47 @@ struct SettingsView: View {
                         }
                     } else {
                         Section {
-                            Text("这是旧版独立显示模式。可在“AI Mac 画板管理”中切回画板模式，将时钟、系统监控等内容作为模块自由组合。")
+                            Text("这是旧版独立显示模式。可在“小电视画板管理”中切回画板模式，将时钟、系统监控等内容作为模块自由组合。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 } else {
                     Section {
-                        Text("请先在“设备管理”中添加并启用 AI Mac 小屏幕。")
+                        Text("请先在“设备管理”中添加并启用 ESP8266 天气时钟。")
                             .foregroundStyle(.secondary)
                     }
                 }
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: .infinity, alignment: .top)
 
-            Divider().padding(.vertical, 4)
+            if !hasExternalPersistentPreview {
+                Divider().padding(.vertical, 4)
 
-            Form {
-                Section {
-                    HStack {
-                        Spacer()
-                        aiMacPreview
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                    Text("彩色画面不进行黑白转换、灰阶抖动或墨水屏插值；连接设备后，最终预览会模拟实际 RGB565 或 JPEG 传输像素。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    HStack(spacing: 4) {
-                        Text("240 × 240 彩色预览")
-                        HelpIcon(text: "拖动色彩滑杆时先显示高质量近似预览，松开后按设备实际 RGB565 或 JPEG 字节重新生成最终预览。设备尚未连接、能力未知时显示原始 240×240 渲染；经典默认正在播放的设备端进度覆盖层会继续实时前进。")
+                Form {
+                    Section {
+                        HStack {
+                            Spacer()
+                            aiMacPreview
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                        Text("彩色画面不进行黑白转换、灰阶抖动或墨水屏插值；连接设备后，最终预览会模拟实际 RGB565 或 JPEG 传输像素。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text("240 × 240 彩色预览")
+                            HelpIcon(text: "拖动色彩滑杆时先显示高质量近似预览，松开后按设备实际 RGB565 或 JPEG 字节重新生成最终预览。设备尚未连接、能力未知时显示原始 240×240 渲染；经典默认正在播放的设备端进度覆盖层会继续实时前进。")
+                        }
                     }
                 }
+                .formStyle(.grouped)
+                .controlCenterHostedFormSurface()
+                .frame(width: 300)
             }
-            .formStyle(.grouped)
-            .frame(width: 300)
         }
         .padding(.bottom, 12)
         .onAppear {
@@ -1541,7 +2266,7 @@ struct SettingsView: View {
                     } header: {
                         HStack(spacing: 4) {
                             Text(mode.title)
-                            HelpIcon(text: "此页面只控制侧边栏当前小屏幕，其他 AI Mac 设备拥有独立的显示内容、图片、画板和推送设置。")
+                            HelpIcon(text: "此页面只控制侧边栏当前小屏幕，其他小电视设备拥有独立的显示内容、图片、画板和推送设置。")
                         }
                     }
 
@@ -1592,30 +2317,34 @@ struct SettingsView: View {
                     }
                 } else {
                     Section {
-                        Text("请先在设备管理中添加并启用 AI Mac 小屏幕。")
+                        Text("请先在设备管理中添加并启用 ESP8266 天气时钟。")
                             .foregroundStyle(.secondary)
                     }
                 }
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: .infinity, alignment: .top)
 
-            Divider().padding(.vertical, 4)
+            if !hasExternalPersistentPreview {
+                Divider().padding(.vertical, 4)
 
-            Form {
-                Section {
-                    HStack {
-                        Spacer()
-                        aiMacPreview
-                        Spacer()
+                Form {
+                    Section {
+                        HStack {
+                            Spacer()
+                            aiMacPreview
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    } header: {
+                        Text("240 × 240 彩色预览")
                     }
-                    .padding(.vertical, 8)
-                } header: {
-                    Text("240 × 240 彩色预览")
                 }
+                .formStyle(.grouped)
+                .controlCenterHostedFormSurface()
+                .frame(width: 300)
             }
-            .formStyle(.grouped)
-            .frame(width: 300)
         }
         .padding(.bottom, 12)
         .onAppear {
@@ -1672,22 +2401,26 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Section { Text("请先在设备管理中添加并启用 AI Mac 小屏幕。") }
+                    Section { Text("请先在设备管理中添加并启用 ESP8266 天气时钟。") }
                 }
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: .infinity, alignment: .top)
 
-            Divider().padding(.vertical, 4)
+            if !hasExternalPersistentPreview {
+                Divider().padding(.vertical, 4)
 
-            Form {
-                Section {
-                    HStack { Spacer(); aiMacPreview; Spacer() }
-                        .padding(.vertical, 8)
-                } header: { Text("240 × 240 彩色预览") }
+                Form {
+                    Section {
+                        HStack { Spacer(); aiMacPreview; Spacer() }
+                            .padding(.vertical, 8)
+                    } header: { Text("240 × 240 彩色预览") }
+                }
+                .formStyle(.grouped)
+                .controlCenterHostedFormSurface()
+                .frame(width: 300)
             }
-            .formStyle(.grouped)
-            .frame(width: 300)
         }
         .padding(.bottom, 12)
         .onAppear {
@@ -1731,6 +2464,8 @@ struct SettingsView: View {
         case .emojiWallpaper: emojiWallpaperForm
         case .homeAssistant: aiMacHomeAssistantForm(deviceID: deviceID)
         case .weather: WeatherSettingsView(model: model)
+        case .grokBot: grokBotForm
+        case .cloudflare: CloudflareAnalyticsSettingsView(model: model)
         case .bambuLab: bambuLabForm(for: .bambuLab)
         case .bambuLab2: bambuLabForm(for: .bambuLab2)
         case .bambuLab3: bambuLabForm(for: .bambuLab3)
@@ -1852,6 +2587,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .controlCenterHostedFormSurface()
         .padding(.bottom, 12)
     }
 
@@ -1926,7 +2662,8 @@ struct SettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped).padding(.bottom, 12)
+        .formStyle(.grouped)
+        .controlCenterHostedFormSurface().padding(.bottom, 12)
     }
 
     private func c6CardManagementRow(_ card: C6CardDescriptor, deviceID: UUID) -> some View {
@@ -1992,6 +2729,13 @@ struct SettingsView: View {
                     Button("立即在设备显示") { model.activateC6Card(card, deviceID: deviceID) }
                         .keyboardShortcut(.return, modifiers: [.command])
                 }
+                if hasExternalPersistentPreview {
+                    Section("设备实际画面") {
+                        Button("刷新设备预览") {
+                            Task { await model.refreshC6NativeCardPreview(deviceID: deviceID) }
+                        }
+                    }
+                }
                 Section("本地配置") {
                     Button("打开设备本地设置") { selected = .c6Device }
                     if let client = try? C6StandaloneClient(host: model.aiMacScreenSettings(for: deviceID).host) {
@@ -2001,18 +2745,22 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .formStyle(.grouped).frame(maxWidth: .infinity, alignment: .top)
-            Divider().padding(.vertical, 4)
-            Form {
-                Section {
-                    HStack { Spacer(); aiMacPreview; Spacer() }.padding(.vertical, 8)
-                    Label("设备实际画面", systemImage: "display")
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
-                    Button("刷新设备预览") {
-                        Task { await model.refreshC6NativeCardPreview(deviceID: deviceID) }
-                    }
-                } header: { Text("240 × 240 本地预览") }
-            }.formStyle(.grouped).frame(width: 300)
+            .formStyle(.grouped)
+            .controlCenterHostedFormSurface().frame(maxWidth: .infinity, alignment: .top)
+            if !hasExternalPersistentPreview {
+                Divider().padding(.vertical, 4)
+                Form {
+                    Section {
+                        HStack { Spacer(); aiMacPreview; Spacer() }.padding(.vertical, 8)
+                        Label("设备实际画面", systemImage: "display")
+                            .font(.system(size: 13)).foregroundStyle(.secondary)
+                        Button("刷新设备预览") {
+                            Task { await model.refreshC6NativeCardPreview(deviceID: deviceID) }
+                        }
+                    } header: { Text("240 × 240 本地预览") }
+                }.formStyle(.grouped)
+                .controlCenterHostedFormSurface().frame(width: 300)
+            }
         }
         .padding(.bottom, 12)
         .task(id: card.id) {
@@ -2442,7 +3190,7 @@ struct SettingsView: View {
                 Text("被控设备")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HelpIcon(text: "选择允许这台控制器操作的显示设备。支持灵犀68、口袋先知、摘录、AI Mac 小屏幕和 AWTRIX NG。")
+                HelpIcon(text: "选择允许这台控制器操作的显示设备。支持灵犀68、口袋先知、摘录、ESP8266 天气时钟（小电视）和 AWTRIX NG。")
             }
             if targets.isEmpty {
                 Text("尚无可用的显示设备")
@@ -2791,54 +3539,34 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: 0) {
                 Form { m5ControllerForm }
                     .formStyle(.grouped)
+                    .controlCenterHostedFormSurface()
                     .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity,
                            alignment: .top)
 
-                Divider().padding(.vertical, 4)
+                if !hasExternalPersistentPreview {
+                    Divider().padding(.vertical, 4)
 
-                Group {
-                    if let device = model.activeDevice(for: .m5Controller) {
-                        let config = model.m5ControllerSettings(for: device.id)
-                        let targetCount = model.m5ResolvedTargets(config).count
-                        let enabledShortcuts = config.resolvedMacShortcuts.filter(\.isEnabled)
-                        let vibeCount = enabledShortcuts.filter { $0.group == .vibeCoding }.count
-                        let fallback = M5ControllerInfo(
-                            active: 0,
-                            devices: [
-                                .init(name: "Vibe Coding", detail: "\(vibeCount) 个可用动作",
-                                      available: vibeCount > 0),
-                                .init(name: "多屏设备", detail: "\(targetCount) 台已配置",
-                                      available: true),
-                                .init(name: "Home Assistant",
-                                      detail: "\(config.homeAssistantEntityIDs?.count ?? 0) 个控制实体",
-                                      available: true),
-                                .init(name: "Mac 快捷键",
-                                      detail: "媒体 + \(max(0, enabledShortcuts.count - vibeCount)) 个动作",
-                                      available: true)
-                            ],
-                            title: "灵犀控制器", footer: "A/B选择 长A进入"
-                        )
-                        M5ControllerDevicePreview(
-                            deviceName: device.name,
-                            info: model.m5ControllerConnected
-                                ? (model.m5ControllerPreviewInfo ?? fallback)
-                                : fallback,
-                            connected: model.m5ControllerConnected,
-                            secured: model.m5ControllerHIDSecured
-                        )
-                    } else {
-                        VStack(spacing: 10) {
-                            Image(systemName: "gamecontroller")
-                                .font(.system(size: 42))
-                                .foregroundStyle(.secondary)
-                            Text("尚未添加控制器")
-                                .font(.headline)
+                    Group {
+                        if let device = model.activeDevice(for: .m5Controller) {
+                            let state = model.m5ScreenPreviewState(for: device.id)
+                            M5ControllerDevicePreview(
+                                deviceName: device.name, info: state.info,
+                                connected: state.connected, secured: state.secured
+                            )
+                        } else {
+                            VStack(spacing: 10) {
+                                Image(systemName: "gamecontroller")
+                                    .font(.system(size: 42))
+                                    .foregroundStyle(.secondary)
+                                Text("尚未添加控制器")
+                                    .font(.headline)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .frame(minWidth: previewWidth, idealWidth: previewWidth, maxWidth: previewWidth,
+                           minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
-                .frame(minWidth: previewWidth, idealWidth: previewWidth, maxWidth: previewWidth,
-                       minHeight: 0, maxHeight: .infinity, alignment: .top)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
         }
@@ -2953,6 +3681,10 @@ struct SettingsView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
                 ForEach(model.settings.devices) { device in
                     Button {
+                        if device.type == .readPico && device.isEnabled {
+                            openReadPicoDevice(device.id)
+                            return
+                        }
                         selectedManagedDeviceID = device.id
                         highlightedDeviceID = device.id
                         addingDeviceID = nil
@@ -2976,6 +3708,13 @@ struct SettingsView: View {
                     .accessibilityLabel("设置设备：\(device.name)")
                 }
             }
+          }
+          Section {
+            CloudflareSourcesManagementView(model: model, showsTitle: false)
+          } header: {
+            Text("共享数据源")
+          } footer: {
+            Text("在这里连接网站等数据服务。添加一次，所有设备的同类卡片共用，不需要在每台设备重复填写。")
           }
         }
         .sheet(isPresented: $deviceSheetOpen, onDismiss: {
@@ -3001,6 +3740,7 @@ struct SettingsView: View {
                 }.padding(20)
                 Divider()
                 Form { devicesEditorForm }.formStyle(.grouped)
+                .controlCenterHostedFormSurface()
             }.frame(minWidth: 700, idealWidth: 780, minHeight: 560, idealHeight: 700)
             .task(id: selectedManagedDeviceID) {
                 guard selectedManagedDeviceID == nil else { return }
@@ -3024,7 +3764,14 @@ struct SettingsView: View {
                 }
                 if let type = selectedAddDeviceType {
                     Section("选择\(type.title)") {
-                        discoveredDevicePicker(type)
+                        if type == .readPico {
+                            ReadPicoAddDeviceForm { name, address in
+                                let id = try model.addReadPicoDevice(name: name, managementAddress: address)
+                                openReadPicoDevice(id)
+                            }
+                        } else {
+                            discoveredDevicePicker(type)
+                        }
                     }
                 }
             }
@@ -3105,7 +3852,7 @@ struct SettingsView: View {
                                     deviceConnectionField(device.id, label: "小屏幕 IP 地址",
                                                           binding: model.aiMacScreenHostBinding(for: device.id),
                                                           fieldWidth: 320,
-                                                          helpText: "支持 240×240 AI Mac 小屏幕；0.8.5 固件支持 Wi-Fi 预配置、轻量现代化热点配网页面、设备端实时时钟、Lingxi-Screen-XXXXXX 设备热点与 RGB565 无损帧，旧固件自动回退 JPEG。")
+                                                          helpText: "支持 240×240 ESP8266 天气时钟；0.8.5 固件支持 Wi-Fi 预配置、轻量现代化热点配网页面、设备端实时时钟、Lingxi-Screen-XXXXXX 设备热点与 RGB565 无损帧，旧固件自动回退 JPEG。")
                                     HStack {
                                         Button("连接测试") {
                                             Task { await model.testAIMacScreenConnection(deviceID: device.id) }
@@ -3155,6 +3902,15 @@ struct SettingsView: View {
                                     m5ControllerDiscoveryInline
                                     DisclosureGroup("控制器固件刷写") {
                                         m5FirmwareFlasherInline
+                                    }
+                                } else if type == .readPico {
+                                    if device.isEnabled {
+                                        Button("打开设备") { openReadPicoDevice(device.id) }
+                                        Text("图书、TF 应用、设备配置和固件维护在主窗口内管理。")
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Text("设备已停用。打开下方「启用设备」后，即可继续使用设备侧栏的各项功能。")
+                                            .foregroundStyle(.secondary)
                                     }
                                 } else {
                                     deviceConnectionField(device.id, label: "API Key",
@@ -3319,7 +4075,7 @@ struct SettingsView: View {
         case .chooseDevice:
             selectedAddDeviceType = type
         case .manual:
-            if type == .bambuLab, bambuDiscoveryHomeAssistantID != nil {
+            if type == .readPico || (type == .bambuLab && bambuDiscoveryHomeAssistantID != nil) {
                 selectedAddDeviceType = type
             } else {
                 model.m5StopScan()
@@ -3385,6 +4141,7 @@ struct SettingsView: View {
     }
 
     private func quietlyDiscoverDevices() async {
+        guard model.backgroundServicesEnabled else { return }
         // 自动扫描不能触发首次蓝牙权限弹窗；未授权时由控制器设置中的操作发起申请。
         if CBManager.authorization == .allowedAlways,
            model.settings.canAddDevice(of: .m5Controller) { model.m5StartScan() }
@@ -3527,13 +4284,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("开源硬件 · ESP8266 Wi-Fi 天气时钟")
                         .font(.callout.weight(.semibold))
-                    Text("AI Mac 小屏幕并非专有硬件；其本体是社区开源的 ESP8266 240×240 Wi-Fi 天气时钟（MG01 / SD2 小电视）。多屏灵犀提供适配该硬件的定制固件、刷写与内容推送功能。")
+                    Text("ESP8266 天气时钟（小电视）并非专有硬件；其本体是社区开源的 ESP8266 240×240 Wi-Fi 天气时钟（MG01 / SD2 小电视）。多屏灵犀提供适配该硬件的定制固件、刷写与内容推送功能。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 12) {
                         Link("开源硬件工程", destination: URL(string: "https://oshwhub.com/q21182889/sd2")!)
-                        Link("社区 AI Mac 项目", destination: URL(string: "https://github.com/pengchujin/esp8266-ai")!)
+                        Link("社区 ESP8266 天气时钟项目", destination: URL(string: "https://github.com/pengchujin/esp8266-ai")!)
                     }
                     .font(.caption.weight(.medium))
                 }
@@ -3546,7 +4303,7 @@ struct SettingsView: View {
                     .stroke(Color.blue.opacity(0.32), lineWidth: 1)
             }
 
-            Text("首次使用时，将 AI Mac 小屏幕通过 USB 数据线连接到 Mac。软件会一并写入 Wi-Fi，刷完后等待设备联网、读取 IP 并自动添加。")
+            Text("首次使用时，将 ESP8266 天气时钟通过 USB 数据线连接到 Mac。软件会一并写入 Wi-Fi，刷完后等待设备联网、读取 IP 并自动添加。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3943,6 +4700,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .controlCenterHostedFormSurface()
         .frame(maxWidth: .infinity, alignment: .top)
         .alert("重命名画板", isPresented: Binding(
             get: { boardRenameTarget != nil },
@@ -4036,7 +4794,7 @@ struct SettingsView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "display").foregroundStyle(.secondary)
                         Text("正在管理")
-                        HelpIcon(text: "每台 AI Mac 小屏幕分别保存画板、顺序、可见状态和自动轮播设置，不会与其他小屏幕串用。")
+                        HelpIcon(text: "每台小电视分别保存画板、顺序、可见状态和自动轮播设置，不会与其他小屏幕串用。")
                         Spacer()
                         if model.enabledDevices(for: model.activeColorScreenType).count > 1 {
                             Picker("", selection: model.activeAIMacScreenBinding) {
@@ -4111,12 +4869,13 @@ struct SettingsView: View {
                 }
             } else {
                 Section {
-                    Text("请先在设备管理中添加 AI Mac 小屏幕。")
+                    Text("请先在设备管理中添加 ESP8266 天气时钟。")
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
+        .controlCenterHostedFormSurface()
         .frame(maxWidth: .infinity, alignment: .top)
         .alert("重命名画板", isPresented: Binding(
             get: { aiMacBoardRenameTarget != nil },
@@ -4147,7 +4906,7 @@ struct SettingsView: View {
                 } header: {
                     HStack(spacing: 4) {
                         Text("当前设备")
-                        HelpIcon(text: "本页的地址、推送间隔、连接状态和手动推送只作用于这台小屏幕。其他 AI Mac 设备保留自己的独立设置。")
+                        HelpIcon(text: "本页的地址、推送间隔、连接状态和手动推送只作用于这台小屏幕。其他小电视设备保留自己的独立设置。")
                     }
                 }
 
@@ -4274,12 +5033,13 @@ struct SettingsView: View {
                 }
             } else {
                 Section {
-                    Text("请先在设备管理中添加 AI Mac 小屏幕。")
+                    Text("请先在设备管理中添加 ESP8266 天气时钟。")
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
+        .controlCenterHostedFormSurface()
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
@@ -4520,6 +5280,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .controlCenterHostedFormSurface()
         .frame(maxWidth: .infinity, alignment: .top)
         .alert("重命名摘录画板", isPresented: Binding(
             get: { excerptBoardRenameTarget != nil },
@@ -5085,37 +5846,41 @@ struct SettingsView: View {
                                    available: availableCanvasModules(CanvasModule.oraclePanelModules))
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: .infinity, alignment: .top)
 
-            Divider()
-                .padding(.vertical, 4)
+            if !hasExternalPersistentPreview {
+                Divider()
+                    .padding(.vertical, 4)
 
-            // 右侧预览边栏：处理前 / 处理后 固定垂直排列；宽度固定适中（比键盘 210 预览稍大）
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("处理前（彩色原始渲染）")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            oracleHeroPreview(model.oracleCanvasRawImage, displayWidth: 240)
+                // 右侧预览边栏：处理前 / 处理后 固定垂直排列；宽度固定适中（比键盘 210 预览稍大）
+                Form {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("处理前（彩色原始渲染）")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                oracleHeroPreview(model.oracleCanvasRawImage, displayWidth: 240)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("处理后（实际效果）")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                oracleHeroPreview(model.oracleCanvasImage, displayWidth: 240)
+                            }
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("处理后（实际效果）")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            oracleHeroPreview(model.oracleCanvasImage, displayWidth: 240)
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text("画板预览")
+                            HelpIcon(text: "上下两图均为设备效果图：画布按 200×200 与设备屏幕显示范围 1:1 对齐叠加；上方为灰阶/抖动处理前的彩色原始渲染，下方为处理后的实际效果（固定 200×200 / 184 PPI，不超屏）。")
                         }
-                    }
-                } header: {
-                    HStack(spacing: 4) {
-                        Text("画板预览")
-                        HelpIcon(text: "上下两图均为设备效果图：画布按 200×200 与设备屏幕显示范围 1:1 对齐叠加；上方为灰阶/抖动处理前的彩色原始渲染，下方为处理后的实际效果（固定 200×200 / 184 PPI，不超屏）。")
                     }
                 }
+                .formStyle(.grouped)
+                .controlCenterHostedFormSurface()
+                .frame(width: 280)
             }
-            .formStyle(.grouped)
-            .frame(width: 280)
         }
         .padding(.bottom, 12)
         .alert("重命名画板", isPresented: Binding(
@@ -5211,36 +5976,40 @@ struct SettingsView: View {
                                    showFullWidthToggle: model.settings.excerptLayoutColumns == 2)
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: .infinity, alignment: .top)
 
-            Divider()
-                .padding(.vertical, 4)
+            if !hasExternalPersistentPreview {
+                Divider()
+                    .padding(.vertical, 4)
 
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("处理前（彩色原始渲染）")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            excerptHeroPreview(model.excerptCanvasRawImage)
+                Form {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("处理前（彩色原始渲染）")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                excerptHeroPreview(model.excerptCanvasRawImage)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("处理后（按服务端算法近似）")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                excerptHeroPreview(model.excerptCanvasImage)
+                            }
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("处理后（按服务端算法近似）")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            excerptHeroPreview(model.excerptCanvasImage)
+                    } header: {
+                        HStack(spacing: 4) {
+                            Text("画板预览")
+                            HelpIcon(text: "上下两图按摘录设备 296×152 显示范围对齐；上方为彩色原始渲染，下方为设备处理后的效果。")
                         }
-                    }
-                } header: {
-                    HStack(spacing: 4) {
-                        Text("画板预览")
-                        HelpIcon(text: "上下两图按摘录设备 296×152 显示范围对齐；上方为彩色原始渲染，下方为设备处理后的效果。")
                     }
                 }
+                .formStyle(.grouped)
+                .controlCenterHostedFormSurface()
+                .frame(minWidth: 310, maxWidth: .infinity, alignment: .top)
             }
-            .formStyle(.grouped)
-            .frame(minWidth: 310, maxWidth: .infinity, alignment: .top)
         }
         .padding(.bottom, 12)
         .onAppear { model.refreshExcerptCanvasPreview() }
@@ -5391,6 +6160,7 @@ struct SettingsView: View {
                                    showFullWidthToggle: model.settings.excerptLayoutColumns == 2)
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(maxWidth: 720, alignment: .topLeading)
 
             Divider()
@@ -5421,6 +6191,7 @@ struct SettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            .controlCenterHostedFormSurface()
             .frame(minWidth: 310, maxWidth: .infinity, alignment: .top)
         }
         .padding(.bottom, 12)
@@ -5690,7 +6461,7 @@ struct SettingsView: View {
                 if owner == .oracle || owner == .aiMac {
                     linkedLyricsKeyboardPicker(owner: owner)
                 }
-                // 键盘和 AI Mac 彩色画板可使用整板封面取色；墨水屏保持手动底色。
+                // 键盘和 小电视彩色画板可使用整板封面取色；墨水屏保持手动底色。
                 if owner == .keyboard || owner == .aiMac {
                     Toggle(isOn: nowPlayingSmartBackgroundBinding(for: owner)) {
                         HStack(spacing: 4) {
@@ -5741,6 +6512,9 @@ struct SettingsView: View {
                 } else {
                     HStack {
                         Button("选择图片…") { Task { await model.pickCanvasImage(for: owner) } }
+                        if owner == .oracle || owner == .excerpt {
+                            SharedCanvasWallpaperButton(model: model, owner: owner)
+                        }
                         HelpIcon(text: "为当前画板独立选择图片，与键盘自定义图片互不影响；图片模块固定作为模块叠加显示。")
                         Spacer()
                         Text(model.canvasImageName(for: owner) ?? "未选择")
@@ -5757,6 +6531,10 @@ struct SettingsView: View {
                         HelpIcon(text: "文章多于显示条数时，每次刷新随机挑选一批；关闭后固定显示最新几篇。")
                     }
                 }
+            case .grokBot:
+                grokBotForm
+            case .cloudflare:
+                CloudflareAnalyticsSettingsView(model: model)
             case .qwenQuota:
                 Picker(selection: model.qwenQuotaShowPercentBinding) {
                     Text("百分比").tag(true)
@@ -5953,7 +6731,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: 4) {
                     Text("卡片渲染")
-                    HelpIcon(text: "使用 SwiftUI 合成可导出的玻璃风格图片，并非系统原生交互材质。仅用于灵犀68 与 AI Mac 彩色屏幕；口袋先知与摘录墨水屏、纯图片与设备端桌面时钟保持原样。")
+                    HelpIcon(text: "使用 SwiftUI 合成可导出的玻璃风格图片，并非系统原生交互材质。仅用于灵犀68 与小电视彩色屏幕；口袋先知与摘录墨水屏、纯图片与设备端桌面时钟保持原样。")
                 }
             }
             Picker(selection: model.themeBinding) {
@@ -6314,11 +7092,13 @@ struct SettingsView: View {
                                           currentApp: String?) -> some View {
         Section("设备实时预览") {
             VStack(alignment: .leading, spacing: 9) {
-                AWTRIXPixelMatrixPreview(
-                    image: model.awtrixLivePreviewImages[route.deviceID],
-                    maximumWidth: 512,
-                    waitingText: "正在等待设备画面")
-                .accessibilityLabel("AWTRIX NG 32 乘 8 实时屏幕预览")
+                if !hasExternalPersistentPreview {
+                    AWTRIXPixelMatrixPreview(
+                        image: model.awtrixLivePreviewImages[route.deviceID],
+                        maximumWidth: 512,
+                        waitingText: "正在等待设备画面")
+                    .accessibilityLabel("AWTRIX NG 32 乘 8 实时屏幕预览")
+                }
 
                 let previewStatus = model.awtrixLivePreviewStatuses[route.deviceID]
                     ?? "正在连接设备实时画面…"
@@ -7006,7 +7786,7 @@ struct SettingsView: View {
         } header: {
             HStack(spacing: 4) {
                 Text("这台小屏幕显示的实体")
-                HelpIcon(text: "每台 AI Mac 小屏幕分别保存自己的实体列表；支持 sensor、开关、camera 和 image 实体。修改后会立即刷新预览并推送当前卡片。")
+                HelpIcon(text: "每台小电视分别保存自己的实体列表；支持 sensor、开关、camera 和 image 实体。修改后会立即刷新预览并推送当前卡片。")
             }
         }
     }
@@ -7367,7 +8147,7 @@ struct SettingsView: View {
                 fieldWidth: 320, helpText: "序列号可在打印机或 Bambu Studio 的设备信息中查看。")
             draftField(key: "\(id.uuidString)#MQTT访问码", label: "访问码",
                 binding: model.bambuMQTTAccessCodeBinding(id), fieldWidth: 320, secure: true,
-                helpText: "在打印机网络设置中查看。仅存入 macOS 钥匙串，不写入软件配置文件。原生 MQTT 不提供摄像头帧和任务封面。")
+                helpText: "在打印机网络设置中查看。仅加密保存在本机，不写入软件配置文件。原生 MQTT 不提供摄像头帧和任务封面。")
             HStack {
                 Button("连接测试") { model.connectBambuMQTT(id) }
                 Text(model.bambuMQTTStatuses[id] ?? "尚未连接")
@@ -7621,6 +8401,7 @@ struct SettingsView: View {
 
     private var generalForm: some View {
         Group {
+        AppLanguageSettingsView()
         Section {
             Picker(selection: model.clockFormatPresetBinding) {
                 Text("24 小时 · HH:mm").tag(0)
@@ -8426,6 +9207,13 @@ struct Sidebar: View {
     @Binding var selection: Panel
     @Binding var awtrixAppRoute: AWTRIXAppRoute?
     @ObservedObject var model: AppModel
+    /// 主窗口先处理当前设备的未保存修改，再执行整组导航副作用。
+    var onNavigate: ((@escaping () -> Void) -> Void)? = nil
+    var onPicoNavigate: ((Panel, UUID?, @escaping () -> Void) -> Void)? = nil
+
+    private func navigate(_ action: @escaping () -> Void) {
+        if let onNavigate { onNavigate(action) } else { action() }
+    }
 
     /// 用户手动展开的设备分组（默认全部收起；只记录被展开的 ID）
     @State private var expandedDeviceIDs: Set<UUID> = []
@@ -8450,6 +9238,9 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 2) {
+            sidebarRow(.controlCenter)
+            sidebarRow(.wallpaperLibrary)
+            Divider().padding(.vertical, 4)
             // 按设备实例分类：每台设备（设备管理中添加的）下面挂它的卡片功能，
             // 点开某台设备下的功能项即操作那台设备
             ScrollView {
@@ -8577,6 +9368,11 @@ struct Sidebar: View {
                 deviceID: device.id,
                 emptyHint: model.m5ControllerSettings(for: device.id).pairedPeripheralID == nil
                     ? "尚未配对，去设备管理扫描配对" : nil))
+        case .readPico:
+            return AnyView(deviceInstanceGroup(
+                icon: "book.closed", title: device.name,
+                isExpanded: deviceExpandedBinding(device.id),
+                panels: Panel.readPicoItems, switchType: .readPico, deviceID: device.id))
         }
     }
 
@@ -8693,11 +9489,13 @@ struct Sidebar: View {
             }
             if let emptyHint {
                 Button {
-                    if let switchType, let deviceID {
-                        model.switchDevice(type: switchType, to: deviceID)
+                    navigate {
+                        if let switchType, let deviceID {
+                            model.switchDevice(type: switchType, to: deviceID)
+                        }
+                        selection = switchType?.isColorWiFiScreen == true
+                            ? .aiMacCardManagement : .cardRotation
                     }
-                    selection = switchType?.isColorWiFiScreen == true
-                        ? .aiMacCardManagement : .cardRotation
                 } label: {
                     Label(emptyHint, systemImage: "plus.circle")
                         .font(.system(size: 11))
@@ -8737,8 +9535,10 @@ struct Sidebar: View {
         let isCurrent = model.activeDeviceID(for: .oracle) == deviceID
             && model.isCurrentOracleCanvasBoard(deviceID: deviceID, boardID: board.id)
         return Button {
-            model.applyOracleCanvasBoard(deviceID: deviceID, boardID: board.id)
-            selection = .oracleCanvas
+            navigate {
+                model.applyOracleCanvasBoard(deviceID: deviceID, boardID: board.id)
+                selection = .oracleCanvas
+            }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
@@ -8768,8 +9568,10 @@ struct Sidebar: View {
         let isCurrent = model.activeDeviceID(for: .excerpt) == deviceID
             && model.isCurrentExcerptCanvasBoard(deviceID: deviceID, boardID: board.id)
         return Button {
-            model.applyExcerptCanvasBoard(deviceID: deviceID, boardID: board.id)
-            selection = .excerptCanvas
+            navigate {
+                model.applyExcerptCanvasBoard(deviceID: deviceID, boardID: board.id)
+                selection = .excerptCanvas
+            }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
@@ -8798,8 +9600,10 @@ struct Sidebar: View {
         let isCurrent = model.activeColorScreenDeviceID == deviceID
             && model.isCurrentAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
         return Button {
-            model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
-            selection = .aiMacScreen
+            navigate {
+                model.applyAIMacCanvasBoard(deviceID: deviceID, boardID: board.id)
+                selection = .aiMacScreen
+            }
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
@@ -8818,7 +9622,7 @@ struct Sidebar: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
-        .help("切换到这台 AI Mac 小屏幕并应用「\(board.name)」")
+        .help("切换到这台小电视并应用「\(board.name)」")
     }
 
     /// 设备二级菜单相对设备名的缩进宽度（图标与文字整体右移）
@@ -8830,8 +9634,10 @@ struct Sidebar: View {
             .settings.oracleBoardRotationEnabled ?? false
         return HStack(spacing: 8) {
             Button {
-                model.switchDevice(type: .oracle, to: deviceID)
-                selection = .oracleBoardManagement
+                navigate {
+                    model.switchDevice(type: .oracle, to: deviceID)
+                    selection = .oracleBoardManagement
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.oracleBoardManagement.icon)
@@ -8871,8 +9677,10 @@ struct Sidebar: View {
             .settings.excerptBoardRotationEnabled ?? false
         return HStack(spacing: 8) {
             Button {
-                model.switchDevice(type: .excerpt, to: deviceID)
-                selection = .excerptBoardManagement
+                navigate {
+                    model.switchDevice(type: .excerpt, to: deviceID)
+                    selection = .excerptBoardManagement
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.excerptBoardManagement.icon)
@@ -8911,8 +9719,10 @@ struct Sidebar: View {
         let rotationOn = model.aiMacScreenSettings(for: deviceID).boardRotationEnabled
         return HStack(spacing: 8) {
             Button {
-                model.selectColorScreen(deviceID: deviceID)
-                selection = .aiMacBoardManagement
+                navigate {
+                    model.selectColorScreen(deviceID: deviceID)
+                    selection = .aiMacBoardManagement
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.aiMacBoardManagement.icon)
@@ -8932,7 +9742,7 @@ struct Sidebar: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.small)
-                .help("该 AI Mac 小屏幕的自动轮播开关")
+                .help("该小电视的自动轮播开关")
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
@@ -8946,8 +9756,10 @@ struct Sidebar: View {
         let rotationOn = model.aiMacScreenSettings(for: deviceID).cardRotationEnabled
         return HStack(spacing: 8) {
             Button {
-                model.selectColorScreen(deviceID: deviceID)
-                selection = .aiMacCardManagement
+                navigate {
+                    model.selectColorScreen(deviceID: deviceID)
+                    selection = .aiMacCardManagement
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.aiMacCardManagement.icon)
@@ -8967,7 +9779,7 @@ struct Sidebar: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.small)
-                .help("该 AI Mac 小屏幕的卡片自动轮播开关")
+                .help("该小电视的卡片自动轮播开关")
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
@@ -8982,11 +9794,13 @@ struct Sidebar: View {
             && model.isCurrentC6Card(deviceID: deviceID, card: card)
         let isSelected = current && selection == .aiMacCard
         return Button {
-            if model.activeColorScreenDeviceID != deviceID {
-                model.selectColorScreen(deviceID: deviceID)
+            navigate {
+                if model.activeColorScreenDeviceID != deviceID {
+                    model.selectColorScreen(deviceID: deviceID)
+                }
+                model.activateC6Card(card, deviceID: deviceID)
+                selection = .aiMacCard
             }
-            model.activateC6Card(card, deviceID: deviceID)
-            selection = .aiMacCard
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: card.icon).frame(width: 18, height: 18)
@@ -9013,11 +9827,13 @@ struct Sidebar: View {
         let selected = current && selection == .aiMacCard
         let title = model.menuTitle(for: mode)
         return Button {
-            if model.activeColorScreenDeviceID != deviceID {
-                model.selectColorScreen(deviceID: deviceID)
+            navigate {
+                if model.activeColorScreenDeviceID != deviceID {
+                    model.selectColorScreen(deviceID: deviceID)
+                }
+                model.activateAIMacCard(mode, deviceID: deviceID)
+                selection = .aiMacCard
             }
-            model.activateAIMacCard(mode, deviceID: deviceID)
-            selection = .aiMacCard
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: mode.icon)
@@ -9035,7 +9851,7 @@ struct Sidebar: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(selected ? Color.accentColor : Color.primary)
-        .help("在这台 AI Mac 小屏幕显示“\(title)”")
+        .help("在这台小电视显示“\(title)”")
     }
 
     private func awtrixCardManagementSidebarRow(_ deviceID: UUID) -> some View {
@@ -9044,9 +9860,11 @@ struct Sidebar: View {
             && model.activeDeviceID(for: .awtrix) == deviceID
         return HStack(spacing: 8) {
             Button {
-                model.switchDevice(type: .awtrix, to: deviceID)
-                awtrixAppRoute = nil
-                selection = .awtrixCardManagement
+                navigate {
+                    model.switchDevice(type: .awtrix, to: deviceID)
+                    awtrixAppRoute = nil
+                    selection = .awtrixCardManagement
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.awtrixCardManagement.icon)
@@ -9085,14 +9903,16 @@ struct Sidebar: View {
         let isSelected = selection == .awtrix && awtrixAppRoute == route
         let isCurrent = model.awtrixSnapshots[deviceID]?.device.currentApp == app.name
         return Button {
-            if model.activeDeviceID(for: .awtrix) != deviceID {
-                model.switchDevice(type: .awtrix, to: deviceID)
-            }
-            awtrixAppRoute = route
-            selection = .awtrix
-            // 路由立即响应；实机应用切换在独立任务中执行。
-            Task {
-                await model.showAWTRIXCard(app.name, deviceID: deviceID)
+            navigate {
+                if model.activeDeviceID(for: .awtrix) != deviceID {
+                    model.switchDevice(type: .awtrix, to: deviceID)
+                }
+                awtrixAppRoute = route
+                selection = .awtrix
+                // 路由立即响应；实机应用切换在独立任务中执行。
+                Task {
+                    await model.showAWTRIXCard(app.name, deviceID: deviceID)
+                }
             }
         } label: {
             HStack(spacing: 7) {
@@ -9130,9 +9950,11 @@ struct Sidebar: View {
             .settings.cardRotationEnabled ?? false
         return HStack(spacing: 8) {
             Button {
-                // 卡片管理页编辑的是「当前操作设备」：先切到这台键盘，避免改到别的键盘
-                model.switchDevice(type: .keyboard, to: deviceID)
-                selection = .cardRotation
+                navigate {
+                    // 卡片管理页编辑的是「当前操作设备」：先切到这台键盘，避免改到别的键盘
+                    model.switchDevice(type: .keyboard, to: deviceID)
+                    selection = .cardRotation
+                }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: Panel.cardRotation.icon)
@@ -9248,31 +10070,36 @@ struct Sidebar: View {
     private func sidebarRow(_ panel: Panel, switchingTo type: DeviceType? = nil,
                             deviceID: UUID? = nil) -> some View {
         let isSelected = selection == panel && !(panel == .awtrix && awtrixAppRoute != nil)
+            && (type != .readPico || model.activeDeviceID(for: .readPico) == deviceID)
         return Button {
-            if panel == .awtrix { awtrixAppRoute = nil }
-            if let type, let deviceID {
-                model.switchDevice(type: type, to: deviceID)
-                if type == .aiMacScreen {
-                    switch panel {
-                    case .aiMacDashboard:
-                        model.activateAIMacScreenMode(.dashboard, deviceID: deviceID)
-                    case .aiMacClock:
-                        model.activateAIMacScreenMode(.clock, deviceID: deviceID)
-                    case .aiMacCustomImage:
-                        model.activateAIMacScreenMode(.customImage, deviceID: deviceID)
-                    default:
-                        break
+            let action = {
+                if panel == .awtrix { awtrixAppRoute = nil }
+                if let type, let deviceID {
+                    model.switchDevice(type: type, to: deviceID)
+                    if type == .aiMacScreen {
+                        switch panel {
+                        case .aiMacDashboard:
+                            model.activateAIMacScreenMode(.dashboard, deviceID: deviceID)
+                        case .aiMacClock:
+                            model.activateAIMacScreenMode(.clock, deviceID: deviceID)
+                        case .aiMacCustomImage:
+                            model.activateAIMacScreenMode(.customImage, deviceID: deviceID)
+                        default:
+                            break
+                        }
                     }
                 }
+                // 用户进入 HA/Bambu 卡片时显式激活一次。切换键盘设备可能已从设备快照恢复出
+                // 相同 displayMode，因此这里允许同模式重新激活；随后 selection 的 onChange
+                // 再调用普通 setMode 会因模式未变化而短路，不会产生第二次查询。
+                if let mode = panel.displayMode,
+                   mode.refreshesHomeAssistantOnEntry || mode.formlabsSlotIndex != nil {
+                    model.setMode(mode, reactivateIfUnchanged: true)
+                }
+                selection = panel
             }
-            // 用户进入 HA/Bambu 卡片时显式激活一次。切换键盘设备可能已从设备快照恢复出
-            // 相同 displayMode，因此这里允许同模式重新激活；随后 selection 的 onChange
-            // 再调用普通 setMode 会因模式未变化而短路，不会产生第二次查询。
-            if let mode = panel.displayMode,
-               mode.refreshesHomeAssistantOnEntry || mode.formlabsSlotIndex != nil {
-                model.setMode(mode, reactivateIfUnchanged: true)
-            }
-            selection = panel
+            if type == .readPico, let onPicoNavigate { onPicoNavigate(panel, deviceID, action) }
+            else { navigate(action) }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: panel.icon)
@@ -9303,9 +10130,18 @@ struct MiniSidebar: View {
     @Binding var selection: Panel
     @Binding var awtrixAppRoute: AWTRIXAppRoute?
     @ObservedObject var model: AppModel
+    var onNavigate: ((@escaping () -> Void) -> Void)? = nil
+    var onPicoNavigate: ((Panel, UUID?, @escaping () -> Void) -> Void)? = nil
+
+    private func navigate(_ action: @escaping () -> Void) {
+        if let onNavigate { onNavigate(action) } else { action() }
+    }
 
     var body: some View {
         VStack(spacing: 2) {
+            iconButton(.controlCenter)
+            iconButton(.wallpaperLibrary)
+            Divider().padding(.vertical, 4)
             // 设备图标：每类设备一个入口（点击进入对应画板），不展示具体设备功能；
             // 该类型全部设备被禁用时隐藏对应图标
             if !model.enabledDevices(for: .keyboard).isEmpty {
@@ -9318,13 +10154,17 @@ struct MiniSidebar: View {
                 deviceIconButton(icon: "quote.opening", title: "摘录", panel: .excerptBoardManagement)
             }
             if !model.enabledDevices(for: .aiMacScreen).isEmpty {
-                deviceIconButton(icon: "display", title: "AI Mac 小屏幕", panel: .aiMacBoardManagement, type: .aiMacScreen)
+                deviceIconButton(icon: "display", title: "ESP8266 天气时钟", panel: .aiMacBoardManagement, type: .aiMacScreen)
             }
             if !model.enabledDevices(for: .c6Screen).isEmpty {
                 deviceIconButton(icon: "cpu", title: "XH Multiscreen C6", panel: .aiMacBoardManagement, type: .c6Screen)
             }
             if !model.enabledDevices(for: .awtrix).isEmpty {
                 deviceIconButton(icon: "rectangle.grid.1x2", title: "AWTRIX NG", panel: .awtrix)
+            }
+            if !model.enabledDevices(for: .readPico).isEmpty {
+                deviceIconButton(icon: "book.closed", title: "小纸 Pico", panel: .readPicoDevice,
+                                 type: .readPico)
             }
             Spacer(minLength: 0)
             // 正在播放：专辑封面（点击跳转到正在播放页）
@@ -9383,13 +10223,20 @@ struct MiniSidebar: View {
 
     /// 设备图标按钮：点击进入该设备对应的画板页面
     private func deviceIconButton(icon: String, title: String, panel: Panel, type: DeviceType? = nil) -> some View {
-        let isSelected = selection == panel && (type == nil || model.activeColorScreenType == type)
+        let isSelected = (type == .readPico ? selection.isReadPico : selection == panel)
+            && (type?.isColorWiFiScreen != true || model.activeColorScreenType == type)
         return Button {
-            if let type, let id = model.activeDevice(for: type)?.id {
-                model.selectColorScreen(deviceID: id)
+            let action = {
+                if let type, let id = model.activeDevice(for: type)?.id {
+                    if type.isColorWiFiScreen { model.selectColorScreen(deviceID: id) }
+                    else { model.switchDevice(type: type, to: id) }
+                }
+                if panel == .awtrix { awtrixAppRoute = nil }
+                selection = panel
             }
-            if panel == .awtrix { awtrixAppRoute = nil }
-            selection = panel
+            if type == .readPico, let onPicoNavigate {
+                onPicoNavigate(panel, model.activeDeviceID(for: .readPico), action)
+            } else { navigate(action) }
         } label: {
             // 图标大小与展开模式设备分组图标一致（15pt semibold / 22×22 视觉）
             Image(systemName: icon)
@@ -10179,6 +11026,12 @@ struct HAEntityAdder: View {
 // MARK: - AppModel 编辑绑定
 
 extension AppModel {
+
+    var grokBotSessionTokenBinding: Binding<String> {
+        Binding(get: { self.settings.grokBotSessionToken },
+                set: { self.settings.grokBotSessionToken = $0 })
+    }
+
     /// 键盘 IP（只显示主机部分，端点后缀由软件自动拼装）
     var keyboardHost: String {
         EndpointBuilder.host(from: settings.endpoint)

@@ -1,0 +1,8 @@
+"NSInputMonitoringUsageDescription" = "用于接收灵犀68的 Fn + 旋钮事件，并在用户主动启用时将其转换为手动翻页。";
+"NSLocalNetworkUsageDescription" = "用于连接局域网设备，以及在你主动开启时让手机扫码配置微信读书授权。";
+"NSLocationWhenInUseUsageDescription" = "仅在刷机配网时获取附近 2.4 GHz Wi-Fi 的网络名称，方便选择 SSID；不获取、保存或上传地理位置。";
+"NSLocationUsageDescription" = "仅在刷机配网时获取附近 2.4 GHz Wi-Fi 的网络名称，方便选择 SSID；不获取、保存或上传地理位置。";
+"NSBluetoothAlwaysUsageDescription" = "用于通过蓝牙连接 M5Stack StickS3 控制器，接收摇晃翻页与按键切换设备信号。";
+"NSBluetoothPeripheralUsageDescription" = "用于通过蓝牙连接 M5Stack StickS3 控制器，接收摇晃翻页与按键切换设备信号。";
+"CFBundleDisplayName" = "多屏灵犀 2.0 测试版";
+"CFBundleName" = "多屏灵犀 2.0 测试版";

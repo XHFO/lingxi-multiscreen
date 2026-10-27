@@ -21,7 +21,7 @@ public struct AIMacDiscoveredDevice: Identifiable, Equatable, Sendable {
             .replacingOccurrences(of: "lingxi-aimac-", with: "", options: [.caseInsensitive])
             .uppercased()
         return suffix.isEmpty || suffix == hostname.uppercased()
-            ? "AI Mac 小屏幕" : "AI Mac \(suffix)"
+            ? "ESP8266 天气时钟" : "小电视 \(suffix)"
     }
 }
 

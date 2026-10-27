@@ -8,27 +8,27 @@ public enum C6ClockStyle: Int, Codable, CaseIterable, Identifiable, Sendable {
     case flip = 0
     case rounded = 1
     public var id: Int { rawValue }
-    public var title: String { self == .flip ? "翻页钟" : "圆角粗数字" }
+    public var title: String { self == .flip ? String(localized: "翻页钟") : String(localized: "圆角粗数字") }
 }
 public enum C6Language: Int, Codable, CaseIterable, Identifiable, Sendable {
     case chinese = 0, english = 1
     public var id: Int { rawValue }
-    public var title: String { self == .chinese ? "简体中文" : "English" }
+    public var title: String { self == .chinese ? String(localized: "简体中文") : "English" }
 }
 public enum C6DigitStyle: Int, Codable, CaseIterable, Identifiable, Sendable {
     case pixel = 0, aerospace = 1
     public var id: Int { rawValue }
-    public var title: String { self == .pixel ? "像素数字" : "航天圆角数字" }
+    public var title: String { self == .pixel ? String(localized: "像素数字") : String(localized: "航天圆角数字") }
 }
 public enum C6SleepMode: Int, Codable, CaseIterable, Identifiable, Sendable {
     case off = 0, idle = 1, schedule = 2
     public var id: Int { rawValue }
-    public var title: String { switch self { case .off: return "不自动休眠"; case .idle: return "无操作后休眠"; case .schedule: return "按时间段休眠" } }
+    public var title: String { switch self { case .off: return String(localized: "不自动休眠"); case .idle: return String(localized: "无操作后休眠"); case .schedule: return String(localized: "按时间段休眠") } }
 }
 public enum C6PrinterCardStyle: Int, Codable, CaseIterable, Identifiable, Sendable {
     case standard = 0, percentage = 1, remaining = 2
     public var id: Int { rawValue }
-    public var title: String { switch self { case .standard: return "标准 · 含任务图"; case .percentage: return "超大百分比"; case .remaining: return "超大剩余时间" } }
+    public var title: String { switch self { case .standard: return String(localized: "标准 · 含任务图"); case .percentage: return String(localized: "超大百分比"); case .remaining: return String(localized: "超大剩余时间") } }
 }
 public struct C6HAEntity: Codable, Equatable, Sendable, Identifiable {
     public var id = ""

@@ -40,7 +40,7 @@ extension AppSettings {
         case .formlabs:
             return "最多支持 5 台 Formlabs 打印机（对应 5 张独立卡片位）。"
         case .aiMacScreen:
-            return "最多支持 5 台 AI Mac 小屏幕。"
+            return "最多支持 5 台 ESP8266 天气时钟（小电视）。"
         case .c6Screen:
             return "最多支持 5 台 XH Multiscreen C6 小屏幕。"
         case .awtrix:
@@ -75,6 +75,7 @@ extension AppSettings {
         case .c6Screen: return activeC6ScreenDeviceID
         case .awtrix: return activeAWTRIXDeviceID
         case .m5Controller: return activeM5ControllerDeviceID
+        case .readPico: return activeReadPicoDeviceID
         }
     }
 
@@ -91,6 +92,7 @@ extension AppSettings {
         case .c6Screen: activeC6ScreenDeviceID = id
         case .awtrix: activeAWTRIXDeviceID = id
         case .m5Controller: activeM5ControllerDeviceID = id
+        case .readPico: activeReadPicoDeviceID = id
         }
     }
 
@@ -109,7 +111,7 @@ extension AppSettings {
             guard let device = activeDevice(for: type),
                   let index = devices.firstIndex(where: { $0.id == device.id }) else { continue }
             // Formlabs 没有全局镜像：连接配置在设备快照里直接编辑，不能用空 capture 覆盖。
-            if type == .formlabs || type.isColorWiFiScreen || type == .m5Controller { continue }
+            if type == .formlabs || type.isColorWiFiScreen || type == .m5Controller || type.isManagementOnly { continue }
             let smartRotationReturn = devices[index].settings.smartRotationReturnDisplayMode
             let smartRotationPrinterID = devices[index].settings.smartRotationReturnPrinterDeviceID
             var captured = DeviceSettings.capture(from: self, type: type)

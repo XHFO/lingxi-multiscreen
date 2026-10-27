@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "device_ready": true,
+  "apps": [
+    {
+      "id": "drawing-notes",
+      "kind": 128,
+      "title": "画板笔记",
+      "description": "画笔、橡皮和撤销 · 保存原稿后继续绘画",
+      "file": "drawing-notes.pga",
+      "version": 10002,
+      "abi": 1,
+      "directory": "apps/tools",
+      "bytes": 60984,
+      "sha256": "76384a0b8e7140a0414bbafd50796ed7d81443713e2c5b79a79c99d2a67ee75c",
+      "source_sha256": "9640223d84047276ed4c157c6da9dad04e0b0729cc4965ae9ac9f5b19ce83850",
+      "inputs": {
+        "apps/src/drawing_notes.c": "b727032cf6e2e7adff4622a10a1ba319e5acf89be4841928ce5c6f13d9a4caa1",
+        "components/read_pico_apps/include/pico_app_sdk.h": "7ad94a0455b0bb5517bf83093775c05d1f9b06a617ce4962189c34cb13195217"
+      },
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "id": "weread",
+      "kind": 129,
+      "title": "微信读书·书架与笔记",
+      "description": "同步个人书架、划线与想法 · 离线浏览，不含完整正文",
+      "file": "weread.pga",
+      "version": 10000,
+      "abi": 1,
+      "directory": "apps/tools",
+      "bytes": 43296,
+      "sha256": "e4efa4f32250d1395bcc646c589cce33eaa85d30b03c4e82bc15d8e60f12db67",
+      "source_sha256": "f2b048c48f02437d91c01599fa7a6d68d7d48cfe881a8225a661eea33ff8c18c",
+      "inputs": {
+        "apps/src/weread.c": "0d4b5de53dd8e632b65b03eaef48e8be6aba83a4f362f67f3c0c99987722efe0",
+        "components/read_pico_apps/include/pico_app_sdk.h": "7ad94a0455b0bb5517bf83093775c05d1f9b06a617ce4962189c34cb13195217",
+        "apps/include/weread_snapshot.h": "83dc20e7518a717da063bcaa99c0b490c8352bc1e3cbbf11cb23820f28cb38a7"
+      },
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "id": "home-link",
+      "kind": 130,
+      "title": "家庭连接",
+      "description": "Home Assistant 与打印机监看 · 可扫码填写",
+      "file": "home-link.pga",
+      "version": 10103,
+      "abi": 1,
+      "directory": "apps/tools",
+      "bytes": 64304,
+      "sha256": "bb061f7463a3f40b87b22835e3a2474662f90dc5451794ddc1bbeb29e685ba91",
+      "source_sha256": "ab669c1d7cbad3a8a24f0b17bbd687487443ad1afee40dfe3d61e459bc038556",
+      "inputs": {
+        "apps/src/home_link.c": "d75bd0d5868e3977d7b6153c5055a601f22ee5ee0fa1c8ce893057dd3389e689",
+        "components/read_pico_apps/include/pico_app_sdk.h": "f1ae42b8ed5a268ab5eba7c855275ac364145b8e6f52298ec37e8da2fed9aec8",
+        "main/system/pico_scroll.h": "b6181044e26baccb06a3161cf1431e0731a5b8fbd5a914d22f4d61fcbd8f10c0"
+      },
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    }
+  ]
+}

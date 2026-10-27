@@ -200,7 +200,7 @@ public struct AWTRIXAppInfo: Decodable, Equatable, Identifiable, Sendable {
         // 多屏灵犀推送的中文点阵应用在设备 API 中使用稳定的内部名，
         // 界面统一显示产品名称，避免和“中文点阵文字”形成两个入口。
         if name.caseInsensitiveCompare("lingxi_text") == .orderedSame {
-            return "灵犀文字"
+            return String(localized: "灵犀文字")
         }
         if name.caseInsensitiveCompare(AWTRIXCardPolicy.homeAssistantAppName) == .orderedSame {
             return "Home Assistant"

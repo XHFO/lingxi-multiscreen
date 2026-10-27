@@ -14,7 +14,7 @@ public enum CodexUsageSource: String, Codable, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .codexCLI: return "Codex 官方"
+        case .codexCLI: return String(localized: "Codex 官方")
         case .ccSwitch: return "CC Switch"
         }
     }

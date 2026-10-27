@@ -1,0 +1,193 @@
+{
+  "schema": 1,
+  "format": "PGA1",
+  "abi": 1,
+  "device_compatible": true,
+  "targets": [
+    "esp32s3-xtensa",
+    "macos-arm64"
+  ],
+  "notice": "此处游戏包同时适用于阅读器与本机预览，可复制到 TF 卡的 apps/games 目录。",
+  "games": [
+    {
+      "id": "gomoku",
+      "kind": 0,
+      "title": "五子棋",
+      "description": "五子连珠 · 离线 AI 对弈",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "gomoku.pga",
+      "url": "./gomoku.pga",
+      "bytes": 121252,
+      "sha256": "3a7f92ce39c638f8bf345cd2089f515306a642805abb53eaefe97c8e16a78462",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 35756,
+          "sha256": "c5cc7f254717195cc757351af810c6a0d267271dbd0e05cfc76797f0c962e504"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 84984,
+          "sha256": "f082d0fb1491f435a9bc4875aecba36f01bf8e734e3c898ab941dc3c869c1bae"
+        }
+      ]
+    },
+    {
+      "id": "go",
+      "kind": 1,
+      "title": "围棋",
+      "description": "九路围棋 · 离线 AI 对弈",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "go.pga",
+      "url": "./go.pga",
+      "bytes": 121256,
+      "sha256": "873f37d38ea352bd0281d1abde1d22198f6d2d0a50c09220b2ff2131c5f03383",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 35768,
+          "sha256": "9415e31ba9edb03c91f3e2a2a71090440612df0be81d72473e1329b151d0b504"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 84976,
+          "sha256": "5821ce720e997b41b55349dd211ecb0e2df0bda7b591b650df52e84d34945888"
+        }
+      ]
+    },
+    {
+      "id": "xiangqi",
+      "kind": 2,
+      "title": "象棋",
+      "description": "中国象棋 · 离线 AI 对弈",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "xiangqi.pga",
+      "url": "./xiangqi.pga",
+      "bytes": 121248,
+      "sha256": "180f80f155222ecc72e3da95db324736084ce1936033347da197ab2a65acb964",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 35752,
+          "sha256": "c8214653260b7d79538e4e8f54319ba1ac7b65db2b3dd5cce1f8d6c4734849e7"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 84984,
+          "sha256": "3b8f59375c553a77e343c63cb5b8831018567868f398cc2bb5be7841ec72d259"
+        }
+      ]
+    },
+    {
+      "id": "chess",
+      "kind": 3,
+      "title": "国际象棋",
+      "description": "国际象棋 · 离线 AI 对弈",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "chess.pga",
+      "url": "./chess.pga",
+      "bytes": 121252,
+      "sha256": "b8613dcbaf7378ab52703e4e144b1b5642116229d0b45598a881f357082d63bb",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 35756,
+          "sha256": "9a08c2416947f7754c4a6a522b07e22837a4f2660ee630a892ca726c5840e050"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 84984,
+          "sha256": "65ed253796f2aad74fb64375a8046e60aad68daf49f06a1a1232d8fd6f436247"
+        }
+      ]
+    },
+    {
+      "id": "2048",
+      "kind": 4,
+      "title": "2048",
+      "description": "滑动合并 · 挑战高分",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "2048.pga",
+      "url": "./2048.pga",
+      "bytes": 89072,
+      "sha256": "c43717971255e448365d2d6f24574fbab6c8b712c00941796525cdb36986f7c3",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 37816,
+          "sha256": "5c027f40c2af5397df414e207b1b51e7f264bf502c724fc7ba0fea10f1c83f24"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 50744,
+          "sha256": "349d2d121373dfcd470a2e3c5125ac72be25a77082b1a87320e46333a41ca69f"
+        }
+      ]
+    },
+    {
+      "id": "snake",
+      "kind": 5,
+      "title": "贪吃蛇",
+      "description": "方向控制 · 三档速度",
+      "version": "1.0.1",
+      "version_code": 10001,
+      "abi": 1,
+      "file": "snake.pga",
+      "url": "./snake.pga",
+      "bytes": 89376,
+      "sha256": "41f394af2ee310adbd655ccc3351ec19ae880cd805bb936b8130d210cf263eb3",
+      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "payloads": [
+        {
+          "target": "esp32s3-xtensa",
+          "bytes": 37816,
+          "sha256": "63cc11dcd2a53d4a27a489f5a5c89731221e76ebde202e905fa01221371175b8"
+        },
+        {
+          "target": "macos-arm64",
+          "bytes": 51048,
+          "sha256": "0ec323a1fb6610e755d9819d2d097ae53f0adbe975869e1fff22fcc8f3e34321"
+        }
+      ]
+    }
+  ]
+}

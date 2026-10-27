@@ -1,0 +1,106 @@
+{
+  "version": "0.39.0-dev68",
+  "packages": [
+    {
+      "path": "apps/games/gomoku.pga",
+      "id": "gomoku",
+      "bytes": 121252,
+      "sha256": "3a7f92ce39c638f8bf345cd2089f515306a642805abb53eaefe97c8e16a78462",
+      "kind": 0,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/games/go.pga",
+      "id": "go",
+      "bytes": 121256,
+      "sha256": "873f37d38ea352bd0281d1abde1d22198f6d2d0a50c09220b2ff2131c5f03383",
+      "kind": 1,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/games/xiangqi.pga",
+      "id": "xiangqi",
+      "bytes": 121248,
+      "sha256": "180f80f155222ecc72e3da95db324736084ce1936033347da197ab2a65acb964",
+      "kind": 2,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/games/chess.pga",
+      "id": "chess",
+      "bytes": 121252,
+      "sha256": "b8613dcbaf7378ab52703e4e144b1b5642116229d0b45598a881f357082d63bb",
+      "kind": 3,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/games/2048.pga",
+      "id": "2048",
+      "bytes": 89072,
+      "sha256": "c43717971255e448365d2d6f24574fbab6c8b712c00941796525cdb36986f7c3",
+      "kind": 4,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/games/snake.pga",
+      "id": "snake",
+      "bytes": 89376,
+      "sha256": "41f394af2ee310adbd655ccc3351ec19ae880cd805bb936b8130d210cf263eb3",
+      "kind": 5,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/tools/drawing-notes.pga",
+      "id": "drawing-notes",
+      "bytes": 60984,
+      "sha256": "76384a0b8e7140a0414bbafd50796ed7d81443713e2c5b79a79c99d2a67ee75c",
+      "kind": 128,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/tools/weread.pga",
+      "id": "weread",
+      "bytes": 43296,
+      "sha256": "e4efa4f32250d1395bcc646c589cce33eaa85d30b03c4e82bc15d8e60f12db67",
+      "kind": 129,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "path": "apps/tools/home-link.pga",
+      "id": "home-link",
+      "bytes": 64304,
+      "sha256": "bb061f7463a3f40b87b22835e3a2474662f90dc5451794ddc1bbeb29e685ba91",
+      "kind": 130,
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    }
+  ],
+  "automatic_install": false,
+  "installation_note": "TF 应用需另通过小纸 Pico 管理窗口导入；更新固件不会自动安装或覆盖 TF 内容。"
+}

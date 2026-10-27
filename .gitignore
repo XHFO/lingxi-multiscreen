@@ -5,3 +5,10 @@
 dist/
 .DS_Store
 *.log
+
+# Local verification artifacts and fallback bundles are not development sources.
+/outputs/
+__pycache__/
+*.pyc
+/Resources/Firmware/ReadPico-validation-*-archive/
+/Resources/Firmware/ReadPico/HANDOFF-*

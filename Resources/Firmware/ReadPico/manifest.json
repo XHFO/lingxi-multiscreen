@@ -1,0 +1,17 @@
+{
+  "board": "read-pico-esp32s3",
+  "chip": "esp32s3",
+  "version": "0.39.0-dev68",
+  "app_address": "0x20000",
+  "slot_bytes": 4194304,
+  "image_bytes": 4193872,
+  "sha256": "5c857e52c55af083a1eb33876420f59183c5baa0454de6ca9c34c42089b72fc4",
+  "kind": "application",
+  "tf_apps": {
+    "count": 9,
+    "directory": "tf-card",
+    "manifest": "tf-manifest.json",
+    "automatic_install": false,
+    "installation_note": "TF 应用需另通过小纸 Pico 管理窗口导入；更新固件不会自动安装或覆盖 TF 内容。"
+  }
+}

@@ -1,0 +1,14 @@
+MindReset read_0 / 小纸 Pico official front product image
+
+Original source: https://dot.mindreset.tech/docs/read_0
+Original asset: https://os-cdn.mindreset.tech/dot/docs/%25E6%25A0%2587%25E5%2587%2586_1790742665415.png?imageMogr2/thumbnail/2000x/ignore-error/1
+Retrieved: 2026-10-27, through the official documentation in the browser.
+
+This derivative preserves the official enclosure, controls and silhouette.
+Only the display window has been made transparent to remove the example book
+and composite the user's actual screen preview. No official book text is used.
+Used for device identification and local preview in 多屏灵犀.
+
+The original product image and trademarks remain the property of their
+respective owners. This notice does not assert a general redistribution license
+or endorsement by MindReset.

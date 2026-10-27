@@ -91,7 +91,9 @@ public enum CardCapabilityRegistry {
         .init(mode: .formlabs4, recipe: .modules([.formlabs4]), requirements: [.formlabs]),
         .init(mode: .formlabs5, recipe: .modules([.formlabs5]), requirements: [.formlabs]),
         .init(mode: .aiMacClock, surfaces: [.colorSquare], recipe: .nativeClock),
-        .init(mode: .weather, recipe: .modules([.weather]))
+        .init(mode: .weather, recipe: .modules([.weather])),
+        .init(mode: .grokBot, recipe: .modules([.grokBot]), requirements: [.quotas]),
+        .init(mode: .cloudflare, recipe: .modules([.cloudflare]))
     ]
 
     private static let byMode = Dictionary(uniqueKeysWithValues: all.map { ($0.mode, $0) })

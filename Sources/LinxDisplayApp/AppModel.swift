@@ -59,11 +59,99 @@ private struct AIMacSmartRotationTarget: Equatable {
 /// 应用总控：每秒时钟驱动渲染与推送，逻辑对齐原版 MainViewModel。
 @MainActor
 public final class AppModel: ObservableObject {
+    @Published private(set) var readingExcerptCards: [UUID: ReadPicoReadingCard] = [:]
+    @Published private(set) var readingExcerptInstanceCards: [String: ReadPicoReadingCard] = [:]
+    private var readingExcerptInstances: [UUID: Set<String>] = [:]
+    private var readingExcerptPending: [String: UUID] = [:]
+    private var readingExcerptEmptyInstances: Set<String> = []
+    private var readingExcerptUpdatedAt: Date?
+    private var readingExcerptTask: Task<Void, Never>?
+    private var readingExcerptGeneration = UUID()
+
+    var readingExcerptDestinations: [ReadPicoReadingDestination] {
+        settings.devices.filter { [.keyboard, .oracle, .excerpt, .readPico, .aiMacScreen, .c6Screen].contains($0.type) }
+            .map { ReadPicoReadingDestination(id: $0.id.uuidString, title: $0.name) }
+    }
+    func readingExcerptCard(for id: UUID?, instance: String = "canvas") -> ReadPicoReadingCard? {
+        guard let id else { return nil }
+        if instance == "canvas" { return readingExcerptCards[id] }
+        guard instance.utf8.count <= 64 else { return nil }
+        readingExcerptInstances[id, default: []].insert(instance)
+        let key = id.uuidString + "." + instance
+        if let existing = readingExcerptInstanceCards[key] { return existing }
+        if readingExcerptEmptyInstances.contains(key) { return nil }
+        if readingExcerptPending[key] == nil {
+            let token = UUID(), generation = readingExcerptGeneration
+            readingExcerptPending[key] = token
+            Task { @MainActor [weak self] in
+                let card = try? await ReadPicoReadingNotesStore.shared.nextCard(target: id.uuidString, instance: instance)
+                guard let self, self.readingExcerptPending[key] == token,
+                      self.readingExcerptGeneration == generation else { return }
+                self.readingExcerptPending[key] = nil
+                if let card { self.readingExcerptInstanceCards[key] = card }
+                else { self.readingExcerptEmptyInstances.insert(key) }
+            }
+        }
+        return nil
+    }
+    func refreshReadingExcerpts(force: Bool = false) {
+        let now = Date()
+        if !force, let last = readingExcerptUpdatedAt, now.timeIntervalSince(last) < 60 { return }
+        readingExcerptUpdatedAt = now
+        readingExcerptTask?.cancel()
+        let generation = UUID(); readingExcerptGeneration = generation
+        readingExcerptPending = [:]
+        readingExcerptEmptyInstances = []
+        let destinations = readingExcerptDestinations
+        let instances = readingExcerptInstances
+        // Revocations take effect immediately, including while a background read is pending.
+        if force { readingExcerptCards = [:]; readingExcerptInstanceCards = [:] }
+        readingExcerptTask = Task { @MainActor [weak self] in
+            var cards: [UUID: ReadPicoReadingCard] = [:]
+            var instanceCards: [String: ReadPicoReadingCard] = [:]
+            for destination in destinations {
+                guard !Task.isCancelled else { return }
+                if let id = UUID(uuidString: destination.id),
+                   let card = try? await ReadPicoReadingNotesStore.shared.nextCard(target: destination.id, instance: "canvas") {
+                    cards[id] = card
+                }
+                if let id = UUID(uuidString: destination.id) {
+                    for instance in instances[id] ?? [] {
+                        guard !Task.isCancelled else { return }
+                        if let card = try? await ReadPicoReadingNotesStore.shared.nextCard(target: destination.id, instance: instance) {
+                            instanceCards[id.uuidString + "." + instance] = card
+                        }
+                    }
+                }
+            }
+            guard let self, !Task.isCancelled, generation == self.readingExcerptGeneration else { return }
+            self.readingExcerptCards = cards
+            self.readingExcerptInstanceCards = instanceCards
+            for (id, values) in instances {
+                for instance in values {
+                    let key = id.uuidString + "." + instance
+                    if instanceCards[key] == nil { self.readingExcerptEmptyInstances.insert(key) }
+                }
+            }
+            self.refreshOracleCanvasPreview(); self.refreshExcerptCanvasPreview(); self.renderPreview()
+        }
+    }
+    private var readPicoBoardSessions: [UUID: ReadPicoLingxiBoardSession] = [:]
+    /// Read-only cache peek; the control center must never create or activate a board session.
+    func existingReadPicoBoardFrame(for id: UUID) -> ReadPicoLingxiBoardRenderer.Result? {
+        readPicoBoardSessions[id]?.frame
+    }
+    func readPicoBoardSession(for id: UUID) -> ReadPicoLingxiBoardSession {
+        if let existing = readPicoBoardSessions[id] { return existing }
+        let session = ReadPicoLingxiBoardSession(); readPicoBoardSessions[id] = session; return session
+    }
     private let store: SettingsStore
     private let codex = CodexRateLimitClient()
     private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
+    private let grokBotClient = GrokBotUsageClient()
     private let nowPlayingClient = NowPlayingClient()
+    private let nowPlayingControlClient = NowPlayingControlClient()
     private let lyricsClient = LyricsClient()
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
@@ -351,6 +439,10 @@ public final class AppModel: ObservableObject {
         fetchQuota: { [weak self] in
             guard let self else { throw QuotaError.unreachable }
             return try await self.quotaClient.fetch()
+        },
+        fetchGrokBot: { [weak self] in
+            guard let self else { return .notConfigured }
+            return await self.grokBotClient.fetch(sessionToken: self.settings.grokBotSessionToken)
         })
 
     /// 活动设置（普通存储属性而非 @Published：视图直接观察 AppSettings 自身
@@ -358,8 +450,21 @@ public final class AppModel: ObservableObject {
     public var settings: AppSettings
     @Published public var usage: UsageSnapshot = .empty
     @Published public var qwenQuota: QwenWorkQuota = .unavailable
+    @Published public var grokBotUsage: GrokBotUsageSnapshot = .notConfigured
+    @Published public var cloudflareBusy = false
+    @Published public var cloudflareStatus = ""
+    var cloudflareLastAttempt: Date?
+    var cloudflareRequestKey: CloudflareAnalyticsSettings?
+    var cloudflareRequestSourceID: UUID?
+    var cloudflareCredentialGeneration = 0
     /// Home Assistant 快照（实体列表 + 选中实体状态 + 错误信息）
     @Published public var haSnapshot: HASnapshot = .empty
+    /// Preview-only successful results, isolated from the shared HA/MQTT projection.
+    /// Arrays share their fetched storage; this cache never fetches or selects a source.
+    private var haSourcePreviewCache = HASourcePreviewCache<[HAEntity]>()
+    private var controlCenterSourcePreviewDemand = ControlCenterSourcePreviewDemand()
+    @Published private var controlCenterHAPreviewErrors: [UUID: String] = [:]
+    private var controlCenterHAPreviewErrorOrigins: [UUID: String] = [:]
     @Published public var formlabsSnapshots: [UUID: FormlabsSnapshot] = [:]
     @Published public var formlabsDiscoveredDevices: [UUID: [FormlabsDeviceInfo]] = [:]
     @Published public var formlabsConnectionStatus: [UUID: String] = [:]
@@ -475,6 +580,9 @@ public final class AppModel: ObservableObject {
     /// 少数派推荐文章缓存（供「少数派推荐」卡片显示）
     @Published public var sspaiArticles: [SspaiArticle] = []
     @Published public var nowPlaying: NowPlayingInfo = .placeholder
+    @Published private(set) var nowPlayingControlInFlight = false
+    @Published private(set) var nowPlayingControlStatus: String?
+    @Published private(set) var nowPlayingControlFailed = false
     @Published public var nowPlayingLyrics: LyricsTrack?
     @Published public var system: SystemSnapshot = .empty
     @Published public var previewImage: NSImage?
@@ -513,6 +621,8 @@ public final class AppModel: ObservableObject {
     private var c6HeartbeatBusy = false
     private var c6HeartbeatTask: Task<Void, Never>?
     @Published public var c6SyncStatuses: [UUID: String] = [:]
+    /// Origin conflicts that automatic sync refused; cleared on resolve or successful sync.
+    @Published public var c6SyncConflicts: [UUID: C6SyncOriginConflict] = [:]
     /// A valid LAN session remains usable if installation-local persistence fails.
     @Published public var c6SessionOnlyAuthorizationIDs: Set<UUID> = []
     @Published public var c6OfflineSimulationIDs: Set<UUID> = []
@@ -635,6 +745,7 @@ public final class AppModel: ObservableObject {
             case .c6Screen: activeID = loaded.activeC6ScreenDeviceID
             case .awtrix: activeID = loaded.activeAWTRIXDeviceID
             case .m5Controller: activeID = loaded.activeM5ControllerDeviceID
+            case .readPico: activeID = loaded.activeReadPicoDeviceID
             }
             if let device = list.first(where: { $0.id == activeID }) ?? list.first {
                 device.settings.apply(to: loaded, type: type)
@@ -693,6 +804,9 @@ public final class AppModel: ObservableObject {
         pomodoro.reset()
         usage = .empty
         qwenQuota = .unavailable
+        haSourcePreviewCache.removeAll()
+        controlCenterHAPreviewErrors.removeAll()
+        controlCenterHAPreviewErrorOrigins.removeAll()
         formlabsSnapshots = [:]
         formlabsDiscoveredDevices = [:]
         formlabsConnectionStatus = [:]
@@ -811,6 +925,13 @@ public final class AppModel: ObservableObject {
 
     /// 给当前 settings 对象接线 onChange（init 与恢复初始设定共用）
     private func wireSettingsHandlers() {
+        settings.onControlCenterLayoutChange = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.store.save(self.settings)
+                self.objectWillChange.send()
+            }
+        }
         settings.onChange = { [weak self] in
             MainActor.assumeIsolated {
                 self?.updateSoftwareDarkState()
@@ -1017,6 +1138,13 @@ public final class AppModel: ObservableObject {
             selectedColorScreenType = type
         }
         guard let newDevice = settings.switchActiveDevice(of: type, to: deviceID) else { return }
+        if type.isManagementOnly {
+            // The atomic switch suppresses settings callbacks. Management devices
+            // have no preview renderer to publish the final selected identity.
+            objectWillChange.send()
+            persistSettings()
+            return
+        }
         // 切换键盘设备：轮换池与当前卡片都换了，重置轮换时钟，从这台键盘自己的卡片重新开始
         if type == .keyboard {
             lastCardRotation = nil
@@ -1218,6 +1346,8 @@ public final class AppModel: ObservableObject {
             settings.devices[index].settings.awtrix = fresh
         case .m5Controller:
             settings.devices[index].settings.m5Controller = M5ControllerDeviceSettings()
+        case .readPico:
+            settings.devices[index].settings.readPico = ReadPicoManagedDeviceSettings()
         }
         setActiveDeviceID(type, device.id)
         if type == .oracle {
@@ -1251,16 +1381,77 @@ public final class AppModel: ObservableObject {
             reconcileFormlabsCards()
         }
         persistSettings()
+        if type.isManagementOnly {
+            objectWillChange.send()
+            return device.id
+        }
         renderPreview()
         refreshOracleCanvasPreview()
         refreshExcerptCanvasPreview()
         return device.id
     }
 
+    /// Create the same persistent device record as the other device types; pairing stays session-only.
+    public func addReadPicoDevice(name: String, managementAddress: String) throws -> UUID {
+        let configuration = try ReadPicoManagedDeviceSettings(managementAddress: managementAddress)
+        let id = addDevice(type: .readPico)
+        guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return id }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty { settings.devices[index].name = trimmedName }
+        settings.devices[index].settings.readPico = configuration
+        objectWillChange.send()
+        persistSettings()
+        return id
+    }
+
+    public func updateReadPicoManagementAddress(deviceID: UUID, address: String) throws {
+        guard let index = settings.devices.firstIndex(where: { $0.id == deviceID && $0.type == .readPico }) else { return }
+        var configuration = settings.devices[index].settings.readPico ?? .init()
+        try configuration.updateManagementAddress(address)
+        settings.devices[index].settings.readPico = configuration
+        objectWillChange.send()
+        persistSettings()
+    }
+
+    public func updateReadPicoAutomaticUSBPreparation(deviceID: UUID, enabled: Bool) {
+        guard let index = settings.devices.firstIndex(where: { $0.id == deviceID && $0.type == .readPico }) else { return }
+        var configuration = settings.devices[index].settings.readPico ?? .init()
+        configuration.automaticUSBPreparation = enabled
+        settings.devices[index].settings.readPico = configuration
+        objectWillChange.send()
+        persistSettings()
+    }
+
+    public func updateReadPicoTransportPreference(deviceID: UUID, preference: ReadPicoTransportPreference) {
+        guard let index = settings.devices.firstIndex(where: { $0.id == deviceID && $0.type == .readPico }) else { return }
+        var configuration = settings.devices[index].settings.readPico ?? .init()
+        configuration.transportPreference = preference
+        settings.devices[index].settings.readPico = configuration
+        objectWillChange.send()
+        persistSettings()
+    }
+
+    public func updateReadPicoInformationPush(deviceID: UUID, settings value: ReadPicoInformationPushSettings) {
+        guard let index = settings.devices.firstIndex(where: { $0.id == deviceID && $0.type == .readPico }) else { return }
+        var configuration = settings.devices[index].settings.readPico ?? .init()
+        configuration.informationPush = .init(source: value.source, landscape: value.landscape, dither: value.dither,
+                                              intervalSeconds: value.intervalSeconds, entityIDs: value.entityIDs)
+        settings.devices[index].settings.readPico = configuration
+        objectWillChange.send()
+        persistSettings()
+    }
+
+    /// Sample the same local monitor used by other devices when a Pico information page requests it.
+    public func refreshReadPicoSystemSnapshot() {
+        guard backgroundServicesEnabled else { return }
+        system = monitor.sample(now: Date())
+    }
+
     /// 删除一台设备（允许删除全部设备；删除的是活动设备时切换到同类回退设备）
     public func removeDevice(id: UUID) {
         guard let device = settings.devices.first(where: { $0.id == id }) else { return }
         let type = device.type
+        if type == .readPico { readPicoBoardSessions.removeValue(forKey: id)?.shutdown() }
         if type == .c6Screen {
             invalidateC6CardOptionTasks(deviceID: id)
             c6OfflineSimulationIDs.remove(id); c6OfflineSimulationHosts[id] = nil
@@ -1270,7 +1461,7 @@ public final class AppModel: ObservableObject {
             c6SyncedHosts[id] = nil
             c6ThumbnailAttempts[id] = nil; c6ThumbnailHashes[id] = nil
             c6SyncTasks.removeValue(forKey: id)?.cancel()
-            c6SyncStatuses[id] = nil; c6SyncedInputs[id] = nil; c6SyncRequests[id] = nil
+            c6SyncStatuses[id] = nil; c6SyncConflicts[id] = nil; c6SyncedInputs[id] = nil; c6SyncRequests[id] = nil
             c6Tokens[id] = nil; c6AttemptInputs[id] = nil; c6SyncLastCheck[id] = nil
             c6SessionOnlyAuthorizationIDs.remove(id)
             _ = C6SecretStore.save("", deviceID: id)
@@ -1290,6 +1481,9 @@ public final class AppModel: ObservableObject {
             clearM5ControllerInfoAndDisconnect()
         }
         guard settings.removeManagedDevice(id: id) != nil else { return }
+        haSourcePreviewCache.remove(sourceID: id)
+        controlCenterHAPreviewErrors[id] = nil
+        controlCenterHAPreviewErrorOrigins[id] = nil
         if removingActiveDevice {
             if type == .oracle {
                 lastOracleAutoPush = settings.oracleAutoPushEnabled ? nil : Date()
@@ -1679,14 +1873,20 @@ public final class AppModel: ObservableObject {
     /// Home Assistant 设备连接测试（读该设备快照的地址与令牌验证；不打印令牌）
     public func testHADevice(_ id: UUID) async -> String {
         guard let device = settings.devices.first(where: { $0.id == id }) else { return "设备不存在" }
-        let server = device.settings.haServerURL ?? ""
-        let token = device.settings.haToken ?? ""
+        let connection = resolvedHAConnection(for: device)
+        let server = connection?.serverURL ?? ""
+        let token = connection?.token ?? ""
+        let requestedSources = haPreviewRequestSources(serverURL: server, token: token)
         if let problem = HomeAssistantClient.validate(serverURL: server, token: token) {
+            haSourcePreviewCache.remove(sourceID: id)
+            objectWillChange.send()
             return problem
         }
         do {
             let entities = try await HomeAssistantClient.fetchStates(serverURL: server, token: token)
             let sampledAt = Date()
+            haSourcePreviewCache.recordSuccess(entities, requestedSources: requestedSources,
+                                              currentConfigurations: haPreviewSourceConfigurations())
             applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
             lastHARefresh = sampledAt
             let result = reconcileBambuPrinters(entities: entities)
@@ -1694,8 +1894,12 @@ public final class AppModel: ObservableObject {
             bambuAutoDiscoveryStatus = result
             return "连接成功：读到 \(entities.count) 个实体；\(result)"
         } catch let error as HAError {
+            haSourcePreviewCache.invalidate(requestedSources: requestedSources)
+            objectWillChange.send()
             return error.errorDescription ?? "连接失败"
         } catch {
+            haSourcePreviewCache.invalidate(requestedSources: requestedSources)
+            objectWillChange.send()
             return "连接失败"
         }
     }
@@ -2084,7 +2288,7 @@ public final class AppModel: ObservableObject {
             return existing.id
         }
         guard settings.canAddDevice(of: discovered.type) else {
-            aiMacNetworkScanStatus = "AI Mac 小屏幕已达到 5 台上限"
+            aiMacNetworkScanStatus = "ESP8266 天气时钟已达到 5 台上限"
             return nil
         }
         let id = addDevice(type: discovered.type)
@@ -2143,7 +2347,7 @@ public final class AppModel: ObservableObject {
         }
         guard let firmwareURL = embeddedAIMacFirmwareURL,
               let helperURL = embeddedAIMacFlashHelperURL else {
-            aiMacFlashStatus = ESP8266FlashError.missingResource("AI Mac 固件").localizedDescription
+            aiMacFlashStatus = ESP8266FlashError.missingResource("ESP8266 天气时钟固件").localizedDescription
             return false
         }
         let provisioningImage: Data
@@ -2184,7 +2388,7 @@ public final class AppModel: ObservableObject {
                     }
                 })
             aiMacFlashProgress = 1
-            status = "AI Mac 小屏幕固件与 Wi-Fi 配置刷入成功"
+            status = "ESP8266 天气时钟固件与 Wi-Fi 配置刷入成功"
             guard let hostname = result.expectedHostname else {
                 aiMacFlashStatus = "固件与 Wi-Fi 已刷入，但未能读取设备识别码；请等待屏幕显示 IP 后手动添加"
                 return true
@@ -2204,14 +2408,14 @@ public final class AppModel: ObservableObject {
                 let ip = try await discovery.value
                 if addDeviceAfterSuccess {
                     guard settings.canAddDevice(of: .aiMacScreen) else {
-                        aiMacFlashStatus = "设备已联网（\(ip)），但 AI Mac 设备列表已达到 5 台上限"
+                        aiMacFlashStatus = "设备已联网（\(ip)），但 ESP8266 天气时钟设备列表已达到 5 台上限"
                         return true
                     }
                     let id = addDevice(type: .aiMacScreen)
                     mutateAIMacScreenSettings(id, schedulePush: false) { $0.host = ip }
                     aiMacScreenStatuses[id] = "已通过刷机流程自动连接 · \(ip)"
                     aiMacFlashStatus = "全部完成：固件刷入成功，设备已联网并自动添加（\(ip)）"
-                    status = "AI Mac 小屏幕已自动添加"
+                    status = "ESP8266 天气时钟已自动添加"
                     await testAIMacScreenConnection(deviceID: id)
                 } else {
                     aiMacFlashStatus = "固件刷入成功，设备已联网 · IP：\(ip)"
@@ -2226,7 +2430,7 @@ public final class AppModel: ObservableObject {
             return true
         } catch {
             aiMacFlashStatus = error.localizedDescription
-            status = "AI Mac 小屏幕固件刷入失败"
+            status = "ESP8266 天气时钟固件刷入失败"
             refreshAIMacFlashPorts()
             return false
         }
@@ -2998,6 +3202,7 @@ public final class AppModel: ObservableObject {
         guard let capability = CardCapabilityRegistry.capability(for: mode),
               isCurrentAIMacCard(deviceID: deviceID, mode: mode) else { return }
         let requirements = capability.requirements
+        if mode == .cloudflare { await refreshCloudflare() }
         if requirements.contains(.system) {
             _ = monitor.sample(now: Date())
             try? await Task.sleep(nanoseconds: 120_000_000)
@@ -3289,7 +3494,7 @@ public final class AppModel: ObservableObject {
 
     public func chooseAIMacScreenImage(deviceID: UUID) {
         let panel = NSOpenPanel()
-        panel.title = "选择 AI Mac 小屏幕图片"
+        panel.title = "选择小电视图片"
         panel.allowedContentTypes = [.png, .jpeg, .gif, .heic]
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -3407,6 +3612,7 @@ public final class AppModel: ObservableObject {
             nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
             customText: settings.canvasText, settings: settings,
             codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
             sspaiArticles: aiMacCanvasArticles(deviceID: deviceID, board: board),
             ha: haSnapshot.selecting(entityIDs: board.haEntityIDs),
             formlabsItems: formlabsCanvasItems(), now: now,
@@ -3418,7 +3624,8 @@ public final class AppModel: ObservableObject {
             bambuHeroLayout: true,
             showBambuCamera: true,
             nowPlayingSmartBackground: board.usesNowPlayingSmartBackground,
-            nowPlayingShowCover: board.usesNowPlayingCover)
+            nowPlayingShowCover: board.usesNowPlayingCover,
+            readingExcerpt: readingExcerptCard(for: deviceID))
     }
 
     /// 通用卡片渲染入口：具体设备只负责尺寸、色彩能力与传输方式；卡片到模块的
@@ -3503,6 +3710,7 @@ public final class AppModel: ObservableObject {
                 nowPlaying: playbackInfo, pomodoro: pomodoroSnapshot,
                 customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
                 settings: settings, codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
                 sspaiArticles: articles, ha: cardHA,
                 formlabsItems: formlabsCanvasItems(), now: now,
                 width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
@@ -3514,7 +3722,8 @@ public final class AppModel: ObservableObject {
                 bambuHeroLayout: true,
                 showBambuCamera: true,
                 nowPlayingSmartBackground: mode == .nowPlaying,
-                nowPlayingShowCover: mode == .nowPlaying)
+                nowPlayingShowCover: mode == .nowPlaying,
+                readingExcerpt: readingExcerptCard(for: deviceID))
         }
     }
 
@@ -4427,6 +4636,148 @@ public final class AppModel: ObservableObject {
         } catch { return "云端失败：\(error.localizedDescription)" }
     }
 
+    /// Existing MQTT data belongs to this managed identity and its current connection.
+    /// Peeking must not start a client, load an access code, or read another printer's pool.
+    func existingBambuMQTTEntities(for id: UUID) -> [HAEntity]? {
+        guard let device = settings.devices.first(where: { $0.id == id && $0.type == .bambuLab }),
+              device.settings.bambuDataSource == .localMQTT else { return nil }
+        var configuration = device.settings.bambuMQTT ?? BambuMQTTSettings()
+        configuration.namespace = id.uuidString
+        guard bambuMQTTClientSettings[id] == configuration else { return nil }
+        return bambuMQTTEntities[id]
+    }
+
+    /// An entity ID alone does not prove which HA server produced it. Only successful
+    /// fetches whose captured connection still matches this source can supply a preview.
+    func existingHASourceEntities(for id: UUID) -> [HAEntity]? {
+        guard let device = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant }) else { return nil }
+        let fingerprint = resolvedHAConnection(for: device)?.fingerprint
+        return haSourcePreviewCache.value(for: id, configurationFingerprint: fingerprint)
+    }
+
+    /// Read-only dual-picture projection for the visible printer overview. These
+    /// are the same source/task leases used by C6 media, never a name-based lookup.
+    /// MQTT has no picture transport; legacy HA sources without a shared picture
+    /// connection cannot borrow frames from the global cache.
+    func existingControlCenterBambuPictures(for id: UUID) -> (camera: Data?, task: Data?) {
+        guard controlCenterSourcePreviewDemand.deviceIDs.contains(id),
+              let device = settings.devices.first(where: { $0.id == id && $0.isEnabled && $0.type == .bambuLab }),
+              device.settings.bambuDataSource != .localMQTT,
+              let sourceID = activeHADeviceID,
+              let source = settings.devices.first(where: { $0.id == sourceID && $0.isEnabled && $0.type == .homeAssistant }),
+              let connection = resolvedHAConnection(for: source),
+              let shared = HASharedConnectionResolver.resolve(serverURL: settings.haServerURL, token: settings.haToken),
+              connection.fingerprint == shared.fingerprint,
+              let entities = existingHASourceEntities(for: sourceID) else { return (nil, nil) }
+        let config = BambuLabCardSettings.from(device)
+        guard config.showImage else { return (nil, nil) }
+        let origin = Self.sha256(Data(settings.haServerURL.utf8) + Data([0]) + Data(settings.haToken.utf8))
+        let taskKey = entities.first { $0.entityId == config.taskEntityID }
+            .flatMap { C6TaskThumbnail.homeAssistantTaskKey($0.state) }
+        func picture(_ entityID: String, taskCover: Bool) -> Data? {
+            guard !entityID.isEmpty,
+                  taskCover ? entityID.hasPrefix("image.")
+                    : (entityID.hasPrefix("camera.") || entityID.hasPrefix("image.")),
+                  entities.contains(where: { $0.entityId == entityID }),
+                  c6PictureOrigins[entityID] == origin else { return nil }
+            if let taskKey {
+                guard c6PictureTaskKeys[entityID]?[config.taskEntityID] == taskKey else { return nil }
+            } else if taskCover { return nil }
+            return haSnapshot.picture(for: entityID)
+        }
+        let cameraID = config.imageEntityID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let taskID = config.taskImageEntityID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (picture(cameraID, taskCover: false),
+                taskID == cameraID ? nil : picture(taskID, taskCover: true))
+    }
+
+    /// Adds both roles only while a visible overview needs them. Other card and
+    /// canvas consumers keep their existing retention and refresh cadence.
+    private func controlCenterPrinterPictureEntityIDs() -> [String] {
+        guard let sourceID = activeHADeviceID,
+              let source = settings.devices.first(where: { $0.id == sourceID && $0.isEnabled && $0.type == .homeAssistant }),
+              let connection = resolvedHAConnection(for: source),
+              let shared = HASharedConnectionResolver.resolve(serverURL: settings.haServerURL, token: settings.haToken),
+              connection.fingerprint == shared.fingerprint,
+              let entities = existingHASourceEntities(for: sourceID) else { return [] }
+        let known = Set(entities.map(\.entityId))
+        var result: [String] = []
+        for device in settings.devices where device.isEnabled && device.type == .bambuLab
+            && device.settings.bambuDataSource != .localMQTT
+            && controlCenterSourcePreviewDemand.deviceIDs.contains(device.id) {
+            let config = BambuLabCardSettings.from(device)
+            guard config.showImage else { continue }
+            for raw in [config.imageEntityID, config.taskImageEntityID] {
+                let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if known.contains(id), (id.hasPrefix("image.") || id.hasPrefix("camera.")), !result.contains(id) {
+                    result.append(id)
+                }
+            }
+        }
+        return result
+    }
+
+    private func pruneControlCenterPrinterPictures() {
+        let retained = Set(pictureEntityIDs())
+        let images = haSnapshot.images.filter { retained.contains($0.key) }
+        if images != haSnapshot.images { haSnapshot.images = images }
+        c6PictureOrigins = c6PictureOrigins.filter { retained.contains($0.key) }
+        c6PictureTaskKeys = c6PictureTaskKeys.filter { retained.contains($0.key) }
+        haPictureRequestGenerations = haPictureRequestGenerations.filter { retained.contains($0.key) }
+    }
+
+    private func refreshControlCenterPrinterPicturesIfNeeded() async {
+        let ids = controlCenterPrinterPictureEntityIDs()
+        guard !ids.isEmpty, let sourceID = activeHADeviceID,
+              let entities = existingHASourceEntities(for: sourceID),
+              let source = settings.devices.first(where: { $0.id == sourceID && $0.type == .homeAssistant }),
+              let connection = resolvedHAConnection(for: source) else { return }
+        let origin = connection.fingerprint + ":printer-pictures"
+        let missing = settings.devices.contains { device in
+            guard controlCenterSourcePreviewDemand.deviceIDs.contains(device.id), device.type == .bambuLab else { return false }
+            let config = BambuLabCardSettings.from(device)
+            let pictures = existingControlCenterBambuPictures(for: device.id)
+            return (!config.imageEntityID.isEmpty && pictures.camera == nil)
+                || (!config.taskImageEntityID.isEmpty && pictures.task == nil)
+        }
+        guard controlCenterSourcePreviewDemand.shouldRequest(origin: origin,
+            needsFirstReading: missing, requestInFlight: false) else { return }
+        controlCenterSourcePreviewDemand.beganRequest(origin: origin)
+        _ = await refreshHAPictures(entities: entities, wantedIDs: ids)
+    }
+
+    func controlCenterHAPreviewError(for id: UUID) -> String? {
+        guard let device = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant }),
+              let fingerprint = resolvedHAConnection(for: device)?.fingerprint,
+              controlCenterHAPreviewErrorOrigins[id] == fingerprint,
+              existingHASourceEntities(for: id) == nil else { return nil }
+        return controlCenterHAPreviewErrors[id]
+    }
+
+    private func resolvedHAConnection(for device: ManagedDevice) -> HASharedConnection? {
+        HASharedConnectionResolver.resolve(serverURL: settings.haServerURL, token: settings.haToken,
+                                          legacyServerURL: device.settings.haServerURL,
+                                          legacyToken: device.settings.haToken)
+    }
+
+    private func haPreviewSourceConfigurations() -> [UUID: String] {
+        var configurations: [UUID: String] = [:]
+        for device in settings.devices where device.type == .homeAssistant {
+            if let fingerprint = resolvedHAConnection(for: device)?.fingerprint {
+                configurations[device.id] = fingerprint
+            }
+        }
+        return configurations
+    }
+
+    /// Capture before an await; a response cannot claim a source added or reconfigured
+    /// while its request was running. Identical saved connections may share the result.
+    private func haPreviewRequestSources(serverURL: String, token: String) -> [UUID: String] {
+        HASourcePreviewOriginPolicy.matchingSources(
+            requestFingerprint: HASourcePreviewOriginPolicy.fingerprint(serverURL: serverURL, token: token),
+            configurations: haPreviewSourceConfigurations())
+    }
+
     /// 当前活动 Home Assistant 设备 ID（无则回退第一台 HA 设备）
     public var activeHADeviceID: UUID? {
         if let id = settings.activeHomeAssistantDeviceID,
@@ -4434,15 +4785,72 @@ public final class AppModel: ObservableObject {
         return settings.devices.first { $0.type == .homeAssistant }?.id
     }
 
-    /// Reuse the actual device-management connection, including saved credentials.
-    /// Do not send credentials from a stale global preview mirror to C6.
+    /// Reuse the single shared connection, with legacy device-copy fallback.
     public var c6HomeAssistantConnection: (name: String, url: String, token: String)? {
         if let id = activeHADeviceID,
-           let device = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant }) {
-            return (device.name, device.settings.haServerURL ?? "", device.settings.haToken ?? "")
+           let device = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant }),
+           let connection = resolvedHAConnection(for: device) {
+            return (device.name, connection.serverURL, connection.token)
         }
-        guard !settings.haServerURL.isEmpty else { return nil }
-        return ("Home Assistant", settings.haServerURL, settings.haToken)
+        guard let connection = HASharedConnectionResolver.resolve(serverURL: settings.haServerURL,
+                                                                token: settings.haToken) else { return nil }
+        return ("Home Assistant", connection.serverURL, connection.token)
+    }
+
+    /// Native view lifecycle registers demand; card construction and rendering never fetch.
+    func beginControlCenterSourcePreviewDemand(owner: UUID, deviceIDs: Set<UUID>) {
+        controlCenterSourcePreviewDemand.setDevices(deviceIDs, owner: owner)
+        pruneControlCenterPrinterPictures()
+        guard backgroundServicesEnabled else { return }
+        Task {
+            await refreshControlCenterHASourcePreviewIfNeeded()
+            await refreshControlCenterPrinterPicturesIfNeeded()
+        }
+    }
+
+    func endControlCenterSourcePreviewDemand(owner: UUID) {
+        controlCenterSourcePreviewDemand.remove(owner: owner)
+        pruneControlCenterPrinterPictures()
+    }
+
+    private func refreshControlCenterHASourcePreviewIfNeeded() async {
+        let demandedIDs = controlCenterSourcePreviewDemand.deviceIDs
+        let needsHA = settings.devices.contains { device in
+            demandedIDs.contains(device.id) && device.isEnabled
+                && (device.type == .homeAssistant
+                    || (device.type == .bambuLab && device.settings.bambuDataSource != .localMQTT))
+        }
+        guard needsHA, let id = activeHADeviceID,
+              let source = settings.devices.first(where: { $0.id == id && $0.type == .homeAssistant && $0.isEnabled }),
+              let connection = resolvedHAConnection(for: source) else { return }
+        let origin = connection.fingerprint
+        guard controlCenterSourcePreviewDemand.shouldRequest(origin: origin,
+            needsFirstReading: existingHASourceEntities(for: id) == nil, requestInFlight: haRefreshing) else { return }
+        controlCenterSourcePreviewDemand.beganRequest(origin: origin)
+        let requestedSources = haPreviewRequestSources(serverURL: connection.serverURL, token: connection.token)
+        haRefreshing = true
+        defer { haRefreshing = false }
+        do {
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: connection.serverURL, token: connection.token)
+            let current = haPreviewSourceConfigurations()
+            let stillMatching = requestedSources.filter { current[$0.key] == $0.value }
+            guard !stillMatching.isEmpty else { return }
+            haSourcePreviewCache.recordSuccess(entities, requestedSources: requestedSources, currentConfigurations: current)
+            for id in stillMatching.keys {
+                controlCenterHAPreviewErrors[id] = nil
+                controlCenterHAPreviewErrorOrigins[id] = nil
+            }
+            // First-frame demand updates readings only: no selection, mapping, alert,
+            // device connection or push. Normal scheduling retains those responsibilities.
+            applyHASnapshot(entities: entities, errorText: nil, rebuildBambuCatalog: false, sampledAt: Date())
+        } catch {
+            let current = haPreviewSourceConfigurations()
+            for (id, fingerprint) in requestedSources where current[id] == fingerprint {
+                controlCenterHAPreviewErrors[id] = (error as? HAError)?.errorDescription ?? "连接失败"
+                controlCenterHAPreviewErrorOrigins[id] = fingerprint
+            }
+            haSourcePreviewCache.invalidate(requestedSources: requestedSources)
+        }
     }
 
     /// Bambu Lab 字段实体映射绑定（按打印机设备快照；活动设备时同步全局镜像防 sync 覆盖）
@@ -4499,7 +4907,7 @@ public final class AppModel: ObservableObject {
     public func bambuMQTTAccessCodeBinding(_ id: UUID) -> Binding<String> {
         if bambuMQTTAccessCodes[id] == nil { bambuMQTTAccessCodes[id] = BambuMQTTSecretStore.read(deviceID: id) }
         return Binding(get: { self.bambuMQTTAccessCodes[id] ?? "" }, set: { value in
-            if !BambuMQTTSecretStore.save(value, deviceID: id) { self.bambuMQTTStatuses[id] = "无法保存访问码到钥匙串" }
+            if !BambuMQTTSecretStore.save(value, deviceID: id) { self.bambuMQTTStatuses[id] = "无法保存访问码到本机加密凭据" }
             else { self.bambuMQTTAccessCodes[id] = value }
             self.disconnectBambuMQTT(id)
         })
@@ -5221,9 +5629,11 @@ public final class AppModel: ObservableObject {
 
     private func tick() async {
         let now = Date()
+        refreshReadingExcerpts()
         maintainC6SoftwareLeases(now: now)
         scheduleC6ConfigurationSync(periodic: true)
         refreshWeatherIfDue(now: now)
+        refreshCloudflareIfDue(now: now)
         scheduleAWTRIXHomeAssistantSync(now: now)
         scheduleAWTRIXWeatherSync(now: now)
         // 设备端时钟每秒重绘，软件效果图也只在应用处于前台时跟随同一秒刷新；
@@ -5237,6 +5647,7 @@ public final class AppModel: ObservableObject {
             || !linkedLyricsKeyboardIDs.isEmpty {
             await refreshNowPlaying(now: now)
         }
+        await refreshControlCenterHASourcePreviewIfNeeded()
         // Home Assistant 定时刷新（按设置间隔节流；未配置服务器地址时自动跳过）
         if haRefreshDue(now: now) {
             await refreshHA()
@@ -5276,7 +5687,7 @@ public final class AppModel: ObservableObject {
             return
         }
         switch settings.displayMode {
-        case .codex, .qwenWork:
+        case .codex, .qwenWork, .grokBot:
             let action = SyncPlanner.forCodex(
                 now: now, lastRefresh: lastQuotaRefresh, lastPush: lastPushAttempt,
                 refreshSeconds: settings.codexRefreshSeconds)
@@ -5288,6 +5699,8 @@ public final class AppModel: ObservableObject {
             case .none:
                 renderPreviewIfDue(now: now)
             }
+        case .cloudflare:
+            await refreshPreviewOrPush(now: now)
         case .weather:
             await refreshPreviewOrPush(now: now)
         case .systemMonitor:
@@ -5639,11 +6052,60 @@ public func setClockTimeFormat(_ format: String) {
             }
             persistSettings()
             refreshDevicePreview(for: owner)
-            let label = owner == .oracle ? "先知" : owner == .excerpt ? "摘录" : "AI Mac"
+            let label = owner == .oracle ? "先知" : owner == .excerpt ? "摘录" : "小电视"
             status = "已更新\(label)画板图片"
         } catch {
             status = Self.friendly(error)
         }
+    }
+
+    /// 添加一个画板模块（已存在则忽略）
+    /// Applies an imported source to the active native canvas and confirms settings persistence.
+    /// Used by the shared wallpaper editor; no device upload is started here.
+    public func setSharedCanvasImage(url: URL, displayName: String, owner: CanvasOwner) throws {
+        guard owner == .oracle || owner == .excerpt else {
+            throw ReadPicoManagerError.invalid("此设备不支持共享画板图片。")
+        }
+        let oldPath = canvasImagePath(for: owner), oldName = canvasImageName(for: owner)
+        let oldOracleBoards = settings.oracleCanvasBoards, oldExcerptBoards = settings.excerptCanvasBoards
+        let oldDevices = settings.devices
+        let destination = try store.saveHistoryImage(from: url)
+        // Suppress onChange persistence, preview and automatic sync throughout this synchronous commit.
+        // 恢复进入前的两个防重入标志；中间状态不落盘、不刷新、不触发自动推送。
+        try { () throws -> Void in
+            let previousAutosave = canvasBoardAutosaveInFlight, previousSync = settings.deviceSyncInFlight
+            canvasBoardAutosaveInFlight = true; settings.deviceSyncInFlight = true
+            defer { canvasBoardAutosaveInFlight = previousAutosave; settings.deviceSyncInFlight = previousSync }
+            if owner == .oracle {
+                settings.oracleCanvasImagePath = destination.path; settings.oracleCanvasImageName = displayName
+                let index = settings.oracleCanvasBoardIndex
+                if settings.oracleCanvasBoards.indices.contains(index) {
+                    settings.oracleCanvasBoards[index] = settings.oracleCanvasBoards[index].updatingConfiguration(from: settings)
+                }
+                captureActiveDeviceSnapshot(of: .oracle)
+            } else {
+                settings.excerptCanvasImagePath = destination.path; settings.excerptCanvasImageName = displayName
+                let index = settings.excerptCanvasBoardIndex
+                if settings.excerptCanvasBoards.indices.contains(index) {
+                    settings.excerptCanvasBoards[index] = settings.excerptCanvasBoards[index].updatingConfiguration(from: settings)
+                }
+                captureActiveDeviceSnapshot(of: .excerpt)
+            }
+            do { try store.saveChecked(settings) }
+            catch {
+                if owner == .oracle {
+                    settings.oracleCanvasImagePath = oldPath; settings.oracleCanvasImageName = oldName
+                } else {
+                    settings.excerptCanvasImagePath = oldPath; settings.excerptCanvasImageName = oldName
+                }
+                settings.oracleCanvasBoards = oldOracleBoards; settings.excerptCanvasBoards = oldExcerptBoards
+                settings.devices = oldDevices
+                // The unused history copy can remain; the active board and snapshots retain the prior source.
+                throw error
+            }
+        }()
+        scheduleC6ConfigurationSync()
+        refreshDevicePreview(for: owner)
     }
 
     /// 添加一个画板模块（已存在则忽略）
@@ -6105,6 +6567,27 @@ public func setClockTimeFormat(_ format: String) {
         persistSettings()
     }
 
+    /// Only an explicit media button may send a transport command. Never infer
+    /// playback success from an accepted command, or mutate the sampled state.
+    func controlNowPlaying(_ command: NowPlayingControlCommand) async {
+        guard !nowPlayingControlInFlight else { return }
+        nowPlayingControlInFlight = true
+        nowPlayingControlFailed = false
+        nowPlayingControlStatus = nil
+        defer { nowPlayingControlInFlight = false }
+        do {
+            _ = try await nowPlayingControlClient.send(command, current: nowPlaying)
+            nowPlayingControlStatus = String(localized: "已发送到系统播放器；播放状态以播放器反馈为准")
+            // The existing fetch coordinator may join a pre-command read. Keep
+            // neutral feedback; the regular MediaRemote notifications/polling
+            // remain the authoritative source for title, state and progress.
+            await refreshNowPlaying(now: Date(), forceRemote: true)
+        } catch {
+            nowPlayingControlFailed = true
+            nowPlayingControlStatus = error.localizedDescription
+        }
+    }
+
     /// 正在播放：每 ~6 秒经子进程拉取一次系统状态，间隔内本地推进播放进度
     private func refreshNowPlaying(now: Date, forceRemote: Bool = false) async {
         // 播放中保持 6 秒校准；无媒体/暂停时退避到 30 秒，避免空闲状态频繁启动
@@ -6518,9 +7001,13 @@ public func setClockTimeFormat(_ format: String) {
 
     /// 刷新侧栏常驻封面：解码当前播放封面（无封面时置 nil，侧栏显示占位）
     private func updateSidebarArtwork() {
+        // Media progress updates often carry the same cover. Retain its decoded image
+        // and sampled color so native cards do not replace/crossfade it every poll.
+        if lastSidebarArtworkData == nowPlaying.artwork,
+           (sidebarArtwork != nil || nowPlaying.artwork == nil) { return }
         guard let cg = cachedArtworkImage(for: nowPlaying.artwork) else {
-            sidebarArtwork = nil
-            sidebarArtworkGlow = nil
+            if sidebarArtwork != nil { sidebarArtwork = nil }
+            if sidebarArtworkGlow != nil { sidebarArtworkGlow = nil }
             lastSidebarArtworkData = nil
             return
         }
@@ -6584,8 +7071,11 @@ public func setClockTimeFormat(_ format: String) {
             await refreshCurrentBambuEntities()
         }
         switch settings.displayMode {
-        case .codex, .qwenWork:
+        case .codex, .qwenWork, .grokBot:
             await refreshData(upload: true, forceUpload: false)
+        case .cloudflare:
+            await refreshCloudflare()
+            await refreshPreviewOrPush(now: Date())
         case .weather:
             if settings.weatherSnapshot == nil { await refreshWeather() }
             await push(force: true)
@@ -6686,7 +7176,8 @@ public func setClockTimeFormat(_ format: String) {
     /// 设备画板（口袋先知/摘录）含「正在播放」模块且开启自动推送：
     /// 需要高频刷新播放状态，实时捕获专辑封面变化
     private var deviceCanvasNeedsLiveNowPlaying: Bool {
-        (settings.oracleAutoPushEnabled && settings.oracleCanvasModuleList.contains(.nowPlaying))
+        readPicoBoardSessions.values.contains { $0.automaticModules.contains(CanvasModule.nowPlaying.rawValue) }
+            || (settings.oracleAutoPushEnabled && settings.oracleCanvasModuleList.contains(.nowPlaying))
             || (settings.excerptAutoPushEnabled && settings.excerptCanvasModuleList.contains(.nowPlaying))
             || enabledColorWiFiScreens.contains { device in
                 let config = device.settings.aiMacScreen ?? AIMacScreenDeviceSettings()
@@ -6729,6 +7220,9 @@ public func setClockTimeFormat(_ format: String) {
             updated.trackedProgress = QwenWorkQuota.trackedQuotaProgress(
                 current: quota.remainingCredits, baseline: settings.qwenQuotaBaseline)
             qwenQuota = updated
+        }
+        if let grok = outcome.grokBot {
+            grokBotUsage = grok
         }
         return outcome.failures
     }
@@ -6798,14 +7292,16 @@ public func setClockTimeFormat(_ format: String) {
         }
         let slots = Set(modules.compactMap(\.formlabsSlotIndex)
                         + currentCardSlots + keyboardRotationSlots + aiMacRotationSlots).sorted()
-        guard !slots.isEmpty else { return }
         let printers = enabledDevices(for: .formlabs)
+        let canvasIDs = Set(slots.compactMap { printers.indices.contains($0) ? printers[$0].id : nil })
+        let demandedIDs = controlCenterSourcePreviewDemand.deviceIDs
+        let ids = canvasIDs.union(printers.filter { demandedIDs.contains($0.id) }.map(\.id))
         var refreshed = false
-        for slot in slots where printers.indices.contains(slot) {
-            let id = printers[slot].id
+        for printer in printers where ids.contains(printer.id) {
+            let id = printer.id
             guard formLabsRefreshDue(deviceID: id, now: now) else { continue }
-            await refreshFormlabs(deviceID: id)
-            refreshed = true
+            await refreshFormlabs(deviceID: id, updateVisiblePreview: canvasIDs.contains(id))
+            refreshed = refreshed || canvasIDs.contains(id)
         }
         guard refreshed else { return }
         if settings.displayMode == .canvas { renderPreview() }
@@ -6826,7 +7322,7 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     public func refreshFormlabs(deviceID: UUID, force: Bool = false,
-                                pushIfVisible: Bool = false) async {
+                                pushIfVisible: Bool = false, updateVisiblePreview: Bool = true) async {
         guard let device = settings.devices.first(where: { $0.id == deviceID && $0.type == .formlabs }) else { return }
         guard force || formLabsRefreshDue(deviceID: deviceID, now: Date()) else { return }
         let config = device.settings.formlabsConnection ?? FormlabsConnectionSettings()
@@ -6839,6 +7335,10 @@ public func setClockTimeFormat(_ format: String) {
         lastFormlabsRefresh[deviceID] = Date()
         let previous = formlabsSnapshots[deviceID] ?? .empty
         var updated = await formlabsClient.refresh(settings: config, previous: previous)
+        // Discard a late response if this source was deleted or reconfigured.
+        guard settings.devices.contains(where: {
+            $0.id == deviceID && $0.type == .formlabs && $0.settings.formlabsConnection == config
+        }) else { return }
         if updated.cloudError == nil {
             if FormlabsTaskCachePolicy.isDefinitelyDifferentTask(
                 previous.print, updated.print) {
@@ -6854,7 +7354,7 @@ public func setClockTimeFormat(_ format: String) {
         } else {
             formlabsConnectionStatus[deviceID] = "Formlabs 云端数据已更新"
         }
-        guard formlabsDevice(for: settings.displayMode)?.id == deviceID else { return }
+        guard updateVisiblePreview, formlabsDevice(for: settings.displayMode)?.id == deviceID else { return }
         renderPreview()
         if pushIfVisible { await pushWhenAvailable(force: false, silentIfUnchanged: true) }
     }
@@ -7020,6 +7520,9 @@ public func setClockTimeFormat(_ format: String) {
         guard !haRefreshing else { return }
         haRefreshing = true
         defer { haRefreshing = false }
+        let requestServer = settings.haServerURL
+        let requestToken = settings.haToken
+        let requestedSources = haPreviewRequestSources(serverURL: requestServer, token: requestToken)
         guard !settings.haServerURL.isEmpty else {
             // 未配置/已清空服务器：不保留上一台服务器的实体池，卡片明确显示未连接
             applyHASnapshot(entities: [], errorText: nil)
@@ -7028,9 +7531,11 @@ public func setClockTimeFormat(_ format: String) {
         }
         lastHARefresh = Date()
         do {
-            let entities = try await HomeAssistantClient.fetchStates(serverURL: settings.haServerURL,
-                                                                     token: settings.haToken)
+            let entities = try await HomeAssistantClient.fetchStates(serverURL: requestServer,
+                                                                     token: requestToken)
             let sampledAt = Date()
+            haSourcePreviewCache.recordSuccess(entities, requestedSources: requestedSources,
+                                              currentConfigurations: haPreviewSourceConfigurations())
             // 一份全局快照：HA 卡片、画板模块、异常监控、打印机映射共用同一数据源
             applyHASnapshot(entities: entities, errorText: nil, sampledAt: sampledAt)
             observeBambuPrinterRotationStates(entities: entities, now: sampledAt)
@@ -7116,11 +7621,13 @@ public func setClockTimeFormat(_ format: String) {
             }
         } catch let error as HAError {
             // 网络波动时保留上一次完整实体目录，避免设备管理中的候选瞬间全部消失。
+            haSourcePreviewCache.invalidate(requestedSources: requestedSources)
             applyHASnapshot(entities: haSnapshot.entities,
                             errorText: error.errorDescription ?? "无法获取实体状态",
                             rebuildBambuCatalog: false,
                             sampledAt: haSnapshot.sampledAt)
         } catch {
+            haSourcePreviewCache.invalidate(requestedSources: requestedSources)
             applyHASnapshot(entities: haSnapshot.entities,
                             errorText: "无法获取实体状态",
                             rebuildBambuCatalog: false,
@@ -7185,6 +7692,7 @@ public func setClockTimeFormat(_ format: String) {
             guard config.showImage else { continue }
             add(config.selectedImageEntityID)
         }
+        controlCenterPrinterPictureEntityIDs().forEach(add)
         // 只有当前正在显示 Bambu 独立卡片的 AI Mac 才额外保留双图，避免让
         // 键盘/墨水屏的单图选择无条件扩大后台图片下载量。
         for mode in activeAIMacCardModes where mode.bambuSlotIndex != nil {
@@ -7700,7 +8208,7 @@ public func setClockTimeFormat(_ format: String) {
         status = upload ? "正在刷新并推送…" : "正在刷新…"
         do {
             switch settings.displayMode {
-            case .codex, .qwenWork, .canvas:
+            case .codex, .qwenWork, .grokBot, .canvas:
                 // 统一调取：一次并行拉取 Codex 用量 + 千问办公额度，缓存后供各功能共享
                 let failures = await refreshUsageAndQuota()
                 if settings.displayMode == .canvas {
@@ -7746,7 +8254,7 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     public func refresh() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot {
             await refreshData(upload: false, forceUpload: false)
         } else if settings.displayMode == .nowPlaying {
             do {
@@ -7799,7 +8307,7 @@ public func setClockTimeFormat(_ format: String) {
     // MARK: - 推送
 
     public func pushNow() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot {
             await refreshData(upload: true, forceUpload: true)
         } else {
             await push(force: true)
@@ -8193,6 +8701,7 @@ public func setClockTimeFormat(_ format: String) {
                                                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                 customText: settings.canvasText, settings: settings,
                                                 codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
                                                 sspaiArticles: sspaiDisplayArticles(for: .oracle),
                                                 ha: haSnapshot(forCanvas: .oracle),
                                                 formlabsItems: formlabsCanvasItems(),
@@ -8207,7 +8716,8 @@ public func setClockTimeFormat(_ format: String) {
                                                 printerFields: canvasPrinterFields(for: .oracle),
                                                 optimizeBambuForOracleEInk: true,
                                                 bambuHeroLayout: true,
-                                                showBambuCamera: false)
+                                                showBambuCamera: false,
+                                                readingExcerpt: readingExcerptCard(for: activeDeviceID(for: .oracle)))
     }
 
     /// 口袋先知画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -8235,6 +8745,7 @@ public func setClockTimeFormat(_ format: String) {
                                                  nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                                                  customText: settings.canvasText, settings: settings,
                                                  codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
                                                  sspaiArticles: sspaiDisplayArticles(for: .excerpt),
                                                  ha: haSnapshot(forCanvas: .excerpt),
                                                  formlabsItems: formlabsCanvasItems(),
@@ -8251,7 +8762,8 @@ public func setClockTimeFormat(_ format: String) {
                                                  printerFields: canvasPrinterFields(for: .excerpt),
                                                  optimizeBambuForOracleEInk: true,
                                                  bambuHeroLayout: true,
-                                                 showBambuCamera: false)
+                                                 showBambuCamera: false,
+                                                 readingExcerpt: readingExcerptCard(for: activeDeviceID(for: .excerpt)))
     }
 
     /// 摘录画板专用调色板：底色按手动深色/亮色模式固定，不随电脑或软件主题同步；
@@ -9636,7 +10148,7 @@ public func setClockTimeFormat(_ format: String) {
                     await self.pushExcerptCanvas()
                 }
             case .aiMacScreen, .c6Screen:
-                self.status = "M5 控制器：AI Mac \(forward ? "下一张" : "上一张")卡片"
+                self.status = "M5 控制器：小电视 \(forward ? "下一张" : "上一张")卡片"
                 self.aiMacPageCard(deviceID: target.id, direction: direction)
             case .awtrix:
                 self.switchDevice(type: .awtrix, to: target.id)
@@ -11694,6 +12206,7 @@ public func setClockTimeFormat(_ format: String) {
                     modules: oracle ? copy.oracleCanvasModuleList : copy.excerptCanvasModuleList,
                     system: system, nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                     customText: copy.canvasText, settings: copy, codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
                     sspaiArticles: Array(sspaiArticles.prefix(max(0, min(6, oracle ? copy.oracleSspaiCount : copy.excerptSspaiCount)))),
                     ha: haSnapshot.selecting(entityIDs: oracle ? copy.oracleCanvasHAEntityIDs : copy.excerptCanvasHAEntityIDs),
                     formlabsItems: formlabsCanvasItems(), now: Date(), width: width, height: height, palette: palette,
@@ -11703,7 +12216,8 @@ public func setClockTimeFormat(_ format: String) {
                     fullWidthModules: oracle ? [] : Set(copy.excerptFullWidthModules),
                     nowPlayingHorizontal: oracle ? copy.oracleNowPlayingHorizontal : copy.excerptNowPlayingHorizontal,
                     canvasImagePath: oracle ? copy.oracleCanvasImagePath : copy.excerptCanvasImagePath,
-                    printerFields: fields, optimizeBambuForOracleEInk: true, bambuHeroLayout: true, showBambuCamera: false)
+                    printerFields: fields, optimizeBambuForOracleEInk: true, bambuHeroLayout: true, showBambuCamera: false,
+                    readingExcerpt: readingExcerptCard(for: device.id))
                 let image: CGImage
                 if oracle {
                     image = ScreenRenderer.oraclePreviewImage(from: raw, algorithm: copy.oracleGrayAlgorithm,
@@ -11758,6 +12272,11 @@ public func setClockTimeFormat(_ format: String) {
         switch settings.displayMode {
         case .pomodoro:
             return try ScreenRenderer.renderPomodoro(pomodoroSnapshot, settings: settings)
+        case .grokBot:
+            return try ScreenRenderer.renderGrokBot(grokBotUsage, settings: settings)
+        case .cloudflare:
+            return try ScreenRenderer.renderCanvas(modules: [.cloudflare], system: system,
+                nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot, customText: "", settings: settings)
         case .weather:
             return try ScreenRenderer.renderCanvas(modules: [.weather], system: system,
                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot, customText: "", settings: settings)
@@ -11827,11 +12346,13 @@ public func setClockTimeFormat(_ format: String) {
                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                 customText: settings.canvasText, settings: settings,
                 codex: usage, qwenQuota: qwenQuota,
+                grokBot: grokBotUsage,
                 sspaiArticles: sspaiDisplayArticles(for: .keyboard),
                 ha: previewSettings == nil ? haSnapshot(forCanvas: .keyboard)
                     : haSnapshot.selecting(entityIDs: settings.canvasHAEntityIDs),
                 formlabsItems: formlabsCanvasItems(),
-                artworkImage: cachedArtworkImage(for: nowPlaying.artwork))
+                artworkImage: cachedArtworkImage(for: nowPlaying.artwork),
+                readingExcerpt: readingExcerptCard(for: previewKeyboardID ?? activeDeviceID(for: .keyboard)))
         case .aiMacClock:
             // 若损坏的旧设置把专属模式写到键盘，安全回退为系统监控画面。
             return try ScreenRenderer.renderSystem(system, history: monitor.networkHistory,
@@ -11905,9 +12426,12 @@ public func setClockTimeFormat(_ format: String) {
         Binding(get: { self.settings.devices.first { $0.id == id }?.settings.c6AutomaticSync ?? true },
                 set: { value in
             self.mutateDeviceSettings(id) { $0.c6AutomaticSync = value }
-            if !value { self.c6SyncTasks.removeValue(forKey: id)?.cancel(); self.c6SyncRequests[id] = nil }
-            else {
+            if !value {
+                self.c6SyncTasks.removeValue(forKey: id)?.cancel(); self.c6SyncRequests[id] = nil
+                self.c6SyncConflicts[id] = nil
+            } else {
                 self.c6SyncLastCheck[id] = nil; self.c6SyncedInputs[id] = nil; self.c6AttemptInputs[id] = nil
+                self.c6SyncConflicts[id] = nil
                 self.scheduleC6ConfigurationSync()
             }
         })
@@ -12039,6 +12563,85 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     @discardableResult
+
+    /// Keep the device document; acknowledge the current Mac input so automatic
+    /// sync stops retrying the same conflicting selection until it changes.
+    public func resolveC6SyncConflictKeepDevice(deviceID id: UUID) {
+        guard let conflict = c6SyncConflicts[id],
+              let device = settings.devices.first(where: { $0.id == id }) else { return }
+        let selection = c6SyncInput(for: device).selection
+        mutateAIMacScreenSettings(id, schedulePush: false) {
+            $0.c6LastSyncedInputKey = conflict.inputKey
+            $0.c6LastSyncedSelection = selection
+        }
+        c6SyncedInputs[id] = conflict.inputKey
+        c6SyncConflicts[id] = nil
+        c6SyncStatuses[id] = "已保留设备配置。电脑端来源暂不同步，直到你再次更改侧边栏选择。"
+    }
+
+    /// Write desktop data-source origins onto the device after an explicit confirmation.
+    public func resolveC6SyncConflictUseDesktop(deviceID id: UUID) {
+        guard c6SyncConflicts[id] != nil,
+              let device = settings.devices.first(where: { $0.id == id && $0.type == .c6Screen && $0.isEnabled }) else { return }
+        let host = aiMacScreenSettings(for: id).host
+        let token = c6Tokens[id] ?? C6SecretStore.read(deviceID: id)
+        guard !token.isEmpty else {
+            c6SyncStatuses[id] = "请先连接设备后再用电脑端覆盖。"
+            return
+        }
+        let (selection, credentials, inputKey) = c6SyncInput(for: device)
+        let requestID = "override|" + inputKey
+        c6SyncTasks.removeValue(forKey: id)?.cancel()
+        c6SyncRequests[id] = requestID
+        c6SyncStatuses[id] = "正在用电脑端覆盖设备来源…"
+        c6SyncTasks[id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if self.c6SyncRequests[id] == requestID { self.c6SyncRequests[id] = nil; self.c6SyncTasks[id] = nil } }
+            do {
+                let client = try C6StandaloneClient(host: host)
+                var remote = try await client.read(token: token)
+                var resolved = selection
+                var resolvedCredentials = credentials
+                if resolved.ha.enabled {
+                    guard !resolved.ha.host.isEmpty else { throw C6StandaloneError.invalidConfiguration }
+                    resolved.ha.host = try await C6ConfigurationSync.localIPv4(resolved.ha.host)
+                }
+                for i in resolved.printers.indices where !resolved.printers[i].sourceHA && !resolved.printers[i].sourceFormlabs {
+                    let enteredKey = resolved.printers[i].credentialKey
+                    resolved.printers[i].host = try await C6ConfigurationSync.localIPv4(resolved.printers[i].host)
+                    if let secret = resolvedCredentials.printerAccessCodes.removeValue(forKey: enteredKey) {
+                        resolvedCredentials.printerAccessCodes[resolved.printers[i].credentialKey] = secret
+                    }
+                }
+                let desired = C6ConfigurationSync.overridingOrigins(resolved, into: remote)
+                guard desired.ha.entities.count <= 6, desired.printers.count <= 3 else {
+                    throw NSError(domain: "C6Sync", code: 5, userInfo: [NSLocalizedDescriptionKey: "合并后超出 C6 的 6 个实体或 3 台打印机限制。"])
+                }
+                for attempt in 0..<2 {
+                    do {
+                        remote = try await client.save(desired, token: token, credentials: resolvedCredentials)
+                        break
+                    } catch C6StandaloneError.conflict where attempt == 0 {
+                        remote = try await client.read(token: token)
+                    }
+                }
+                self.didUpdateC6DeviceConfiguration(remote, deviceID: id, host: host)
+                self.c6SyncedInputs[id] = inputKey
+                self.c6SyncedConfigurations[id] = remote
+                self.c6SyncedHosts[id] = host
+                self.mutateAIMacScreenSettings(id, schedulePush: false) {
+                    $0.c6LastSyncedInputKey = inputKey
+                    $0.c6LastSyncedSelection = resolved
+                }
+                self.c6SyncConflicts[id] = nil
+                self.c6SyncStatuses[id] = "已用电脑端覆盖设备来源 · \(remote.ha.entities.count) 个实体 / \(remote.printers.count) 台打印机"
+                self.scheduleC6ThumbnailSync()
+            } catch {
+                self.c6SyncStatuses[id] = "覆盖失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     public func invalidateC6Authorization(deviceID: UUID, host: String, token: String) -> Bool {
         guard isCurrentColorScreenTarget(deviceID, host: AIMacScreenSupport.normalizedHost(host)),
               (c6Tokens[deviceID] ?? C6SecretStore.read(deviceID: deviceID)) == token else { return false }
@@ -12281,13 +12884,19 @@ public func setClockTimeFormat(_ format: String) {
                         }
                         if !delta.ha.enabled { resolvedCredentials.haToken = "" }
                         for attempt in 0..<2 {
-                            guard !C6ConfigurationSync.hasHomeAssistantOriginConflict(selection: delta, remote: remote) else {
-                                throw NSError(domain: "C6Sync", code: 4, userInfo: [NSLocalizedDescriptionKey:
-                                    "设备已配置另一 Home Assistant 来源；原配置已保留，请在本地设置中确认来源后再同步。"])
+                            if C6ConfigurationSync.hasHomeAssistantOriginConflict(selection: delta, remote: remote) {
+                                let message = "设备已配置另一 Home Assistant 来源；原配置已保留。"
+                                self.c6SyncConflicts[id] = C6SyncOriginConflict(kind: .homeAssistant, message: message, inputKey: key)
+                                self.c6SyncedInputs[id] = key // stop automatic retry until selection changes or user resolves
+                                self.c6SyncStatuses[id] = "同步冲突：请选择保留设备或用电脑端覆盖。"
+                                return
                             }
-                            guard !C6ConfigurationSync.hasPrinterOriginConflict(selection: delta, remote: remote) else {
-                                throw NSError(domain: "C6Sync", code: 6, userInfo: [NSLocalizedDescriptionKey:
-                                    "同一打印机在设备与电脑中使用了不同来源或云端账号；设备原配置已保留，请确认来源后再同步。"])
+                            if C6ConfigurationSync.hasPrinterOriginConflict(selection: delta, remote: remote) {
+                                let message = "同一打印机在设备与电脑中使用了不同来源或云端账号；设备原配置已保留。"
+                                self.c6SyncConflicts[id] = C6SyncOriginConflict(kind: .printer, message: message, inputKey: key)
+                                self.c6SyncedInputs[id] = key
+                                self.c6SyncStatuses[id] = "同步冲突：请选择保留设备或用电脑端覆盖。"
+                                return
                             }
                             let desired = C6ConfigurationSync.applyingChanges(resolved, since: checkpoint.c6LastSyncedSelection, into: remote)
                             // Re-evaluate after every conflict read. An unchanged
@@ -12345,6 +12954,8 @@ public func setClockTimeFormat(_ format: String) {
                     }
                     self.scheduleC6ThumbnailSync()
                     let resultLabel = appliesSelection ? "已同步到设备" : "已读取设备配置"
+                    // Keep an unresolved origin-conflict banner across read-only polls.
+                    if appliesSelection { self.c6SyncConflicts[id] = nil }
                     self.c6SyncStatuses[id] = "\(resultLabel) · \(remote.ha.entities.count) 个实体 / \(remote.printers.count) 台打印机\(remote.weather ? " / 天气" : "")"
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -12487,6 +13098,11 @@ public func setClockTimeFormat(_ format: String) {
                 }
             }
         }
+    }
+
+    func invalidateCloudflarePreview() {
+        renderPreview()
+        enabledColorWiFiScreens.forEach { refreshAIMacScreenPreview(deviceID: $0.id) }
     }
 
     private func refreshWeatherIfDue(now: Date) {

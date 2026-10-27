@@ -23,13 +23,24 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
 echo "==> swift build -c release（SDK ${SDK_VERSION}，最低 macOS ${MACOSX_DEPLOYMENT_TARGET}）"
 # 分发包不携带 dSYM；在 Documents / File Provider 目录中生成 dSYM 还可能被系统
 # 扩展属性拦截。使用 SwiftPM 的产品级选项，避免它在编译结束后仍调用 dsymutil。
-swift build -c release --product LinxDisplayApp --disable-sandbox -debug-info-format none
+BUILD_PATH="${LINGXI_SWIFT_BUILD_PATH:-$ROOT/.build}"
+BUILD_LOG="$(mktemp /private/tmp/lingxi-swift-build.XXXXXX)"
+swift build -c release --product LinxDisplayApp --disable-sandbox -debug-info-format none --scratch-path "$BUILD_PATH" 2>&1 | tee "$BUILD_LOG"
+# swiftbuild can exit successfully after a database I/O error and leave the old
+# executable untouched. Never label and package that stale executable as a new build.
+if rg -q '^error:' "$BUILD_LOG"; then
+    echo "Swift build reported an error; refusing to package a stale executable ($BUILD_LOG)" >&2
+    exit 1
+fi
 
-BIN=".build/release/LinxDisplayApp"
+BIN="$BUILD_PATH/release/LinxDisplayApp"
 APP_NAME="多屏灵犀 2.0 测试版"
 EXEC_NAME="LingxiMultiScreen"
-FINAL_APP="$ROOT/dist/$APP_NAME.app"
-mkdir -p "$ROOT/dist"
+# 完整 2.0 测试主程序也可输出到独立候选目录，避免覆盖正在使用的测试包。
+# Full 2.0 test builds may target a separate directory without replacing the current app.
+OUTPUT_DIRECTORY="${LINGXI_APP_OUTPUT_DIRECTORY:-$ROOT/dist}"
+FINAL_APP="$OUTPUT_DIRECTORY/$APP_NAME.app"
+mkdir -p "$OUTPUT_DIRECTORY"
 # Documents 可能由 File Provider 管理，直接在其中组装会被注入 Finder 扩展属性并破坏签名。
 # 先在本机临时目录完成全部组装与签名，再把成品移动到 dist。
 STAGE_ROOT="$(mktemp -d /private/tmp/lingxi-multiscreen-build.XXXXXX)"
@@ -45,12 +56,24 @@ chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
 if [ -f "$ROOT/Resources/Icon.icns" ]; then
     cp "$ROOT/Resources/Icon.icns" "$APP/Contents/Resources/"
 fi
+# App chrome localization (development language zh-Hans + English)
+if [ -d "$ROOT/Resources/Localization" ]; then
+    for lproj in "$ROOT/Resources/Localization"/*.lproj; do
+        [ -d "$lproj" ] || continue
+        cp -R "$lproj" "$APP/Contents/Resources/"
+    done
+fi
 if [ -f "$ROOT/Resources/quote_0_hero.png" ]; then
     cp "$ROOT/Resources/quote_0_hero.png" "$APP/Contents/Resources/"
 fi
 if [ -f "$ROOT/Resources/rand0_hero.png" ]; then
     cp "$ROOT/Resources/rand0_hero.png" "$APP/Contents/Resources/"
 fi
+# Official Pico shell and source attribution are required by native previews.
+for resource in read_pico_hero.png read_pico_hero.NOTICE.txt; do
+    [ -f "$ROOT/Resources/$resource" ] || { echo "Missing Pico preview resource: $resource" >&2; exit 1; }
+    cp "$ROOT/Resources/$resource" "$APP/Contents/Resources/"
+done
 # 灵犀68 键盘设备外观图（实时预览打底，绿色显示区叠加渲染画面）
 if [ -f "$ROOT/Resources/akko2.png" ]; then
     cp "$ROOT/Resources/akko2.png" "$APP/Contents/Resources/"
@@ -122,6 +145,90 @@ if [ "$(plutil -extract version raw "$ROOT/Resources/Firmware/c6-manifest.json")
     echo "错误：C6 固件版本或芯片不匹配" >&2
     exit 1
 fi
+# BEGIN READ_PICO_PACKAGE
+# 中文：日常更新仅用 APP；首次安装资源独立校验，并只在分区不匹配且确认后使用。
+# English: Normal updates use APP only; separately validate first-install resources for confirmed mismatches.
+PICO_DIRECTORY="$ROOT/Resources/Firmware/ReadPico"
+PICO_APP_SOURCE="$PICO_DIRECTORY/read-pico-app.bin"
+PICO_MANIFEST_SOURCE="$PICO_DIRECTORY/manifest.json"
+if [ -e "$PICO_DIRECTORY" ] || [ -L "$PICO_DIRECTORY" ]; then
+    if [ ! -f "$PICO_APP_SOURCE" ] || [ ! -f "$PICO_MANIFEST_SOURCE" ]; then
+        echo "错误：小纸 Pico APP 与 manifest.json 必须成对提供" >&2
+        exit 1
+    fi
+    PICO_BOARD="$(plutil -extract board raw "$PICO_MANIFEST_SOURCE")"
+    PICO_CHIP="$(plutil -extract chip raw "$PICO_MANIFEST_SOURCE")"
+    PICO_VERSION="$(plutil -extract version raw "$PICO_MANIFEST_SOURCE")"
+    PICO_ADDRESS="$(plutil -extract app_address raw "$PICO_MANIFEST_SOURCE")"
+    PICO_SLOT_BYTES="$(plutil -extract slot_bytes raw "$PICO_MANIFEST_SOURCE")"
+    PICO_IMAGE_BYTES="$(plutil -extract image_bytes raw "$PICO_MANIFEST_SOURCE")"
+    PICO_KIND="$(plutil -extract kind raw "$PICO_MANIFEST_SOURCE" 2>/dev/null || true)"
+    PICO_SHA256="$(plutil -extract sha256 raw "$PICO_MANIFEST_SOURCE" | tr '[:upper:]' '[:lower:]')"
+    PICO_ACTUAL_BYTES="$(wc -c < "$PICO_APP_SOURCE" | tr -d '[:space:]')"
+    if [ "$PICO_BOARD" != "read-pico-esp32s3" ] || [ "$PICO_CHIP" != "esp32s3" ] \
+        || { [ "$PICO_ADDRESS" != "0x20000" ] && [ "$PICO_ADDRESS" != "131072" ]; } \
+        || [ "$PICO_SLOT_BYTES" != "4194304" ] || [ -z "$PICO_VERSION" ] \
+        || { [ -n "$PICO_KIND" ] && [ "$PICO_KIND" != "application" ]; } \
+        || [ "$PICO_IMAGE_BYTES" != "$PICO_ACTUAL_BYTES" ] \
+        || [ "$PICO_ACTUAL_BYTES" -lt 288 ] || [ "$PICO_ACTUAL_BYTES" -gt 4194304 ] \
+        || [[ ! "$PICO_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "错误：小纸 Pico 固件清单的板卡、地址、版本、大小或类型无效" >&2
+        exit 1
+    fi
+    PICO_ACTUAL_SHA256="$(shasum -a 256 "$PICO_APP_SOURCE" | awk '{print $1}')"
+    PICO_DESCRIPTOR_VERSION="$(dd if="$PICO_APP_SOURCE" bs=1 skip=48 count=32 2>/dev/null | tr -d '\000')"
+    PICO_DESCRIPTOR_PROJECT="$(dd if="$PICO_APP_SOURCE" bs=1 skip=80 count=32 2>/dev/null | tr -d '\000')"
+    if [ "$PICO_ACTUAL_SHA256" != "$PICO_SHA256" ] \
+        || [ "$(xxd -p -l 1 "$PICO_APP_SOURCE")" != "e9" ] \
+        || [ "$(xxd -p -l 2 -s 12 "$PICO_APP_SOURCE")" != "0900" ] \
+        || [ "$(xxd -p -l 4 -s 32 "$PICO_APP_SOURCE")" != "3254cdab" ] \
+        || [ "$PICO_DESCRIPTOR_PROJECT" != "Read_Pico" ] \
+        || [ "$PICO_DESCRIPTOR_VERSION" != "$PICO_VERSION" ]; then
+        echo "错误：小纸 Pico APP 哈希或 ESP32-S3 芯片校验失败" >&2
+        exit 1
+    fi
+    # Always validate declared TF resources, including a missing tree; legacy APP-only manifests remain supported.
+    python3 "$ROOT/scripts/validate-readpico-tf-resources.py" "$PICO_DIRECTORY"
+    if [ -e "$PICO_DIRECTORY/fresh-install.json" ]; then
+        python3 "$ROOT/scripts/validate-readpico-first-install.py" "$PICO_DIRECTORY"
+    fi
+    PICO_MANIFEST_SHA256="$(shasum -a 256 "$PICO_MANIFEST_SOURCE" | awk '{print $1}')"
+    PICO_DESTINATION="$APP/Contents/Resources/Firmware/ReadPico"
+    mkdir -p "$PICO_DESTINATION"
+    cp "$PICO_APP_SOURCE" "$PICO_DESTINATION/read-pico-app.bin"
+    cp "$PICO_MANIFEST_SOURCE" "$PICO_DESTINATION/manifest.json"
+    if [ "$(shasum -a 256 "$PICO_DESTINATION/read-pico-app.bin" | awk '{print $1}')" != "$PICO_SHA256" ] \
+        || [ "$(shasum -a 256 "$PICO_DESTINATION/manifest.json" | awk '{print $1}')" != "$PICO_MANIFEST_SHA256" ]; then
+        echo "错误：小纸 Pico 资源复制校验失败" >&2
+        exit 1
+    fi
+    # 首次安装的固定资源与普通 APP 更新隔离；仅在明确确认分区迁移时使用。
+    # Keep first-install resources separate from normal APP updates; migration requires explicit consent.
+    if [ -e "$PICO_DIRECTORY/fresh-install.json" ]; then
+        cp "$PICO_DIRECTORY/fresh-install.json" "$PICO_DESTINATION/fresh-install.json"
+        for PICO_INITIAL_FILE in bootloader.bin partition-table.bin ota-data.bin assets.bin storage.bin; do
+            if [ -f "$PICO_DIRECTORY/$PICO_INITIAL_FILE" ]; then
+                cp "$PICO_DIRECTORY/$PICO_INITIAL_FILE" "$PICO_DESTINATION/$PICO_INITIAL_FILE"
+            fi
+        done
+        python3 "$ROOT/scripts/validate-readpico-first-install.py" "$PICO_DESTINATION"
+    fi
+    # 附带的 TF 包仅供显式导入；固件升级不会自动写入 TF 卡。
+    # Bundled TF packages require explicit import; firmware updates never install them automatically.
+    if [ -d "$PICO_DIRECTORY/tf-card" ]; then
+        cp -R "$PICO_DIRECTORY/tf-card" "$PICO_DESTINATION/tf-card"
+        cp "$PICO_DIRECTORY/tf-manifest.json" "$PICO_DESTINATION/tf-manifest.json"
+        diff -rq "$PICO_DIRECTORY/tf-card" "$PICO_DESTINATION/tf-card"
+    fi
+    if [ -d "$PICO_DIRECTORY/validation" ]; then
+        cp -R "$PICO_DIRECTORY/validation" "$PICO_DESTINATION/validation"
+        diff -rq "$PICO_DIRECTORY/validation" "$PICO_DESTINATION/validation"
+    fi
+    echo "==> 已校验并内置小纸 Pico APP：$PICO_VERSION"
+else
+    echo "==> 未提供小纸 Pico 内置固件，管理页保留本地文件选择"
+fi
+# END READ_PICO_PACKAGE
 cp "$FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
 cp "$M5_FIRMWARE_SOURCE" "$APP/Contents/Resources/Firmware/"
 cp "$FLASH_HELPER_SOURCE" "$APP/Contents/Resources/Firmware/"
@@ -143,6 +250,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>多屏灵犀 2.0 测试版</string>
 	<key>CFBundleDisplayName</key>
 	<string>多屏灵犀 2.0 测试版</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleIconFile</key>
 	<string>Icon</string>
 	<key>CFBundlePackageType</key>
@@ -150,7 +264,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleShortVersionString</key>
 	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>31</string>
+	<string>86</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>
@@ -160,7 +274,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>NSInputMonitoringUsageDescription</key>
 	<string>用于接收灵犀68的 Fn + 旋钮事件，并在用户主动启用时将其转换为手动翻页。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于发现并连接灵犀键盘、口袋先知、摘录、AI Mac 小屏幕和 AWTRIX NG 等局域网设备。</string>
+	<string>用于连接局域网设备，以及在你主动开启时让手机扫码配置微信读书授权。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>仅在刷机配网时获取附近 2.4 GHz Wi-Fi 的网络名称，方便选择 SSID；不获取、保存或上传地理位置。</string>
 	<key>NSLocationUsageDescription</key>
@@ -199,7 +313,7 @@ codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
 if [ -d "$FINAL_APP" ]; then
-    ROLLBACK_ROOT="$(mktemp -d "$ROOT/dist/.rollback-beta2.XXXXXX")"
+    ROLLBACK_ROOT="$(mktemp -d "$OUTPUT_DIRECTORY/.rollback-beta2.XXXXXX")"
     mv "$FINAL_APP" "$ROLLBACK_ROOT/$APP_NAME.app"
 fi
 mv "$APP" "$FINAL_APP"

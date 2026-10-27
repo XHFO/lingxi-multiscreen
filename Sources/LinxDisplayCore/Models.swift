@@ -27,6 +27,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     /// AI Mac 彩色小屏专属的设备端实时桌面时钟。
     case aiMacClock = 21
     case weather = 22
+    case cloudflare = 23
+    case grokBot = 24
 
     /// 设置文件可能来自包含实验卡片的开发版。遇到当前版本不认识的编号时，
     /// 只回退当前显示页，不能让整份设备与画板配置解码失败。
@@ -61,29 +63,31 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
 
     public var title: String {
         switch self {
-        case .codex: return "Codex 用量"
-        case .pomodoro: return "番茄钟"
-        case .systemMonitor: return "系统监控"
-        case .customImage: return "自定义图片"
-        case .qwenWork: return "千问办公额度"
-        case .nowPlaying: return "正在播放"
-        case .canvas: return "灵犀画板"
-        case .excerptQuote: return "摘录语录"
-        case .sspai: return "少数派推荐"
-        case .emojiWallpaper: return "Emoji 壁纸"
+        case .codex: return String(localized: "Codex 用量")
+        case .pomodoro: return String(localized: "番茄钟")
+        case .systemMonitor: return String(localized: "系统监控")
+        case .customImage: return String(localized: "自定义图片")
+        case .qwenWork: return String(localized: "千问办公额度")
+        case .nowPlaying: return String(localized: "正在播放")
+        case .canvas: return String(localized: "灵犀画板")
+        case .excerptQuote: return String(localized: "摘录语录")
+        case .sspai: return String(localized: "少数派推荐")
+        case .emojiWallpaper: return String(localized: "Emoji 壁纸")
         case .homeAssistant: return "Home Assistant"
-        case .bambuLab: return "Bambu Lab 打印机"
-        case .bambuLab2: return "Bambu Lab 打印机 2"
-        case .bambuLab3: return "Bambu Lab 打印机 3"
-        case .bambuLab4: return "Bambu Lab 打印机 4"
-        case .bambuLab5: return "Bambu Lab 打印机 5"
-        case .formlabs: return "Formlabs 打印机"
-        case .formlabs2: return "Formlabs 打印机 2"
-        case .formlabs3: return "Formlabs 打印机 3"
-        case .formlabs4: return "Formlabs 打印机 4"
-        case .formlabs5: return "Formlabs 打印机 5"
-        case .aiMacClock: return "桌面时钟"
-        case .weather: return "天气"
+        case .bambuLab: return String(localized: "Bambu Lab 打印机")
+        case .bambuLab2: return String(localized: "Bambu Lab 打印机 2")
+        case .bambuLab3: return String(localized: "Bambu Lab 打印机 3")
+        case .bambuLab4: return String(localized: "Bambu Lab 打印机 4")
+        case .bambuLab5: return String(localized: "Bambu Lab 打印机 5")
+        case .formlabs: return String(localized: "Formlabs 打印机")
+        case .formlabs2: return String(localized: "Formlabs 打印机 2")
+        case .formlabs3: return String(localized: "Formlabs 打印机 3")
+        case .formlabs4: return String(localized: "Formlabs 打印机 4")
+        case .formlabs5: return String(localized: "Formlabs 打印机 5")
+        case .aiMacClock: return String(localized: "桌面时钟")
+        case .weather: return String(localized: "天气")
+        case .cloudflare: return String(localized: "Cloudflare 网站统计")
+        case .grokBot: return String(localized: "Grok Bot 用量")
         }
     }
 
@@ -98,6 +102,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .nowPlaying: return "music.note"
         case .aiMacClock: return "clock"
         case .weather: return "cloud.sun"
+        case .cloudflare: return "chart.bar.xaxis"
+        case .grokBot: return "sparkles"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -122,17 +128,17 @@ public enum EmojiWallpaperLayout: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .mixedSize: return "大小混合"
-        case .grid: return "网格排列"
-        case .spiral: return "螺旋"
+        case .mixedSize: return String(localized: "大小混合")
+        case .grid: return String(localized: "网格排列")
+        case .spiral: return String(localized: "螺旋")
         }
     }
 
     public var subtitle: String {
         switch self {
-        case .mixedSize: return "居中对齐的网格里，按规律交替放大、缩小表情，错落有致"
-        case .grid: return "相同大小的表情居中排成整齐网格"
-        case .spiral: return "漩涡状从中心向外排布：中间的表情小，越靠近边缘越大"
+        case .mixedSize: return String(localized: "居中对齐的网格里，按规律交替放大、缩小表情，错落有致")
+        case .grid: return String(localized: "相同大小的表情居中排成整齐网格")
+        case .spiral: return String(localized: "漩涡状从中心向外排布：中间的表情小，越靠近边缘越大")
         }
     }
 }
@@ -175,39 +181,45 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case formlabs4 = 25
     case formlabs5 = 26
     case weather = 27
+    case readingExcerpt = 28
+    case cloudflare = 29
+    case grokBot = 30
 
     public var id: Int { rawValue }
 
     public var title: String {
         switch self {
-        case .clock: return "时钟"
-        case .date: return "日期"
-        case .cpu: return "CPU 占用"
-        case .memory: return "内存占用"
-        case .network: return "网络速率"
-        case .nowPlaying: return "正在播放"
-        case .pomodoro: return "番茄钟"
-        case .uptime: return "运行时间"
-        case .text: return "自定义文字"
-        case .image: return "自定义图像"
-        case .qwenQuota: return "千问额度"
-        case .codex: return "Codex 用量"
-        case .oracleText: return "先知语录"
-        case .excerptText: return "摘录语录"
-        case .sspai: return "少数派推荐"
-        case .disk: return "磁盘占用"
+        case .clock: return String(localized: "时钟")
+        case .date: return String(localized: "日期")
+        case .cpu: return String(localized: "CPU 占用")
+        case .memory: return String(localized: "内存占用")
+        case .network: return String(localized: "网络速率")
+        case .nowPlaying: return String(localized: "正在播放")
+        case .pomodoro: return String(localized: "番茄钟")
+        case .uptime: return String(localized: "运行时间")
+        case .text: return String(localized: "自定义文字")
+        case .image: return String(localized: "自定义图像")
+        case .qwenQuota: return String(localized: "千问额度")
+        case .codex: return String(localized: "Codex 用量")
+        case .oracleText: return String(localized: "先知语录")
+        case .excerptText: return String(localized: "摘录语录")
+        case .sspai: return String(localized: "少数派推荐")
+        case .disk: return String(localized: "磁盘占用")
         case .homeAssistant: return "Home Assistant"
-        case .bambuLab: return "Bambu Lab 打印机"
-        case .bambuLab2: return "Bambu Lab 打印机 2"
-        case .bambuLab3: return "Bambu Lab 打印机 3"
-        case .bambuLab4: return "Bambu Lab 打印机 4"
-        case .bambuLab5: return "Bambu Lab 打印机 5"
-        case .formlabs: return "Formlabs 打印机"
-        case .formlabs2: return "Formlabs 打印机 2"
-        case .formlabs3: return "Formlabs 打印机 3"
-        case .formlabs4: return "Formlabs 打印机 4"
-        case .formlabs5: return "Formlabs 打印机 5"
-        case .weather: return "天气"
+        case .bambuLab: return String(localized: "Bambu Lab 打印机")
+        case .bambuLab2: return String(localized: "Bambu Lab 打印机 2")
+        case .bambuLab3: return String(localized: "Bambu Lab 打印机 3")
+        case .bambuLab4: return String(localized: "Bambu Lab 打印机 4")
+        case .bambuLab5: return String(localized: "Bambu Lab 打印机 5")
+        case .formlabs: return String(localized: "Formlabs 打印机")
+        case .formlabs2: return String(localized: "Formlabs 打印机 2")
+        case .formlabs3: return String(localized: "Formlabs 打印机 3")
+        case .formlabs4: return String(localized: "Formlabs 打印机 4")
+        case .formlabs5: return String(localized: "Formlabs 打印机 5")
+        case .weather: return String(localized: "天气")
+        case .readingExcerpt: return String(localized: "阅读摘录")
+        case .cloudflare: return String(localized: "Cloudflare 网站统计")
+        case .grokBot: return String(localized: "Grok Bot 用量")
         }
     }
 
@@ -231,6 +243,9 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .disk: return "internaldrive"
         case .homeAssistant: return "house"
         case .weather: return "cloud.sun"
+        case .readingExcerpt: return "text.quote"
+        case .cloudflare: return "chart.bar.xaxis"
+        case .grokBot: return "sparkles"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         }
@@ -340,7 +355,7 @@ public enum RuntimePerformancePolicy {
             return timeFormat.contains("s") ? 1 : 30
         case .excerptQuote, .sspai:
             return 30
-        case .codex, .qwenWork, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather,
+        case .codex, .qwenWork, .grokBot, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather, .cloudflare,
              .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))
@@ -445,10 +460,10 @@ public enum ExcerptQuoteCategory: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .famousSayings: return "名人名言"
-        case .movieQuotes: return "经典电影台词"
-        case .poetry: return "诗词名句"
-        case .proverbs: return "谚语俗语"
+        case .famousSayings: return String(localized: "名人名言")
+        case .movieQuotes: return String(localized: "经典电影台词")
+        case .poetry: return String(localized: "诗词名句")
+        case .proverbs: return String(localized: "谚语俗语")
         }
     }
 }
@@ -462,8 +477,8 @@ public enum CanvasImageMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .background: return "背景（完整显示，模块叠加）"
-        case .overlay: return "叠加（作为模块）"
+        case .background: return String(localized: "背景（完整显示，模块叠加）")
+        case .overlay: return String(localized: "叠加（作为模块）")
         }
     }
 }
@@ -477,8 +492,8 @@ public enum OracleDisplayMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .bw: return "黑白（1 位）"
-        case .gray4: return "4 级灰阶"
+        case .bw: return String(localized: "黑白（1 位）")
+        case .gray4: return String(localized: "4 级灰阶")
         }
     }
 }
@@ -496,23 +511,23 @@ public enum OracleGrayAlgorithm: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .luminosity: return "亮度加权"
-        case .average: return "平均值"
-        case .lightness: return "明度法"
-        case .redChannel: return "红通道"
-        case .greenChannel: return "绿通道"
-        case .blueChannel: return "蓝通道"
+        case .luminosity: return String(localized: "亮度加权")
+        case .average: return String(localized: "平均值")
+        case .lightness: return String(localized: "明度法")
+        case .redChannel: return String(localized: "红通道")
+        case .greenChannel: return String(localized: "绿通道")
+        case .blueChannel: return String(localized: "蓝通道")
         }
     }
 
     public var subtitle: String {
         switch self {
-        case .luminosity: return "0.299R + 0.587G + 0.114B，符合人眼敏感度的标准加权"
-        case .average: return "(R + G + B) ÷ 3，三通道等权平均"
-        case .lightness: return "(max + min) ÷ 2，结果偏亮、对比柔和"
-        case .redChannel: return "仅取红色通道的亮度"
-        case .greenChannel: return "仅取绿色通道的亮度，人眼最敏感"
-        case .blueChannel: return "仅取蓝色通道的亮度"
+        case .luminosity: return String(localized: "0.299R + 0.587G + 0.114B，符合人眼敏感度的标准加权")
+        case .average: return String(localized: "(R + G + B) ÷ 3，三通道等权平均")
+        case .lightness: return String(localized: "(max + min) ÷ 2，结果偏亮、对比柔和")
+        case .redChannel: return String(localized: "仅取红色通道的亮度")
+        case .greenChannel: return String(localized: "仅取绿色通道的亮度，人眼最敏感")
+        case .blueChannel: return String(localized: "仅取蓝色通道的亮度")
         }
     }
 }
@@ -533,9 +548,9 @@ public enum OracleDitherKernel: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .threshold: return "阈值（THRESHOLD）"
-        case .none: return "不抖动（NONE）"
-        case .ordered: return "有序抖动（ORDERED）"
+        case .threshold: return String(localized: "阈值（THRESHOLD）")
+        case .none: return String(localized: "不抖动（NONE）")
+        case .ordered: return String(localized: "有序抖动（ORDERED）")
         case .floydSteinberg: return "Floyd-Steinberg"
         case .atkinson: return "Atkinson"
         case .burkes: return "Burkes"
@@ -547,15 +562,15 @@ public enum OracleDitherKernel: Int, CaseIterable, Identifiable, Codable {
 
     public var subtitle: String {
         switch self {
-        case .threshold: return "按固定阈值（128）判黑/白，无灰度过渡"
-        case .none: return "直接取最近的灰阶档，不做误差扩散"
-        case .ordered: return "Bayer 4×4 矩阵，规则点阵纹理"
-        case .floydSteinberg: return "误差扩散（7/16·3/16·5/16·1/16），官方默认算法，细节保留最好"
-        case .atkinson: return "误差扩散（1/8×6 邻域），高光更干净"
-        case .burkes: return "误差扩散（8/32 系），介于 FS 与 Sierra 之间"
-        case .sierra2: return "误差扩散（4/16 系），与 Sierra-2 Lite 同族"
-        case .stucki: return "误差扩散（8/42 系），纹理更细腻"
-        case .jarvisJudiceNinke: return "误差扩散（7/48 系，12 邻域），最平滑但计算量大"
+        case .threshold: return String(localized: "按固定阈值（128）判黑/白，无灰度过渡")
+        case .none: return String(localized: "直接取最近的灰阶档，不做误差扩散")
+        case .ordered: return String(localized: "Bayer 4×4 矩阵，规则点阵纹理")
+        case .floydSteinberg: return String(localized: "误差扩散（7/16·3/16·5/16·1/16），官方默认算法，细节保留最好")
+        case .atkinson: return String(localized: "误差扩散（1/8×6 邻域），高光更干净")
+        case .burkes: return String(localized: "误差扩散（8/32 系），介于 FS 与 Sierra 之间")
+        case .sierra2: return String(localized: "误差扩散（4/16 系），与 Sierra-2 Lite 同族")
+        case .stucki: return String(localized: "误差扩散（8/42 系），纹理更细腻")
+        case .jarvisJudiceNinke: return String(localized: "误差扩散（7/48 系，12 邻域），最平滑但计算量大")
         }
     }
 }
@@ -571,11 +586,11 @@ public enum CardTheme: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .deepSpace: return "深空薄荷"
-        case .minimalLight: return "明亮极简"
-        case .neonPurple: return "霓虹紫"
-        case .amberTerminal: return "琥珀终端"
-        case .laserOrange: return "激光橙黑"
+        case .deepSpace: return String(localized: "深空薄荷")
+        case .minimalLight: return String(localized: "明亮极简")
+        case .neonPurple: return String(localized: "霓虹紫")
+        case .amberTerminal: return String(localized: "琥珀终端")
+        case .laserOrange: return String(localized: "激光橙黑")
         }
     }
 }
@@ -598,9 +613,9 @@ public enum AppearanceMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
+        case .system: return String(localized: "跟随系统")
+        case .light: return String(localized: "浅色")
+        case .dark: return String(localized: "深色")
         }
     }
 }
@@ -614,8 +629,8 @@ public enum PraiseSource: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .builtin: return "内置夸夸语（随机轮换）"
-        case .hitokoto: return "一言（每日随机）"
+        case .builtin: return String(localized: "内置夸夸语（随机轮换）")
+        case .hitokoto: return String(localized: "一言（每日随机）")
         }
     }
 }
@@ -631,10 +646,10 @@ public enum BackgroundTone: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .system: return "跟随软件明暗"
-        case .dark: return "深色"
-        case .light: return "浅色"
-        case .custom: return "自定义…"
+        case .system: return String(localized: "跟随软件明暗")
+        case .dark: return String(localized: "深色")
+        case .light: return String(localized: "浅色")
+        case .custom: return String(localized: "自定义…")
         }
     }
 }
@@ -655,15 +670,15 @@ public enum AccentTone: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .system: return "跟随主题"
-        case .blue: return "蓝色"
-        case .purple: return "紫色"
-        case .pink: return "粉色"
-        case .orange: return "橙色"
-        case .green: return "绿色"
-        case .red: return "红色"
-        case .graphite: return "石墨"
-        case .custom: return "自定义…"
+        case .system: return String(localized: "跟随主题")
+        case .blue: return String(localized: "蓝色")
+        case .purple: return String(localized: "紫色")
+        case .pink: return String(localized: "粉色")
+        case .orange: return String(localized: "橙色")
+        case .green: return String(localized: "绿色")
+        case .red: return String(localized: "红色")
+        case .graphite: return String(localized: "石墨")
+        case .custom: return String(localized: "自定义…")
         }
     }
 }
@@ -677,8 +692,8 @@ public enum CanvasBackgroundMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .dark: return "深色底色"
-        case .light: return "浅色底色"
+        case .dark: return String(localized: "深色底色")
+        case .light: return String(localized: "浅色底色")
         }
     }
 }
@@ -693,9 +708,9 @@ public enum DotServerDitherType: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .diffusion: return "误差扩散（DIFFUSION）"
-        case .ordered: return "有序抖动（ORDERED）"
-        case .none: return "无（NONE）"
+        case .diffusion: return String(localized: "误差扩散（DIFFUSION）")
+        case .ordered: return String(localized: "有序抖动（ORDERED）")
+        case .none: return String(localized: "无（NONE）")
         }
     }
 
@@ -726,16 +741,16 @@ public enum DotServerDitherKernel: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .threshold: return "THRESHOLD（阈值）"
+        case .threshold: return String(localized: "THRESHOLD（阈值）")
         case .atkinson: return "ATKINSON"
         case .burkes: return "BURKES"
         case .floydSteinberg: return "FLOYD_STEINBERG"
         case .sierra2: return "SIERRA2"
         case .stucki: return "STUCKI"
         case .jarvisJudiceNinke: return "JARVIS_JUDICE_NINKE"
-        case .diffusionRow: return "DIFFUSION_ROW（行扩散）"
-        case .diffusionColumn: return "DIFFUSION_COLUMN（列扩散）"
-        case .diffusion2D: return "DIFFUSION_2D（二维扩散）"
+        case .diffusionRow: return String(localized: "DIFFUSION_ROW（行扩散）")
+        case .diffusionColumn: return String(localized: "DIFFUSION_COLUMN（列扩散）")
+        case .diffusion2D: return String(localized: "DIFFUSION_2D（二维扩散）")
         }
     }
 
@@ -932,8 +947,8 @@ public enum ImageRotationMode: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .sequential: return "顺序切换"
-        case .random: return "随机切换"
+        case .sequential: return String(localized: "顺序切换")
+        case .random: return String(localized: "随机切换")
         }
     }
 }
@@ -984,11 +999,11 @@ public enum CustomImageClockOverlay: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .none: return "不叠加"
-        case .horizontalTop: return "Pixel 大时钟 · 顶部"
-        case .horizontalBottom: return "Pixel 大时钟 · 底部"
-        case .verticalLeft: return "Pixel 叠排大时钟 · 上方"
-        case .verticalCenter: return "Pixel 叠排大时钟 · 居中"
+        case .none: return String(localized: "不叠加")
+        case .horizontalTop: return String(localized: "Pixel 大时钟 · 顶部")
+        case .horizontalBottom: return String(localized: "Pixel 大时钟 · 底部")
+        case .verticalLeft: return String(localized: "Pixel 叠排大时钟 · 上方")
+        case .verticalCenter: return String(localized: "Pixel 叠排大时钟 · 居中")
         }
     }
 
@@ -1034,9 +1049,9 @@ public enum WallpaperColorStyle: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .natural: return "自然"
-        case .vibrant: return "鲜艳"
-        case .expressive: return "表现力"
+        case .natural: return String(localized: "自然")
+        case .vibrant: return String(localized: "鲜艳")
+        case .expressive: return String(localized: "表现力")
         }
     }
 
@@ -1062,12 +1077,12 @@ public enum ClockFontWeight: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .ultraLight: return "极细"
-        case .thin: return "纤细"
-        case .light: return "细体"
-        case .regular: return "常规"
-        case .medium: return "中粗"
-        case .bold: return "粗体"
+        case .ultraLight: return String(localized: "极细")
+        case .thin: return String(localized: "纤细")
+        case .light: return String(localized: "细体")
+        case .regular: return String(localized: "常规")
+        case .medium: return String(localized: "中粗")
+        case .bold: return String(localized: "粗体")
         }
     }
 
@@ -1109,12 +1124,12 @@ public enum ClockFont: Int, CaseIterable, Identifiable, Codable {
     public var title: String {
         switch self {
         case .helveticaNeue: return "Helvetica Neue"
-        case .pingfang: return "苹方 PingFang"
-        case .songti: return "宋体 Songti"
-        case .kaiti: return "楷体 Kaiti"
+        case .pingfang: return String(localized: "苹方 PingFang")
+        case .songti: return String(localized: "宋体 Songti")
+        case .kaiti: return String(localized: "楷体 Kaiti")
         case .timesNewRoman: return "Times New Roman"
         case .courier: return "Courier New"
-        case .menlo: return "Menlo 等宽"
+        case .menlo: return String(localized: "Menlo 等宽")
         }
     }
 
@@ -1179,17 +1194,17 @@ public enum Rand0ButtonTarget: Int, CaseIterable, Identifiable, Codable {
 
     public var title: String {
         switch self {
-        case .oracle: return "口袋先知自身"
-        case .keyboard: return "灵犀68 键盘"
-        case .excerpt: return "摘录"
+        case .oracle: return String(localized: "口袋先知自身")
+        case .keyboard: return String(localized: "灵犀68 键盘")
+        case .excerpt: return String(localized: "摘录")
         }
     }
 
     public var subtitle: String {
         switch self {
-        case .oracle: return "下键短按：手动更新口袋先知画布（重新渲染并推送）"
-        case .keyboard: return "上键/下键短按：在灵犀68 键盘的卡片列表中上下翻页（上一张/下一张，循环）"
-        case .excerpt: return "下键短按：切换到 Dot 云端内容列表的下一项（云端仅提供下一条接口）"
+        case .oracle: return String(localized: "下键短按：手动更新口袋先知画布（重新渲染并推送）")
+        case .keyboard: return String(localized: "上键/下键短按：在灵犀68 键盘的卡片列表中上下翻页（上一张/下一张，循环）")
+        case .excerpt: return String(localized: "下键短按：切换到 Dot 云端内容列表的下一项（云端仅提供下一条接口）")
         }
     }
 }
@@ -1208,27 +1223,29 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable, Send
     case awtrix = 7
     case m5Controller = 8
     case c6Screen = 9
+    case readPico = 10
 
     public var id: Int { rawValue }
 
     public var title: String {
         switch self {
-        case .keyboard: return "灵犀68 键盘"
-        case .oracle: return "口袋先知"
-        case .excerpt: return "摘录"
+        case .keyboard: return String(localized: "灵犀68 键盘")
+        case .oracle: return String(localized: "口袋先知")
+        case .excerpt: return String(localized: "摘录")
         case .homeAssistant: return "Home Assistant"
-        case .bambuLab: return "Bambu Lab 打印机"
-        case .formlabs: return "Formlabs 打印机"
-        case .aiMacScreen: return "AI Mac 小屏幕"
+        case .bambuLab: return String(localized: "Bambu Lab 打印机")
+        case .formlabs: return String(localized: "Formlabs 打印机")
+        case .aiMacScreen: return String(localized: "ESP8266 天气时钟")
         case .awtrix: return "AWTRIX NG"
-        case .m5Controller: return "M5 StickS3 控制器"
+        case .m5Controller: return String(localized: "M5 StickS3 控制器")
         case .c6Screen: return "XH Multiscreen C6"
+        case .readPico: return String(localized: "小纸 Pico")
         }
     }
 
     /// 设备类型级的试验状态；界面使用文字徽标呈现，不只依赖颜色。
     public var isBeta: Bool {
-        self == .m5Controller || self == .c6Screen
+        self == .m5Controller || self == .c6Screen || self == .readPico
     }
     public var isColorWiFiScreen: Bool { self == .aiMacScreen || self == .c6Screen }
 }
@@ -1236,7 +1253,8 @@ public enum DeviceType: Int, CaseIterable, Identifiable, Codable, Hashable, Send
 /// 新建画板的命名规则：空画板先显示“未命名”，第一次添加模块时才使用
 /// 第一个模块的显示名称；用户已主动命名或画板已有模块时绝不覆盖。
 public enum CanvasBoardNamingPolicy {
-    public static let untitledName = "未命名"
+    public static let untitledName = "未命名" // stable storage sentinel (not localized)
+    public static var untitledDisplayName: String { String(localized: "未命名") }
 
     public static func nameAfterAddingFirstModule(currentName: String,
                                                   currentModules: [Int],
@@ -1720,6 +1738,8 @@ public struct DeviceSettings: Codable, Equatable {
     public var awtrix: AWTRIXSettings?
     /// M5Stack StickS3 蓝牙控制器：独立保存配对与被控设备列表。
     public var m5Controller: M5ControllerDeviceSettings?
+    /// 小纸 Pico 的持久设备身份；临时配对码只驻留当前连接会话，不写入设置。
+    public var readPico: ReadPicoManagedDeviceSettings?
     /// 画板图像模块自己的图片（先知/摘录设备各自独立，与键盘自定义图片解耦）
     public var canvasImagePath: String?
     public var canvasImageName: String?
@@ -1899,7 +1919,7 @@ public struct DeviceSettings: Codable, Equatable {
             break
         case .awtrix:
             d.awtrix = s.awtrix
-        case .m5Controller:
+        case .m5Controller, .readPico:
             // 控制器设置直接保存在 ManagedDevice.settings 中。
             break
         }
@@ -2068,7 +2088,7 @@ public struct DeviceSettings: Codable, Equatable {
             break
         case .awtrix:
             if let awtrix { s.awtrix = awtrix }
-        case .m5Controller:
+        case .m5Controller, .readPico:
             break
         }
     }
@@ -2109,7 +2129,7 @@ public struct ManagedDevice: Identifiable, Codable, Equatable {
         switch type {
         case .bambuLab: return "打印机 \(index + 1)"
         case .formlabs: return "Formlabs \(index + 1)"
-        case .aiMacScreen: return "AI Mac 小屏幕 \(index + 1)"
+        case .aiMacScreen: return "小电视 \(index + 1)"
         case .c6Screen: return "XH Multiscreen C6 \(index + 1)"
         case .awtrix: return "AWTRIX NG \(index + 1)"
         case .m5Controller: return "M5 StickS3 控制器 \(index + 1)"

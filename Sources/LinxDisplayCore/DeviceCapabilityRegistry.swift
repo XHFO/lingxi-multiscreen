@@ -14,6 +14,7 @@ public enum DeviceTransportKind: String, Codable {
     case cloudDataAPI
     case sharedDataSource
     case bluetoothControl
+    case localDeviceManagement
 }
 
 public struct DisplayPixelSize: Codable, Equatable {
@@ -36,6 +37,8 @@ public struct DeviceCapabilityProfile: Identifiable, Equatable {
     public let transport: DeviceTransportKind
     public let cardSurface: CardSurface?
     public let supportsMultipleBoards: Bool
+    /// 独立管理设备不参与普通卡片渲染、自动轮换或控制器翻页目标。
+    public let isManagementOnly: Bool
 
     public var id: Int { type.rawValue }
 
@@ -44,7 +47,8 @@ public struct DeviceCapabilityProfile: Identifiable, Equatable {
                 colorCapability: DisplayColorCapability,
                 transport: DeviceTransportKind,
                 cardSurface: CardSurface? = nil,
-                supportsMultipleBoards: Bool = false) {
+                supportsMultipleBoards: Bool = false,
+                isManagementOnly: Bool = false) {
         self.type = type
         self.icon = icon
         self.maximumInstances = maximumInstances
@@ -53,6 +57,7 @@ public struct DeviceCapabilityProfile: Identifiable, Equatable {
         self.transport = transport
         self.cardSurface = cardSurface
         self.supportsMultipleBoards = supportsMultipleBoards
+        self.isManagementOnly = isManagementOnly
     }
 }
 
@@ -88,7 +93,10 @@ public enum DeviceCapabilityRegistry {
               colorCapability: .fullColor, transport: .localHTTPImage),
         .init(type: .m5Controller, icon: "gamecontroller", maximumInstances: 1,
               screenSize: .init(width: 135, height: 240),
-              colorCapability: .fullColor, transport: .bluetoothControl)
+              colorCapability: .fullColor, transport: .bluetoothControl),
+        .init(type: .readPico, icon: "book.closed", screenSize: .init(width: 684, height: 1216),
+              colorCapability: .monochrome, transport: .localDeviceManagement,
+              isManagementOnly: true)
     ]
 
     private static let byType = Dictionary(uniqueKeysWithValues: all.map { ($0.type, $0) })
@@ -100,4 +108,6 @@ public extension DeviceType {
     var capabilityProfile: DeviceCapabilityProfile? {
         DeviceCapabilityRegistry.profile(for: self)
     }
+
+    var isManagementOnly: Bool { capabilityProfile?.isManagementOnly ?? false }
 }
