@@ -436,7 +436,11 @@ struct ReadPicoLingxiBoardView: View {
                 modules: (draft.playlist.mode == .carousel ? draft.playlist.enabledItems.map(\.module) : draft.board.modules).compactMap(CanvasModule.init(rawValue:)), timeFormat: model.settings.timeFormat,
                 nowPlaying: model.nowPlaying.isPlaying, pomodoroRunning: model.pomodoroSnapshot.isRunning)))
     }
-    private var availableModules: [CanvasModule] { CanvasModule.oraclePanelModules.filter { !draft.board.modules.contains($0.rawValue) } }
+    private var availableModules: [CanvasModule] {
+        CanvasModule.oraclePanelModules.filter {
+            !CanvasModule.picoUnsupportedModules.contains($0) && !draft.board.modules.contains($0.rawValue)
+        }
+    }
     private var sharedPlaylistModules: [CanvasModule] {
         CanvasModule.oraclePanelModules.filter { module in
             ![CanvasModule.text, .image, .homeAssistant].contains(module)

@@ -115,6 +115,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case homeAssistant
     case weather
     case grokBot
+    case deepSeek
     case cloudflare
     case bambuLab
     case bambuLab2
@@ -180,8 +181,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     /// 主导航项（外观与设置置于底部）
     static var mainItems: [Panel] {
-        [.qwenWork, .codex, .grokBot, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
-         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather, .grokBot, .cloudflare,
+        [.qwenWork, .codex, .grokBot, .deepSeek, .pomodoro, .system, .nowPlaying, .customImage, .canvas,
+         .excerptQuote, .sspai, .emojiWallpaper, .homeAssistant, .weather, .cloudflare,
          .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
          .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5,
          .devices, .oracleCanvas, .excerptCanvas]
@@ -239,6 +240,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .homeAssistant: return .homeAssistant
         case .weather: return .weather
         case .grokBot: return .grokBot
+        case .deepSeek: return .deepSeek
         case .cloudflare: return .cloudflare
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
@@ -278,6 +280,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .homeAssistant: return "Home Assistant"
         case .weather: return String(localized: "天气")
         case .grokBot: return String(localized: "Grok Bot 用量")
+        case .deepSeek: return String(localized: "DeepSeek 用量")
         case .cloudflare: return String(localized: "Cloudflare 网站统计")
         case .bambuLab: return String(localized: "Bambu Lab 打印机")
         case .bambuLab2: return String(localized: "Bambu Lab 打印机 2")
@@ -342,6 +345,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .homeAssistant: return "house"
         case .weather: return "cloud.sun"
         case .grokBot: return "sparkles"
+        case .deepSeek: return "brain.head.profile"
         case .cloudflare: return "chart.bar.xaxis"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
@@ -399,6 +403,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .homeAssistant: return .homeAssistant
         case .weather: return .weather
         case .grokBot: return .grokBot
+        case .deepSeek: return .deepSeek
         case .cloudflare: return .cloudflare
         case .bambuLab: return .bambuLab
         case .bambuLab2: return .bambuLab2
@@ -2094,6 +2099,7 @@ struct SettingsView: View {
         case .homeAssistant: homeAssistantForm
         case .weather: WeatherSettingsView(model: model)
         case .grokBot: grokBotForm
+        case .deepSeek: deepSeekForm
         case .cloudflare: CloudflareAnalyticsSettingsView(model: model)
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5: bambuLabForm(for: panel)
         case .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: formlabsForm(for: panel)
@@ -2157,6 +2163,58 @@ struct SettingsView: View {
             }
             Button("立即刷新") {
                 Task { await model.refreshData(upload: false, forceUpload: false) }
+            }
+        }
+        .controlCenterHostedFormSurface()
+    }
+
+    private var deepSeekForm: some View {
+        Form {
+            Section {
+                SecureField("DeepSeek API Key", text: model.deepSeekAPIKeyBinding)
+                Link("在 DeepSeek 开放平台创建 API Key",
+                     destination: URL(string: "https://platform.deepseek.com/api_keys")!)
+            } header: {
+                Text("官方余额")
+            } footer: {
+                Text("通过 DeepSeek 官方 GET /user/balance 读取总余额、赠送余额与充值余额。密钥仅保存在本机设置中。")
+            }
+            Section {
+                SecureField("平台会话令牌（可选）", text: model.deepSeekPlatformTokenBinding)
+                Link("打开 DeepSeek 用量页", destination: URL(string: "https://platform.deepseek.com/usage")!)
+                Text("令牌来自 platform.deepseek.com 的浏览器本地存储 userToken，用于读取今日 / 本月 Token 与花费；不填时只显示官方余额。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Token 用量")
+            }
+            Section("当前状态") {
+                if model.deepSeekUsage.isAvailable {
+                    LabeledContent("账户余额", value: model.deepSeekUsage.balanceText)
+                    LabeledContent("API 状态", value: model.deepSeekUsage.apiAvailable ? "可用" : "不可用")
+                    LabeledContent("今日花费", value: model.deepSeekUsage.todayCostText)
+                    LabeledContent("今日 Token", value: model.deepSeekUsage.todayTokensText)
+                    LabeledContent("本月花费", value: model.deepSeekUsage.monthCostText)
+                    LabeledContent("本月 Token", value: model.deepSeekUsage.monthTokensText)
+                    LabeledContent("今日请求", value: model.deepSeekUsage.todayRequests.map { String($0) } ?? "—")
+                    LabeledContent("本月请求", value: model.deepSeekUsage.monthRequests.map { String($0) } ?? "—")
+                    LabeledContent("赠送 / 充值",
+                                   value: model.deepSeekUsage.moneyText(model.deepSeekUsage.grantedBalance)
+                                        + " / " + model.deepSeekUsage.moneyText(model.deepSeekUsage.toppedUpBalance))
+                    if let top = model.deepSeekUsage.topModel, !top.isEmpty {
+                        LabeledContent("主要模型", value: top)
+                    }
+                } else {
+                    LabeledContent("状态", value: model.deepSeekUsage.message.isEmpty ? "尚未读取" : model.deepSeekUsage.message)
+                }
+                if model.deepSeekUsage.isAvailable, !model.deepSeekUsage.message.isEmpty {
+                    Text(model.deepSeekUsage.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                Button("立即刷新") { Task { await model.refreshDeepSeek() } }
             }
         }
         .controlCenterHostedFormSurface()
@@ -2477,6 +2535,7 @@ struct SettingsView: View {
         case .homeAssistant: aiMacHomeAssistantForm(deviceID: deviceID)
         case .weather: WeatherSettingsView(model: model)
         case .grokBot: grokBotForm
+        case .deepSeek: deepSeekForm
         case .cloudflare: CloudflareAnalyticsSettingsView(model: model)
         case .bambuLab: bambuLabForm(for: .bambuLab)
         case .bambuLab2: bambuLabForm(for: .bambuLab2)
@@ -6545,6 +6604,8 @@ struct SettingsView: View {
                 }
             case .grokBot:
                 grokBotForm
+            case .deepSeek:
+                deepSeekForm
             case .cloudflare:
                 CloudflareAnalyticsSettingsView(model: model)
             case .qwenQuota:
@@ -11042,6 +11103,16 @@ extension AppModel {
     var grokBotSessionTokenBinding: Binding<String> {
         Binding(get: { self.settings.grokBotSessionToken },
                 set: { self.settings.grokBotSessionToken = $0 })
+    }
+
+    var deepSeekAPIKeyBinding: Binding<String> {
+        Binding(get: { self.settings.deepSeekAPIKey },
+                set: { self.settings.deepSeekAPIKey = $0 })
+    }
+
+    var deepSeekPlatformTokenBinding: Binding<String> {
+        Binding(get: { self.settings.deepSeekPlatformToken },
+                set: { self.settings.deepSeekPlatformToken = $0 })
     }
 
     /// 键盘 IP（只显示主机部分，端点后缀由软件自动拼装）

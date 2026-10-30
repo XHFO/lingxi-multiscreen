@@ -94,7 +94,7 @@ struct ReadPicoBoardPlaylistItem: Codable, Equatable, Identifiable {
     }
     static func supports(_ module: Int) -> Bool {
         guard let value = CanvasModule(rawValue: module) else { return false }
-        return value != .excerptText
+        return value != .excerptText && !CanvasModule.picoUnsupportedModules.contains(value)
     }
     var configurationForRendering: ReadPicoLingxiBoardConfiguration {
         var value = configuration

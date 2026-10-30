@@ -38,7 +38,7 @@ struct ReadPicoBoardPlaylistEditor: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Menu {
-                    ForEach(CanvasModule.oraclePanelModules) { module in
+                    ForEach(CanvasModule.oraclePanelModules.filter { !CanvasModule.picoUnsupportedModules.contains($0) }) { module in
                         Button { add(module) } label: { Label(module.title, systemImage: module.icon) }
                     }
                 } label: { Label("添加模块", systemImage: "plus") }

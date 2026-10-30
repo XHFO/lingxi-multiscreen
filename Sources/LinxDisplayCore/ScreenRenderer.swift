@@ -484,6 +484,7 @@ public enum ScreenRenderer {
                                     codex: UsageSnapshot = .empty,
                                     qwenQuota: QwenWorkQuota = .unavailable,
                                     grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                    deepSeek: DeepSeekUsageSnapshot = .notConfigured,
                                     sspaiArticles: [SspaiArticle] = [],
                                     ha: HASnapshot = .empty,
                                     formlabsItems: [FormlabsCanvasItem] = [],
@@ -592,7 +593,8 @@ public enum ScreenRenderer {
                 drawCanvasModule(ctx, module, band: bands[index], colors: colors,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, deepSeek: deepSeek,
+                                 sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  nowPlayingSmartBg: settings.canvasNowPlayingSmartBg,
@@ -782,6 +784,7 @@ public enum ScreenRenderer {
                                           codex: UsageSnapshot = .empty,
                                           qwenQuota: QwenWorkQuota = .unavailable,
                                           grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                          deepSeek: DeepSeekUsageSnapshot = .notConfigured,
                                           sspaiArticles: [SspaiArticle] = [],
                                           ha: HASnapshot = .empty,
                                           formlabsItems: [FormlabsCanvasItem] = [],
@@ -884,7 +887,8 @@ public enum ScreenRenderer {
                 drawCanvasModule(ctx, module, band: bands[index], colors: canvasPalette,
                                  system: system, nowPlaying: nowPlaying, pomodoro: pomodoro,
                                  customText: customText, settings: settings,
-                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, sspaiArticles: sspaiArticles,
+                                 codex: codex, qwenQuota: qwenQuota, grokBot: grokBot, deepSeek: deepSeek,
+                                 sspaiArticles: sspaiArticles,
                                  ha: ha, now: now,
                                  formlabsItems: formlabsItems,
                                  imageOverlayOnly: true,
@@ -1677,6 +1681,7 @@ public enum ScreenRenderer {
                                          customText: String, settings: AppSettings,
                                          codex: UsageSnapshot, qwenQuota: QwenWorkQuota,
                                          grokBot: GrokBotUsageSnapshot = .notConfigured,
+                                         deepSeek: DeepSeekUsageSnapshot = .notConfigured,
                                          sspaiArticles: [SspaiArticle], ha: HASnapshot, now: Date,
                                          formlabsItems: [FormlabsCanvasItem] = [],
                                          imageOverlayOnly: Bool = false,
@@ -2605,6 +2610,10 @@ public enum ScreenRenderer {
             drawGrokBotModule(ctx, band: band, snapshot: grokBot, colors: colors,
                               accent: accentOverride ?? colors.accentCG, now: now,
                               deviceCanvas: deviceCanvas, monochromeDeviceCanvas: monochromeDeviceCanvas)
+        case .deepSeek:
+            drawDeepSeekModule(ctx, band: band, snapshot: deepSeek, colors: colors,
+                               accent: accentOverride ?? colors.accentCG, now: now,
+                               deviceCanvas: deviceCanvas, monochromeDeviceCanvas: monochromeDeviceCanvas)
         case .cloudflare:
             drawCloudflareAnalytics(ctx, band: band, colors: colors, settings: settings, now: now)
         case .readingExcerpt:
@@ -8188,7 +8197,8 @@ public enum ScreenRenderer {
 
     /// 标签/数值成对列表：左标签右数值，行高随可用高度均分。
     private static func drawMetricRows(_ ctx: CGContext, rows: [(String, String)],
-                                       in area: CGRect, colors: ScreenPalette, accent: CGColor) {
+                                       in area: CGRect, colors: ScreenPalette, accent: CGColor,
+                                       labelWidth explicitLabelWidth: CGFloat? = nil) {
         guard !rows.isEmpty, area.width > 20, area.height > 12 else { return }
         let rowH = min(max(area.height / CGFloat(rows.count), 14), 24)
         let usable = min(CGFloat(rows.count) * rowH, area.height)
@@ -8196,7 +8206,7 @@ public enum ScreenRenderer {
         for (index, pair) in rows.enumerated() {
             let y = top + CGFloat(index) * rowH
             let row = CGRect(x: area.minX, y: y, width: area.width, height: rowH)
-            let labelW = min(max(area.width * 0.38, 48), 90)
+            let labelW = explicitLabelWidth ?? min(max(area.width * 0.38, 48), 90)
             drawText(ctx, pair.0, size: min(rowH * 0.55, 11), bold: false,
                      color: colors.secondaryTextCG,
                      in: rect(row.minX + 2, row.minY, labelW, row.height), align: .left)
@@ -8304,6 +8314,162 @@ public enum ScreenRenderer {
                              maxSize: 8, minSize: 6, bold: false, color: colors.tertiaryTextCG,
                              in: rect(area.minX, area.maxY - footH, area.width, footH), align: .center)
         }
+    }
+
+    // MARK: - DeepSeek 官方余额 / 平台用量
+
+    /// 142×428 键盘卡片。大数字显示账户余额；下方信息框显示今日 / 本月用量。
+    public static func renderDeepSeek(_ snapshot: DeepSeekUsageSnapshot, settings: AppSettings,
+                                      now: Date = Date()) throws -> RenderResult {
+        let colors = settings.resolvedPalette
+        let ctx = createContext()
+        let safe = clampSafeArea(settings.safeAreaHeight)
+        let card = drawCanvas(ctx, safeArea: safe, colors: colors)
+        drawHeader(ctx, card: card, title: "DEEPSEEK", badge: "官方",
+                   accent: colors.accentCG, colors: colors)
+        drawLine(ctx, x1: card.minX + 9, y1: card.minY + 38,
+                 x2: card.maxX - 9, y2: card.minY + 38, color: colors.borderCG)
+        let body = CGRect(x: card.minX + 8, y: card.minY + 46,
+                          width: card.width - 16, height: max(card.maxY - (card.minY + 54), 40))
+        drawDeepSeekBody(ctx, snapshot: snapshot, in: body, colors: colors,
+                         accent: colors.accentCG, now: now)
+        return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    private static func deepSeekRows(_ snapshot: DeepSeekUsageSnapshot) -> [(String, String)] {
+        if snapshot.hasUsageDetails {
+            return [
+                ("今日费用", snapshot.todayCost.map { snapshot.moneyText($0, decimals: 3) } ?? "—"),
+                ("今日 Token", snapshot.todayTokensText),
+                ("本月费用", snapshot.monthCostText),
+                ("本月 Token", snapshot.monthTokensText)
+            ]
+        }
+        guard snapshot.isAvailable else { return [] }
+        return [
+            ("赠送余额", snapshot.moneyText(snapshot.grantedBalance)),
+            ("充值余额", snapshot.moneyText(snapshot.toppedUpBalance)),
+            ("API 状态", snapshot.apiAvailable ? "可用" : "不可用")
+        ]
+    }
+
+    private static func drawDeepSeekModule(_ ctx: CGContext, band: CGRect,
+                                           snapshot: DeepSeekUsageSnapshot, colors: ScreenPalette,
+                                           accent: CGColor, now: Date,
+                                           deviceCanvas: Bool, monochromeDeviceCanvas: Bool) {
+        if deviceCanvas, !monochromeDeviceCanvas, band.width >= 180, band.height >= 180 {
+            drawSquareDeepSeek(ctx, band: band, snapshot: snapshot, accent: accent,
+                               colors: colors, now: now)
+            return
+        }
+        if band.height >= 126 {
+            drawDeepSeekBody(ctx, snapshot: snapshot, in: band.insetBy(dx: 4, dy: 2),
+                             colors: colors, accent: accent, now: now)
+            return
+        }
+        guard snapshot.isAvailable else {
+            drawWrapped(ctx, snapshot.message.isEmpty ? "尚未配置" : snapshot.message,
+                        maxSize: 11, minSize: 7, bold: true, color: colors.primaryTextCG,
+                        in: band.insetBy(dx: 4, dy: 2), maxLines: 3, align: .center)
+            return
+        }
+        let labelH = max(band.height * 0.38, 12)
+        drawText(ctx, "DEEPSEEK", size: min(max(band.height * 0.22, 7), 9), bold: true,
+                 color: colors.secondaryTextCG,
+                 in: rect(band.minX + 2, band.minY, band.width - 4, labelH), align: .left)
+        drawAdaptiveText(ctx, snapshot.balanceText,
+                         maxSize: min(band.height * 0.46, 17), minSize: 9, bold: true,
+                         color: colors.primaryTextCG,
+                         in: rect(band.minX + 2, band.minY + labelH - 3,
+                                  band.width - 4, band.height - labelH + 3), align: .left)
+        if band.height >= 48 {
+            let detail = snapshot.hasUsageDetails
+                ? "今日 " + snapshot.todayCostText
+                : (snapshot.apiAvailable ? "官方余额" : "API 不可用")
+            let size = min(max(band.height * 0.2, 6), 8)
+            drawText(ctx, detail, size: size, bold: false, color: colors.tertiaryTextCG,
+                     in: rect(band.minX + 2, band.maxY - size * 2.2, band.width - 4, size * 2.2),
+                     align: .right)
+        }
+        _ = accent
+        _ = now
+    }
+
+    private static func drawDeepSeekBody(_ ctx: CGContext, snapshot: DeepSeekUsageSnapshot,
+                                         in area: CGRect, colors: ScreenPalette,
+                                         accent: CGColor, now: Date) {
+        guard area.width > 20, area.height > 24 else { return }
+        guard snapshot.isAvailable else {
+            drawText(ctx, "尚未读取", size: min(area.width * 0.14, 18), bold: true,
+                     color: colors.primaryTextCG,
+                     in: rect(area.minX, area.minY + area.height * 0.34, area.width, 30),
+                     align: .center)
+            drawWrapped(ctx, snapshot.message.isEmpty ? "请在软件中配置 DeepSeek API Key" : snapshot.message,
+                        maxSize: 9, minSize: 7, bold: false, color: colors.secondaryTextCG,
+                        in: CGRect(x: area.minX + 6, y: area.minY + area.height * 0.34 + 34,
+                                   width: area.width - 12, height: area.height * 0.4),
+                        maxLines: 5, align: .center)
+            return
+        }
+
+        let captionH: CGFloat = area.height >= 150 ? 18 : 0
+        if captionH > 0 {
+            drawText(ctx, "账户余额", size: 10, bold: true, color: colors.secondaryTextCG,
+                     in: rect(area.minX, area.minY, area.width, captionH), align: .center)
+        }
+        let heroH = min(max(area.height * 0.26, 34), 72)
+        let hero = CGRect(x: area.minX, y: area.minY + captionH, width: area.width, height: heroH)
+        drawAdaptiveText(ctx, snapshot.balanceText,
+                         maxSize: min(heroH * 0.7, 34), minSize: 15, bold: true,
+                         color: colors.primaryTextCG, in: rect(hero), align: .center)
+        let status = snapshot.apiAvailable ? "API 可用" : "API 不可用"
+        drawText(ctx, status, size: 8, bold: true,
+                 color: snapshot.apiAvailable ? colors.tertiaryTextCG : colors.accentCG,
+                 in: rect(area.minX, hero.maxY - 2, area.width, 13), align: .center)
+        if !snapshot.message.isEmpty {
+            drawWrapped(ctx, snapshot.message, maxSize: 8, minSize: 6, bold: false,
+                        color: colors.tertiaryTextCG,
+                        in: CGRect(x: area.minX, y: hero.maxY + 10, width: area.width,
+                                   height: min(area.height * 0.16, 26)),
+                        maxLines: 2, align: .center)
+        }
+
+        let rows = deepSeekRows(snapshot)
+        let boxTop = hero.maxY + (snapshot.message.isEmpty ? 14 : 30)
+        let footH: CGFloat = area.height >= 220 ? 16 : 0
+        let boxBottom = area.maxY - footH - 2
+        if !rows.isEmpty, boxBottom - boxTop >= 34 {
+            let box = CGRect(x: area.minX, y: boxTop, width: area.width,
+                             height: min(boxBottom - boxTop, 128))
+            drawBox(ctx, rect(box), colors: colors)
+            drawMetricRows(ctx, rows: rows, in: box.insetBy(dx: 7, dy: 7),
+                           colors: colors, accent: accent,
+                           labelWidth: min(max(box.width * 0.52, 62), 68))
+        }
+        if footH > 0 {
+            let stamp = snapshot.sampledAt ?? now
+            drawText(ctx, "官方数据 · 采样 " + formatDate(stamp, "HH:mm"),
+                     size: 7, bold: false, color: colors.tertiaryTextCG,
+                     in: rect(area.minX, area.maxY - footH, area.width, footH), align: .center)
+        }
+    }
+
+    private static func drawSquareDeepSeek(_ ctx: CGContext, band: CGRect,
+                                           snapshot: DeepSeekUsageSnapshot, accent: CGColor,
+                                           colors: ScreenPalette, now: Date) {
+        let inner = band.insetBy(dx: 6, dy: 5)
+        fillRound(ctx, rect(inner), radius: 12, color: colors.insetCG)
+        strokeRound(ctx, rect(inner), radius: 12, color: colors.borderCG, width: 1)
+        drawText(ctx, "DEEPSEEK", size: 16, bold: true, color: colors.primaryTextCG,
+                 in: rect(inner.minX + 11, inner.minY + 8, 120, 23), align: .left)
+        drawAdaptiveText(ctx, "官方", maxSize: 10, minSize: 8, bold: true, color: accent,
+                         in: rect(inner.maxX - 58, inner.minY + 9, 46, 21), align: .right)
+        drawLine(ctx, x1: inner.minX + 10, y1: inner.minY + 35,
+                 x2: inner.maxX - 10, y2: inner.minY + 35, color: colors.borderCG)
+        let body = CGRect(x: inner.minX + 8, y: inner.minY + 40,
+                          width: inner.width - 16, height: inner.height - 48)
+        drawDeepSeekBody(ctx, snapshot: snapshot, in: body, colors: colors,
+                         accent: accent, now: now)
     }
 
     private static func drawSquareGrokBot(_ ctx: CGContext, band: CGRect,

@@ -54,6 +54,11 @@ struct ReadPicoSharedModuleSettingsView: View {
             Section("网站统计") { CloudflareAnalyticsSettingsView(model: model) }
         case .qwenQuota:
             Section("千问额度") { Toggle("显示百分比", isOn: $settings.qwenQuotaShowPercent) }
+        case .deepSeek:
+            Section("DeepSeek 用量") {
+                Text("余额与 Token 用量统一在「DeepSeek 用量」面板配置，所有画板共用。")
+                    .foregroundStyle(.secondary)
+            }
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5:
             Section("显示信息") {
                 Toggle("工作状态", isOn: printerField(\.showStatus))

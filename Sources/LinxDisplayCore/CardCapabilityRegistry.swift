@@ -93,6 +93,7 @@ public enum CardCapabilityRegistry {
         .init(mode: .aiMacClock, surfaces: [.colorSquare], recipe: .nativeClock),
         .init(mode: .weather, recipe: .modules([.weather])),
         .init(mode: .grokBot, recipe: .modules([.grokBot]), requirements: [.quotas]),
+        .init(mode: .deepSeek, recipe: .modules([.deepSeek]), requirements: [.quotas]),
         .init(mode: .cloudflare, recipe: .modules([.cloudflare]))
     ]
 

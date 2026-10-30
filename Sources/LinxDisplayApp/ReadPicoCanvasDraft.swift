@@ -21,7 +21,10 @@ struct ReadPicoLingxiBoardConfiguration: Codable, Equatable {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               name.utf8.count <= 256, text.utf8.count <= 16_384,
               modules.count <= 12, Set(modules).count == modules.count,
-              modules.allSatisfy({ CanvasModule.allCases.map(\.rawValue).contains($0) && $0 != CanvasModule.excerptText.rawValue }),
+              modules.allSatisfy({ raw in
+                  guard let module = CanvasModule(rawValue: raw) else { return false }
+                  return module != .excerptText && !CanvasModule.picoUnsupportedModules.contains(module)
+              }),
               (1...2).contains(columns), (2...4).contains(rasterScale),
               entityIDs.count <= 24, Set(entityIDs).count == entityIDs.count,
               entityIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 255 }),

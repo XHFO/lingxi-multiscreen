@@ -35,6 +35,18 @@ extension QwenWorkQuota {
     }
 }
 
+extension DeepSeekUsageSnapshot {
+    static var sample: DeepSeekUsageSnapshot {
+        DeepSeekUsageSnapshot(
+            state: .live, currency: "CNY", totalBalance: 110.5,
+            grantedBalance: 10, toppedUpBalance: 100.5, apiAvailable: true,
+            todayTokens: 12_345, monthTokens: 1_234_567,
+            todayCost: 0.1234, monthCost: 12.34,
+            todayRequests: 42, monthRequests: 1_024,
+            topModel: "deepseek-chat", sampledAt: Date(), message: "")
+    }
+}
+
 extension NowPlayingInfo {
     static var sample: NowPlayingInfo {
         NowPlayingInfo(
@@ -1050,6 +1062,7 @@ func exportPreviews(to directory: String) throws {
             ("pomodoro", try ScreenRenderer.renderPomodoro(pomodoroSnapshot, settings: settings)),
             ("system", try ScreenRenderer.renderSystem(system, settings: settings)),
             ("qwenwork", try ScreenRenderer.renderQwenWork(.sample, settings: settings)),
+            ("deepseek", try ScreenRenderer.renderDeepSeek(.sample, settings: settings)),
             ("nowplaying", try ScreenRenderer.renderNowPlaying(.sample, settings: settings))
         ]
         for (name, result) in results {
@@ -1067,6 +1080,30 @@ func exportPreviews(to directory: String) throws {
             _ = CGImageDestinationFinalize(dest)
             print("已导出 \(fileURL.path)")
         }
+    }
+
+    // DeepSeek 240×240 小屏模块预览
+    do {
+        var squareSettings = AppSettings()
+        squareSettings.cardTheme = .deepSpace
+        let square = ScreenRenderer.renderDeviceCanvas(
+            modules: [.deepSeek], system: .empty, nowPlaying: .placeholder,
+            pomodoro: PomodoroSnapshot(phase: .idle, effectivePhase: .idle, taskName: "",
+                                       remaining: 0, duration: 0, completedFocusSessions: 0),
+            customText: "", settings: squareSettings, deepSeek: .sample,
+            width: 240, height: 240, palette: squareSettings.resolvedPalette,
+            optimizeForEInk: false)
+        let ctx = CGContext(data: nil, width: 720, height: 720,
+                            bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.interpolationQuality = .high
+        ctx.draw(square, in: CGRect(x: 0, y: 0, width: 720, height: 720))
+        let url = outURL.appendingPathComponent("DeepSeek-240.png")
+        let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+        _ = CGImageDestinationFinalize(dest)
+        print("已导出 \(url.path)")
     }
 
     // 系统监控折线图预览（深空主题 + 四板块）
@@ -6641,6 +6678,12 @@ Task { @MainActor in
             print("Menu bar：\(passed) 项通过，\(failures.count) 项失败")
             exit(failures.isEmpty ? 0 : 1)
         }
+        if CommandLine.arguments.contains("--deepseek-only") {
+            try await testDeepSeek()
+            failures.forEach { print("失败：\($0)") }
+            print("DeepSeek：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--liquid-glass-only") {
             try await testLiquidGlassRendering()
             failures.forEach { print("失败：\($0)") }
@@ -6661,6 +6704,7 @@ Task { @MainActor in
         try await testLiquidGlassRendering()
         try testMigration()
         try testQuotaParse()
+        try await testDeepSeek()
         await testQuotaLiveFetch()
         testEndpointBuilder()
         testAppearanceColors()

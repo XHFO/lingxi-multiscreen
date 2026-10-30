@@ -450,6 +450,14 @@ public final class AppSettings: ObservableObject {
     @Published public var grokBotSessionToken = "" {
         didSet { onChange() }
     }
+    /// DeepSeek 官方 API Key（敏感字段，仅保存在本机 settings.json；日志与测试不打印明文）。
+    @Published public var deepSeekAPIKey = "" {
+        didSet { onChange() }
+    }
+    /// DeepSeek 平台网页会话令牌（可选）。用于读取今日 / 本月 Token 用量；不填时只显示官方余额。
+    @Published public var deepSeekPlatformToken = "" {
+        didSet { onChange() }
+    }
 
     @Published public var haRefreshMinutes = 5 {
         didSet { onChange() }
@@ -985,7 +993,7 @@ public final class AppSettings: ObservableObject {
     public func defaultCanvasMargin(for module: CanvasModule) -> Int {
         switch module {
         case .nowPlaying, .image, .sspai, .oracleText, .excerptText, .readingExcerpt: return 6
-        case .pomodoro, .weather, .cloudflare, .grokBot: return 4
+        case .pomodoro, .weather, .cloudflare, .grokBot, .deepSeek: return 4
         case .cpu, .memory, .disk, .network, .uptime, .qwenQuota, .codex, .homeAssistant, .bambuLab,
              .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return 4
@@ -1306,7 +1314,7 @@ public final class AppSettings: ObservableObject {
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
              keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled, awtrix,
-             haServerURL, haToken, grokBotSessionToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
+             haServerURL, haToken, grokBotSessionToken, deepSeekAPIKey, deepSeekPlatformToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
@@ -1428,6 +1436,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(haServerURL, forKey: .haServerURL)
         try container.encode(haToken, forKey: .haToken)
         try container.encode(grokBotSessionToken, forKey: .grokBotSessionToken)
+        try container.encode(deepSeekAPIKey, forKey: .deepSeekAPIKey)
+        try container.encode(deepSeekPlatformToken, forKey: .deepSeekPlatformToken)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
         try container.encode(haEntityID, forKey: .haEntityID)
         try container.encode(haEntities, forKey: .haEntities)
@@ -1667,6 +1677,8 @@ extension AppSettings: Codable {
         haServerURL = try container.decodeIfPresent(String.self, forKey: .haServerURL) ?? haServerURL
         haToken = try container.decodeIfPresent(String.self, forKey: .haToken) ?? haToken
         grokBotSessionToken = try container.decodeIfPresent(String.self, forKey: .grokBotSessionToken) ?? grokBotSessionToken
+        deepSeekAPIKey = try container.decodeIfPresent(String.self, forKey: .deepSeekAPIKey) ?? deepSeekAPIKey
+        deepSeekPlatformToken = try container.decodeIfPresent(String.self, forKey: .deepSeekPlatformToken) ?? deepSeekPlatformToken
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
         haEntityID = try container.decodeIfPresent(String.self, forKey: .haEntityID) ?? haEntityID
         haEntities = try container.decodeIfPresent([String].self, forKey: .haEntities) ?? haEntities

@@ -29,6 +29,8 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
     case weather = 22
     case cloudflare = 23
     case grokBot = 24
+    /// DeepSeek 官方余额与平台 Token 用量。
+    case deepSeek = 25
 
     /// 设置文件可能来自包含实验卡片的开发版。遇到当前版本不认识的编号时，
     /// 只回退当前显示页，不能让整份设备与画板配置解码失败。
@@ -88,6 +90,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .weather: return String(localized: "天气")
         case .cloudflare: return String(localized: "Cloudflare 网站统计")
         case .grokBot: return String(localized: "Grok Bot 用量")
+        case .deepSeek: return String(localized: "DeepSeek 用量")
         }
     }
 
@@ -104,6 +107,7 @@ public enum DisplayMode: Int, CaseIterable, Identifiable, Codable, Hashable {
         case .weather: return "cloud.sun"
         case .cloudflare: return "chart.bar.xaxis"
         case .grokBot: return "sparkles"
+        case .deepSeek: return "brain.head.profile"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -184,6 +188,8 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     case readingExcerpt = 28
     case cloudflare = 29
     case grokBot = 30
+    /// DeepSeek 官方余额 / 平台 Token 用量（三个画板通用）。
+    case deepSeek = 31
 
     public var id: Int { rawValue }
 
@@ -220,6 +226,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .readingExcerpt: return String(localized: "阅读摘录")
         case .cloudflare: return String(localized: "Cloudflare 网站统计")
         case .grokBot: return String(localized: "Grok Bot 用量")
+        case .deepSeek: return String(localized: "DeepSeek 用量")
         }
     }
 
@@ -246,6 +253,7 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
         case .readingExcerpt: return "text.quote"
         case .cloudflare: return "chart.bar.xaxis"
         case .grokBot: return "sparkles"
+        case .deepSeek: return "brain.head.profile"
         case .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5: return "printer"
         }
@@ -295,6 +303,10 @@ public enum CanvasModule: Int, CaseIterable, Identifiable, Codable {
     /// 摘录画板可选模块（含摘录语录，不含先知语录）
     public static let excerptPanelModules: [CanvasModule] =
         [.excerptText] + allCases.filter { $0 != .oracleText && $0 != .excerptText }
+
+    /// 小纸 Pico 固件尚不认识的模块。只在 Pico 画板编辑与推送前排除，避免设备拒绝整块画板；
+    /// 软件内的键盘 / 口袋先知 / 摘录 / AI Mac 画板仍可使用。
+    public static let picoUnsupportedModules: Set<CanvasModule> = [.deepSeek]
 }
 
 /// 键盘独立番茄钟卡片的刷新对齐策略。
@@ -355,7 +367,7 @@ public enum RuntimePerformancePolicy {
             return timeFormat.contains("s") ? 1 : 30
         case .excerptQuote, .sspai:
             return 30
-        case .codex, .qwenWork, .grokBot, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather, .cloudflare,
+        case .codex, .qwenWork, .grokBot, .deepSeek, .emojiWallpaper, .homeAssistant, .aiMacClock, .weather, .cloudflare,
              .bambuLab, .bambuLab2, .bambuLab3, .bambuLab4, .bambuLab5,
              .formlabs, .formlabs2, .formlabs3, .formlabs4, .formlabs5:
             return TimeInterval(max(5, dynamicUploadSeconds))

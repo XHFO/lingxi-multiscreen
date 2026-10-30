@@ -96,6 +96,10 @@ import LinxDisplayCore
                 } else { item.body = value.message.isEmpty ? "尚未读取" : value.message }
                 if let reset = value.resetDate { item.rows.append(.init("下次重置", stamp(reset))) }
                 if let count = value.availableBankedResetCount { item.rows.append(.init("可用重置", "\(count)")) }
+            case .deepSeek:
+                // Pico 固件当前没有这个类型；正常 UI 已排除，这里保留可读提示以防旧草稿。
+                item.kind = .text; item.title = "DeepSeek"
+                item.body = "DeepSeek 用量暂不支持显示在小纸 Pico 画板。"
             case .oracleText:
                 item.kind = .oracleText; item.title = "先知"; item.body = ScreenRenderer.rotatingOracleText(now)
             case .readingExcerpt:

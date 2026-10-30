@@ -150,6 +150,7 @@ public final class AppModel: ObservableObject {
     private let ccSwitchQuota = CCSwitchQuotaClient()
     private let quotaClient = QwenWorkQuotaClient()
     private let grokBotClient = GrokBotUsageClient()
+    private let deepSeekClient = DeepSeekUsageClient()
     private let nowPlayingClient = NowPlayingClient()
     private let nowPlayingControlClient = NowPlayingControlClient()
     private let lyricsClient = LyricsClient()
@@ -425,7 +426,7 @@ public final class AppModel: ObservableObject {
     private var canvasBoardAutosaveInFlight = false
     private var cropWindow: NSWindow?
 
-    /// 统一数据调取器：一次并行拉取 Codex 用量与千问办公额度，缓存后分发给各功能
+    /// 统一数据调取器：一次并行拉取 Codex、千问、Grok Bot 与 DeepSeek 用量，缓存后分发给各功能
     private lazy var usageAggregator: UsageDataAggregator = UsageDataAggregator(
         fetchCodex: { [weak self] path in
             guard let self else { throw CodexError.notFound }
@@ -443,6 +444,12 @@ public final class AppModel: ObservableObject {
         fetchGrokBot: { [weak self] in
             guard let self else { return .notConfigured }
             return await self.grokBotClient.fetch(sessionToken: self.settings.grokBotSessionToken)
+        },
+        fetchDeepSeek: { [weak self] in
+            guard let self else { return .notConfigured }
+            return await self.deepSeekClient.fetch(
+                apiKey: self.settings.deepSeekAPIKey,
+                platformToken: self.settings.deepSeekPlatformToken)
         })
 
     /// 活动设置（普通存储属性而非 @Published：视图直接观察 AppSettings 自身
@@ -451,6 +458,7 @@ public final class AppModel: ObservableObject {
     @Published public var usage: UsageSnapshot = .empty
     @Published public var qwenQuota: QwenWorkQuota = .unavailable
     @Published public var grokBotUsage: GrokBotUsageSnapshot = .notConfigured
+    @Published public var deepSeekUsage: DeepSeekUsageSnapshot = .notConfigured
     @Published public var cloudflareBusy = false
     @Published public var cloudflareStatus = ""
     var cloudflareLastAttempt: Date?
@@ -3613,6 +3621,7 @@ public final class AppModel: ObservableObject {
             customText: settings.canvasText, settings: settings,
             codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
             sspaiArticles: aiMacCanvasArticles(deviceID: deviceID, board: board),
             ha: haSnapshot.selecting(entityIDs: board.haEntityIDs),
             formlabsItems: formlabsCanvasItems(), now: now,
@@ -3711,6 +3720,7 @@ public final class AppModel: ObservableObject {
                 customText: mode == .excerptQuote ? quoteDisplayText : settings.canvasText,
                 settings: settings, codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
                 sspaiArticles: articles, ha: cardHA,
                 formlabsItems: formlabsCanvasItems(), now: now,
                 width: AIMacScreenSupport.frameSize, height: AIMacScreenSupport.frameSize,
@@ -5687,7 +5697,7 @@ public final class AppModel: ObservableObject {
             return
         }
         switch settings.displayMode {
-        case .codex, .qwenWork, .grokBot:
+        case .codex, .qwenWork, .grokBot, .deepSeek:
             let action = SyncPlanner.forCodex(
                 now: now, lastRefresh: lastQuotaRefresh, lastPush: lastPushAttempt,
                 refreshSeconds: settings.codexRefreshSeconds)
@@ -7071,7 +7081,7 @@ public func setClockTimeFormat(_ format: String) {
             await refreshCurrentBambuEntities()
         }
         switch settings.displayMode {
-        case .codex, .qwenWork, .grokBot:
+        case .codex, .qwenWork, .grokBot, .deepSeek:
             await refreshData(upload: true, forceUpload: false)
         case .cloudflare:
             await refreshCloudflare()
@@ -7164,14 +7174,14 @@ public func setClockTimeFormat(_ format: String) {
         }
     }
 
-    /// 任一画板（键盘/先知/摘录/AI Mac）模块组合里含 Codex 或千问额度模块
+    /// 任一画板（键盘/先知/摘录/AI Mac）模块组合里含用量类模块
     private var canvasNeedsQuotaData: Bool {
         let lists = [settings.canvasModuleList,
                      settings.oracleCanvasModuleList,
                      settings.excerptCanvasModuleList,
                      allAIMacCanvasModules, allPicoCanvasModules]
         return lists.contains { list in
-            list.contains { $0 == .codex || $0 == .qwenQuota }
+            list.contains { $0 == .codex || $0 == .qwenQuota || $0 == .grokBot || $0 == .deepSeek }
         } || activeAIMacCardModes.contains { mode in
             CardCapabilityRegistry.capability(for: mode)?.requirements.contains(.quotas) ?? false
         }
@@ -7201,7 +7211,7 @@ public func setClockTimeFormat(_ format: String) {
         return now.timeIntervalSince(lastQuotaRefresh) >= TimeInterval(max(1, settings.codexRefreshSeconds))
     }
 
-    /// 统一调取：一次并行拉取 Codex 用量与千问办公额度并更新缓存（单源失败保留旧值）。
+    /// 统一调取：一次并行拉取 Codex、千问、Grok Bot 与 DeepSeek 用量并更新缓存（单源失败保留旧值）。
     /// 返回失败提示列表（空 = 全部成功）。
     @discardableResult
     private func refreshUsageAndQuota() async -> [String] {
@@ -7228,7 +7238,18 @@ public func setClockTimeFormat(_ format: String) {
         if let grok = outcome.grokBot {
             grokBotUsage = grok
         }
+        if let deepSeek = outcome.deepSeek {
+            deepSeekUsage = deepSeek
+        }
         return outcome.failures
+    }
+
+    /// 立即刷新 DeepSeek 官方余额与平台用量（设置页按钮）。
+    public func refreshDeepSeek() async {
+        let failures = await refreshUsageAndQuota()
+        renderPreview()
+        lastRefresh = "最后刷新：\(Self.formatNow())"
+        status = failures.isEmpty ? "DeepSeek 数据已刷新" : failures.joined(separator: "；")
     }
 
     /// 切换 Codex 额度来源后立即丢弃旧来源快照并重新读取，避免界面在一个刷新周期内
@@ -8213,8 +8234,8 @@ public func setClockTimeFormat(_ format: String) {
         status = upload ? "正在刷新并推送…" : "正在刷新…"
         do {
             switch settings.displayMode {
-            case .codex, .qwenWork, .grokBot, .canvas:
-                // 统一调取：一次并行拉取 Codex 用量 + 千问办公额度，缓存后供各功能共享
+            case .codex, .qwenWork, .grokBot, .deepSeek, .canvas:
+                // 统一调取：一次并行拉取所有额度来源，缓存后供各功能共享
                 let failures = await refreshUsageAndQuota()
                 if settings.displayMode == .canvas {
                     system = monitor.sample(now: Date())
@@ -8259,7 +8280,7 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     public func refresh() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot || settings.displayMode == .deepSeek {
             await refreshData(upload: false, forceUpload: false)
         } else if settings.displayMode == .nowPlaying {
             do {
@@ -8312,7 +8333,7 @@ public func setClockTimeFormat(_ format: String) {
     // MARK: - 推送
 
     public func pushNow() async {
-        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot {
+        if settings.displayMode == .codex || settings.displayMode == .qwenWork || settings.displayMode == .grokBot || settings.displayMode == .deepSeek {
             await refreshData(upload: true, forceUpload: true)
         } else {
             await push(force: true)
@@ -8707,6 +8728,7 @@ public func setClockTimeFormat(_ format: String) {
                                                 customText: settings.canvasText, settings: settings,
                                                 codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
                                                 sspaiArticles: sspaiDisplayArticles(for: .oracle),
                                                 ha: haSnapshot(forCanvas: .oracle),
                                                 formlabsItems: formlabsCanvasItems(),
@@ -8751,6 +8773,7 @@ public func setClockTimeFormat(_ format: String) {
                                                  customText: settings.canvasText, settings: settings,
                                                  codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
                                                  sspaiArticles: sspaiDisplayArticles(for: .excerpt),
                                                  ha: haSnapshot(forCanvas: .excerpt),
                                                  formlabsItems: formlabsCanvasItems(),
@@ -12212,6 +12235,7 @@ public func setClockTimeFormat(_ format: String) {
                     system: system, nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot,
                     customText: copy.canvasText, settings: copy, codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
                     sspaiArticles: Array(sspaiArticles.prefix(max(0, min(6, oracle ? copy.oracleSspaiCount : copy.excerptSspaiCount)))),
                     ha: haSnapshot.selecting(entityIDs: oracle ? copy.oracleCanvasHAEntityIDs : copy.excerptCanvasHAEntityIDs),
                     formlabsItems: formlabsCanvasItems(), now: Date(), width: width, height: height, palette: palette,
@@ -12279,6 +12303,8 @@ public func setClockTimeFormat(_ format: String) {
             return try ScreenRenderer.renderPomodoro(pomodoroSnapshot, settings: settings)
         case .grokBot:
             return try ScreenRenderer.renderGrokBot(grokBotUsage, settings: settings)
+        case .deepSeek:
+            return try ScreenRenderer.renderDeepSeek(deepSeekUsage, settings: settings)
         case .cloudflare:
             return try ScreenRenderer.renderCanvas(modules: [.cloudflare], system: system,
                 nowPlaying: nowPlaying, pomodoro: pomodoroSnapshot, customText: "", settings: settings)
@@ -12352,6 +12378,7 @@ public func setClockTimeFormat(_ format: String) {
                 customText: settings.canvasText, settings: settings,
                 codex: usage, qwenQuota: qwenQuota,
                 grokBot: grokBotUsage,
+                deepSeek: deepSeekUsage,
                 sspaiArticles: sspaiDisplayArticles(for: .keyboard),
                 ha: previewSettings == nil ? haSnapshot(forCanvas: .keyboard)
                     : haSnapshot.selecting(entityIDs: settings.canvasHAEntityIDs),
