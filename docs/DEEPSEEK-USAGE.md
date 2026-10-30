@@ -20,6 +20,9 @@
 
 ## 配置
 
+入口：**设备管理 → 共享数据源 → DeepSeek 官方用量 → 添加/配置**。
+配置完成后，可在同一面板点「添加到当前键盘侧栏」；AI Mac / C6 在各自设备的卡片管理中启用。
+
 在「DeepSeek 用量」面板填写：
 
 - **DeepSeek API Key**：在 <https://platform.deepseek.com/api_keys> 创建，用于读取官方余额。

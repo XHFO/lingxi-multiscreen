@@ -2213,6 +2213,22 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("显示") {
+                if let device = model.activeDevice(for: .keyboard) {
+                    let visible = model.activeKeyboardCardList.contains(.deepSeek)
+                    Button(visible ? "已在「\(device.name)」侧栏显示" : "添加到「\(device.name)」侧栏") {
+                        model.setKeyboardCardVisible(.deepSeek, visible: true)
+                    }
+                    .disabled(visible)
+                    Text("卡片配置是全局的；每台键盘可在「卡片管理」中单独决定是否显示。AI Mac / C6 也在各自的卡片管理中启用。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("尚未添加键盘设备。配置会保存，添加设备后可在卡片管理中启用此卡片。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section {
                 Button("立即刷新") { Task { await model.refreshDeepSeek() } }
             }
@@ -3728,6 +3744,47 @@ struct SettingsView: View {
 
     /// 设备管理页面：多台 灵犀68/口袋先知/摘录 设备的添加、重命名、删除与活动设备切换；
     /// 每台设备独立记住自己的画板与卡片设置；Home Assistant 服务器为全局唯一连接配置
+    /// 共享数据源里的 DeepSeek 入口。密钥是全局配置，但卡片仍按设备在卡片管理中启用。
+    private var deepSeekDataSourceRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "brain.head.profile")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("DeepSeek 官方用量").font(.headline)
+                Text(deepSeekDataSourceStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(model.settings.deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "添加" : "配置") {
+                deviceSheetOpen = false
+                controlCenterDataSource = nil
+                selected = .deepSeek
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("配置 DeepSeek 官方用量")
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var deepSeekDataSourceStatus: String {
+        if model.settings.deepSeekAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "未配置 · 填写官方 API Key 后显示余额，平台令牌可选"
+        }
+        guard model.deepSeekUsage.isAvailable else {
+            return model.deepSeekUsage.message.isEmpty ? "已配置 · 等待刷新" : model.deepSeekUsage.message
+        }
+        var parts = ["余额 " + model.deepSeekUsage.balanceText]
+        if model.deepSeekUsage.hasUsageDetails {
+            parts.append("今日 " + model.deepSeekUsage.todayCostText)
+            parts.append(model.deepSeekUsage.todayTokensText + " Token")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private var devicesForm: some View {
         Group {
           Section("添加设备") {
@@ -3781,11 +3838,12 @@ struct SettingsView: View {
             }
           }
           Section {
+            deepSeekDataSourceRow
             CloudflareSourcesManagementView(model: model, showsTitle: false)
           } header: {
             Text("共享数据源")
           } footer: {
-            Text("在这里连接网站等数据服务。添加一次，所有设备的同类卡片共用，不需要在每台设备重复填写。")
+            Text("在这里连接网站、AI 用量等数据服务。添加一次，所有设备的同类卡片共用，不需要在每台设备重复填写。")
           }
         }
         .sheet(isPresented: $deviceSheetOpen, onDismiss: {
