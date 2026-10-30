@@ -18,6 +18,36 @@ struct DeviceControlCenterPreview {
     }
 }
 
+/// Identity is based on the target device and the selected board, rather than an
+/// encoded copy of every device/account in AppSettings on each refresh.
+fileprivate struct ControlCenterFallbackInput: Equatable {
+    enum Selection: Equatable {
+        case keyboard(DisplayMode)
+        case oracle(OracleCanvasBoard)
+        case excerpt(ExcerptCanvasBoard)
+        case controller(M5ControllerInfo, Bool, Bool)
+    }
+    let device: ManagedDevice
+    let selection: Selection
+    let appearance: [String?]
+}
+
+@MainActor final class ControlCenterDevicePreviewCache {
+    private var frames = ControlCenterPreviewCache<UUID, ControlCenterFallbackInput, NSImage?>()
+
+    fileprivate func image(device: ManagedDevice, selection: ControlCenterFallbackInput.Selection,
+                           settings: AppSettings, make: () -> NSImage?) -> NSImage? {
+        let input = ControlCenterFallbackInput(device: device, selection: selection, appearance: [
+            String(settings.cardTheme.rawValue), String(settings.backgroundTone.rawValue), settings.customBackgroundHex,
+            String(settings.accentTone.rawValue), settings.customAccentHex, settings.cardRenderingMode.rawValue,
+            settings.softwareIsDark ? "dark" : "light"
+        ])
+        return frames.value(for: device.id, input: input, make: make)
+    }
+
+    func retain(_ ids: Set<UUID>) { frames.retain(ids) }
+}
+
 /// Reuses the same product photographs and screen coordinates as each device's detail preview.
 /// It only composes a local presentation; the image used for a device push is left untouched.
 struct DeviceControlCenterPreviewSurface: View {
@@ -51,6 +81,8 @@ struct DeviceControlCenterPreviewSurface: View {
                 if let frame = PreviewResources.m5StickS3Image {
                     controllerPreview(frame: frame, in: geometry.size)
                 } else { plainPreview }
+            case .aiMacScreen, .c6Screen:
+                roundedScreenPreview(in: geometry.size)
             default:
                 plainPreview
             }
@@ -63,13 +95,22 @@ struct DeviceControlCenterPreviewSurface: View {
         Image(nsImage: image).resizable().interpolation(.high).scaledToFit().padding(18)
     }
 
-    private func fittedSize(for frame: NSImage, in available: CGSize) -> CGSize {
-        let width = max(1, available.width - 28)
-        let height = max(1, available.height - 28)
+    private func fittedSize(for frame: NSImage, in available: CGSize, inset: CGFloat = 14) -> CGSize {
+        let width = max(1, available.width - inset * 2)
+        let height = max(1, available.height - inset * 2)
         let ratio = frame.size.width / max(1, frame.size.height)
         return width / height > ratio
             ? CGSize(width: height * ratio, height: height)
             : CGSize(width: width, height: width / max(0.001, ratio))
+    }
+
+    private func roundedScreenPreview(in available: CGSize) -> some View {
+        let fitted = fittedSize(for: image, in: available, inset: 18)
+        let radius = min(24, min(fitted.width, fitted.height) * 0.07)
+        return Image(nsImage: image).resizable().interpolation(.high)
+            .frame(width: fitted.width, height: fitted.height)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .frame(width: available.width, height: available.height)
     }
 
     private func heroPreview(frame: NSImage, screenRect: CGRect, cornerRadius: CGFloat = 0,
@@ -142,7 +183,8 @@ extension AppModel {
 
     /// A read-only presentation path: no new connections, sessions, sampling, selection or pushes.
     /// Reuses the menu's detached renderers; a computer rendition is never called a device screenshot.
-    @MainActor func controlCenterPreview(for device: ManagedDevice) -> DeviceControlCenterPreview {
+    @MainActor func controlCenterPreview(for device: ManagedDevice,
+                                        fallbackCache: ControlCenterDevicePreviewCache? = nil) -> DeviceControlCenterPreview {
         guard device.isEnabled else { return .init(image: nil, source: .disabled, status: String(localized: "设置已保留，可随时重新启用")) }
         guard DeviceControlCenterPolicy.hasDisplay(device.type) else {
             return .init(image: nil, source: .noDisplay, status: String(localized: "打开设备设置查看连接与功能"))
@@ -152,15 +194,38 @@ extension AppModel {
         switch device.type {
         case .keyboard:
             let mode = activeDeviceID(for: .keyboard) == device.id ? settings.displayMode : (device.settings.displayMode ?? .canvas)
-            image = try? menuBarPreview(for: .card(device.id, mode)); source = .localRender
+            if activeDeviceID(for: .keyboard) == device.id, let previewImage {
+                image = previewImage
+            } else if let fallbackCache {
+                image = fallbackCache.image(device: device, selection: .keyboard(mode), settings: settings) {
+                    try? menuBarPreview(for: .card(device.id, mode))
+                }
+            } else { image = try? menuBarPreview(for: .card(device.id, mode)) }
+            source = .localRender
         case .oracle:
             let boards = visibleOracleCanvasBoards(for: device.id)
             let current = boards.first { isCurrentOracleCanvasBoard(deviceID: device.id, boardID: $0.id) } ?? boards.first
-            image = current.flatMap { try? menuBarPreview(for: .board(device.id, $0.id)) }; source = .localRender
+            if let current, activeDeviceID(for: .oracle) == device.id,
+               isCurrentOracleCanvasBoard(deviceID: device.id, boardID: current.id), let oracleCanvasImage {
+                image = oracleCanvasImage
+            } else if let current, let fallbackCache {
+                image = fallbackCache.image(device: device, selection: .oracle(current), settings: settings) {
+                    try? menuBarPreview(for: .board(device.id, current.id))
+                }
+            } else { image = current.flatMap { try? menuBarPreview(for: .board(device.id, $0.id)) } }
+            source = .localRender
         case .excerpt:
             let boards = visibleExcerptCanvasBoards(for: device.id)
             let current = boards.first { isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: $0.id) } ?? boards.first
-            image = current.flatMap { try? menuBarPreview(for: .board(device.id, $0.id)) }; source = .localRender
+            if let current, activeDeviceID(for: .excerpt) == device.id,
+               isCurrentExcerptCanvasBoard(deviceID: device.id, boardID: current.id), let excerptCanvasImage {
+                image = excerptCanvasImage
+            } else if let current, let fallbackCache {
+                image = fallbackCache.image(device: device, selection: .excerpt(current), settings: settings) {
+                    try? menuBarPreview(for: .board(device.id, current.id))
+                }
+            } else { image = current.flatMap { try? menuBarPreview(for: .board(device.id, $0.id)) } }
+            source = .localRender
         case .aiMacScreen:
             image = aiMacScreenPreviews[device.id]; source = .localRender
         case .c6Screen:
@@ -170,11 +235,18 @@ extension AppModel {
             image = awtrixLivePreviewImages[device.id]; source = .deviceFrame
         case .m5Controller:
             let state = m5ScreenPreviewState(for: device.id)
-            let renderer = ImageRenderer(content: M5ControllerScreenPreview(
-                info: state.info, connected: state.connected, secured: state.secured
-            ).frame(width: 135, height: 240))
-            renderer.scale = 2
-            image = renderer.nsImage; source = .localRender
+            let render = {
+                let renderer = ImageRenderer(content: M5ControllerScreenPreview(
+                    info: state.info, connected: state.connected, secured: state.secured
+                ).frame(width: 135, height: 240))
+                renderer.scale = 2
+                return renderer.nsImage
+            }
+            if let fallbackCache {
+                image = fallbackCache.image(device: device,
+                    selection: .controller(state.info, state.connected, state.secured), settings: settings, make: render)
+            } else { image = render() }
+            source = .localRender
         case .readPico:
             image = existingReadPicoBoardFrame(for: device.id)?.preview; source = .localRender
         default: image = nil; source = .unavailable

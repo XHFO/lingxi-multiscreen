@@ -1,11 +1,11 @@
 {
-  "version": "0.39.0-dev68",
+  "version": "0.40.0-dev71",
   "packages": [
     {
       "path": "apps/games/gomoku.pga",
       "id": "gomoku",
       "bytes": 121252,
-      "sha256": "3a7f92ce39c638f8bf345cd2089f515306a642805abb53eaefe97c8e16a78462",
+      "sha256": "664f35d795af64864a833aa91a9b504dc2beee6434ff05ce49cf58d700e25c62",
       "kind": 0,
       "targets": [
         "esp32s3-xtensa",
@@ -16,7 +16,7 @@
       "path": "apps/games/go.pga",
       "id": "go",
       "bytes": 121256,
-      "sha256": "873f37d38ea352bd0281d1abde1d22198f6d2d0a50c09220b2ff2131c5f03383",
+      "sha256": "ec62bf4cc680ee12a15e83a827c53e8d73ddfa607a39ce5a2730e7622735e52b",
       "kind": 1,
       "targets": [
         "esp32s3-xtensa",
@@ -27,7 +27,7 @@
       "path": "apps/games/xiangqi.pga",
       "id": "xiangqi",
       "bytes": 121248,
-      "sha256": "180f80f155222ecc72e3da95db324736084ce1936033347da197ab2a65acb964",
+      "sha256": "8b8b1bf9bc9e57b20a766bb20baea5f009e905f21ecbc9869d3c34de230f08b7",
       "kind": 2,
       "targets": [
         "esp32s3-xtensa",
@@ -38,7 +38,7 @@
       "path": "apps/games/chess.pga",
       "id": "chess",
       "bytes": 121252,
-      "sha256": "b8613dcbaf7378ab52703e4e144b1b5642116229d0b45598a881f357082d63bb",
+      "sha256": "b3d92bb4e61b62cf8d2c89d9063863b6b14e0a1250e02b212d9dd875bb17b2d3",
       "kind": 3,
       "targets": [
         "esp32s3-xtensa",
@@ -49,7 +49,7 @@
       "path": "apps/games/2048.pga",
       "id": "2048",
       "bytes": 89072,
-      "sha256": "c43717971255e448365d2d6f24574fbab6c8b712c00941796525cdb36986f7c3",
+      "sha256": "e46137932cfd52a3e3dc7f53043afbfba405ea48e908d77b87db355c2cf24742",
       "kind": 4,
       "targets": [
         "esp32s3-xtensa",
@@ -60,7 +60,7 @@
       "path": "apps/games/snake.pga",
       "id": "snake",
       "bytes": 89376,
-      "sha256": "41f394af2ee310adbd655ccc3351ec19ae880cd805bb936b8130d210cf263eb3",
+      "sha256": "d80ab8f23e3631c94fb465fe1b499be73f3fba0ca77a79c3b11857dab69bc8e6",
       "kind": 5,
       "targets": [
         "esp32s3-xtensa",
@@ -71,7 +71,7 @@
       "path": "apps/tools/drawing-notes.pga",
       "id": "drawing-notes",
       "bytes": 60984,
-      "sha256": "76384a0b8e7140a0414bbafd50796ed7d81443713e2c5b79a79c99d2a67ee75c",
+      "sha256": "70495911c08c8c6f1c4bdafd9de9e14ce179aad829d9879d937d8d8f04b0dd13",
       "kind": 128,
       "targets": [
         "esp32s3-xtensa",
@@ -81,8 +81,8 @@
     {
       "path": "apps/tools/weread.pga",
       "id": "weread",
-      "bytes": 43296,
-      "sha256": "e4efa4f32250d1395bcc646c589cce33eaa85d30b03c4e82bc15d8e60f12db67",
+      "bytes": 121356,
+      "sha256": "9b983c373274d1b7f30badab0c3ebd5412374c7c688bf76eb02f1014f6237db2",
       "kind": 129,
       "targets": [
         "esp32s3-xtensa",
@@ -92,8 +92,8 @@
     {
       "path": "apps/tools/home-link.pga",
       "id": "home-link",
-      "bytes": 64304,
-      "sha256": "bb061f7463a3f40b87b22835e3a2474662f90dc5451794ddc1bbeb29e685ba91",
+      "bytes": 64176,
+      "sha256": "f3d87a48be4e508d1c2a19db8e223af64dc87e77df184be828794ee6abe46d7a",
       "kind": 130,
       "targets": [
         "esp32s3-xtensa",

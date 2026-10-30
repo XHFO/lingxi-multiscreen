@@ -1404,7 +1404,8 @@ struct SettingsView: View {
                 Divider()
             }
             if selected == .controlCenter || floatingControlCenterDevice != nil {
-                DeviceControlCenterView(model: model, onOpen: openFloatingControlCenterDevice,
+                DeviceControlCenterView(model: model, isActive: floatingControlCenterDevice == nil,
+                                        onOpen: openFloatingControlCenterDevice,
                                         onOpenDataSource: openControlCenterDataSource, onAdd: addControlCenterDevice)
             } else if let device = hostedControlCenterDevice, inlineControlCenterDeviceID != nil {
                 floatingDeviceWorkspace(for: device, showsPageNavigation: columnVisibility == .detailOnly)
@@ -1420,6 +1421,17 @@ struct SettingsView: View {
                     Divider()
                 }
             }
+        }
+        .background {
+            let showsDashboard = selected == .controlCenter || floatingControlCenterDevice != nil
+            let allowsBackdrop = showsDashboard && columnVisibility == .detailOnly
+            if showsDashboard && (!allowsBackdrop || reduceTransparency) {
+                Color(nsColor: .windowBackgroundColor)
+            }
+            ControlCenterWindowBackground(isEnabled: allowsBackdrop)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 
@@ -1706,7 +1718,7 @@ struct SettingsView: View {
             switch controlCenterDataSource {
             case let .cloudflare(id):
                 if let source = model.settings.cloudflareSources.first(where: { $0.id == id }) {
-                    CloudflareSourceEditor(model: model, source: source, compact: true) {
+                    CloudflareSourceSettingsWorkspace(model: model, sourceID: source.id) {
                         selected = .controlCenter; controlCenterDataSource = nil
                     }.id(id)
                 } else {

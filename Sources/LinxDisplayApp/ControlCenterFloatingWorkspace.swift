@@ -328,7 +328,9 @@ struct ControlCenterFloatingLivePreview: View {
         .accessibilityIdentifier("control-center-persistent-preview")
         .task(id: deviceID) { refreshPreview() }
         .onReceive(refresh) { _ in refreshPreview() }
-        .onReceive(model.objectWillChange.debounce(for: .milliseconds(240), scheduler: RunLoop.main)) { _ in
+        // Playback and system readings publish every second. The periodic frame
+        // refresh covers those; only editing settings needs an immediate rerender.
+        .onReceive(model.settings.objectWillChange.debounce(for: .milliseconds(240), scheduler: RunLoop.main)) { _ in
             refreshPreview()
         }
         .onReceive(picoChanges.debounce(for: .milliseconds(260), scheduler: RunLoop.main)) { _ in

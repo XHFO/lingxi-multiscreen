@@ -7152,6 +7152,10 @@ public func setClockTimeFormat(_ format: String) {
                 .canvasBoards.flatMap(\.moduleList)
         }
     }
+    private var allPicoCanvasModules: [CanvasModule] {
+        Array(Set(readPicoBoardSessions.values.flatMap(\.automaticModules)))
+            .sorted().compactMap(CanvasModule.init(rawValue:))
+    }
 
     private var activeAIMacCardModes: [DisplayMode] {
         enabledColorWiFiScreens.compactMap { device in
@@ -7165,7 +7169,7 @@ public func setClockTimeFormat(_ format: String) {
         let lists = [settings.canvasModuleList,
                      settings.oracleCanvasModuleList,
                      settings.excerptCanvasModuleList,
-                     allAIMacCanvasModules]
+                     allAIMacCanvasModules, allPicoCanvasModules]
         return lists.contains { list in
             list.contains { $0 == .codex || $0 == .qwenQuota }
         } || activeAIMacCardModes.contains { mode in
@@ -7280,6 +7284,7 @@ public func setClockTimeFormat(_ format: String) {
             + settings.oracleCanvasModuleList
             + settings.excerptCanvasModuleList
             + allAIMacCanvasModules
+            + allPicoCanvasModules
         // 自动轮播池里的打印机即使当前没显示，也要保持状态新鲜；否则一张曾经空闲而
         // 被跳过的卡片永远没有机会发现新任务开始。
         let currentCardSlots = activeAIMacCardModes.compactMap(\.formlabsSlotIndex)

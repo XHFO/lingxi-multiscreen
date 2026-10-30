@@ -33,6 +33,7 @@ import LinxDisplayCore
     @Published private(set) var deliveredBoardName: String?
     private var carousel = ReadPicoBoardCarouselCursor()
     private var provider: (() throws -> ReadPicoLingxiBoardRenderer.Result)?
+    private var transferProvider: (() throws -> ReadPicoLingxiBoardRenderer.Result)?
     private var sourceFactory: (() throws -> AutomaticSource)?
     private var automaticSource: AutomaticSource?
     private var automaticOwnerGeneration: UUID?
@@ -92,11 +93,13 @@ import LinxDisplayCore
     func activate(owner: UUID, manager: ReadPicoManagerModel, draft: ReadPicoCanvasDraft,
                   cadence: @escaping () -> ReadPicoBoardRefreshPolicy.Context = { .init() },
                   automaticSource: (() throws -> AutomaticSource)? = nil,
+                  transferProvider: (() throws -> ReadPicoLingxiBoardRenderer.Result)? = nil,
                   provider: @escaping () throws -> ReadPicoLingxiBoardRenderer.Result) {
         if self.manager !== manager || (self.draft != nil && self.draft !== draft) {
             shutdown(); lastConfirmed = nil; lastDeliveredBitmap = nil; lastDeliveredIdentity = nil; lastDeliveredChannel = nil; lastCheck = nil
         }
         self.manager = manager; self.draft = draft; self.provider = provider
+        self.transferProvider = transferProvider ?? provider
         self.sourceFactory = automaticSource; cadenceContext = cadence; active = true; visible = true; visibleOwner = owner
         refresh()
     }
@@ -118,7 +121,7 @@ import LinxDisplayCore
         generation = UUID(); cancelReceiptRead()
         do {
             if let sourceFactory { automaticSource = try sourceFactory() }
-            else if let provider { automaticSource = .init(draft: draft, render: provider, cadence: cadenceContext) }
+            else if let transferProvider { automaticSource = .init(draft: draft, render: transferProvider, cadence: cadenceContext) }
             else { return }
             guard automaticSource?.draft.hasRenderableBoardContent == true || !(automaticSource?.boards.isEmpty ?? true) else {
                 throw ReadPicoManagerError.invalid("请先添加画板内容。")
@@ -212,25 +215,26 @@ import LinxDisplayCore
                     rendered = try automaticSource.render()
                 }
             } else {
-                guard let draft, let provider else { return }
-                source = draft; rendered = try provider()
+                guard let draft, let transferProvider else { return }
+                source = draft; rendered = try transferProvider()
             }
             lastCheck = Date()
             let payload = rendered.transferData
+            let contentIdentity = rendered.comparisonData
             let contentChannel = rendered.contentChannel
             let snapshot = try source.canvasMode == 2 ? source.makeBoardPushSnapshot(bitmap: payload) : source.makePushSnapshot(nativeGray16: true)
             if sendingAutomatically { originalAutomaticDraft = nil }
             if sendingAutomatically, let savedDelivery, manager.boardDelivery?.id == savedDelivery.receiptID,
                let identity = manager.boardConnectionIdentity, identity == lastDeliveredIdentity,
-               savedDelivery.bitmap == payload, savedDelivery.contentChannel == contentChannel {
+               savedDelivery.bitmap == contentIdentity, savedDelivery.contentChannel == contentChannel {
                 snapshot.acknowledge()
                 confirmCarousel(renderedItem); confirmBoard(renderedBoardIndex)
                 checkSavedDelivery(savedDelivery, identity: identity, manager: manager)
                 return
             }
             if sendingAutomatically, let identity = manager.boardConnectionIdentity,
-               identity == lastDeliveredIdentity, lastDeliveredBitmap == payload, lastDeliveredChannel == contentChannel {
-                // A matching saved or displayed receipt proves delivery of these exact pixels.
+               identity == lastDeliveredIdentity, lastDeliveredBitmap == contentIdentity, lastDeliveredChannel == contentChannel {
+                // A matching saved or displayed receipt proves delivery of this exact semantic content or image.
                 snapshot.acknowledge()
                 confirmCarousel(renderedItem)
                 confirmBoard(renderedBoardIndex)
@@ -238,7 +242,8 @@ import LinxDisplayCore
             }
             let requestID = UUID()
             timer?.cancel(); timer = nil
-            frame = rendered; pushID = requestID; ownsPush = true; isError = false
+            if !rendered.bitmap.isEmpty { frame = rendered }
+            pushID = requestID; ownsPush = true; isError = false
             status = "正在发送到设备…"; nextUpdate = nil
             let completion: (Bool) -> Void = { [weak self, weak manager] success in
                 let delivery = success && manager?.boardDelivery?.contentChannel == contentChannel ? manager?.boardDelivery : nil
@@ -246,8 +251,12 @@ import LinxDisplayCore
                 guard let self, self.pushID == requestID else { return }
                 self.pushID = nil; self.ownsPush = false
                 if let delivery {
+                    if self.visible, rendered.modelData != nil,
+                       let preview = try? ReadPicoLingxiBoardRenderer.nativePreview(rendered, landscape: rendered.width > rendered.height, now: Date()) {
+                        self.frame = preview
+                    }
                     self.confirmCarousel(renderedItem); self.confirmBoard(renderedBoardIndex)
-                    self.lastDeliveredBitmap = payload
+                    self.lastDeliveredBitmap = contentIdentity
                     self.lastDeliveredIdentity = manager?.boardConnectionIdentity
                     self.lastDeliveredChannel = contentChannel
                     if delivery.displayed {
@@ -255,7 +264,7 @@ import LinxDisplayCore
                         self.lastConfirmed = Date()
                         self.status = "设备已确认显示。"
                     } else {
-                        self.savedDelivery = .init(receiptID: delivery.id, snapshot: snapshot, bitmap: payload, contentChannel: contentChannel,
+                        self.savedDelivery = .init(receiptID: delivery.id, snapshot: snapshot, bitmap: contentIdentity, contentChannel: contentChannel,
                                                    item: renderedItem, boardIndex: renderedBoardIndex)
                         self.status = "已保存到设备，尚未显示；阅读器保留当前页面。"
                     }
@@ -351,7 +360,7 @@ import LinxDisplayCore
         if !automatic { active = false; generation = UUID() }
     }
     func shutdown() {
-        active = false; visible = false; visibleOwner = nil; generation = UUID(); provider = nil; sourceFactory = nil; pendingRefresh = false
+        active = false; visible = false; visibleOwner = nil; generation = UUID(); provider = nil; transferProvider = nil; sourceFactory = nil; pendingRefresh = false
         stop(); pushID = nil; ownsPush = false; manager = nil; draft = nil
     }
 }
@@ -547,7 +556,7 @@ struct ReadPicoLingxiBoardView: View {
                 }
                 if elapsed >= max(1, session.effectiveSeconds ?? cadenceContext.contentCheckSeconds) {
                     elapsed = 0
-                    if modules.contains(.clock) || modules.contains(.pomodoro) { session.refresh() }
+                    if modules.contains(.clock) || modules.contains(.date) || modules.contains(.pomodoro) { session.refresh() }
                     if modules.contains(where: { [.cpu, .memory, .disk, .network, .uptime].contains($0) }) { model.refreshReadPicoSystemSnapshot() }
                 }
             }
@@ -659,6 +668,8 @@ struct ReadPicoLingxiBoardView: View {
                 Picker("排布", selection: $draft.board.columns) { Text("单列").tag(1); Text("双列").tag(2) }.pickerStyle(.segmented)
             }
             if draft.canvasMode == 2 {
+                Text("预览与设备共用原生排版，文字和卡片会随横竖屏自适应。")
+                    .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("更多显示选项", isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 14) {
                         Picker("内容大小", selection: $draft.board.rasterScale) { Text("紧凑").tag(2); Text("标准").tag(3); Text("大号").tag(4) }
@@ -826,12 +837,15 @@ struct ReadPicoLingxiBoardView: View {
         case .nowPlaying:
             Toggle("封面与文字横向排布", isOn: $draft.board.nowPlayingHorizontal)
             Text("使用多屏灵犀正在播放的真实标题、歌手、专辑和封面。") .font(.caption).foregroundStyle(.secondary)
+        case .grokBot:
+            Text("此版显示 Grok 状态与额度，暂不支持动画。")
+                .font(.callout).foregroundStyle(.secondary)
         case .weather:
             Text(model.settings.weatherSnapshot.map { "\($0.city) · \($0.description)" } ?? "请先在多屏灵犀天气页选择城市。") .font(.callout).foregroundStyle(.secondary)
             Button(model.weatherBusy ? "正在更新天气…" : "获取最新天气") { Task { await model.refreshWeather(); session.refresh() } }
                 .disabled(model.weatherBusy || !model.settings.weather.isValid)
         default:
-            Text(module.bambuSlotIndex != nil || module.formlabsSlotIndex != nil ? "使用多屏灵犀已经配置的对应打印机与显示字段。" : "使用多屏灵犀相同模块的数据、排版和显示设置。")
+            Text(module.bambuSlotIndex != nil || module.formlabsSlotIndex != nil ? "使用多屏灵犀已经配置的对应打印机与显示字段。" : "使用多屏灵犀相同模块的数据，由小纸 Pico 按屏幕方向排版。")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         if ![CanvasModule.text, .image, .homeAssistant].contains(module), let onConfigureModule {
@@ -961,12 +975,12 @@ struct ReadPicoLingxiBoardView: View {
                 var automaticSource = ReadPicoLingxiBoardSession.AutomaticSource(draft: frozen, render: { [weak app] in
                     guard let app else { throw ReadPicoManagerError.unavailable("软件正在退出，自动更新已停止。") }
                     if RuntimePerformancePolicy.needsSystemSample(modules: frozen.board.modules.compactMap(CanvasModule.init(rawValue:))) { app.refreshReadPicoSystemSnapshot() }
-                    return try ReadPicoLingxiBoardRenderer.render(draft: frozen, model: app, deviceID: deviceID)
+                    return try ReadPicoLingxiBoardRenderer.transfer(draft: frozen, model: app, deviceID: deviceID)
                 }, cadence: { [weak app] in app.map { Self.refreshContext(model: $0, draft: frozen) } ?? .init() },
                     renderItem: { [weak app] itemID in
                         guard let app else { throw ReadPicoManagerError.unavailable("软件正在退出。") }
                         app.refreshReadPicoSystemSnapshot()
-                        return try ReadPicoLingxiBoardRenderer.render(draft: frozen, model: app, deviceID: deviceID, playlistItemID: itemID)
+                        return try ReadPicoLingxiBoardRenderer.transfer(draft: frozen, model: app, deviceID: deviceID, playlistItemID: itemID)
                     })
                 if supportsCarousel, let library, library.carouselEnabled {
                     let entries = library.boards.filter(\.includedInCarousel)
@@ -985,13 +999,16 @@ struct ReadPicoLingxiBoardView: View {
                                   draft: board, render: { [weak app] in
                                 guard let app else { throw ReadPicoManagerError.unavailable("软件正在退出。") }
                                 app.refreshReadPicoSystemSnapshot()
-                                return try ReadPicoLingxiBoardRenderer.render(draft: board, model: app, deviceID: deviceID,
+                                return try ReadPicoLingxiBoardRenderer.transfer(draft: board, model: app, deviceID: deviceID,
                                     playlistItemID: item?.id, readingInstance: "board.\(entry.id.uuidString)")
                             }, cadence: { [weak app] in app.map { Self.refreshContext(model: $0, draft: board) } ?? .init() })
                         }
                     }
                 }
                 return automaticSource
+            }, transferProvider: { [weak app] in
+                guard let app else { throw ReadPicoManagerError.unavailable("软件已关闭。") }
+                return try ReadPicoLingxiBoardRenderer.transfer(draft: source, model: app, deviceID: deviceID, playlistItemID: playlistPreviewID)
             }, provider: { [weak app] in
                 guard let app else { throw ReadPicoManagerError.unavailable("软件已关闭。") }
                 return try ReadPicoLingxiBoardRenderer.render(draft: source, model: app, deviceID: deviceID, playlistItemID: playlistPreviewID)

@@ -19,13 +19,13 @@ struct CloudflareSourcesManagementView: View {
     var body: some View {
         Group {
             if compact, let editor {
-                CloudflareSourceEditor(model: model, source: editor.source, compact: true) { self.editor = nil }
+                editorContent(editor)
             } else {
                 management
             }
         }
         .sheet(item: Binding(get: { compact ? nil : editor }, set: { editor = $0 })) { route in
-            CloudflareSourceEditor(model: model, source: route.source) { editor = nil }
+            editorContent(route)
         }
         .alert("移除数据源？", isPresented: Binding(get: { removingSource != nil }, set: { if !$0 { removingSource = nil } })) {
             Button("取消", role: .cancel) { removingSource = nil }
@@ -41,6 +41,20 @@ struct CloudflareSourcesManagementView: View {
             }
         } message: {
             Text("移除「\(removingSource?.name ?? "")」及此 Mac 保存的对应凭据。若它正在使用，画板会改用剩余数据源；没有其他数据源时等待重新添加。")
+        }
+    }
+
+    @ViewBuilder private func editorContent(_ route: CloudflareSourceEditorRoute) -> some View {
+        if let source = route.source {
+            VStack(alignment: .leading, spacing: compact ? 16 : 0) {
+                if compact {
+                    Button { editor = nil } label: { Label("返回数据源", systemImage: "chevron.left") }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                }
+                CloudflareSourceSettingsWorkspace(model: model, sourceID: source.id, compact: compact) { editor = nil }
+            }
+        } else {
+            CloudflareSourceEditor(model: model, compact: compact) { editor = nil }
         }
     }
 
@@ -202,6 +216,7 @@ struct CloudflareSourceEditor: View {
     init(model: AppModel, source: CloudflareAnalyticsSource? = nil, compact: Bool = false, onClose: @escaping () -> Void) {
         self.model = model; self.settings = model.settings; self.source = source
         self.compact = compact; self.onClose = onClose
+        _step = State(initialValue: CloudflareSourceDraftPolicy.initialConnectionStep(editingExistingSource: source != nil))
         _configuration = State(initialValue: source?.configuration ?? CloudflareAnalyticsSettings())
         _name = State(initialValue: source?.name ?? "")
         _keepSavedToken = State(initialValue: source != nil)

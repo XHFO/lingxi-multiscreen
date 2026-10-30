@@ -6,11 +6,14 @@ import SwiftUI
 /// An overview of saved devices, with truthful preview provenance and stable device-ID navigation.
 struct DeviceControlCenterView: View {
     @ObservedObject var model: AppModel
+    var isActive = true
     let onOpen: (UUID, CGRect?) -> Void
     let onOpenDataSource: (DeviceControlCenterDataSource.Destination) -> Void
     let onAdd: () -> Void
     @State private var previews: [UUID: DeviceControlCenterPreview] = [:]
-    @State private var previewImageData: [UUID: Data] = [:]
+    @State private var previewCache = ControlCenterDevicePreviewCache()
+    @State private var viewportFrame: CGRect = .zero
+    @State private var viewportDeviceIDs: Set<UUID> = []
     @State private var editingLayout = false
     @State private var resized: [String: DeviceControlCenterCardSize] = [:]
     @State private var resizeGrid: DeviceControlCenterLayoutEngine.Grid?
@@ -40,18 +43,21 @@ struct DeviceControlCenterView: View {
     private var screenIDs: [String] { screenDevices.map { "device:" + $0.id.uuidString } }
     private var sourceIDs: [String] { dataSources.map { "source:" + $0.id } }
     private var allIDs: [String] { screenIDs + sourceIDs }
-    private var visibleIDs: [String] { layout.visibleIDs(for: allIDs) }
     private var catalog: [ControlCenterCardCatalogItem] {
         screenDevices.map { .init(id: "device:" + $0.id.uuidString, title: $0.name,
                                  subtitle: $0.type.title, symbolName: $0.type.capabilityProfile?.icon ?? "display") }
         + dataSources.map { .init(id: "source:" + $0.id, title: $0.title, subtitle: $0.subtitle, symbolName: $0.symbolName) }
     }
-    private var cards: [String: ControlCenterItem] {
-        Dictionary(uniqueKeysWithValues:
-            screenDevices.map { ("device:" + $0.id.uuidString, ControlCenterItem.device($0)) } +
-            dataSources.map { ("source:" + $0.id, ControlCenterItem.source($0)) })
-    }
     var body: some View {
+        // Build this projection once per update. Looking it up from every card
+        // used to reconstruct all sources twice for each card in the grid.
+        let screens = screenDevices
+        let sources = dataSources
+        let availableIDs = screens.map { "device:" + $0.id.uuidString } + sources.map { "source:" + $0.id }
+        let visibleIDs = layout.visibleIDs(for: availableIDs)
+        let cards = Dictionary(uniqueKeysWithValues:
+            screens.map { ("device:" + $0.id.uuidString, ControlCenterItem.device($0)) } +
+            sources.map { ("source:" + $0.id, ControlCenterItem.source($0)) })
         ScrollView {
             VStack(alignment: .leading, spacing: compactDashboard ? 16 : 24) {
                 header
@@ -59,7 +65,7 @@ struct DeviceControlCenterView: View {
                     Label("拖动卡片调整顺序或移入分组；右下角调整网格大小，卡片菜单也可选择分组。", systemImage: "hand.draw")
                         .font(.body).foregroundStyle(.secondary)
                 }
-                if allIDs.isEmpty && layout.groups.isEmpty {
+                if availableIDs.isEmpty && layout.groups.isEmpty {
                     ContentUnavailableView {
                         Label("你的设备，从这里开始", systemImage: "square.grid.2x2")
                     } description: { Text("添加屏幕、阅读器或控制设备，在这里集中查看。") }
@@ -72,23 +78,35 @@ struct DeviceControlCenterView: View {
                     actions: { Button("添加卡片") { showsCardPicker = true }.buttonStyle(.borderedProminent) }
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
-                    cardGroup(nil)
+                    cardGroup(nil, cards: cards, availableIDs: availableIDs)
                     ForEach(layout.groups) { group in
-                        cardGroup(group)
+                        cardGroup(group, cards: cards, availableIDs: availableIDs)
                     }
                 }
             }
             .padding(compactDashboard ? 16 : 24)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .scrollContentBackground(.hidden)
         .onGeometryChange(for: Double.self) { Double($0.size.width) } action: { viewportWidth = $0 }
-        .task { registerSourcePreviewDemand(); refreshPreviews() }
-        .onReceive(refresh) { _ in refreshPreviews() }
-        .onChange(of: devices.map { "\($0.id):\($0.isEnabled)" }.joined()) { _ in registerSourcePreviewDemand(); refreshPreviews() }
-        .onChange(of: dataSources.map(\.id).joined()) { _ in registerSourcePreviewDemand(); refreshPreviews() }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            viewportFrame = frame
+            updateViewportDevices()
+        }
+        .task(id: isActive) {
+            registerSourcePreviewDemand()
+            if isActive { refreshPreviews() }
+        }
+        .onReceive(refresh) { _ in if isActive { refreshPreviews() } }
+        .onChange(of: screens) { _ in registerSourcePreviewDemand(); updateViewportDevices(); refreshPreviews() }
+        .onChange(of: sources.map(\.id)) { _ in registerSourcePreviewDemand(); refreshPreviews() }
         .onChange(of: layout.hiddenCardIDs) { _ in registerSourcePreviewDemand(); refreshPreviews(); clearGesture() }
-        .onPreferenceChange(ControlCenterCardFrameKey.self) { cardFrames = $0 }
+        .onChange(of: viewportDeviceIDs) { _ in refreshPreviews() }
+        .onPreferenceChange(ControlCenterCardFrameKey.self) {
+            guard cardFrames != $0 else { return }
+            cardFrames = $0
+            updateViewportDevices()
+        }
         .onPreferenceChange(ControlCenterGroupFrameKey.self) { groupFrames = $0 }
         .onPreferenceChange(ControlCenterGridFrameKey.self) { gridFrames = $0 }
         .sheet(isPresented: $showsCardPicker, onDismiss: {
@@ -172,8 +190,9 @@ struct DeviceControlCenterView: View {
                 .accessibilityIdentifier("control-center-add-card")
         }.fixedSize(horizontal: true, vertical: false)
     }
-    @ViewBuilder private func cardGroup(_ group: DeviceControlCenterGroup?) -> some View {
-        let ids = layout.visibleIDs(for: allIDs, inGroup: group?.id)
+    @ViewBuilder private func cardGroup(_ group: DeviceControlCenterGroup?, cards: [String: ControlCenterItem],
+                                       availableIDs: [String]) -> some View {
+        let ids = layout.visibleIDs(for: availableIDs, inGroup: group?.id)
         let key = group?.id ?? ungroupedKey
         if !ids.isEmpty || group != nil || (editingLayout && !layout.groups.isEmpty) {
             VStack(alignment: .leading, spacing: 14) {
@@ -212,7 +231,7 @@ struct DeviceControlCenterView: View {
                     ControlCenterFlowLayout {
                         ForEach(ids, id: \.self) { id in
                             if let item = cards[id] {
-                                editableCard(id: id, title: item.title, section: ids) { height in
+                                editableCard(id: id, title: item.title, section: ids, sizeOptions: sizeOptions(for: item)) { height in
                                     switch item {
                                     case .device(let device):
                                         DeviceControlCenterCard(device: device, preview: previews[device.id], height: height,
@@ -266,6 +285,7 @@ struct DeviceControlCenterView: View {
         }
     }
     private func editableCard<Content: View>(id: String, title: String, section: [String],
+                                             sizeOptions: ControlCenterCardSizeOptions,
                                              @ViewBuilder content: @escaping (CGFloat) -> Content) -> some View {
         let order = layout.orderedIDs(for: section)
         let index = order.firstIndex(of: id) ?? 0
@@ -273,7 +293,7 @@ struct DeviceControlCenterView: View {
             editing: editingLayout, dragOffset: draggedID == id ? dragOffset : .zero,
             dropTarget: dropID == id, canMoveEarlier: index > 0, canMoveLater: index < order.count - 1,
             onReorder: { value, ended in reorder(id, value: value, ended: ended) },
-            onResize: { translation, ended in resize(id, translation: translation, ended: ended) },
+            onResize: { translation, ended in resize(id, translation: translation, ended: ended, options: sizeOptions) },
             onSetSize: { width, height in model.settings.controlCenterLayout.setSize(for: id, width: width, height: height) },
             onResetSize: { model.settings.controlCenterLayout.resetSize(for: id) },
             onMove: { delta in model.settings.controlCenterLayout.move(id, to: index + delta, availableIDs: section, allAvailableIDs: allIDs) },
@@ -281,16 +301,16 @@ struct DeviceControlCenterView: View {
             onSetGroup: { model.settings.controlCenterLayout.setGroup(for: id, to: $0) },
             onNewGroup: { groupEditor = .init(groupID: nil, title: "", cardID: id) },
             onRemove: { model.settings.controlCenterLayout.setCardVisible(false, for: id); clearGesture() },
-            sizeOptions: sizeOptions(for: id),
+            sizeOptions: sizeOptions,
             content: content)
             .zIndex(draggedID == id ? 1 : 0)
     }
-    private func sizeOptions(for id: String) -> ControlCenterCardSizeOptions {
-        guard let item = cards[id], case .source(let source) = item,
+    private func sizeOptions(for item: ControlCenterItem) -> ControlCenterCardSizeOptions {
+        guard case .source(let source) = item,
               source.kind == .nowPlaying || source.kind == .printer else { return .grid }
         return .smallMediumLarge
     }
-    private func resize(_ id: String, translation: CGSize, ended: Bool) {
+    private func resize(_ id: String, translation: CGSize, ended: Bool, options: ControlCenterCardSizeOptions) {
         if resizeGrid == nil {
             resizeGrid = DeviceControlCenterLayoutEngine.grid(availableWidth: gridWidth)
             resizeOriginal = layout.size(for: id)
@@ -298,7 +318,7 @@ struct DeviceControlCenterView: View {
         let grid = resizeGrid ?? DeviceControlCenterLayoutEngine.grid(availableWidth: gridWidth)
         let original = resizeOriginal ?? layout.size(for: id)
         let candidate = grid.snappedSize(original: original, translation: translation)
-        let size = sizeOptions(for: id).constrainedResize(candidate, original: original)
+        let size = options.constrainedResize(candidate, original: original)
         if ended {
             model.settings.controlCenterLayout.setSize(for: id, width: size.preferredWidth, height: size.preferredHeight)
             resized[id] = nil; resizeGrid = nil; resizeOriginal = nil
@@ -340,13 +360,14 @@ struct DeviceControlCenterView: View {
         draggedID = nil; dragOffset = .zero; dropID = nil; dropGroupKey = nil; resized = [:]; resizeGrid = nil; resizeOriginal = nil
     }
     private func refreshPreviews() {
-        let visible = screenDevices.filter { layout.isCardVisible("device:" + $0.id.uuidString) }
-        let ids = Set(visible.map(\.id))
+        guard isActive else { return }
+        let screens = screenDevices
+        let ids = Set(screens.filter { layout.isCardVisible("device:" + $0.id.uuidString) }.map(\.id))
         var next = previews.filter { ids.contains($0.key) }
-        var imageData = previewImageData.filter { ids.contains($0.key) }
+        previewCache.retain(ids)
         var changed = next.count != previews.count
-        for device in visible {
-            let fresh = model.controlCenterPreview(for: device)
+        for device in screens where ids.contains(device.id) && viewportDeviceIDs.contains(device.id) {
+            let fresh = model.controlCenterPreview(for: device, fallbackCache: previewCache)
             let previous = previews[device.id]
             // Retain a transiently unavailable frame, while making its age explicit.
             let current: DeviceControlCenterPreview
@@ -354,18 +375,27 @@ struct DeviceControlCenterView: View {
                 current = .init(image: previous.image, source: previous.source,
                                 status: String(localized: "显示上次画面，等待更新"))
             } else { current = fresh }
-            let sameImageReference = current.image === previous?.image
-            let bytes = sameImageReference ? imageData[device.id] : current.image?.tiffRepresentation
             if let previous, previous.status == current.status, previous.caption == current.caption,
-               sameImageReference || (bytes != nil && bytes == imageData[device.id]) { continue }
-            let image = bytes != nil && bytes == imageData[device.id] ? previous?.image : current.image
-            next[device.id] = .init(image: image, source: current.source, status: current.status)
-            imageData[device.id] = bytes
+               current.image === previous.image { continue }
+            next[device.id] = current
             changed = true
         }
-        if changed { previews = next; previewImageData = imageData }
+        if changed { previews = next }
+    }
+    private func updateViewportDevices() {
+        let ids = Set(screenDevices.compactMap { device -> UUID? in
+            guard layout.isCardVisible("device:" + device.id.uuidString),
+                  ControlCenterPreviewVisibility.intersects(cardFrames["device:" + device.id.uuidString],
+                                                           viewport: viewportFrame) else { return nil }
+            return device.id
+        })
+        if ids != viewportDeviceIDs { viewportDeviceIDs = ids }
     }
     private func registerSourcePreviewDemand() {
+        guard isActive else {
+            model.endControlCenterSourcePreviewDemand(owner: sourcePreviewDemandID)
+            return
+        }
         let ids = Set(dataSources.compactMap { source -> UUID? in
             guard layout.isCardVisible("source:" + source.id) else { return nil }
             guard case .managedDevice(let id) = source.destination else { return nil }

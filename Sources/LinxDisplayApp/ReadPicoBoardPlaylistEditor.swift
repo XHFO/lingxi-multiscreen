@@ -208,6 +208,9 @@ struct ReadPicoBoardPlaylistEditor: View {
             Text("当前项已选 \(selected?.configuration.entityIDs.count ?? 0)/24 个实体。") .font(.caption).foregroundStyle(.secondary)
         case .nowPlaying:
             Toggle("封面与文字横向排布", isOn: binding(\.configuration.nowPlayingHorizontal, fallback: true))
+        case .grokBot:
+            Text("此版显示 Grok 状态与额度，暂不支持动画。")
+                .font(.callout).foregroundStyle(.secondary)
         case .weather:
             Text(model.settings.weatherSnapshot.map { "\($0.city) · \($0.description)" } ?? "请在多屏灵犀天气页选择城市。")
                 .font(.callout).foregroundStyle(.secondary)

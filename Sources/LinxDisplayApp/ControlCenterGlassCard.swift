@@ -34,6 +34,9 @@ struct ControlCenterGlassCard: ViewModifier {
                 .contentShape(shape)
         } else {
             content
+                // A translucent backing quiets the window's backdrop while
+                // retaining the glass surface's transmitted color and depth.
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: shape)
                 .clipShape(shape)
                 .contentShape(shape)
                 .glassEffect(.regular.interactive(!reduceMotion), in: shape)

@@ -20,8 +20,8 @@
       "file": "gomoku.pga",
       "url": "./gomoku.pga",
       "bytes": 121252,
-      "sha256": "3a7f92ce39c638f8bf345cd2089f515306a642805abb53eaefe97c8e16a78462",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "664f35d795af64864a833aa91a9b504dc2beee6434ff05ce49cf58d700e25c62",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -30,12 +30,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 35756,
-          "sha256": "c5cc7f254717195cc757351af810c6a0d267271dbd0e05cfc76797f0c962e504"
+          "sha256": "4b6e8c4e1635a84bed45fcda0c15a509bc50bba1a26044eb90408450c3ab70c9"
         },
         {
           "target": "macos-arm64",
           "bytes": 84984,
-          "sha256": "f082d0fb1491f435a9bc4875aecba36f01bf8e734e3c898ab941dc3c869c1bae"
+          "sha256": "d35a8cf3dfabdcbf257f2ea89ae29eb0d855cceed716f247d1a8010e97b36a9f"
         }
       ]
     },
@@ -50,8 +50,8 @@
       "file": "go.pga",
       "url": "./go.pga",
       "bytes": 121256,
-      "sha256": "873f37d38ea352bd0281d1abde1d22198f6d2d0a50c09220b2ff2131c5f03383",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "ec62bf4cc680ee12a15e83a827c53e8d73ddfa607a39ce5a2730e7622735e52b",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -60,12 +60,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 35768,
-          "sha256": "9415e31ba9edb03c91f3e2a2a71090440612df0be81d72473e1329b151d0b504"
+          "sha256": "ebb351b4c5ea3e5a9a73e7b948c0a65132a70fcde46501f00b6c5ac33b7bf9ba"
         },
         {
           "target": "macos-arm64",
           "bytes": 84976,
-          "sha256": "5821ce720e997b41b55349dd211ecb0e2df0bda7b591b650df52e84d34945888"
+          "sha256": "9cc2e14a23189dff47a7e824bdd725c84b06301569a473904932e3def207ac9a"
         }
       ]
     },
@@ -80,8 +80,8 @@
       "file": "xiangqi.pga",
       "url": "./xiangqi.pga",
       "bytes": 121248,
-      "sha256": "180f80f155222ecc72e3da95db324736084ce1936033347da197ab2a65acb964",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "8b8b1bf9bc9e57b20a766bb20baea5f009e905f21ecbc9869d3c34de230f08b7",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -90,12 +90,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 35752,
-          "sha256": "c8214653260b7d79538e4e8f54319ba1ac7b65db2b3dd5cce1f8d6c4734849e7"
+          "sha256": "62136e916202c8a3ab790db6cf3292df8a1a2b3f45c68055f6b0cd3aa3517752"
         },
         {
           "target": "macos-arm64",
           "bytes": 84984,
-          "sha256": "3b8f59375c553a77e343c63cb5b8831018567868f398cc2bb5be7841ec72d259"
+          "sha256": "771dc59dda93cad16ca52e3bdb8aa66171964e693247a2119f4e4421b91dbdf6"
         }
       ]
     },
@@ -110,8 +110,8 @@
       "file": "chess.pga",
       "url": "./chess.pga",
       "bytes": 121252,
-      "sha256": "b8613dcbaf7378ab52703e4e144b1b5642116229d0b45598a881f357082d63bb",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "b3d92bb4e61b62cf8d2c89d9063863b6b14e0a1250e02b212d9dd875bb17b2d3",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -120,12 +120,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 35756,
-          "sha256": "9a08c2416947f7754c4a6a522b07e22837a4f2660ee630a892ca726c5840e050"
+          "sha256": "daffdd0ce3edae0e73a816aa35ecdcabf4a7c2b5130ffa15f374cdb83688cb44"
         },
         {
           "target": "macos-arm64",
           "bytes": 84984,
-          "sha256": "65ed253796f2aad74fb64375a8046e60aad68daf49f06a1a1232d8fd6f436247"
+          "sha256": "f73d8ae2e97c0357d5fc34333c5d39eb7de0507b352c152a2a39002362f7d57a"
         }
       ]
     },
@@ -140,8 +140,8 @@
       "file": "2048.pga",
       "url": "./2048.pga",
       "bytes": 89072,
-      "sha256": "c43717971255e448365d2d6f24574fbab6c8b712c00941796525cdb36986f7c3",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "e46137932cfd52a3e3dc7f53043afbfba405ea48e908d77b87db355c2cf24742",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -150,12 +150,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 37816,
-          "sha256": "5c027f40c2af5397df414e207b1b51e7f264bf502c724fc7ba0fea10f1c83f24"
+          "sha256": "c29d40fb30577aa8bd66f5eee96774547c9cb96080c4e551a785074d1de321cf"
         },
         {
           "target": "macos-arm64",
           "bytes": 50744,
-          "sha256": "349d2d121373dfcd470a2e3c5125ac72be25a77082b1a87320e46333a41ca69f"
+          "sha256": "fa128f516198e41a9a07ff6e7ec12ba60fafff0d9e57d7ef9acdb660da942944"
         }
       ]
     },
@@ -170,8 +170,8 @@
       "file": "snake.pga",
       "url": "./snake.pga",
       "bytes": 89376,
-      "sha256": "41f394af2ee310adbd655ccc3351ec19ae880cd805bb936b8130d210cf263eb3",
-      "source_sha256": "93b25237a11a885328c94bc5301ec9a40494868bf2930606b45fda918ceb6813",
+      "sha256": "d80ab8f23e3631c94fb465fe1b499be73f3fba0ca77a79c3b11857dab69bc8e6",
+      "source_sha256": "54058eab75050bf75a4f60135e8b3f30f0630ea56efa60461bc27374df1918a7",
       "targets": [
         "esp32s3-xtensa",
         "macos-arm64"
@@ -180,12 +180,12 @@
         {
           "target": "esp32s3-xtensa",
           "bytes": 37816,
-          "sha256": "63cc11dcd2a53d4a27a489f5a5c89731221e76ebde202e905fa01221371175b8"
+          "sha256": "0d4c39d84cf4b9b04144396be4665d5ca3b2e00859d1d745e4bf58906d6aae3c"
         },
         {
           "target": "macos-arm64",
           "bytes": 51048,
-          "sha256": "0ec323a1fb6610e755d9819d2d097ae53f0adbe975869e1fff22fcc8f3e34321"
+          "sha256": "9af9f7cd8b0c6cccc52fce5ed4b67ab5f44a2a157a34a8f2130d3566f18f9598"
         }
       ]
     }

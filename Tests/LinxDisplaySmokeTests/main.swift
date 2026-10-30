@@ -6554,6 +6554,12 @@ func testC6FirmwarePackage() throws {
 // 也与 AppKit/SwiftUI 的线程约束保持一致。
 Task { @MainActor in
     do {
+        if CommandLine.arguments.contains("--pico-board-data-only") {
+            try await testReadPicoBoardModel()
+            failures.forEach { print("失败：\($0)") }
+            print("Pico board data：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--c6-merged-only") {
             try testC6MergedCards()
             failures.forEach { print("失败：\($0)") }

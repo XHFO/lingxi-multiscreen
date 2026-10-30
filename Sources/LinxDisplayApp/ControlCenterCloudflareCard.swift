@@ -11,7 +11,6 @@ struct ControlCenterCloudflareCard: View {
     let action: () -> Void
     @State private var hovering = false
     @State private var showsDisplaySettings = false
-    @State private var opensConnectionAfterDismiss = false
 
     private var saved: CloudflareAnalyticsSource? {
         guard case .cloudflare(let id) = source.destination else { return nil }
@@ -38,18 +37,11 @@ struct ControlCenterCloudflareCard: View {
         .accessibilityLabel(source.title + ", " + source.status)
         .accessibilityHint(String(localized: "打开显示设置"))
         .accessibilityIdentifier("control-center-source-\(source.id)")
-        .sheet(isPresented: $showsDisplaySettings, onDismiss: {
-            guard opensConnectionAfterDismiss else { return }
-            opensConnectionAfterDismiss = false
-            action()
-        }) {
+        .sheet(isPresented: $showsDisplaySettings) {
             if case .cloudflare(let id) = source.destination {
-                CloudflareDisplaySettingsView(model: model, sourceID: id,
-                    onClose: { showsDisplaySettings = false },
-                    onEditConnection: {
-                        opensConnectionAfterDismiss = true
-                        showsDisplaySettings = false
-                    })
+                CloudflareSourceSettingsWorkspace(model: model, sourceID: id, compact: false) {
+                    showsDisplaySettings = false
+                }
                     .controlCenterFloatingPresentationSurface()
             }
         }

@@ -25,6 +25,8 @@ public struct ReadPicoUSBBoardStatus: Sendable {
     public let directProtocol: Int, chunkBytes: Int
     public let displayIntent: Bool
     public let dualOrientation: Bool, pairMaxBytes: Int
+    public let modelProtocol: Int, modelMaxBytes: Int
+    public var supportsModel: Bool { modelProtocol == 1 && modelMaxBytes >= ReadPicoBoardModel.maximumBytes }
     public let contentChannel: ReadPicoContentChannel
     public let appChannels: [String]
     public func supports(_ channel: ReadPicoContentChannel) -> Bool { channel == .canvas || appChannels.contains(channel.rawValue) }
@@ -34,12 +36,14 @@ public struct ReadPicoUSBBoardStatus: Sendable {
     public let power: ReadPicoPowerStatus?
     public init(taskID: String, state: String, power: ReadPicoPowerStatus? = nil, directProtocol: Int = 0, chunkBytes: Int = 0,
                 displayIntent: Bool = false, dualOrientation: Bool = false, pairMaxBytes: Int = 0,
-                revision: UInt32? = nil, orientation: String? = nil, contentChannel: ReadPicoContentChannel = .canvas, appChannels: [String] = []) {
+                revision: UInt32? = nil, orientation: String? = nil, contentChannel: ReadPicoContentChannel = .canvas, appChannels: [String] = [],
+                modelProtocol: Int = 0, modelMaxBytes: Int = 0) {
         self.taskID = taskID; self.state = state; self.power = power
         self.directProtocol = directProtocol; self.chunkBytes = chunkBytes; self.displayIntent = displayIntent
         self.dualOrientation = dualOrientation; self.pairMaxBytes = pairMaxBytes
         self.revision = revision; self.orientation = orientation
         self.contentChannel = contentChannel; self.appChannels = appChannels
+        self.modelProtocol = modelProtocol; self.modelMaxBytes = modelMaxBytes
     }
     public init(line: String) throws {
         let raw = Array(line.utf8)
@@ -70,6 +74,8 @@ public struct ReadPicoUSBBoardStatus: Sendable {
         displayIntent = (object["display_intent"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
         dualOrientation = (object["dual_orientation"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
         pairMaxBytes = integer(object["pair_max_bytes"]) ?? 0
+        modelProtocol = integer(object["model_protocol"]) ?? 0
+        modelMaxBytes = integer(object["model_max_bytes"]) ?? 0
         revision = integer(object["revision"]).flatMap { UInt32(exactly: $0) }
         orientation = (object["orientation"] as? String).flatMap { ["portrait", "landscape"].contains($0) ? $0 : nil }
         power = ReadPicoPowerStatus.decodeOptional(object["power"])
@@ -169,8 +175,10 @@ public struct ReadPicoUSBBoardClient: Sendable {
             throw ReadPicoManagerError.unavailable("传输前设备连接已变化，请重新选择 USB 设备。")
         }
         let capability = try await verifyDirect(port: port)
+        let model = ReadPicoBoardModel.isModel(bmp)
+        guard !model || capability.supportsModel else { throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。") }
         guard capability.supports(contentChannel) else { throw ReadPicoManagerError.unavailable("请更新设备固件，以支持 Cloudflare 独立应用；本次未传输图片。") }
-        guard contentChannel == .canvas || ReadPicoCanvasPair.isPair(bmp) else { throw ReadPicoManagerError.invalid("应用内容必须同时提供横竖两种布局。") }
+        guard contentChannel == .canvas || model || ReadPicoCanvasPair.isPair(bmp) else { throw ReadPicoManagerError.invalid("应用内容必须提供数据模型或横竖两种布局。") }
         if ReadPicoCanvasPair.isPair(bmp), !capability.supportsDualOrientation || bmp.count > capability.pairMaxBytes {
             throw ReadPicoManagerError.unavailable("请更新设备固件，以一次接收横竖双方向画板；本次未传输任何图片。")
         }
@@ -278,6 +286,7 @@ public struct ReadPicoUSBBoardClient: Sendable {
                                        progress: @escaping @Sendable (ReadPicoUSBBoardProgress) async -> Void) async throws -> ReadPicoUSBBoardReceipt {
         try validateDirectPayload(bmp)
         let paired = ReadPicoCanvasPair.isPair(bmp)
+        let model = ReadPicoBoardModel.isModel(bmp)
         let fd = Darwin.open(port, O_RDWR | O_NOCTTY | O_NONBLOCK)
         guard fd >= 0 else { throw ReadPicoManagerError.unavailable("USB 端口暂不可用，请保持连接后重试。") }
         defer { Darwin.close(fd) }
@@ -291,15 +300,18 @@ public struct ReadPicoUSBBoardClient: Sendable {
         guard capability.directProtocol == 1, (1...1024).contains(capability.chunkBytes), !display || capability.displayIntent else {
             throw ReadPicoManagerError.unavailable("请更新设备固件，以使用直接 USB 画板和显示控制。")
         }
-        guard capability.supports(contentChannel), contentChannel == .canvas || paired else {
+        guard capability.supports(contentChannel), contentChannel == .canvas || paired || model else {
             throw ReadPicoManagerError.unavailable("当前设备不支持本次应用内容；本次未传输图片。")
         }
         guard !paired || capability.supportsDualOrientation && bmp.count <= capability.pairMaxBytes else {
             throw ReadPicoManagerError.unavailable("请更新设备固件，以一次接收横竖双方向画板；本次未传输任何图片。")
         }
+        guard !model || capability.supportsModel else {
+            throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。")
+        }
         let task = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let crc = String(format: "%08x", readPicoCRC32(bmp))
-        let verb = contentChannel == .canvas ? (paired ? "BEGINPAIR" : "BEGIN") : "BEGINAPP \(contentChannel.rawValue)"
+        let verb = model ? "BEGINMODEL \(contentChannel.rawValue)" : contentChannel == .canvas ? (paired ? "BEGINPAIR" : "BEGIN") : "BEGINAPP \(contentChannel.rawValue)"
         let begin = "RPICO BOARD \(verb) \(task) \(bmp.count) \(crc) \(display ? 1 : 0)\n"
         var abortNeeded = false, atChunkBoundary = true
         defer {
@@ -520,7 +532,8 @@ public struct ReadPicoUSBBoardClient: Sendable {
         guard bmp[28] == 4 else { throw ReadPicoManagerError.invalid("USB 灵犀画板使用原生 16 灰阶图片。") }
     }
     private static func validateDirectPayload(_ data: Data) throws {
-        if ReadPicoCanvasPair.isPair(data) { try ReadPicoCanvasPair.validate(data) }
+        if ReadPicoBoardModel.isModel(data) { _ = try ReadPicoBoardModel.decode(data) }
+        else if ReadPicoCanvasPair.isPair(data) { try ReadPicoCanvasPair.validate(data) }
         else { try validateBitmap(data) }
     }
     private static func readStatus(_ port: String) throws -> ReadPicoUSBBoardStatus {

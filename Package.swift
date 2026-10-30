@@ -6,9 +6,15 @@ let package = Package(
     platforms: [.macOS(.v26)],
     targets: [
         .target(name: "C6DisplayRenderer", path: "Sources/C6DisplayRenderer", publicHeadersPath: "include"),
+        .target(name: "CPicoBoardRenderer", path: "Sources/CPicoBoardRenderer",
+                exclude: ["NOTICE.md", "source-manifest.json", "vendor/cJSON/LICENSE"],
+                sources: ["main/system/pico_board_data.c", "main/system/pico_board_render.c",
+                          "components/read_pico_home_link/home_link_json.c", "pico_board_sha.c"],
+                publicHeadersPath: "include",
+                cSettings: [.define("PICO_BOARD_PORTABLE"), .headerSearchPath("private"), .headerSearchPath("vendor/cJSON")]),
         .target(
             name: "LinxDisplayCore",
-            dependencies: ["C6DisplayRenderer"],
+            dependencies: ["C6DisplayRenderer", "CPicoBoardRenderer"],
             path: "Sources/LinxDisplayCore",
             linkerSettings: [
                 .linkedFramework("JavaScriptCore"),

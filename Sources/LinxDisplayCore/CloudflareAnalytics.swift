@@ -118,6 +118,13 @@ public struct CloudflareAnalyticsSettings: Codable, Equatable {
             && hostname == other.hostname && period == other.period
     }
 
+    /// Read the current preference on every scheduler tick so changing the
+    /// interval takes effect without restarting or revalidating the source.
+    public func isRefreshDue(lastAttempt: Date?, now: Date) -> Bool {
+        let interval = TimeInterval(min(max(refreshMinutes, 5), 60) * 60)
+        return now.timeIntervalSince(lastAttempt ?? .distantPast) >= interval
+    }
+
     /// Resolved emphasize color for keyboard / device cards. Brand orange when tone is `.system` and theme has no override.
     public func resolvedAccentCG(themeAccent: CGColor? = nil) -> CGColor {
         if let rgb = AppearanceResolver.accentRGB(tone: accentTone, customHex: customAccentHex) {

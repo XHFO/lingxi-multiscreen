@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "source": "XH View OS For Pico 0.40.0-dev71",
+  "files": [
+    {
+      "upstream": "main/system/pico_board_data.h",
+      "file": "main/system/pico_board_data.h",
+      "sha256": "623421db7e20dec88bb8430e37fc6ddefbf6fffeedf31fe637ebe0ac7b70a9a6"
+    },
+    {
+      "upstream": "main/system/pico_board_data.c",
+      "file": "main/system/pico_board_data.c",
+      "sha256": "5fdbdb3af6a5f3637842618186abae07e867f43a1183dc519976514e387757f7"
+    },
+    {
+      "upstream": "main/system/pico_board_render.c",
+      "file": "main/system/pico_board_render.c",
+      "sha256": "369ac4a969910e0349a1c0956cba4f11b0d320c0e56ab612eac8a3ba1d5ab1f8"
+    },
+    {
+      "upstream": "components/read_pico_home_link/home_link_json.h",
+      "file": "components/read_pico_home_link/home_link_json.h",
+      "sha256": "40bb22fa87ec7a7da11db5bf155f4dc84de3e87c6d324b8d479c8aec4a775c5a"
+    },
+    {
+      "upstream": "components/read_pico_home_link/home_link_json.c",
+      "file": "components/read_pico_home_link/home_link_json.c",
+      "sha256": "c11edcb49cad35d3bc59a699bab786dc9fb29a1f091cc4922005cfa53a2866fe"
+    },
+    {
+      "upstream": "managed_components/espressif__cjson/cJSON/cJSON.h",
+      "file": "vendor/cJSON/cJSON.h",
+      "sha256": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee"
+    },
+    {
+      "upstream": "managed_components/espressif__cjson/cJSON/cJSON.c",
+      "file": "vendor/cJSON/cJSON.c",
+      "sha256": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852"
+    },
+    {
+      "upstream": "managed_components/espressif__cjson/cJSON/LICENSE",
+      "file": "vendor/cJSON/LICENSE",
+      "sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c"
+    }
+  ]
+}

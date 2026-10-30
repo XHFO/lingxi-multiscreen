@@ -20,6 +20,36 @@ struct CloudflareSourceValidationProof {
 
 /// Side-effect-free draft validation. A guide visit or cancelled draft never saves credentials.
 enum CloudflareSourceDraftPolicy {
+    /// Time range changes affect the query, independently of display controls.
+    /// Merge into the latest record so other settings or credentials cannot be
+    /// overwritten by a delayed selection from an already open settings view.
+    static func applyingPeriod(_ period: CloudflareAnalyticsPeriod,
+                               to current: CloudflareAnalyticsSource) -> CloudflareAnalyticsSource {
+        var result = current
+        result.configuration.period = period
+        result.snapshot = result.snapshot.flatMap { $0.matches(result.configuration) ? $0 : nil }
+        return result
+    }
+
+    /// Merge display controls into the latest saved source, retaining any newer
+    /// reading or connection change that arrived while the controls were open.
+    static func applyingDisplayPreferences(_ display: CloudflareAnalyticsSettings,
+                                          to current: CloudflareAnalyticsSource) -> CloudflareAnalyticsSource {
+        var result = current
+        result.configuration.presentation = display.presentation
+        result.configuration.rankByTraffic = display.rankByTraffic
+        result.configuration.domainLetterCase = display.domainLetterCase
+        result.configuration.displayLanguage = display.displayLanguage
+        result.configuration.accentTone = display.accentTone
+        result.configuration.customAccentHex = display.customAccentHex
+        result.configuration.refreshMinutes = min(max(display.refreshMinutes, 5), 60)
+        return result
+    }
+
+    static func initialConnectionStep(editingExistingSource: Bool) -> Int {
+        editingExistingSource ? 2 : 0
+    }
+
     static func normalized(_ configuration: CloudflareAnalyticsSettings) -> CloudflareAnalyticsSettings {
         var draft = configuration
         draft.zoneID = draft.zoneID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "format": "BWMAP001",
+  "file": "cloudflare-world-dots.bwm",
+  "bytes": 4588,
+  "sha256": "8cbb9e3583e5a452a4c526d860e5ea9d5ea4171d785b789e4e9453c48788dcb1",
+  "columns": 120,
+  "rows": 52,
+  "countries": 147,
+  "points": 1841,
+  "source": "Natural Earth 1:110m public domain; same country dots as Lingxi CloudflareWorldDots.swift",
+  "source_geojson_sha256": "6866c877d39cba9c357620878839b336d569f8c662d3cfab4cb1dbe2d39c977f",
+  "delivery": "Bundle in the desktop app; encode in schema1 world_map; persist atomically with the board snapshot"
+}

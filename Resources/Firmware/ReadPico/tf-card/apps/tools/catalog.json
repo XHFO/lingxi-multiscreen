@@ -12,11 +12,11 @@
       "abi": 1,
       "directory": "apps/tools",
       "bytes": 60984,
-      "sha256": "76384a0b8e7140a0414bbafd50796ed7d81443713e2c5b79a79c99d2a67ee75c",
-      "source_sha256": "9640223d84047276ed4c157c6da9dad04e0b0729cc4965ae9ac9f5b19ce83850",
+      "sha256": "70495911c08c8c6f1c4bdafd9de9e14ce179aad829d9879d937d8d8f04b0dd13",
+      "source_sha256": "31dae4f4e88cc94b4065c8554da07dff044748dec1ef9e59da255174448b6e50",
       "inputs": {
         "apps/src/drawing_notes.c": "b727032cf6e2e7adff4622a10a1ba319e5acf89be4841928ce5c6f13d9a4caa1",
-        "components/read_pico_apps/include/pico_app_sdk.h": "7ad94a0455b0bb5517bf83093775c05d1f9b06a617ce4962189c34cb13195217"
+        "components/read_pico_apps/include/pico_app_sdk.h": "f1ae42b8ed5a268ab5eba7c855275ac364145b8e6f52298ec37e8da2fed9aec8"
       },
       "targets": [
         "esp32s3-xtensa",
@@ -26,19 +26,21 @@
     {
       "id": "weread",
       "kind": 129,
-      "title": "微信读书·书架与笔记",
-      "description": "同步个人书架、划线与想法 · 离线浏览，不含完整正文",
+      "title": "微信读书",
+      "description": "在线搜书、图书资料、推荐与阅读统计 · 离线划线与想法",
       "file": "weread.pga",
-      "version": 10000,
+      "version": 10200,
       "abi": 1,
       "directory": "apps/tools",
-      "bytes": 43296,
-      "sha256": "e4efa4f32250d1395bcc646c589cce33eaa85d30b03c4e82bc15d8e60f12db67",
-      "source_sha256": "f2b048c48f02437d91c01599fa7a6d68d7d48cfe881a8225a661eea33ff8c18c",
+      "bytes": 121356,
+      "sha256": "9b983c373274d1b7f30badab0c3ebd5412374c7c688bf76eb02f1014f6237db2",
+      "source_sha256": "930bcfb00ed9fc31b98984deb21e4d8128d6d964efd4a697260b38d087cd1b83",
       "inputs": {
-        "apps/src/weread.c": "0d4b5de53dd8e632b65b03eaef48e8be6aba83a4f362f67f3c0c99987722efe0",
-        "components/read_pico_apps/include/pico_app_sdk.h": "7ad94a0455b0bb5517bf83093775c05d1f9b06a617ce4962189c34cb13195217",
-        "apps/include/weread_snapshot.h": "83dc20e7518a717da063bcaa99c0b490c8352bc1e3cbbf11cb23820f28cb38a7"
+        "apps/src/weread.c": "9d3cd3850b7a505b00e6063ca8633b3cfadf2861553f4b02970797db8ee30520",
+        "components/read_pico_apps/include/pico_app_sdk.h": "f1ae42b8ed5a268ab5eba7c855275ac364145b8e6f52298ec37e8da2fed9aec8",
+        "apps/include/weread_snapshot.h": "297871218f2eacf73b48f50e5ead8f7421c789cc6bfdd214487f742aceab834f",
+        "apps/include/weread_explore.h": "1e29cda84b39975c1196d4e6204bd35073fc6509388a271700ab84b6f78f607d",
+        "apps/include/weread_explore_json.h": "e52a66e4f9fe3a644212193b79340b1653eba7dd13beaf29b807db8f08d00d7c"
       },
       "targets": [
         "esp32s3-xtensa",
@@ -51,14 +53,14 @@
       "title": "家庭连接",
       "description": "Home Assistant 与打印机监看 · 可扫码填写",
       "file": "home-link.pga",
-      "version": 10103,
+      "version": 10105,
       "abi": 1,
       "directory": "apps/tools",
-      "bytes": 64304,
-      "sha256": "bb061f7463a3f40b87b22835e3a2474662f90dc5451794ddc1bbeb29e685ba91",
-      "source_sha256": "ab669c1d7cbad3a8a24f0b17bbd687487443ad1afee40dfe3d61e459bc038556",
+      "bytes": 64176,
+      "sha256": "f3d87a48be4e508d1c2a19db8e223af64dc87e77df184be828794ee6abe46d7a",
+      "source_sha256": "a23e83429fc8de8c071c27b19ff41442cd960d3571986e58d6c1b4318dd57d03",
       "inputs": {
-        "apps/src/home_link.c": "d75bd0d5868e3977d7b6153c5055a601f22ee5ee0fa1c8ce893057dd3389e689",
+        "apps/src/home_link.c": "68f1f06f0fd8637e28b2bc815870e511264792a36b16038db373091ae297ddb3",
         "components/read_pico_apps/include/pico_app_sdk.h": "f1ae42b8ed5a268ab5eba7c855275ac364145b8e6f52298ec37e8da2fed9aec8",
         "main/system/pico_scroll.h": "b6181044e26baccb06a3161cf1431e0731a5b8fbd5a914d22f4d61fcbd8f10c0"
       },

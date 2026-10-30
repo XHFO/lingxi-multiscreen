@@ -9,8 +9,7 @@ extension AppModel {
         if cloudflareRequestKey?.hasSameQuery(as: settings.cloudflare) != true || cloudflareRequestSourceID != settings.cloudflareSourceID {
             cloudflareRequestKey = settings.cloudflare; cloudflareRequestSourceID = settings.cloudflareSourceID; cloudflareLastAttempt = nil
         }
-        let interval = TimeInterval(min(max(settings.cloudflare.refreshMinutes, 5), 60) * 60)
-        guard now.timeIntervalSince(cloudflareLastAttempt ?? .distantPast) >= interval else { return }
+        guard settings.cloudflare.isRefreshDue(lastAttempt: cloudflareLastAttempt, now: now) else { return }
         Task { @MainActor [weak self] in await self?.refreshCloudflare() }
     }
 
@@ -332,14 +331,14 @@ struct CloudflareAnalyticsSettingsView: View {
                     .textFieldStyle(.roundedBorder).autocorrectionDisabled()
                 Text(copy("留空统计整个网站；例如 www.example.com，不含 https://。", "Leave blank for the entire website. Use a hostname such as www.example.com, without https://."))
                     .font(.caption).foregroundStyle(.secondary)
-                CloudflareDisplayOptionsView(configuration: $settings.cloudflare, showsLanguageAndMetric: false)
+                CloudflareDisplayOptionsView(configuration: $settings.cloudflare, showsLanguageAndMetric: false,
+                                             showsPeriod: false)
                 Text(copy("仅调整域名的显示方式，网站筛选与统计数据保持原样。", "Changes only the displayed domain. The hostname filter and statistics stay the same."))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(copy("全球热区按国家或地区显示点阵分布。设备上的地图与排行沿用上方选择的指标。", "Global traffic shows activity by country or region. The device's map and ranking use the metric selected above."))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(copy("用于键盘卡片波形、地图热区与排行强调；「跟随主题」时沿用软件主题强调色，否则默认 Cloudflare 橙。", "Used for the keyboard-card sparkline, map heat, and ranking emphasis. System follows the app theme accent; otherwise defaults to Cloudflare orange."))
                     .font(.caption).foregroundStyle(.secondary)
-                Stepper(copy("每 \(settings.cloudflare.refreshMinutes) 分钟更新", "Refresh every \(settings.cloudflare.refreshMinutes) minutes"), value: $settings.cloudflare.refreshMinutes, in: 5...60, step: 5)
             }
             .padding(.top, 12)
         } label: {

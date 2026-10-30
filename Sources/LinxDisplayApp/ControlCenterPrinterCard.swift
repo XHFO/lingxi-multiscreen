@@ -56,7 +56,8 @@ struct ControlCenterPrinterSnapshot {
     static func bambu(_ config: BambuLabCardSettings, entities: [HAEntity],
                       staleErrorSeconds: TimeInterval, cameraImage: Data? = nil,
                       taskImage: Data? = nil, supportsPictures: Bool = true,
-                      sampledAt: Date? = nil) -> Self {
+                      sampledAt: Date? = nil,
+                      decodeImage: (PictureKind, Data?) -> NSImage? = { _, data in data.flatMap(NSImage.init(data:)) }) -> Self {
         func entity(_ id: String) -> HAEntity? {
             guard !id.isEmpty, let value = entities.first(where: { $0.entityId == id }),
                   text(value.state) != nil else { return nil }
@@ -100,9 +101,9 @@ struct ControlCenterPrinterSnapshot {
             return BambuHMSCode.reason(for: value.state) ?? value.state
         } : nil
         let pictures: [Picture] = config.showImage && supportsPictures ? [
-            .init(kind: .camera, image: cameraImage.flatMap(NSImage.init(data:)),
+            .init(kind: .camera, image: decodeImage(.camera, cameraImage),
                   placeholder: config.imageEntityID.isEmpty ? "未设置摄像头" : "等待摄像头快照"),
-            .init(kind: .task, image: taskImage.flatMap(NSImage.init(data:)),
+            .init(kind: .task, image: decodeImage(.task, taskImage),
                   placeholder: config.taskImageEntityID.isEmpty ? "未设置任务封面" : "等待当前任务封面")
         ] : []
         return .init(brand: .bambu, usesBrandAccent: config.themeAccent == .bambuLab, status: status,
@@ -112,7 +113,8 @@ struct ControlCenterPrinterSnapshot {
                      sampledAt: sampledAt)
     }
 
-    static func formlabs(_ snapshot: FormlabsSnapshot, connection: FormlabsConnectionSettings) -> Self {
+    static func formlabs(_ snapshot: FormlabsSnapshot, connection: FormlabsConnectionSettings,
+                         decodeImage: (PictureKind, Data?) -> NSImage? = { _, data in data.flatMap(NSImage.init(data:)) }) -> Self {
         let job = snapshot.print
         let rawStatus = snapshot.device?.isConnected == false ? "offline"
             : job.flatMap { text($0.status) } ?? snapshot.device?.status ?? "unknown"
@@ -146,11 +148,15 @@ struct ControlCenterPrinterSnapshot {
                      task: job.flatMap { text($0.name) }, progress: progress, metrics: metrics,
                      error: error,
                      pictures: connection.showThumbnail ? [.init(kind: .task,
-                        image: thumbnail.flatMap(NSImage.init(data:)), placeholder: "等待当前任务封面")] : [],
+                        image: decodeImage(.task, thumbnail), placeholder: "等待当前任务封面")] : [],
                      pictureNotice: nil,
                      sampledAt: snapshot.sampledAt)
     }
 }
+
+// The cache is a read-only projection aid, never a source of printer data. It is
+// bounded by both slot count and encoded bytes and only accessed on the main actor.
+@MainActor private let controlCenterPrinterImageCache = ControlCenterPrinterImageCache()
 
 extension AppModel {
     @MainActor func controlCenterPrinterSnapshot(for source: DeviceControlCenterDataSource) -> ControlCenterPrinterSnapshot? {
@@ -163,7 +169,9 @@ extension AppModel {
             let serial = connection.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !serial.isEmpty, cached.id.trimmingCharacters(in: .whitespacesAndNewlines)
                 .caseInsensitiveCompare(serial) == .orderedSame else { return nil }
-            return .formlabs(snapshot, connection: connection)
+            return .formlabs(snapshot, connection: connection) { kind, data in
+                controlCenterPrinterImageCache.image(for: id, slot: kind == .camera ? .camera : .task, data: data)
+            }
         case .bambuLab:
             let entities = device.settings.bambuDataSource == .localMQTT
                 ? existingBambuMQTTEntities(for: id)
@@ -176,7 +184,9 @@ extension AppModel {
                           staleErrorSeconds: TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60),
                           cameraImage: pictures.camera, taskImage: pictures.task,
                           supportsPictures: device.settings.bambuDataSource != .localMQTT,
-                          sampledAt: device.settings.bambuDataSource == .localMQTT ? nil : haSnapshot.sampledAt)
+                          sampledAt: device.settings.bambuDataSource == .localMQTT ? nil : haSnapshot.sampledAt) { kind, data in
+                controlCenterPrinterImageCache.image(for: id, slot: kind == .camera ? .camera : .task, data: data)
+            }
         default: return nil
         }
     }

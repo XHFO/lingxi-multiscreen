@@ -1,11 +1,11 @@
 {
   "board": "read-pico-esp32s3",
   "chip": "esp32s3",
-  "version": "0.39.0-dev68",
+  "version": "0.40.0-dev71",
   "app_address": "0x20000",
   "slot_bytes": 4194304,
-  "image_bytes": 4193872,
-  "sha256": "5c857e52c55af083a1eb33876420f59183c5baa0454de6ca9c34c42089b72fc4",
+  "image_bytes": 4193360,
+  "sha256": "e310cdadfe1146a1eafdf9e6901a2921340bc642a2b704b78e65b6f2acd1f25f",
   "kind": "application",
   "tf_apps": {
     "count": 9,

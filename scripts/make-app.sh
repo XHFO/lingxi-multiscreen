@@ -74,6 +74,18 @@ for resource in read_pico_hero.png read_pico_hero.NOTICE.txt; do
     [ -f "$ROOT/Resources/$resource" ] || { echo "Missing Pico preview resource: $resource" >&2; exit 1; }
     cp "$ROOT/Resources/$resource" "$APP/Contents/Resources/"
 done
+# The native Pico preview uses the same external map asset as the reader firmware.
+PICO_MAP_SOURCE="$ROOT/Resources/PicoBoard/cloudflare-world-dots.bwm"
+[ -s "$PICO_MAP_SOURCE" ] || { echo "Missing Pico native map asset" >&2; exit 1; }
+if [ "$(shasum -a 256 "$PICO_MAP_SOURCE" | awk '{print $1}')" != "8cbb9e3583e5a452a4c526d860e5ea9d5ea4171d785b789e4e9453c48788dcb1" ]; then
+    echo "Pico native map asset does not match the shared renderer" >&2; exit 1
+fi
+mkdir -p "$APP/Contents/Resources/PicoBoard"
+cp "$PICO_MAP_SOURCE" "$APP/Contents/Resources/PicoBoard/"
+cp "$ROOT/Resources/PicoBoard/NOTICE.md" "$ROOT/Resources/PicoBoard/board-resources.json" "$APP/Contents/Resources/PicoBoard/"
+if [ "$(shasum -a 256 "$PICO_MAP_SOURCE" | awk '{print $1}')" != "$(shasum -a 256 "$APP/Contents/Resources/PicoBoard/cloudflare-world-dots.bwm" | awk '{print $1}')" ]; then
+    echo "Pico native map asset copy verification failed" >&2; exit 1
+fi
 # 灵犀68 键盘设备外观图（实时预览打底，绿色显示区叠加渲染画面）
 if [ -f "$ROOT/Resources/akko2.png" ]; then
     cp "$ROOT/Resources/akko2.png" "$APP/Contents/Resources/"
@@ -264,7 +276,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleShortVersionString</key>
 	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>86</string>
+	<string>88</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>LSUIElement</key>

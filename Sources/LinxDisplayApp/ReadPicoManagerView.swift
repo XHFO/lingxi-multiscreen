@@ -1244,6 +1244,9 @@ extension ReadPicoHTTPClient: ReadPicoManagerDeviceClient {}
         let port = try directBoardPort(expectedIdentity: fallbackIdentity)
         let identity = identifyUSBPort(port)
         let directCapability = try await boardClient.verifyDirect(port: port); try check(id)
+        if ReadPicoBoardModel.isModel(bmp), !directCapability.supportsModel {
+            throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。")
+        }
         if ReadPicoCanvasPair.isPair(bmp), !directCapability.supportsDualOrientation {
             throw ReadPicoManagerError.unavailable("请更新设备固件，以支持一次接收竖屏和横屏画面。")
         }
@@ -1269,11 +1272,15 @@ extension ReadPicoHTTPClient: ReadPicoManagerDeviceClient {}
     /// Only an authenticated read failure may authorize an automatic USB fallback, before any POST.
     func sendBoard(_ bmp: Data, display: Bool = false, contentChannel: ReadPicoContentChannel = .canvas, completion: ((Bool) -> Void)? = nil) {
         guard !busy else { rejectCompletion(completion); return }
-        if ReadPicoCanvasPair.isPair(bmp) {
+        let model = ReadPicoBoardModel.isModel(bmp)
+        if model {
+            do { _ = try ReadPicoBoardModel.decode(bmp) }
+            catch { report(error.localizedDescription, error: true); rejectCompletion(completion); return }
+        } else if ReadPicoCanvasPair.isPair(bmp) {
             do { try ReadPicoCanvasPair.validate(bmp) }
             catch { report(error.localizedDescription, error: true); rejectCompletion(completion); return }
         }
-        guard contentChannel == .canvas || ReadPicoCanvasPair.isPair(bmp) else {
+        guard contentChannel == .canvas || model || ReadPicoCanvasPair.isPair(bmp) else {
             report("应用内容必须同时提供横竖两种布局。", error: true); rejectCompletion(completion); return
         }
         guard !boardSubmissionUncertain else {
@@ -1311,6 +1318,7 @@ extension ReadPicoHTTPClient: ReadPicoManagerDeviceClient {}
                 do {
                     let result = try await client.capabilities(); try self.check(id)
                     guard result.protocol == 1, result.canvas.supportsNativeGray16 else { throw ReadPicoManagerError.unavailable("当前设备尚不支持原生 16 灰阶画板，请更新固件后重试。") }
+                    guard !model || result.canvas.supportsModel else { throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。") }
                     self.capability = result.canvas; self.acceptPowerStatus(result.power); self.boardRouting.probeSucceeded(at: self.boardNow())
                 } catch {
                     try self.check(id)
@@ -1328,7 +1336,10 @@ extension ReadPicoHTTPClient: ReadPicoManagerDeviceClient {}
                 return try await self.sendBoardUSB(bmp, id: id, display: display, contentChannel: contentChannel)
             case .wireless:
                 guard self.store == nil, !self.waitingForUSBVolume, let client = self.client, let capability = self.capability else { throw ReadPicoUSBWirelessError.busy }
-                if ReadPicoCanvasPair.isPair(bmp) {
+                if model {
+                    guard capability.supportsModel else { throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。") }
+                    _ = try ReadPicoBoardModel.decode(bmp)
+                } else if ReadPicoCanvasPair.isPair(bmp) {
                     guard capability.supportsDualOrientation, bmp.count <= (capability.pairMaxBytes ?? 0) else {
                         throw ReadPicoManagerError.unavailable("请更新设备固件，以支持一次接收竖屏和横屏画面。")
                     }

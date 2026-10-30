@@ -566,6 +566,8 @@ public struct ReadPicoCanvasCapability: Decodable, Sendable {
     public let grayLevels: Int?, bitDepths: [Int]?
     public let displayIntent: Bool?
     public let dualOrientation: Bool?, pairMaxBytes: Int?
+    public let modelProtocol: Int?, modelMaxBytes: Int?
+    public var supportsModel: Bool { supported && modelProtocol == 1 && (modelMaxBytes ?? 0) >= ReadPicoBoardModel.maximumBytes }
     public let orientation: String?
     public let appChannels: [String]?
     public let appReceipts: [String: ReadPicoCanvasReceipt]?
@@ -585,6 +587,7 @@ public struct ReadPicoCanvasCapability: Decodable, Sendable {
         case supported, width, height, formats, state, revision
         case maxBytes = "max_bytes", grayLevels = "gray_levels", bitDepths = "bit_depths", displayIntent = "display_intent"
         case dualOrientation = "dual_orientation", pairMaxBytes = "pair_max_bytes", orientation
+        case modelProtocol = "model_protocol", modelMaxBytes = "model_max_bytes"
         case appChannels = "app_channels", appReceipts = "app_receipts"
     }
 }
@@ -960,18 +963,23 @@ public actor ReadPicoHTTPClient: ReadPicoContentStore {
     public func pushCanvas(_ bmp: Data, capability: ReadPicoCanvasCapability, display: Bool,
                            contentChannel: ReadPicoContentChannel) async throws {
         guard capability.supports(contentChannel) else { throw ReadPicoManagerError.unavailable("请更新设备固件，以支持 Cloudflare 独立应用。") }
-        guard contentChannel == .canvas || ReadPicoCanvasPair.isPair(bmp) else { throw ReadPicoManagerError.invalid("应用内容必须同时提供横竖两种布局。") }
+        let model = ReadPicoBoardModel.isModel(bmp)
+        guard contentChannel == .canvas || model || ReadPicoCanvasPair.isPair(bmp) else { throw ReadPicoManagerError.invalid("应用内容必须提供数据模型或横竖两种布局。") }
         let pair = ReadPicoCanvasPair.isPair(bmp)
-        if pair {
+        if model {
+            guard capability.supportsModel else { throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。") }
+            _ = try ReadPicoBoardModel.decode(bmp)
+        } else if pair {
             guard capability.supportsDualOrientation, bmp.count <= (capability.pairMaxBytes ?? 0) else {
                 throw ReadPicoManagerError.unavailable("请更新设备固件，以支持一次接收竖屏和横屏画面。")
             }
             try ReadPicoCanvasPair.validate(bmp)
         } else { try ReadPicoBitmap.validateCanvas(bmp, capability: capability) }
         guard !display || capability.displayIntent == true else { throw ReadPicoManagerError.unavailable("请更新设备固件，以支持发送后立即展示。") }
-        let path = contentChannel == .canvas ? (pair ? "pico/canvas/pair" : "pico/canvas") : "pico/apps/\(contentChannel.rawValue)/pair"
+        let path = model ? (contentChannel == .canvas ? "pico/canvas/model" : "pico/apps/\(contentChannel.rawValue)/model")
+            : contentChannel == .canvas ? (pair ? "pico/canvas/pair" : "pico/canvas") : "pico/apps/\(contentChannel.rawValue)/pair"
         let data = try await request(display ? path + "/show" : path, method: "POST", data: bmp,
-                                     contentType: pair ? "application/vnd.readpico.canvas-pair" : "image/bmp")
+                                     contentType: model ? "application/vnd.readpico.board-model+json" : pair ? "application/vnd.readpico.canvas-pair" : "image/bmp")
         guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any], body["ok"] as? Bool == true, body["accepted"] as? Bool == true else { throw ReadPicoManagerError.invalid("设备没有接收画布。") }
     }
     /// A saved receipt confirms delivery only; only displayed confirms panel presentation.
@@ -1109,7 +1117,7 @@ public enum ReadPicoBitmap {
             }
             let canvas = ReadPicoCanvasCapability(supported: capability.supported, width: 684, height: 1216,
                 formats: capability.formats, maxBytes: capability.maxBytes, state: capability.state,
-                revision: capability.revision, grayLevels: capability.grayLevels, bitDepths: capability.bitDepths, displayIntent: nil, dualOrientation: nil, pairMaxBytes: nil, orientation: nil, appChannels: nil, appReceipts: nil)
+                revision: capability.revision, grayLevels: capability.grayLevels, bitDepths: capability.bitDepths, displayIntent: nil, dualOrientation: nil, pairMaxBytes: nil, modelProtocol: nil, modelMaxBytes: nil, orientation: nil, appChannels: nil, appReceipts: nil)
             do { try validateCanvas(data, capability: canvas) }
             catch { throw ReadPicoManagerError.invalid("锁屏图片的 16 灰阶 BMP 数据或色板无效。") }
             return
