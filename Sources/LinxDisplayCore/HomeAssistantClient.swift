@@ -378,6 +378,19 @@ public enum HomeAssistantClient {
             let model: String?
             let series: String?
             let entity_picture: String?
+            let brightness: Int?
+            let supported_color_modes: [String]?
+            let percentage: Int?
+            let percentage_step: Double?
+            let current_temperature: Double?
+            let temperature: Double?
+            let min_temp: Double?
+            let max_temp: Double?
+            let target_temp_step: Double?
+            let hvac_modes: [String]?
+            let hvac_action: String?
+            let current_humidity: Double?
+            let device_class: String?
         }
     }
 
@@ -519,6 +532,18 @@ public enum HomeAssistantClient {
         var body: [String: Any] = ["entity_id": command.entityID]
         if let position = command.position {
             body["position"] = position
+        }
+        if let brightness = command.brightnessPercent {
+            body["brightness_pct"] = brightness
+        }
+        if let percentage = command.percentage {
+            body["percentage"] = percentage
+        }
+        if let temperature = command.temperature {
+            body["temperature"] = temperature
+        }
+        if let hvacMode = command.hvacMode {
+            body["hvac_mode"] = hvacMode
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
@@ -691,7 +716,20 @@ public enum HomeAssistantClient {
                  icon: Self.mdiName(from: raw.attributes?.icon),
                  lastChanged: Self.parseHADate(raw.last_changed),
                  model: raw.attributes?.model ?? raw.attributes?.series,
-                 entityPicture: raw.attributes?.entity_picture)
+                 entityPicture: raw.attributes?.entity_picture,
+                 brightness: raw.attributes?.brightness,
+                 supportedColorModes: raw.attributes?.supported_color_modes,
+                 percentage: raw.attributes?.percentage,
+                 percentageStep: raw.attributes?.percentage_step,
+                 currentTemperature: raw.attributes?.current_temperature,
+                 targetTemperature: raw.attributes?.temperature,
+                 minTemperature: raw.attributes?.min_temp,
+                 maxTemperature: raw.attributes?.max_temp,
+                 targetTemperatureStep: raw.attributes?.target_temp_step,
+                 hvacModes: raw.attributes?.hvac_modes,
+                 hvacAction: raw.attributes?.hvac_action,
+                 currentHumidity: raw.attributes?.current_humidity,
+                 deviceClass: raw.attributes?.device_class)
     }
 
     /// 解析 HA 时间戳（ISO8601；兼容带/不带小数秒）

@@ -13,9 +13,10 @@ func testControlCenterHASelectionPolicy() {
     let legacy = Data(#"{"connectionFingerprint":"a","entityIDs":[" light.desk ","light.desk",""]}"#.utf8)
     checkEqual(try! JSONDecoder().decode(ControlCenterHASelection.self, from: legacy).entityIDs, ["light.desk"],
                "存档读取同样归一化，避免重复实体行")
-    checkEqual(ControlCenterHAControlPolicy.supportedDomains, Set(["light", "switch", "fan", "input_boolean"]),
-               "中控仅提供四种显式开关白名单")
-    for domain in ["light", "switch", "fan", "input_boolean"] {
+    checkEqual(ControlCenterHAControlPolicy.supportedDomains,
+               Set(["light", "switch", "fan", "input_boolean", "climate"]),
+               "中控提供显式控制白名单，含空调电源")
+    for domain in ["light", "switch", "fan", "input_boolean", "climate"] {
         let entity = HAEntity(entityId: domain + ".test", friendlyName: "Test", state: "off", unitOfMeasurement: nil)
         let on = ControlCenterHAControlPolicy.command(for: entity, selectedEntityIDs: [entity.entityId],
             expectedFingerprint: "a", currentFingerprint: "a", turnOn: true)
@@ -37,7 +38,7 @@ func testControlCenterHASelectionPolicy() {
         check(ControlCenterHAControlPolicy.command(for: offline, selectedEntityIDs: [offline.entityId], expectedFingerprint: "a",
             currentFingerprint: "a", turnOn: true) == nil, "不可用状态\(state)不会发出服务操作")
     }
-    for domain in ["lock", "script", "scene", "automation", "button", "input_button", "cover", "vacuum", "climate", "media_player", "sensor", "binary_sensor"] {
+    for domain in ["lock", "script", "scene", "automation", "button", "input_button", "cover", "vacuum", "media_player", "sensor", "binary_sensor"] {
         let entity = HAEntity(entityId: domain + ".test", friendlyName: "Test", state: "on", unitOfMeasurement: nil)
         check(ControlCenterHAControlPolicy.command(for: entity, selectedEntityIDs: [entity.entityId], expectedFingerprint: "a",
             currentFingerprint: "a", turnOn: false) == nil, "\(domain)保持只读，不继承更宽泛控制列表")

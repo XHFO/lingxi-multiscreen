@@ -493,13 +493,27 @@ public struct HAServiceCommand: Equatable, Sendable {
     public var entityID: String
     /// cover.set_cover_position 使用；0=完全关闭，100=完全打开。
     public var position: Int?
+    /// light.turn_on 使用；0–100。
+    public var brightnessPercent: Int?
+    /// fan.set_percentage 使用；0–100。
+    public var percentage: Int?
+    /// climate.set_temperature 使用。
+    public var temperature: Double?
+    /// 可选的 climate.set_hvac_mode。
+    public var hvacMode: String?
 
     public init(domain: String, service: String, entityID: String,
-                position: Int? = nil) {
+                position: Int? = nil, brightnessPercent: Int? = nil,
+                percentage: Int? = nil, temperature: Double? = nil,
+                hvacMode: String? = nil) {
         self.domain = domain
         self.service = service
         self.entityID = entityID
         self.position = position.map { min(max($0, 0), 100) }
+        self.brightnessPercent = brightnessPercent.map { min(max($0, 0), 100) }
+        self.percentage = percentage.map { min(max($0, 0), 100) }
+        self.temperature = temperature
+        self.hvacMode = hvacMode
     }
 }
 

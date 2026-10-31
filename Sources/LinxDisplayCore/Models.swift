@@ -2505,10 +2505,39 @@ public struct HAEntity: Codable, Equatable {
     public var model: String?
     /// 图片地址（attributes.entity_picture；多为相对 Home Assistant 的路径，需补全并带令牌请求）
     public var entityPicture: String?
+    /// 灯光当前亮度（HA 的 0–255 原始值）。
+    public var brightness: Int?
+    /// 灯光支持的色彩模式；用于判断是否为可调光灯。
+    public var supportedColorModes: [String]?
+    /// 风扇当前百分比（0–100）。
+    public var percentage: Int?
+    /// 风扇百分比步长。
+    public var percentageStep: Double?
+    /// 空调当前室温。
+    public var currentTemperature: Double?
+    /// 空调目标温度。
+    public var targetTemperature: Double?
+    public var minTemperature: Double?
+    public var maxTemperature: Double?
+    public var targetTemperatureStep: Double?
+    /// 空调可用模式与当前动作（heating/cooling/idle 等）。
+    public var hvacModes: [String]?
+    public var hvacAction: String?
+    /// 空调自身湿度（部分集成提供）。
+    public var currentHumidity: Double?
+    /// HA attributes.device_class，用于识别温度/湿度传感器。
+    public var deviceClass: String?
 
     public init(entityId: String, friendlyName: String, state: String,
                 unitOfMeasurement: String?, icon: String? = nil, lastChanged: Date? = nil,
-                model: String? = nil, entityPicture: String? = nil) {
+                model: String? = nil, entityPicture: String? = nil,
+                brightness: Int? = nil, supportedColorModes: [String]? = nil,
+                percentage: Int? = nil, percentageStep: Double? = nil,
+                currentTemperature: Double? = nil, targetTemperature: Double? = nil,
+                minTemperature: Double? = nil, maxTemperature: Double? = nil,
+                targetTemperatureStep: Double? = nil,
+                hvacModes: [String]? = nil, hvacAction: String? = nil,
+                currentHumidity: Double? = nil, deviceClass: String? = nil) {
         self.entityId = entityId
         self.friendlyName = friendlyName
         self.state = state
@@ -2517,6 +2546,19 @@ public struct HAEntity: Codable, Equatable {
         self.lastChanged = lastChanged
         self.model = model
         self.entityPicture = entityPicture
+        self.brightness = brightness
+        self.supportedColorModes = supportedColorModes
+        self.percentage = percentage
+        self.percentageStep = percentageStep
+        self.currentTemperature = currentTemperature
+        self.targetTemperature = targetTemperature
+        self.minTemperature = minTemperature
+        self.maxTemperature = maxTemperature
+        self.targetTemperatureStep = targetTemperatureStep
+        self.hvacModes = hvacModes
+        self.hvacAction = hvacAction
+        self.currentHumidity = currentHumidity
+        self.deviceClass = deviceClass
     }
 
     /// 是否为可抓取静态帧的画面源：image.* 使用 entity_picture；camera.* 可走
@@ -2528,6 +2570,45 @@ public struct HAEntity: Codable, Equatable {
     /// 实体域（entity_id 前缀，如 sensor / light；无点回退 unknown）
     public var domain: String {
         HAEntityPicker.domain(of: entityId)
+    }
+
+    /// 可调光灯：有亮度属性，或声明的色彩模式包含可调光能力；仅有 onoff 的灯不显示滑块。
+    public var isDimmableLight: Bool {
+        guard domain == "light" else { return false }
+        if brightness != nil { return true }
+        let dimmingModes: Set<String> = ["brightness", "color_temp", "hs", "rgb", "rgbw", "rgbww", "xy", "white"]
+        return (supportedColorModes ?? []).contains { dimmingModes.contains($0.lowercased()) }
+    }
+
+    /// 支持百分比调速的风扇。
+    public var isSpeedFan: Bool { domain == "fan" }
+
+    /// 空调温控器。
+    public var isClimate: Bool { domain == "climate" }
+
+    /// 温度传感器：device_class 优先，其次按单位兜底。
+    public var isTemperatureSensor: Bool {
+        guard domain == "sensor" else { return false }
+        if deviceClass == "temperature" { return true }
+        let unit = (unitOfMeasurement ?? "").lowercased()
+        return unit.contains("°c") || unit.contains("°f") || unit == "c" || unit == "f"
+    }
+
+    /// 湿度传感器：device_class 优先；没有 device_class 时只接受名称/ID 明确含湿度且单位为 %。
+    public var isHumiditySensor: Bool {
+        guard domain == "sensor" else { return false }
+        if deviceClass == "humidity" { return true }
+        guard (unitOfMeasurement ?? "").contains("%") else { return false }
+        return displayName.contains("湿") || entityId.lowercased().contains("humidity")
+    }
+
+    /// 中控面板中合并显示的温度/湿度传感器。
+    public var isClimateSensor: Bool { isTemperatureSensor || isHumiditySensor }
+
+    /// 灯光亮度百分比（0–100）；无亮度属性时为 nil。
+    public var brightnessPercent: Int? {
+        guard let brightness else { return nil }
+        return min(max(Int((Double(brightness) / 255.0 * 100).rounded()), 0), 100)
     }
 
     /// 显示名：优先 friendly_name，缺失时用 entity_id

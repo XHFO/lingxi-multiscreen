@@ -14,6 +14,8 @@ struct ControlCenterHomeAssistantCard: View {
     @State private var operations: [String: UUID] = [:]
     @State private var messages: [String: String] = [:]
     @State private var overrides: [String: ConfirmedReading] = [:]
+    @State private var sliderValues: [String: Double] = [:]
+    @State private var climateTargets: [String: Double] = [:]
 
     private struct ConfirmedReading {
         let fingerprint: String
@@ -53,10 +55,19 @@ struct ControlCenterHomeAssistantCard: View {
                         .accessibilityIdentifier("control-center-ha-edit-\(source.id)")
                 }
                 if let context, !context.selectedEntityIDs.isEmpty {
+                    let sensorIDs = Set(context.selectedEntityIDs.filter { id in
+                        displayedEntity(id, context: context)?.isClimateSensor == true
+                    })
                     ScrollView {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: gap), count: columns), spacing: gap) {
-                            ForEach(context.selectedEntityIDs, id: \.self) { id in
-                                entityTile(id, context: context, compact: compact)
+                        VStack(alignment: .leading, spacing: gap) {
+                            if !sensorIDs.isEmpty {
+                                climateSensorsTile(context.selectedEntityIDs.filter { sensorIDs.contains($0) },
+                                                   context: context, compact: compact)
+                            }
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: gap), count: columns), spacing: gap) {
+                                ForEach(context.selectedEntityIDs.filter { !sensorIDs.contains($0) }, id: \.self) { id in
+                                    entityTile(id, context: context, compact: compact)
+                                }
                             }
                         }.padding(.trailing, 2)
                     }.scrollIndicators(.automatic)
@@ -86,6 +97,7 @@ struct ControlCenterHomeAssistantCard: View {
         .onHover { hovering = $0 }
         .onChange(of: context?.fingerprint) {
             operations.removeAll(); messages.removeAll(); overrides.removeAll()
+            sliderValues.removeAll(); climateTargets.removeAll()
         }
         .popover(isPresented: $showingEditor, arrowEdge: .top) {
             ControlCenterHAEntityEditor(model: model, source: source) { showingEditor = false }
@@ -127,12 +139,43 @@ struct ControlCenterHomeAssistantCard: View {
         return baseline
     }
 
+    private func climateSensorsTile(_ ids: [String], context: ControlCenterHAContext,
+                                    compact: Bool) -> some View {
+        let sensors = ids.compactMap { displayedEntity($0, context: context) }
+        return HStack(spacing: 0) {
+            ForEach(Array(sensors.enumerated()), id: \.element.entityId) { index, entity in
+                VStack(spacing: compact ? 3 : 5) {
+                    Image(systemName: SFIconMapper.symbol(for: entity))
+                        .font(compact ? .system(size: 16) : .title3)
+                        .foregroundStyle(Color.orange)
+                    Text(entity.displayName)
+                        .font(.system(size: compact ? 10 : 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(entity.displayValue)
+                        .font(.system(size: compact ? 17 : 22, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(maxWidth: .infinity)
+                if index < sensors.count - 1 {
+                    Divider().frame(height: compact ? 40 : 52)
+                }
+            }
+        }
+        .padding(compact ? 10 : 14)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(sensors.map { "\($0.displayName) \($0.displayValue)" }.joined(separator: "，")))
+    }
+
     private func entityTile(_ id: String, context: ControlCenterHAContext, compact: Bool) -> some View {
         let entity = displayedEntity(id, context: context)
         let available = entity.map(ControlCenterHAControlPolicy.isAvailable) ?? false
         let controllable = entity.map(ControlCenterHAControlPolicy.isControllable) ?? false
         let inFlight = operations[id] != nil
-        let isOn = entity?.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "on"
+        let isOn = entity.map(ControlCenterHAControlPolicy.isPowerOn) ?? false
         return VStack(alignment: .leading, spacing: compact ? 6 : 8) {
             HStack(alignment: .center, spacing: compact ? 8 : 10) {
                 Image(systemName: entity.map(SFIconMapper.symbol(for:)) ?? "questionmark.circle")
@@ -169,6 +212,15 @@ struct ControlCenterHomeAssistantCard: View {
                     Text("只读").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
                 }
             }
+            if let entity, available, controllable {
+                if entity.isDimmableLight {
+                    brightnessControl(entity, context: context, compact: compact)
+                } else if entity.isSpeedFan {
+                    fanControl(entity, context: context, compact: compact)
+                } else if entity.isClimate {
+                    climateControl(entity, context: context, compact: compact)
+                }
+            }
             if let message = messages[id] {
                 Text(message).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(3).help(message)
             }
@@ -179,19 +231,158 @@ struct ControlCenterHomeAssistantCard: View {
         .accessibilityElement(children: .contain)
     }
 
+    private func brightnessControl(_ entity: HAEntity, context: ControlCenterHAContext,
+                                   compact: Bool) -> some View {
+        let value = sliderValues[entity.entityId]
+            ?? Double(entity.brightnessPercent ?? (entity.state.lowercased() == "on" ? 100 : 0))
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("亮度").font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(value.rounded()))%").font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: Binding(get: { sliderValues[entity.entityId] ?? value },
+                                  set: { sliderValues[entity.entityId] = $0 }),
+                   in: 0...100, step: 1) { editing in
+                guard !editing else { return }
+                let percent = Int((sliderValues[entity.entityId] ?? value).rounded())
+                sendBrightness(entity, context: context, percent: percent)
+            }
+            .tint(.orange)
+            .controlSize(.small)
+        }
+    }
+
+    private func fanControl(_ entity: HAEntity, context: ControlCenterHAContext,
+                            compact: Bool) -> some View {
+        let value = sliderValues[entity.entityId] ?? Double(entity.percentage ?? 0)
+        let step = max(entity.percentageStep ?? 1, 1)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("风速").font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(value.rounded()))%").font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: Binding(get: { sliderValues[entity.entityId] ?? value },
+                                  set: { sliderValues[entity.entityId] = $0 }),
+                   in: 0...100, step: step) { editing in
+                guard !editing else { return }
+                let percent = Int((sliderValues[entity.entityId] ?? value).rounded())
+                sendFan(entity, context: context, percent: percent)
+            }
+            .tint(.teal)
+            .controlSize(.small)
+        }
+    }
+
+    private func climateControl(_ entity: HAEntity, context: ControlCenterHAContext,
+                                compact: Bool) -> some View {
+        let step = max(entity.targetTemperatureStep ?? 0.5, 0.5)
+        let rawLower = entity.minTemperature ?? 16
+        let rawUpper = entity.maxTemperature ?? 30
+        let lower = min(rawLower, rawUpper - step)
+        let upper = max(rawUpper, lower + step)
+        let target = min(max(climateTargets[entity.entityId] ?? entity.targetTemperature ?? 22, lower), upper)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Button {
+                    adjustClimate(entity, context: context, target: target - step, lower: lower, upper: upper)
+                } label: {
+                    Image(systemName: "minus").frame(width: 24, height: 24)
+                }.buttonStyle(.plain)
+                    .background(Color.primary.opacity(0.06), in: Circle())
+                    .accessibilityLabel(Text("降低目标温度"))
+                VStack(spacing: 1) {
+                    Text(String(format: "%.1f°", target))
+                        .font(.system(size: compact ? 17 : 20, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Text("目标温度").font(.system(size: 9)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity)
+                Button {
+                    adjustClimate(entity, context: context, target: target + step, lower: lower, upper: upper)
+                } label: {
+                    Image(systemName: "plus").frame(width: 24, height: 24)
+                }.buttonStyle(.plain)
+                    .background(Color.primary.opacity(0.06), in: Circle())
+                    .accessibilityLabel(Text("提高目标温度"))
+            }
+            Slider(value: Binding(get: {
+                min(max(climateTargets[entity.entityId] ?? target, lower), upper)
+            }, set: { climateTargets[entity.entityId] = min(max($0, lower), upper) }),
+                   in: lower...upper, step: step) { editing in
+                guard !editing else { return }
+                let value = climateTargets[entity.entityId] ?? target
+                sendClimate(entity, context: context, temperature: value)
+            }
+            .tint(.orange)
+            .controlSize(.small)
+            HStack(spacing: 6) {
+                if let current = entity.currentTemperature {
+                    Text("室温 " + String(format: "%.1f°", current))
+                }
+                if let humidity = entity.currentHumidity {
+                    Text("湿度 " + String(format: "%.0f%%", humidity))
+                }
+                Spacer(minLength: 0)
+                if let action = entity.hvacAction, !action.isEmpty {
+                    Text(action)
+                }
+            }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func adjustClimate(_ entity: HAEntity, context: ControlCenterHAContext,
+                               target: Double, lower: Double, upper: Double) {
+        let value = min(max(target, lower), upper)
+        climateTargets[entity.entityId] = value
+        sendClimate(entity, context: context, temperature: value)
+    }
+
+    private func sendBrightness(_ entity: HAEntity, context: ControlCenterHAContext, percent: Int) {
+        runOperation(entity, context: context) {
+            await model.performControlCenterHABrightnessAction(source: source, entityID: entity.entityId,
+                expectedFingerprint: context.fingerprint, percent: percent)
+        }
+    }
+
+    private func sendFan(_ entity: HAEntity, context: ControlCenterHAContext, percent: Int) {
+        runOperation(entity, context: context) {
+            await model.performControlCenterHAFanAction(source: source, entityID: entity.entityId,
+                expectedFingerprint: context.fingerprint, percent: percent)
+        }
+    }
+
+    private func sendClimate(_ entity: HAEntity, context: ControlCenterHAContext, temperature: Double) {
+        runOperation(entity, context: context) {
+            await model.performControlCenterHAClimateAction(source: source, entityID: entity.entityId,
+                expectedFingerprint: context.fingerprint, temperature: temperature)
+        }
+    }
+
     private func execute(_ entity: HAEntity, context: ControlCenterHAContext) {
+        let turnOn = !ControlCenterHAControlPolicy.isPowerOn(entity)
+        runOperation(entity, context: context) {
+            await model.performControlCenterHAAction(source: source, entityID: entity.entityId,
+                expectedFingerprint: context.fingerprint, turnOn: turnOn)
+        }
+    }
+
+    private func runOperation(_ entity: HAEntity, context: ControlCenterHAContext,
+                              action: @escaping () async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError>) {
         guard operations[entity.entityId] == nil else { return }
         let requestID = UUID()
         operations[entity.entityId] = requestID
         messages[entity.entityId] = nil
         let baseline = context.entities.first(where: { $0.entityId == entity.entityId }) ?? entity
-        let turnOn = entity.state.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "on"
         Task { @MainActor in
-            let result = await model.performControlCenterHAAction(source: source, entityID: entity.entityId,
-                                                                  expectedFingerprint: context.fingerprint, turnOn: turnOn)
+            let result = await action()
             guard operations[entity.entityId] == requestID,
                   self.context?.fingerprint == context.fingerprint else { return }
             operations[entity.entityId] = nil
+            sliderValues[entity.entityId] = nil
+            climateTargets[entity.entityId] = nil
             switch result {
             case .success(let reading):
                 if let updated = reading.entity {
@@ -199,7 +390,8 @@ struct ControlCenterHomeAssistantCard: View {
                                                                   baseline: baseline, confirmed: updated)
                 }
                 messages[entity.entityId] = reading.message
-            case .failure(let error): messages[entity.entityId] = error.localizedDescription
+            case .failure(let error):
+                messages[entity.entityId] = error.localizedDescription
             }
         }
     }
@@ -217,10 +409,20 @@ private struct ControlCenterHAEntityEditor: View {
     private var context: ControlCenterHAContext? { model.controlCenterHAContext(for: source) }
     private var candidates: [HAEntity] {
         let all = context?.entities ?? []
-        let base = filter == 0 ? all.filter(ControlCenterHAControlPolicy.isControllable)
-            : filter == 2 ? selected.map { id in
-                all.first { $0.entityId == id } ?? HAEntity(entityId: id, friendlyName: id, state: "unavailable", unitOfMeasurement: nil)
-            } : all
+        let base: [HAEntity]
+        switch filter {
+        case 0:
+            base = all.filter(ControlCenterHAControlPolicy.isControllable)
+        case 2:
+            base = selected.map { id in
+                all.first { $0.entityId == id } ?? HAEntity(entityId: id, friendlyName: id,
+                                                            state: "unavailable", unitOfMeasurement: nil)
+            }
+        case 3:
+            base = all.filter(ControlCenterHAControlPolicy.isClimateSensor)
+        default:
+            base = all
+        }
         return HAEntityPicker.filter(base, keyword: keyword)
     }
     var body: some View {
@@ -235,9 +437,14 @@ private struct ControlCenterHAEntityEditor: View {
             TextField("搜索名称、entity_id 或分类", text: $keyword).textFieldStyle(.roundedBorder)
             Picker("实体筛选", selection: $filter) {
                 Text("可控制").tag(0)
+                Text("温湿度").tag(3)
                 Text("全部实体").tag(1)
                 Text("已选择").tag(2)
             }.pickerStyle(.segmented)
+            if filter == 3 {
+                Text("温度与湿度传感器会合并到同一张温湿度卡中显示；可多选。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if candidates.isEmpty {
                 ContentUnavailableView {
                     Label("暂无匹配实体", systemImage: "magnifyingglass")
@@ -374,13 +581,59 @@ extension AppModel {
     @MainActor func performControlCenterHAAction(source: DeviceControlCenterDataSource, entityID: String,
                                                 expectedFingerprint: String, turnOn: Bool,
                                                 transport: ControlCenterHAActionTransport = .live) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
+        await performControlCenterHAServiceAction(source: source, entityID: entityID,
+            expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
+            ControlCenterHAControlPolicy.command(for: entity, selectedEntityIDs: selectedIDs,
+                expectedFingerprint: expected, currentFingerprint: current, turnOn: turnOn)
+        }
+    }
+
+    @MainActor func performControlCenterHABrightnessAction(source: DeviceControlCenterDataSource,
+                                                          entityID: String, expectedFingerprint: String,
+                                                          percent: Int,
+                                                          transport: ControlCenterHAActionTransport = .live) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
+        await performControlCenterHAServiceAction(source: source, entityID: entityID,
+            expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
+            ControlCenterHAControlPolicy.brightnessCommand(for: entity, selectedEntityIDs: selectedIDs,
+                expectedFingerprint: expected, currentFingerprint: current, percent: percent)
+        }
+    }
+
+    @MainActor func performControlCenterHAFanAction(source: DeviceControlCenterDataSource,
+                                                    entityID: String, expectedFingerprint: String,
+                                                    percent: Int,
+                                                    transport: ControlCenterHAActionTransport = .live) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
+        await performControlCenterHAServiceAction(source: source, entityID: entityID,
+            expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
+            ControlCenterHAControlPolicy.fanCommand(for: entity, selectedEntityIDs: selectedIDs,
+                expectedFingerprint: expected, currentFingerprint: current, percent: percent)
+        }
+    }
+
+    @MainActor func performControlCenterHAClimateAction(source: DeviceControlCenterDataSource,
+                                                       entityID: String, expectedFingerprint: String,
+                                                       temperature: Double,
+                                                       transport: ControlCenterHAActionTransport = .live) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
+        await performControlCenterHAServiceAction(source: source, entityID: entityID,
+            expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
+            ControlCenterHAControlPolicy.climateTemperatureCommand(for: entity, selectedEntityIDs: selectedIDs,
+                expectedFingerprint: expected, currentFingerprint: current, temperature: temperature)
+        }
+    }
+
+    @MainActor private func performControlCenterHAServiceAction(
+        source: DeviceControlCenterDataSource, entityID: String, expectedFingerprint: String,
+        transport: ControlCenterHAActionTransport,
+        commandBuilder: (HAEntity, [String], String, String?) -> HAServiceCommand?
+    ) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
         guard let context = controlCenterHAContext(for: source), context.fingerprint == expectedFingerprint,
               let connection = overviewHAConnection(sourceID: context.sourceID) else { return .failure(.sourceChanged) }
         guard let entity = context.entities.first(where: { $0.entityId == entityID }),
               ControlCenterHAControlPolicy.isAvailable(entity) else { return .failure(.unavailable) }
-        guard let command = ControlCenterHAControlPolicy.command(for: entity,
-            selectedEntityIDs: context.selectedEntityIDs, expectedFingerprint: expectedFingerprint,
-            currentFingerprint: connection.fingerprint, turnOn: turnOn) else { return .failure(.unsupported) }
+        guard let command = commandBuilder(entity, context.selectedEntityIDs,
+                                           expectedFingerprint, connection.fingerprint) else {
+            return .failure(.unsupported)
+        }
         do {
             try await transport.send(connection, command)
         } catch {

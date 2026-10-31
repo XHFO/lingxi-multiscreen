@@ -13,7 +13,7 @@ enum ControlCenterSoftwareField: String, CaseIterable, Identifiable {
     case pomodoroTime, pomodoroPhase, pomodoroTask, pomodoroCompleted, pomodoroProgress
     case excerptText, excerptSource
     case systemCPU, systemMemory, systemDisk, systemNetwork, systemUptime
-    case customImageName, emojiText, canvasModules
+    case emojiText
 
     var id: String { rawValue }
 
@@ -58,9 +58,7 @@ enum ControlCenterSoftwareField: String, CaseIterable, Identifiable {
         case .systemDisk: return "磁盘占用"
         case .systemNetwork: return "网络速率"
         case .systemUptime: return "运行时间"
-        case .customImageName: return "图片名称"
         case .emojiText: return "Emoji 内容"
-        case .canvasModules: return "模块数量"
         }
     }
 
@@ -78,9 +76,7 @@ enum ControlCenterSoftwareField: String, CaseIterable, Identifiable {
         case .excerptQuote: return [.excerptText, .excerptSource]
         case .systemMonitor: return [.systemCPU, .systemMemory, .systemDisk,
                                      .systemNetwork, .systemUptime]
-        case .customImage: return [.customImageName]
         case .emojiWallpaper: return [.emojiText]
-        case .canvas: return [.canvasModules]
         default: return []
         }
     }
@@ -97,9 +93,7 @@ enum ControlCenterSoftwareField: String, CaseIterable, Identifiable {
         case .excerptQuote: return [.excerptText, .excerptSource]
         case .systemMonitor: return [.systemCPU, .systemMemory, .systemDisk,
                                      .systemNetwork, .systemUptime]
-        case .customImage: return [.customImageName]
         case .emojiWallpaper: return [.emojiText]
-        case .canvas: return [.canvasModules]
         default: return []
         }
     }
@@ -146,20 +140,11 @@ struct ControlCenterSoftwareSummary {
         case .pomodoro: return pomodoro(model: model, fields: fields)
         case .excerptQuote: return excerpt(model: model, fields: fields)
         case .systemMonitor: return system(model: model, fields: fields)
-        case .customImage:
-            return .init(title: mode.title, icon: mode.icon, headline: nil, headlineLabel: nil,
-                         metrics: [], body: model.settings.customImageName ?? "尚未选择图片",
-                         footer: "键盘卡片", progress: nil, fields: fields)
         case .emojiWallpaper:
             let text = model.settings.emojiWallpaperText.trimmingCharacters(in: .whitespacesAndNewlines)
             return .init(title: mode.title, icon: mode.icon, headline: nil, headlineLabel: nil,
                          metrics: [], body: text.isEmpty ? "尚未输入 Emoji" : text,
                          footer: "键盘卡片", progress: nil, fields: fields)
-        case .canvas:
-            let count = model.settings.canvasModuleList.count
-            return .init(title: mode.title, icon: mode.icon, headline: nil, headlineLabel: nil,
-                         metrics: [], body: count > 0 ? "\(count) 个模块" : "尚未添加模块",
-                         footer: "键盘画板", progress: nil, fields: fields)
         default:
             return .init(title: mode.title, icon: mode.icon, headline: nil, headlineLabel: nil,
                          metrics: [], body: nil, footer: "打开设置", progress: nil, fields: fields)
