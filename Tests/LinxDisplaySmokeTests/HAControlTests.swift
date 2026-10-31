@@ -47,7 +47,8 @@ func testHAControls() throws {
     let climate = try entity("""
     {"entity_id":"climate.living","state":"heat","attributes":{"friendly_name":"客厅空调",
      "temperature":24.5,"current_temperature":23.0,"min_temp":16,"max_temp":30,
-     "target_temp_step":0.5,"hvac_action":"heating","current_humidity":55}}
+     "target_temp_step":0.5,"hvac_action":"heating","current_humidity":55,
+     "hvac_modes":["off","heat","cool","auto","dry","fan_only"]}}
     """)
     check(climate.isClimate, "空调识别")
     check(ControlCenterHAControlPolicy.isPowerOn(climate), "制热中的空调视为电源开启")
@@ -61,6 +62,14 @@ func testHAControls() throws {
     checkEqual(climateCommand?.service, "set_temperature", "空调调温服务")
     checkEqual(climateCommand?.temperature, 30, "空调温度上限钳制")
     check(ControlCenterHAControlPolicy.isControllable(climate), "空调可控制")
+    let modeCommand = ControlCenterHAControlPolicy.climateModeCommand(
+        for: climate, selectedEntityIDs: [climate.entityId], expectedFingerprint: "fp",
+        currentFingerprint: "fp", mode: "cool")
+    checkEqual(modeCommand?.service, "set_hvac_mode", "空调模式服务")
+    checkEqual(modeCommand?.hvacMode, "cool", "空调目标模式")
+    check(ControlCenterHAControlPolicy.climateModeCommand(
+        for: climate, selectedEntityIDs: [climate.entityId], expectedFingerprint: "fp",
+        currentFingerprint: "fp", mode: "turbo") == nil, "未声明的空调模式不发送")
 
     let temperature = try entity("""
     {"entity_id":"sensor.living_temperature","state":"23.4","attributes":{

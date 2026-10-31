@@ -104,6 +104,22 @@ public enum ControlCenterHAControlPolicy {
                                 entityID: entity.entityId, temperature: clamped)
     }
 
+    /// 空调模式：off / heat / cool / heat_cool / auto / dry / fan_only。
+    public static func climateModeCommand(for entity: HAEntity,
+                                          selectedEntityIDs: [String],
+                                          expectedFingerprint: String,
+                                          currentFingerprint: String?,
+                                          mode: String) -> HAServiceCommand? {
+        let value = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !expectedFingerprint.isEmpty, currentFingerprint == expectedFingerprint,
+              selectedEntityIDs.contains(entity.entityId),
+              entity.domain == "climate", isAvailable(entity), !value.isEmpty else { return nil }
+        if let modes = entity.hvacModes, !modes.isEmpty,
+           !modes.map({ $0.lowercased() }).contains(value) { return nil }
+        return HAServiceCommand(domain: "climate", service: "set_hvac_mode",
+                                entityID: entity.entityId, hvacMode: value)
+    }
+
     /// 温湿度传感器是可选中但只读的实体。
     public static func isClimateSensor(_ entity: HAEntity) -> Bool {
         entity.isClimateSensor

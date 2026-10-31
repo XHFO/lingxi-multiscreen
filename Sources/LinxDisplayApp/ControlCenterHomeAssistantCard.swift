@@ -191,34 +191,31 @@ struct ControlCenterHomeAssistantCard: View {
                 }
                 Spacer(minLength: 0)
                 if controllable {
-                    Button {
-                        guard let entity else { return }
-                        execute(entity, context: context)
-                    } label: {
-                        ZStack {
-                            Image(systemName: "power").opacity(inFlight ? 0 : 1)
-                            if inFlight { ProgressView().controlSize(.small) }
-                        }.frame(width: compact ? 28 : 32, height: 28)
-                    }
-                    .buttonStyle(.plain).tint(isOn ? .orange : .secondary)
-                    .foregroundStyle(isOn ? Color.orange : Color.secondary)
-                    .background(Color.primary.opacity(isOn ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .disabled(!available || inFlight)
-                    .help(isOn ? String(localized: "关闭") : String(localized: "开启"))
-                    .accessibilityLabel(Text((isOn ? String(localized: "关闭") : String(localized: "开启")) + " " + (entity?.displayName ?? id)))
-                    .accessibilityValue(inFlight ? Text("正在执行…") : Text(entity?.displayState ?? ""))
-                    .accessibilityIdentifier("control-center-ha-control-\(id)")
+                    powerButton(id: id, entity: entity, context: context, compact: compact,
+                                isOn: isOn, available: available, inFlight: inFlight)
                 } else {
                     Text("只读").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
                 }
             }
             if let entity, available, controllable {
                 if entity.isDimmableLight {
+                    Spacer(minLength: 0)
                     brightnessControl(entity, context: context, compact: compact)
+                    Spacer(minLength: 0)
                 } else if entity.isSpeedFan {
+                    Spacer(minLength: 0)
                     fanControl(entity, context: context, compact: compact)
+                    Spacer(minLength: 0)
                 } else if entity.isClimate {
                     climateControl(entity, context: context, compact: compact)
+                    Spacer(minLength: 0)
+                } else {
+                    Spacer(minLength: 0)
+                    Text(entity.displayState)
+                        .font(.system(size: compact ? 25 : 30, weight: .semibold, design: .rounded))
+                        .foregroundStyle(isOn ? Color.orange : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                    Spacer(minLength: 0)
                 }
             }
             if let message = messages[id] {
@@ -226,9 +223,34 @@ struct ControlCenterHomeAssistantCard: View {
             }
         }
         .padding(compact ? 9 : 12)
-        .frame(maxWidth: .infinity, minHeight: compact ? 62 : 72, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: compact ? 156 : 170, alignment: .topLeading)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func powerButton(id: String, entity: HAEntity?, context: ControlCenterHAContext,
+                             compact: Bool, isOn: Bool, available: Bool, inFlight: Bool) -> some View {
+        Button {
+            guard let entity else { return }
+            execute(entity, context: context)
+        } label: {
+            ZStack {
+                Image(systemName: "power").opacity(inFlight ? 0 : 1)
+                if inFlight { ProgressView().controlSize(.small) }
+            }.frame(width: compact ? 28 : 32, height: 28)
+        }
+        .buttonStyle(.plain).tint(isOn ? .orange : .secondary)
+        .foregroundStyle(isOn ? Color.orange : Color.secondary)
+        .background(Color.primary.opacity(isOn ? 0.08 : 0.04),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .disabled(!available || inFlight)
+        .help(isOn ? String(localized: "关闭") : String(localized: "开启"))
+        .accessibilityLabel(Text((isOn ? String(localized: "关闭") : String(localized: "开启"))
+            + " " + (entity?.displayName ?? id)))
+        .accessibilityValue(inFlight ? Text("正在执行…") : Text(entity?.displayState ?? ""))
+        .accessibilityIdentifier("control-center-ha-control-\(id)")
     }
 
     private func brightnessControl(_ entity: HAEntity, context: ControlCenterHAContext,
@@ -318,6 +340,31 @@ struct ControlCenterHomeAssistantCard: View {
             }
             .tint(.orange)
             .controlSize(.small)
+            if let modes = entity.hvacModes, !modes.isEmpty {
+                Menu {
+                    ForEach(modes, id: \.self) { mode in
+                        Button {
+                            sendClimateMode(entity, context: context, mode: mode)
+                        } label: {
+                            Label(hvacModeTitle(mode), systemImage: hvacModeSymbol(mode))
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: hvacModeSymbol(entity.state))
+                        Text(hvacModeTitle(entity.state))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(Text("空调模式"))
+                .accessibilityValue(Text(hvacModeTitle(entity.state)))
+            }
             HStack(spacing: 6) {
                 if let current = entity.currentTemperature {
                     Text("室温 " + String(format: "%.1f°", current))
@@ -330,6 +377,38 @@ struct ControlCenterHomeAssistantCard: View {
                     Text(action)
                 }
             }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private func sendClimateMode(_ entity: HAEntity, context: ControlCenterHAContext, mode: String) {
+        runOperation(entity, context: context) {
+            await model.performControlCenterHAClimateModeAction(source: source, entityID: entity.entityId,
+                expectedFingerprint: context.fingerprint, mode: mode)
+        }
+    }
+
+    private func hvacModeTitle(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "off": return String(localized: "关闭")
+        case "heat": return String(localized: "制热")
+        case "cool": return String(localized: "制冷")
+        case "heat_cool": return String(localized: "自动冷暖")
+        case "auto": return String(localized: "自动")
+        case "dry": return String(localized: "除湿")
+        case "fan_only": return String(localized: "送风")
+        default: return raw
+        }
+    }
+
+    private func hvacModeSymbol(_ raw: String) -> String {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "off": return "power"
+        case "heat": return "flame.fill"
+        case "cool": return "snowflake"
+        case "heat_cool", "auto": return "arrow.triangle.2.circlepath"
+        case "dry": return "drop.fill"
+        case "fan_only": return "fan.fill"
+        default: return "thermometer.medium"
         }
     }
 
@@ -607,6 +686,17 @@ extension AppModel {
             expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
             ControlCenterHAControlPolicy.fanCommand(for: entity, selectedEntityIDs: selectedIDs,
                 expectedFingerprint: expected, currentFingerprint: current, percent: percent)
+        }
+    }
+
+    @MainActor func performControlCenterHAClimateModeAction(source: DeviceControlCenterDataSource,
+                                                           entityID: String, expectedFingerprint: String,
+                                                           mode: String,
+                                                           transport: ControlCenterHAActionTransport = .live) async -> Result<ControlCenterHAActionReading, ControlCenterHAActionError> {
+        await performControlCenterHAServiceAction(source: source, entityID: entityID,
+            expectedFingerprint: expectedFingerprint, transport: transport) { entity, selectedIDs, expected, current in
+            ControlCenterHAControlPolicy.climateModeCommand(for: entity, selectedEntityIDs: selectedIDs,
+                expectedFingerprint: expected, currentFingerprint: current, mode: mode)
         }
     }
 
