@@ -19,6 +19,9 @@ extension AppModel {
         var forms: [FormlabsCanvasItem] = []
 
         switch source.destination {
+        case .software:
+            // Software cards use their live native SwiftUI summary card; no device canvas.
+            return nil
         case .nowPlaying:
             // The dashboard uses the native live media card instead of a rendered
             // device image. No player or fake hardware session is created.

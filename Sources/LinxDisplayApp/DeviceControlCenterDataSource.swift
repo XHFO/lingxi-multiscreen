@@ -6,13 +6,22 @@ import LinxDisplayCore
 /// starts a refresh or changes the active device. Managed services appear here once, rather
 /// than also pretending to be display devices in the screen collection.
 struct DeviceControlCenterDataSource: Identifiable, Equatable {
-    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying }
+    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying, software }
     enum Destination: Equatable {
         case managedDevice(UUID)
         case cloudflare(UUID)
         case weather
         case nowPlaying
+        case software(DisplayMode)
     }
+
+    /// 中控面板收录的软件卡片。天气、Cloudflare、Home Assistant、打印机和正在播放
+    /// 已有各自的专用数据源卡片，不在这里重复。
+    static let softwareModes: [DisplayMode] = [
+        .codex, .qwenWork, .grokBot, .deepSeek,
+        .sspai, .pomodoro, .excerptQuote,
+        .systemMonitor, .customImage, .emojiWallpaper, .canvas
+    ]
 
     let id: String
     let kind: Kind
@@ -86,6 +95,15 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
                            title: String(localized: "正在播放"), subtitle: String(localized: "系统媒体"),
                            status: String(localized: "未在播放"), symbolName: "music.note",
                            destination: .nowPlaying))
+
+        // Software cards are shared state, not physical sources. They appear after the
+        // configured device and website sources so adding one never changes existing order.
+        for mode in softwareModes {
+            result.append(Self(id: "software:\(mode.rawValue)", kind: .software,
+                               title: mode.title, subtitle: String(localized: "软件卡片"),
+                               status: String(localized: "打开设置"),
+                               symbolName: mode.icon, destination: .software(mode)))
+        }
         return result
     }
 }
@@ -93,6 +111,11 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
 extension AppModel {
     @MainActor func controlCenterDataSources() -> [DeviceControlCenterDataSource] {
         DeviceControlCenterDataSource.sources(settings: settings).map { source in
+            if case let .software(mode) = source.destination {
+                var updated = source
+                updated.status = ControlCenterSoftwareSummary.make(model: self, settings: settings, mode: mode).status
+                return updated
+            }
             guard case .managedDevice(let id) = source.destination,
                   let device = settings.devices.first(where: { $0.id == id }), device.isEnabled else { return source }
             let error: String?

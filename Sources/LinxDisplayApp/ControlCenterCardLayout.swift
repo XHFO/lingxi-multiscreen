@@ -79,6 +79,7 @@ struct EditableControlCenterCard<Content: View>: View {
     let onNewGroup: () -> Void
     let onRemove: () -> Void
     var sizeOptions: ControlCenterCardSizeOptions = .grid
+    var onCustomize: (() -> Void)? = nil
     @ViewBuilder let content: (CGFloat) -> Content
     @State private var showDimensions = false
 
@@ -169,6 +170,11 @@ struct EditableControlCenterCard<Content: View>: View {
     }
 
     @ViewBuilder private var sizeAndOrderMenu: some View {
+        if let onCustomize {
+            Section("显示") {
+                Button("自定义显示内容…", action: onCustomize)
+            }
+        }
         Section("网格尺寸") {
             ForEach(sizeOptions.presets) { preset in
                 Button { onSetSize(preset.size.preferredWidth, preset.size.preferredHeight) } label: {

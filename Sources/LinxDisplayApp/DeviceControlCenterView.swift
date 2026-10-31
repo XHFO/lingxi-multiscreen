@@ -28,6 +28,7 @@ struct DeviceControlCenterView: View {
     @State private var groupFrames: [String: CGRect] = [:]
     @State private var dropGroupKey: String?
     @State private var groupEditor: ControlCenterGroupEditorRequest?
+    @State private var customizingSource: DeviceControlCenterDataSource?
     @State private var showsCardPicker = false
     @State private var addsDeviceAfterPickerDismiss = false
     @State private var sourcePreviewDemandID = UUID()
@@ -95,7 +96,10 @@ struct DeviceControlCenterView: View {
         }
         .task(id: isActive) {
             registerSourcePreviewDemand()
-            if isActive { refreshPreviews() }
+            if isActive {
+                refreshPreviews()
+                await model.refreshControlCenterSoftwareDataIfNeeded()
+            }
         }
         .onReceive(refresh) { _ in if isActive { refreshPreviews() } }
         .onChange(of: screens) { _ in registerSourcePreviewDemand(); updateViewportDevices(); refreshPreviews() }
@@ -120,6 +124,10 @@ struct DeviceControlCenterView: View {
                     addsDeviceAfterPickerDismiss = true
                     showsCardPicker = false
                 }, onClose: { showsCardPicker = false })
+                .controlCenterFloatingPresentationSurface()
+        }
+        .sheet(item: $customizingSource) { source in
+            ControlCenterSoftwareSettingsView(model: model, source: source)
                 .controlCenterFloatingPresentationSurface()
         }
         .sheet(item: $groupEditor) { request in
@@ -231,7 +239,12 @@ struct DeviceControlCenterView: View {
                     ControlCenterFlowLayout {
                         ForEach(ids, id: \.self) { id in
                             if let item = cards[id] {
-                                editableCard(id: id, title: item.title, section: ids, sizeOptions: sizeOptions(for: item)) { height in
+                                let customize: (() -> Void)? = {
+                                    guard case .source(let source) = item, source.kind == .software else { return nil }
+                                    return { customizingSource = source }
+                                }()
+                                editableCard(id: id, title: item.title, section: ids,
+                                             sizeOptions: sizeOptions(for: item), onCustomize: customize) { height in
                                     switch item {
                                     case .device(let device):
                                         DeviceControlCenterCard(device: device, preview: previews[device.id], height: height,
@@ -251,6 +264,9 @@ struct DeviceControlCenterView: View {
                                                 action: { onOpenDataSource(source.destination) })
                                         } else if source.kind == .weather {
                                             ControlCenterWeatherCard(model: model, source: source, height: height,
+                                                action: { onOpenDataSource(source.destination) })
+                                        } else if source.kind == .software {
+                                            ControlCenterSoftwareCard(model: model, source: source, height: height,
                                                 action: { onOpenDataSource(source.destination) })
                                         }
                                     }
@@ -286,6 +302,7 @@ struct DeviceControlCenterView: View {
     }
     private func editableCard<Content: View>(id: String, title: String, section: [String],
                                              sizeOptions: ControlCenterCardSizeOptions,
+                                             onCustomize: (() -> Void)? = nil,
                                              @ViewBuilder content: @escaping (CGFloat) -> Content) -> some View {
         let order = layout.orderedIDs(for: section)
         let index = order.firstIndex(of: id) ?? 0
@@ -302,6 +319,7 @@ struct DeviceControlCenterView: View {
             onNewGroup: { groupEditor = .init(groupID: nil, title: "", cardID: id) },
             onRemove: { model.settings.controlCenterLayout.setCardVisible(false, for: id); clearGesture() },
             sizeOptions: sizeOptions,
+            onCustomize: onCustomize,
             content: content)
             .zIndex(draggedID == id ? 1 : 0)
     }

@@ -101,6 +101,11 @@ public final class AppSettings: ObservableObject {
     @Published public var controlCenterLayout = DeviceControlCenterLayout() {
         didSet { onControlCenterLayoutChange() }
     }
+    /// 中控软件卡片各自选择的显示字段，键为 DisplayMode.rawValue，值为字段 rawValue 数组。
+    /// 没有键 = 使用该卡片的默认字段；空数组 = 只显示标题与状态。
+    @Published public var controlCenterSoftwareFields: [String: [String]] = [:] {
+        didSet { onChange() }
+    }
     @Published public var backgroundTone: BackgroundTone = .system {
         didSet { onChange() }
     }
@@ -988,6 +993,19 @@ public final class AppSettings: ObservableObject {
         return seeded
     }
 
+    /// 中控软件卡片选择的内容字段；nil 表示尚未自定义，调用方使用默认字段。
+    public func controlCenterSoftwareFieldIDs(for mode: DisplayMode) -> [String]? {
+        controlCenterSoftwareFields[String(mode.rawValue)]
+    }
+
+    public func setControlCenterSoftwareFieldIDs(_ ids: [String], for mode: DisplayMode) {
+        controlCenterSoftwareFields[String(mode.rawValue)] = ids
+    }
+
+    public func clearControlCenterSoftwareFieldIDs(for mode: DisplayMode) {
+        controlCenterSoftwareFields.removeValue(forKey: String(mode.rawValue))
+    }
+
     /// 各模块的自适应默认边距：内容厚重/需要呼吸的模块给更大间距，
     /// 纯文字紧凑模块给最小间距；用户手动设置过则覆盖默认值
     public func defaultCanvasMargin(for module: CanvasModule) -> Int {
@@ -1332,7 +1350,7 @@ public final class AppSettings: ObservableObject {
              excerptAutoPushEnabled, excerptAutoPushMinutes,
              excerptBoardRotationEnabled, excerptBoardRotationMinutes,
              cardRotationEnabled, cardRotationMinutes, cardRotationModes,
-             sidebarOrder, keyboardCardPanels, sidebarWidth, controlCenterLayout,
+             sidebarOrder, keyboardCardPanels, sidebarWidth, controlCenterLayout, controlCenterSoftwareFields,
              dotApiKey, dotDeviceId, rand0IP, rand0ButtonTarget, rand0ButtonTargetDeviceID,
              devices, menuBarKeyboardDeviceID, lastUpdateCheckAt, activeKeyboardDeviceID, activeOracleDeviceID, activeExcerptDeviceID, activeHomeAssistantDeviceID, activeBambuLabDeviceID, activeFormlabsDeviceID, activeAIMacScreenDeviceID, activeC6ScreenDeviceID, activeAWTRIXDeviceID, activeM5ControllerDeviceID, activeReadPicoDeviceID,
              oracleCanvasModules, excerptCanvasModules,
@@ -1493,6 +1511,7 @@ public final class AppSettings: ObservableObject {
         try container.encodeIfPresent(keyboardCardPanels, forKey: .keyboardCardPanels)
         try container.encode(sidebarWidth, forKey: .sidebarWidth)
         try container.encode(controlCenterLayout, forKey: .controlCenterLayout)
+        try container.encode(controlCenterSoftwareFields, forKey: .controlCenterSoftwareFields)
         try container.encode(dotApiKey, forKey: .dotApiKey)
         try container.encode(dotDeviceId, forKey: .dotDeviceId)
         try container.encode(rand0IP, forKey: .rand0IP)
@@ -1747,6 +1766,7 @@ extension AppSettings: Codable {
         cardRotationModes = try container.decodeIfPresent([Int].self, forKey: .cardRotationModes) ?? cardRotationModes
         sidebarWidth = try container.decodeIfPresent(Int.self, forKey: .sidebarWidth) ?? sidebarWidth
         controlCenterLayout = (try? container.decode(DeviceControlCenterLayout.self, forKey: .controlCenterLayout)) ?? DeviceControlCenterLayout()
+        controlCenterSoftwareFields = (try? container.decode([String: [String]].self, forKey: .controlCenterSoftwareFields)) ?? [:]
         dotApiKey = try container.decodeIfPresent(String.self, forKey: .dotApiKey) ?? dotApiKey
         dotDeviceId = try container.decodeIfPresent(String.self, forKey: .dotDeviceId) ?? dotDeviceId
         rand0IP = try container.decodeIfPresent(String.self, forKey: .rand0IP) ?? rand0IP

@@ -7244,6 +7244,12 @@ public func setClockTimeFormat(_ format: String) {
         return outcome.failures
     }
 
+    /// 中控面板出现软件卡片时按统一周期补充一次用量缓存；不触发设备推送。
+    public func refreshControlCenterSoftwareDataIfNeeded() async {
+        guard isQuotaDataStale(now: Date()) else { return }
+        _ = await refreshUsageAndQuota()
+    }
+
     /// 立即刷新 DeepSeek 官方余额与平台用量（设置页按钮）。
     public func refreshDeepSeek() async {
         let failures = await refreshUsageAndQuota()

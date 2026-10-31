@@ -1703,6 +1703,15 @@ struct SettingsView: View {
 
     private func openControlCenterDataSource(_ destination: DeviceControlCenterDataSource.Destination) {
         if case let .managedDevice(id) = destination { openFloatingControlCenterDevice(id, nil); return }
+        if case let .software(mode) = destination {
+            guard let panel = Panel.from(displayMode: mode) else { return }
+            requestPicoNavigation {
+                clearFloatingControlCenterDevice()
+                controlCenterDataSource = nil
+                selected = panel
+            }
+            return
+        }
         requestPicoNavigation {
             if destination == .nowPlaying {
                 clearFloatingControlCenterDevice()

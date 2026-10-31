@@ -128,9 +128,13 @@ func testDeepSeek() async throws {
     var settings = AppSettings()
     settings.deepSeekAPIKey = "sk-test-deepseek"
     settings.deepSeekPlatformToken = "platform-token"
+    settings.setControlCenterSoftwareFieldIDs(["deepSeekBalance", "deepSeekTodayCost"], for: .deepSeek)
     let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
     checkEqual(restored.deepSeekAPIKey, "sk-test-deepseek", "DeepSeek API Key 设置往返")
     checkEqual(restored.deepSeekPlatformToken, "platform-token", "平台会话令牌设置往返")
+    checkEqual(restored.controlCenterSoftwareFieldIDs(for: .deepSeek),
+               ["deepSeekBalance", "deepSeekTodayCost"], "中控软件卡片字段设置往返")
+    checkEqual(restored.controlCenterSoftwareFieldIDs(for: .codex), nil, "未自定义的卡片使用默认字段")
 
     let card = try ScreenRenderer.renderDeepSeek(snapshot, settings: settings, now: now)
     checkEqual(card.image.width, ScreenRenderer.width, "DeepSeek 键盘卡片宽度")
