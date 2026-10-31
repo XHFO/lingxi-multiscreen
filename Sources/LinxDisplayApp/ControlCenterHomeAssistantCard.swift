@@ -28,7 +28,6 @@ struct ControlCenterHomeAssistantCard: View {
         GeometryReader { geometry in
             let compact = geometry.size.width < 340 || geometry.size.height < 310
             let inset: CGFloat = compact ? 14 : 22
-            let columns = geometry.size.width - inset * 2 >= 440 ? 2 : 1
             let gap: CGFloat = compact ? 8 : 10
             VStack(alignment: .leading, spacing: compact ? 10 : 14) {
                 HStack(spacing: compact ? 8 : 10) {
@@ -64,9 +63,12 @@ struct ControlCenterHomeAssistantCard: View {
                                 climateSensorsTile(context.selectedEntityIDs.filter { sensorIDs.contains($0) },
                                                    context: context, compact: compact)
                             }
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: gap), count: columns), spacing: gap) {
+                            HAEntityFlowLayout(tileHeight: compact ? 156 : 170, gap: gap) {
                                 ForEach(context.selectedEntityIDs.filter { !sensorIDs.contains($0) }, id: \.self) { id in
                                     entityTile(id, context: context, compact: compact)
+                                        .layoutValue(key: HAEntityTileSpanKey.self,
+                                                     value: tileSpan(id, context: context,
+                                                                     forceFull: geometry.size.width < 560))
                                 }
                             }
                         }.padding(.trailing, 2)
@@ -137,6 +139,13 @@ struct ControlCenterHomeAssistantCard: View {
             return reading.confirmed
         }
         return baseline
+    }
+
+    private func tileSpan(_ id: String, context: ControlCenterHAContext, forceFull: Bool) -> Int {
+        if forceFull { return 2 }
+        if context.wideEntityIDs.contains(id) { return 2 }
+        if displayedEntity(id, context: context)?.isClimate == true { return 2 }
+        return 1
     }
 
     private func climateSensorsTile(_ ids: [String], context: ControlCenterHAContext,
@@ -482,6 +491,7 @@ private struct ControlCenterHAEntityEditor: View {
     let onClose: () -> Void
     @State private var fingerprint = ""
     @State private var selected: [String] = []
+    @State private var wide: Set<String> = []
     @State private var keyword = ""
     @State private var filter = 0
     @State private var error: String?
@@ -524,6 +534,10 @@ private struct ControlCenterHAEntityEditor: View {
                 Text("温度与湿度传感器会合并到同一张温湿度卡中显示；可多选。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if filter == 2 {
+                Text("「半宽」两两并排，单独一行时自动铺满；点按钮可切换为「整行」。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if candidates.isEmpty {
                 ContentUnavailableView {
                     Label("暂无匹配实体", systemImage: "magnifyingglass")
@@ -534,8 +548,13 @@ private struct ControlCenterHAEntityEditor: View {
                 List(candidates, id: \.entityId) { entity in
                     HStack(spacing: 10) {
                         Toggle(isOn: Binding(get: { selected.contains(entity.entityId) }, set: { enabled in
-                            if enabled { selected.append(entity.entityId) }
-                            else { selected.removeAll { $0 == entity.entityId } }
+                            if enabled {
+                                selected.append(entity.entityId)
+                                if entity.isClimate { wide.insert(entity.entityId) }
+                            } else {
+                                selected.removeAll { $0 == entity.entityId }
+                                wide.remove(entity.entityId)
+                            }
                         })) {
                             HStack(spacing: 10) {
                                 Image(systemName: SFIconMapper.symbol(for: entity)).frame(width: 22)
@@ -548,6 +567,13 @@ private struct ControlCenterHAEntityEditor: View {
                             }
                         }.toggleStyle(.checkbox)
                         if filter == 2, let index = selected.firstIndex(of: entity.entityId) {
+                            Button(wide.contains(entity.entityId) ? "整行" : "半宽") {
+                                if wide.contains(entity.entityId) { wide.remove(entity.entityId) }
+                                else { wide.insert(entity.entityId) }
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .help(String(localized: "切换半宽/整行；半宽两两并排，单独一行时自动铺满"))
                             VStack(spacing: 2) {
                                 Button { selected.swapAt(index, index - 1) } label: { Image(systemName: "chevron.up") }
                                     .disabled(index == 0).help(String(localized: "向前移动"))
@@ -563,11 +589,12 @@ private struct ControlCenterHAEntityEditor: View {
                 Text("连接已变更，请重新选择实体。").font(.caption).foregroundStyle(.orange)
             }
             HStack {
-                Button("清除选择") { selected = [] }.disabled(selected.isEmpty)
+                Button("清除选择") { selected = []; wide = [] }.disabled(selected.isEmpty)
                 Spacer()
                 Button("取消", action: onClose).keyboardShortcut(.cancelAction)
                 Button("完成") {
-                    guard model.setControlCenterHASelection(source: source, expectedFingerprint: fingerprint, entityIDs: selected) else {
+                    guard model.setControlCenterHASelection(source: source, expectedFingerprint: fingerprint,
+                                                             entityIDs: selected, wideEntityIDs: Array(wide)) else {
                         error = String(localized: "连接已变更，请重新选择实体。")
                         return
                     }
@@ -580,6 +607,11 @@ private struct ControlCenterHAEntityEditor: View {
         .onAppear {
             fingerprint = context?.fingerprint ?? ""
             selected = context?.selectedEntityIDs ?? []
+            var initialWide = Set(context?.wideEntityIDs ?? [])
+            for id in selected where context?.entities.first(where: { $0.entityId == id })?.isClimate == true {
+                initialWide.insert(id)
+            }
+            wide = initialWide
         }
     }
 }
@@ -589,6 +621,7 @@ struct ControlCenterHAContext {
     let fingerprint: String
     let entities: [HAEntity]
     let selectedEntityIDs: [String]
+    let wideEntityIDs: [String]
     let error: String?
 }
 
@@ -637,11 +670,15 @@ extension AppModel {
         return ControlCenterHAContext(sourceID: id, fingerprint: connection.fingerprint,
             entities: existingHASourceEntities(for: id) ?? [],
             selectedEntityIDs: settings.controlCenterLayout.homeAssistantEntityIDs(for: source.id,
-                connectionFingerprint: connection.fingerprint), error: controlCenterHAPreviewError(for: id))
+                connectionFingerprint: connection.fingerprint),
+            wideEntityIDs: settings.controlCenterLayout.homeAssistantWideEntityIDs(for: source.id,
+                connectionFingerprint: connection.fingerprint),
+            error: controlCenterHAPreviewError(for: id))
     }
 
     @MainActor func setControlCenterHASelection(source: DeviceControlCenterDataSource,
-                                               expectedFingerprint: String, entityIDs: [String]) -> Bool {
+                                               expectedFingerprint: String, entityIDs: [String],
+                                               wideEntityIDs: [String] = []) -> Bool {
         guard let context = controlCenterHAContext(for: source), context.fingerprint == expectedFingerprint else { return false }
         let known = Set(context.entities.map(\.entityId))
         // Existing unavailable selections can be removed or retained, but arbitrary
@@ -649,7 +686,8 @@ extension AppModel {
         let allowed = known.union(context.selectedEntityIDs)
         guard entityIDs.allSatisfy({ allowed.contains($0) }) else { return false }
         var layout = settings.controlCenterLayout
-        _ = layout.setHomeAssistantEntities(for: source.id, connectionFingerprint: expectedFingerprint, entityIDs: entityIDs)
+        _ = layout.setHomeAssistantEntities(for: source.id, connectionFingerprint: expectedFingerprint,
+                                            entityIDs: entityIDs, wideEntityIDs: wideEntityIDs)
         settings.controlCenterLayout = layout
         return true
     }

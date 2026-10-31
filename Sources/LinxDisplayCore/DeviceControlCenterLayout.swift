@@ -142,10 +142,16 @@ public struct DeviceControlCenterLayout: Codable, Equatable, Sendable {
         return saved.entityIDs
     }
 
+    public func homeAssistantWideEntityIDs(for sourceID: String, connectionFingerprint: String) -> [String] {
+        guard let saved = homeAssistantSelections[sourceID], saved.connectionFingerprint == connectionFingerprint else { return [] }
+        return saved.wideEntityIDs
+    }
+
     @discardableResult public mutating func setHomeAssistantEntities(for sourceID: String,
-            connectionFingerprint: String, entityIDs: [String]) -> Bool {
+            connectionFingerprint: String, entityIDs: [String], wideEntityIDs: [String] = []) -> Bool {
         guard !sourceID.isEmpty, !connectionFingerprint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        let selection = ControlCenterHASelection(connectionFingerprint: connectionFingerprint, entityIDs: entityIDs)
+        let selection = ControlCenterHASelection(connectionFingerprint: connectionFingerprint,
+                                                 entityIDs: entityIDs, wideEntityIDs: wideEntityIDs)
         guard homeAssistantSelections[sourceID] != selection else { return false }
         homeAssistantSelections[sourceID] = selection
         return true

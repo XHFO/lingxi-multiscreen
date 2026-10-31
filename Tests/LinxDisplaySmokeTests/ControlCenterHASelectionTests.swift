@@ -3,16 +3,20 @@ import LinxDisplayCore
 
 func testControlCenterHASelectionPolicy() {
     let selection = ControlCenterHASelection(connectionFingerprint: "source-a",
-        entityIDs: [" light.desk ", "", "switch.fan", "light.desk", "\n"])
+        entityIDs: [" light.desk ", "", "switch.fan", "light.desk", "\n"],
+        wideEntityIDs: ["light.desk", "missing.entity", "light.desk"])
     checkEqual(selection.entityIDs, ["light.desk", "switch.fan"], "中控HA选择去空去重保留用户顺序")
+    checkEqual(selection.wideEntityIDs, ["light.desk"], "整行实体只保留已选中的去重ID")
     checkEqual(ControlCenterHASelection(connectionFingerprint: "source-a", entityIDs: []).entityIDs, [],
                "空选择保持空，不自动选择前几个实体")
     let encoded = try! JSONEncoder().encode(selection)
     checkEqual(try! JSONDecoder().decode(ControlCenterHASelection.self, from: encoded), selection,
                "独立中控选择与来源指纹完整往返")
     let legacy = Data(#"{"connectionFingerprint":"a","entityIDs":[" light.desk ","light.desk",""]}"#.utf8)
-    checkEqual(try! JSONDecoder().decode(ControlCenterHASelection.self, from: legacy).entityIDs, ["light.desk"],
+    let legacyDecoded = try! JSONDecoder().decode(ControlCenterHASelection.self, from: legacy)
+    checkEqual(legacyDecoded.entityIDs, ["light.desk"],
                "存档读取同样归一化，避免重复实体行")
+    checkEqual(legacyDecoded.wideEntityIDs, [], "旧存档缺少整行字段时默认为半宽")
     checkEqual(ControlCenterHAControlPolicy.supportedDomains,
                Set(["light", "switch", "fan", "input_boolean", "climate"]),
                "中控提供显式控制白名单，含空调电源")

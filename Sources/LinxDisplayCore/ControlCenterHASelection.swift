@@ -5,21 +5,31 @@ import Foundation
 public struct ControlCenterHASelection: Codable, Equatable, Sendable {
     public let connectionFingerprint: String
     public let entityIDs: [String]
+    /// 用户指定为整行宽度的实体；其余实体使用半宽（单独一行时自动铺满）。
+    public let wideEntityIDs: [String]
 
-    public init(connectionFingerprint: String, entityIDs: [String]) {
+    public init(connectionFingerprint: String, entityIDs: [String],
+                wideEntityIDs: [String] = []) {
         self.connectionFingerprint = connectionFingerprint
         var seen = Set<String>()
         self.entityIDs = entityIDs.compactMap { raw in
             let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             return !id.isEmpty && seen.insert(id).inserted ? id : nil
         }
+        let allowed = Set(self.entityIDs)
+        var wideSeen = Set<String>()
+        self.wideEntityIDs = wideEntityIDs.compactMap { raw in
+            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return allowed.contains(id) && wideSeen.insert(id).inserted ? id : nil
+        }
     }
 
-    private enum CodingKeys: String, CodingKey { case connectionFingerprint, entityIDs }
+    private enum CodingKeys: String, CodingKey { case connectionFingerprint, entityIDs, wideEntityIDs }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(connectionFingerprint: try values.decode(String.self, forKey: .connectionFingerprint),
-                  entityIDs: try values.decode([String].self, forKey: .entityIDs))
+                  entityIDs: try values.decode([String].self, forKey: .entityIDs),
+                  wideEntityIDs: try values.decodeIfPresent([String].self, forKey: .wideEntityIDs) ?? [])
     }
 }
 
