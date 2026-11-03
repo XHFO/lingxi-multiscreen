@@ -464,6 +464,7 @@ public final class AppModel: ObservableObject {
     @Published public var xiaomiDevices: [XiaomiDevice] = []
     @Published public var xiaomiBusy = false
     @Published public var xiaomiStatus = ""
+    @Published public var xiaomiLoginURL: URL?
     @Published public var aiStatusAuto: AIStatusEntry?
     @Published public var aiStatusHookEntries: [AIStatusEntry] = []
     private var aiStatusTask: Task<Void, Never>?
@@ -7339,24 +7340,30 @@ public func setClockTimeFormat(_ format: String) {
             xiaomiStatus = "无法生成小米登录地址。"
             return
         }
-        NSWorkspace.shared.open(url)
-        xiaomiStatus = "浏览器登录后，把地址栏中的完整回调地址粘贴到下方并点「完成登录」。"
+        xiaomiLoginURL = url
+        xiaomiStatus = "请在内嵌窗口完成小米登录。"
     }
 
-    public func completeXiaomiLogin(callback: String) async {
+    public func cancelXiaomiLogin() {
+        xiaomiLoginURL = nil
+        xiaomiStatus = ""
+    }
+
+    public func completeXiaomiLogin(code: String) async {
         guard !xiaomiBusy else { return }
         xiaomiBusy = true
         defer { xiaomiBusy = false }
         let region = xiaomiRegion
         let deviceID = xiaomiLoginDeviceID ?? "ha." + UUID().uuidString
         do {
-            let account = try await XiaomiOAuthLogin.complete(callback: callback,
+            let account = try await XiaomiOAuthLogin.complete(code: code,
                                                               region: region, deviceID: deviceID)
             guard XiaomiAccountStore.save(account) else {
                 xiaomiStatus = "无法保存小米登录凭据。"
                 return
             }
             xiaomiAccount = account
+            xiaomiLoginURL = nil
             xiaomiBusy = false
             await refreshXiaomiDevices()
         } catch {

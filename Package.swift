@@ -24,7 +24,8 @@ let package = Package(
         .executableTarget(
             name: "LinxDisplayApp",
             dependencies: ["LinxDisplayCore"],
-            path: "Sources/LinxDisplayApp"
+            path: "Sources/LinxDisplayApp",
+            linkerSettings: [.linkedFramework("WebKit")]
         ),
         .executableTarget(
             name: "LinxDisplaySmokeTests",

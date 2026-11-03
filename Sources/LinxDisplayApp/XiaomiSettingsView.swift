@@ -6,7 +6,6 @@ import LinxDisplayCore
 struct XiaomiSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var settings: AppSettings
-    @State private var callbackURL = ""
 
     init(model: AppModel) {
         self.model = model
@@ -46,16 +45,8 @@ struct XiaomiSettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.xiaomiBusy)
-                    Text("小米只接受 homeassistant.local 回调。浏览器登录后，把地址栏里的完整地址粘贴到下面。")
+                    Text("在软件内嵌的小米登录页完成授权，不需要复制回调地址或运行 Home Assistant。")
                         .font(.caption).foregroundStyle(.secondary)
-                    TextField("回调地址（https://…?code=…）", text: $callbackURL)
-                    Button("完成登录") {
-                        Task {
-                            await model.completeXiaomiLogin(callback: callbackURL)
-                            if model.xiaomiAccount != nil { callbackURL = "" }
-                        }
-                    }
-                    .disabled(model.xiaomiBusy || callbackURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 if !model.xiaomiStatus.isEmpty {
                     Text(model.xiaomiStatus).font(.caption).foregroundStyle(.secondary)
@@ -112,6 +103,17 @@ struct XiaomiSettingsView: View {
         .task {
             if model.xiaomiAccount != nil, model.xiaomiDevices.isEmpty {
                 await model.refreshXiaomiDevices()
+            }
+        }
+        .sheet(isPresented: Binding(get: { model.xiaomiLoginURL != nil },
+                                    set: { if !$0 { model.cancelXiaomiLogin() } })) {
+            if let url = model.xiaomiLoginURL {
+                XiaomiLoginSheet(url: url,
+                                 onCode: { code in
+                                     Task { await model.completeXiaomiLogin(code: code) }
+                                 },
+                                 onCancel: { model.cancelXiaomiLogin() })
+                    .controlCenterFloatingPresentationSurface()
             }
         }
     }
