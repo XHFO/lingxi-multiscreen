@@ -61,20 +61,6 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        let script = """
-        (function(){
-          window.open = function(u){ if(u){ window.location.href = u; } return null; };
-          document.addEventListener('click', function(e){
-            var a = e.target && e.target.closest ? e.target.closest('a') : null;
-            if (a && a.target && a.target.toLowerCase() === '_blank') { a.target = '_self'; }
-          }, true);
-          document.addEventListener('submit', function(e){
-            try { e.target.target = '_self'; } catch (_) {}
-          }, true);
-        })();
-        """
-        configuration.userContentController.addUserScript(
-            WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -89,6 +75,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let parent: XiaomiLoginWebView
+        var popups: [WKWebView] = []
         init(_ parent: XiaomiLoginWebView) { self.parent = parent }
 
         private func handleRedirect(_ url: URL?) -> Bool {
@@ -133,10 +120,24 @@ struct XiaomiLoginWebView: NSViewRepresentable {
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let target = navigationAction.request.url, handleRedirect(target) { return nil }
-            if navigationAction.targetFrame == nil {
-                webView.load(navigationAction.request)
+            // 必须返回真实 WKWebView：小米授权页会 window.open('', '_blank') 后把表单
+            // 提交到该窗口。返回 nil 或手动 load 都会丢失 POST/窗口上下文，表现为点击无响应。
+            let popup = WKWebView(frame: webView.frame, configuration: configuration)
+            popup.navigationDelegate = self
+            popup.uiDelegate = self
+            popups.append(popup)
+            // 如果小米在新窗口里显示授权/二次确认页，把它覆盖在当前登录页上，用户仍可操作。
+            if let container = webView.superview {
+                popup.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(popup)
+                NSLayoutConstraint.activate([
+                    popup.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
+                    popup.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
+                    popup.topAnchor.constraint(equalTo: webView.topAnchor),
+                    popup.bottomAnchor.constraint(equalTo: webView.bottomAnchor)
+                ])
             }
-            return nil
+            return popup
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
