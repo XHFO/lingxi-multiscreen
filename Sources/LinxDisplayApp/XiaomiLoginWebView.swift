@@ -9,17 +9,25 @@ final class XiaomiWebController: ObservableObject {
         let js = """
         (function(){
           var texts = ['确认授权','授权登录','同意授权','确认登录'];
-          var nodes = Array.prototype.slice.call(document.querySelectorAll('button,a,[role=button],div,span'));
+          function fire(el) {
+            ['mousedown','mouseup','click'].forEach(function(t){
+              try { el.dispatchEvent(new MouseEvent(t, {bubbles:true, cancelable:true, view:window})); } catch(_) {}
+            });
+            try { if (typeof el.onclick === 'function') el.onclick(); } catch(_) {}
+          }
+          var nodes = Array.prototype.slice.call(document.querySelectorAll('button,a,[role=button],div,span,input'));
           for (var i = 0; i < nodes.length; i++) {
             var n = nodes[i];
-            var t = (n.textContent || '').replace(/\\s+/g,'');
+            var t = (n.textContent || n.value || '').replace(/\\s+/g,'');
             for (var j = 0; j < texts.length; j++) {
               if (t === texts[j] || (t.indexOf(texts[j]) >= 0 && t.length < 20)) {
-                n.click();
+                fire(n);
                 return 'clicked:' + n.tagName + ':' + texts[j];
               }
             }
           }
+          var forms = document.forms;
+          if (forms && forms.length > 0) { forms[0].submit(); return 'submitted-form:' + forms.length; }
           return 'not-found';
         })();
         """
