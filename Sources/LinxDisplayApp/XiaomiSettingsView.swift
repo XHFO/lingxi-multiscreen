@@ -40,9 +40,13 @@ struct XiaomiSettingsView: View {
                             .disabled(model.xiaomiBusy)
                     }
                 } else {
-                    Button(model.xiaomiBusy ? "正在登录…" : "扫码登录小米账号") {
-                        model.startXiaomiQRLogin()
+                    Button(model.xiaomiBusy ? "正在登录…" : "在 Safari 中登录小米账号") {
+                        Task { await model.loginXiaomiBrowser() }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.xiaomiBusy)
+                    Button("改用扫码登录") { model.startXiaomiQRLogin() }
+                        .disabled(model.xiaomiBusy)
                     .buttonStyle(.borderedProminent)
                     .disabled(model.xiaomiBusy)
                     Text("在软件内嵌的小米登录页完成授权，不需要复制回调地址或运行 Home Assistant。")

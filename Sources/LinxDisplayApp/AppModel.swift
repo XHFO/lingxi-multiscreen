@@ -7336,6 +7336,27 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     /// 小米扫码登录：不经过授权按钮。二维码确认后自动完成 OAuth 并换取 token。
+    public func loginXiaomiBrowser() async {
+        guard !xiaomiBusy else { return }
+        xiaomiBusy = true
+        xiaomiStatus = "请在 Safari 中完成小米登录，授权后软件会自动继续…"
+        defer { xiaomiBusy = false }
+        let region = xiaomiRegion
+        let deviceID = "ha." + UUID().uuidString
+        do {
+            let account = try await XiaomiBrowserLogin.login(region: region, deviceID: deviceID)
+            guard XiaomiAccountStore.save(account) else {
+                xiaomiStatus = "无法保存小米登录凭据。"
+                return
+            }
+            xiaomiAccount = account
+            xiaomiBusy = false
+            await refreshXiaomiDevices()
+        } catch {
+            xiaomiStatus = error.localizedDescription
+        }
+    }
+
     public func startXiaomiQRLogin() {
         xiaomiQRTask?.cancel()
         xiaomiQRSheet = true
