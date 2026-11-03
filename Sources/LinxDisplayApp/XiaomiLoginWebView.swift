@@ -9,6 +9,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
     let onCode: (String) -> Void
     let onCancel: () -> Void
     let onError: (String) -> Void
+    let onURLChange: (URL?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -16,6 +17,17 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let script = """
+        (function(){
+          window.open = function(u){ if(u){ window.location.href = u; } return null; };
+          document.addEventListener('click', function(e){
+            var a = e.target && e.target.closest ? e.target.closest('a') : null;
+            if (a && a.target && a.target.toLowerCase() === '_blank') { a.target = '_self'; }
+          }, true);
+        })();
+        """
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -54,10 +66,16 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            parent.onURLChange(webView.url)
             if handleRedirect(webView.url) { webView.stopLoading() }
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            parent.onURLChange(webView.url)
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            parent.onURLChange(webView.url)
             if handleRedirect(webView.url) { webView.stopLoading() }
         }
 
@@ -84,6 +102,7 @@ struct XiaomiLoginSheet: View {
     let onCode: (String) -> Void
     let onCancel: () -> Void
     @State private var message = ""
+    @State private var currentURL: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -96,10 +115,28 @@ struct XiaomiLoginSheet: View {
             XiaomiLoginWebView(url: url,
                                redirectPrefix: XiaomiOAuthLogin.redirectURL,
                                onCode: onCode, onCancel: onCancel,
-                               onError: { message = $0 })
-            if !message.isEmpty {
-                Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.top, 8)
+                               onError: { message = $0 },
+                               onURLChange: { currentURL = $0 })
+            if let currentURL {
+                Text(currentURL.absoluteString)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .lineLimit(2).textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.top, 6)
             }
+            if !message.isEmpty {
+                Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.top, 4)
+            }
+            HStack {
+                Button("我已完成授权") {
+                    if let currentURL, let code = XiaomiOAuthLogin.code(from: currentURL) {
+                        onCode(code)
+                    } else {
+                        message = "当前页面还没有回调 code，请先完成小米授权。"
+                    }
+                }
+                .disabled(currentURL == nil)
+                Spacer()
+            }.padding(.horizontal, 12).padding(.top, 6)
             Divider()
             Text("登录完成后窗口会自动关闭；授权信息只保存在本机加密凭据中。")
                 .font(.caption).foregroundStyle(.secondary).padding(12)
