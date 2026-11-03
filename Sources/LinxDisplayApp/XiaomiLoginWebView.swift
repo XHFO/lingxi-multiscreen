@@ -1,9 +1,45 @@
 import SwiftUI
 import WebKit
 
+final class XiaomiWebController: ObservableObject {
+    weak var webView: WKWebView?
+    @Published var message = ""
+
+    func clickAuthorize() {
+        let js = """
+        (function(){
+          var texts = ['确认授权','授权登录','同意授权','确认登录'];
+          var nodes = Array.prototype.slice.call(document.querySelectorAll('button,a,[role=button],div,span'));
+          for (var i = 0; i < nodes.length; i++) {
+            var n = nodes[i];
+            var t = (n.textContent || '').replace(/\\s+/g,'');
+            for (var j = 0; j < texts.length; j++) {
+              if (t === texts[j] || (t.indexOf(texts[j]) >= 0 && t.length < 20)) {
+                n.click();
+                return 'clicked:' + n.tagName + ':' + texts[j];
+              }
+            }
+          }
+          return 'not-found';
+        })();
+        """
+        webView?.evaluateJavaScript(js) { [weak self] result, error in
+            DispatchQueue.main.async {
+                if let error { self?.message = "自动点击失败：\(error.localizedDescription)" }
+                else if let text = result as? String, text.hasPrefix("clicked:") {
+                    self?.message = "已触发授权按钮，请稍候…"
+                } else {
+                    self?.message = "没有找到授权按钮，请手动点击页面中的「确认授权」。"
+                }
+            }
+        }
+    }
+}
+
 /// 在应用内打开小米 OAuth 登录页。导航到 accepted 回调地址时直接截获 code，
 /// 不真正访问 homeassistant.local，因此不需要 Home Assistant 或复制粘贴。
 struct XiaomiLoginWebView: NSViewRepresentable {
+    let controller: XiaomiWebController
     let url: URL
     let redirectPrefix: String
     let onCode: (String) -> Void
@@ -24,6 +60,9 @@ struct XiaomiLoginWebView: NSViewRepresentable {
             var a = e.target && e.target.closest ? e.target.closest('a') : null;
             if (a && a.target && a.target.toLowerCase() === '_blank') { a.target = '_self'; }
           }, true);
+          document.addEventListener('submit', function(e){
+            try { e.target.target = '_self'; } catch (_) {}
+          }, true);
         })();
         """
         configuration.userContentController.addUserScript(
@@ -33,6 +72,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
         webView.allowsBackForwardNavigationGestures = true
+        controller.webView = webView
         webView.load(URLRequest(url: url))
         return webView
     }
@@ -103,6 +143,7 @@ struct XiaomiLoginSheet: View {
     let onCancel: () -> Void
     @State private var message = ""
     @State private var currentURL: URL?
+    @StateObject private var controller = XiaomiWebController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -112,7 +153,7 @@ struct XiaomiLoginSheet: View {
                 Button("取消", action: onCancel).keyboardShortcut(.cancelAction)
             }.padding(16)
             Divider()
-            XiaomiLoginWebView(url: url,
+            XiaomiLoginWebView(controller: controller, url: url,
                                redirectPrefix: XiaomiOAuthLogin.redirectURL,
                                onCode: onCode, onCancel: onCancel,
                                onError: { message = $0 },
@@ -126,7 +167,11 @@ struct XiaomiLoginSheet: View {
             if !message.isEmpty {
                 Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.top, 4)
             }
+            if !controller.message.isEmpty {
+                Text(controller.message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 2)
+            }
             HStack {
+                Button("自动点击确认授权") { controller.clickAuthorize() }
                 Button("我已完成授权") {
                     if let currentURL, let code = XiaomiOAuthLogin.code(from: currentURL) {
                         onCode(code)
