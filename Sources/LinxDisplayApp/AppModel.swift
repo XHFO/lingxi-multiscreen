@@ -151,6 +151,7 @@ public final class AppModel: ObservableObject {
     private let quotaClient = QwenWorkQuotaClient()
     private let grokBotClient = GrokBotUsageClient()
     private let deepSeekClient = DeepSeekUsageClient()
+    private let xiaomiClient = XiaomiCloudClient()
     private let nowPlayingClient = NowPlayingClient()
     private let nowPlayingControlClient = NowPlayingControlClient()
     private let lyricsClient = LyricsClient()
@@ -459,6 +460,10 @@ public final class AppModel: ObservableObject {
     @Published public var qwenQuota: QwenWorkQuota = .unavailable
     @Published public var grokBotUsage: GrokBotUsageSnapshot = .notConfigured
     @Published public var deepSeekUsage: DeepSeekUsageSnapshot = .notConfigured
+    @Published public var xiaomiAccount: XiaomiAccount? = XiaomiAccountStore.load()
+    @Published public var xiaomiDevices: [XiaomiDevice] = []
+    @Published public var xiaomiBusy = false
+    @Published public var xiaomiStatus = ""
     @Published public var cloudflareBusy = false
     @Published public var cloudflareStatus = ""
     var cloudflareLastAttempt: Date?
@@ -7256,6 +7261,84 @@ public func setClockTimeFormat(_ format: String) {
         renderPreview()
         lastRefresh = "最后刷新：\(Self.formatNow())"
         status = failures.isEmpty ? "DeepSeek 数据已刷新" : failures.joined(separator: "；")
+    }
+
+    // MARK: - 小米 IoT
+
+    public var xiaomiRegion: XiaomiCloudRegion {
+        XiaomiCloudRegion(rawValue: settings.xiaomiRegionRaw) ?? .cn
+    }
+
+    public var selectedXiaomiDevices: [XiaomiDevice] {
+        let selected = Set(settings.xiaomiSelectedDeviceIDs)
+        return xiaomiDevices.filter { selected.contains($0.did) }
+    }
+
+    public func loginXiaomi() async {
+        guard !xiaomiBusy else { return }
+        xiaomiBusy = true
+        xiaomiStatus = "正在打开小米登录…"
+        defer { xiaomiBusy = false }
+        let region = xiaomiRegion
+        let deviceID = "ha." + UUID().uuidString
+        do {
+            let account = try await XiaomiOAuthLogin.login(region: region, deviceID: deviceID) { url in
+                NSWorkspace.shared.open(url)
+            }
+            guard XiaomiAccountStore.save(account) else {
+                xiaomiStatus = "无法保存小米登录凭据。"
+                return
+            }
+            xiaomiAccount = account
+            xiaomiBusy = false
+            await refreshXiaomiDevices()
+        } catch {
+            xiaomiStatus = error.localizedDescription
+        }
+    }
+
+    public func refreshXiaomiDevices() async {
+        guard !xiaomiBusy else { return }
+        guard var account = xiaomiAccount else {
+            xiaomiStatus = "尚未登录小米账号。"
+            return
+        }
+        xiaomiBusy = true
+        xiaomiStatus = "正在读取小米设备…"
+        defer { xiaomiBusy = false }
+        do {
+            if account.isExpired {
+                account = try await xiaomiClient.refresh(account)
+                _ = XiaomiAccountStore.save(account)
+                xiaomiAccount = account
+            }
+            let devices = try await xiaomiClient.fetchDevices(account: account)
+            xiaomiDevices = devices
+            if settings.xiaomiSelectedDeviceIDs.isEmpty {
+                settings.xiaomiSelectedDeviceIDs = devices.map(\.did)
+            }
+            xiaomiStatus = "已读取 \(devices.count) 台小米设备"
+        } catch {
+            xiaomiStatus = error.localizedDescription
+        }
+    }
+
+    public func logoutXiaomi() {
+        XiaomiAccountStore.save(nil)
+        xiaomiAccount = nil
+        xiaomiDevices = []
+        settings.xiaomiSelectedDeviceIDs = []
+        xiaomiStatus = "已退出小米账号"
+    }
+
+    public func setXiaomiDeviceSelected(_ did: String, selected: Bool) {
+        var list = settings.xiaomiSelectedDeviceIDs
+        if selected {
+            if !list.contains(did) { list.append(did) }
+        } else {
+            list.removeAll { $0 == did }
+        }
+        settings.xiaomiSelectedDeviceIDs = list
     }
 
     /// 切换 Codex 额度来源后立即丢弃旧来源快照并重新读取，避免界面在一个刷新周期内

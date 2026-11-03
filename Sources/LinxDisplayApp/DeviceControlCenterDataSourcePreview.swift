@@ -19,7 +19,7 @@ extension AppModel {
         var forms: [FormlabsCanvasItem] = []
 
         switch source.destination {
-        case .software:
+        case .software, .xiaomi:
             // Software cards use their live native SwiftUI summary card; no device canvas.
             return nil
         case .nowPlaying:

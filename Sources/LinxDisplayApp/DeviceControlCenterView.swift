@@ -268,6 +268,9 @@ struct DeviceControlCenterView: View {
                                         } else if source.kind == .software {
                                             ControlCenterSoftwareCard(model: model, source: source, height: height,
                                                 action: { onOpenDataSource(source.destination) })
+                                        } else if source.kind == .xiaomi {
+                                            ControlCenterXiaomiCard(model: model, source: source, height: height,
+                                                action: { onOpenDataSource(source.destination) })
                                         }
                                     }
                                 }

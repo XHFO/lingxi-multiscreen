@@ -459,6 +459,14 @@ public final class AppSettings: ObservableObject {
     @Published public var deepSeekAPIKey = "" {
         didSet { onChange() }
     }
+    /// 小米 IoT 云区域（cn/de/i2/ru/sg/us）。
+    @Published public var xiaomiRegionRaw = "cn" {
+        didSet { onChange() }
+    }
+    /// 导入到中控面板的小米设备 DID。
+    @Published public var xiaomiSelectedDeviceIDs: [String] = [] {
+        didSet { onChange() }
+    }
     /// DeepSeek 平台网页会话令牌（可选）。用于读取今日 / 本月 Token 用量；不填时只显示官方余额。
     @Published public var deepSeekPlatformToken = "" {
         didSet { onChange() }
@@ -1332,7 +1340,9 @@ public final class AppSettings: ObservableObject {
              pomodoroPraiseEnabled, pomodoroPraiseSource, pomodoroTaskFontSize,
              pomodoroToggleShortcut, pomodoroSkipShortcut, pomodoroResetShortcut,
              keyboardPageUpShortcut, keyboardPageDownShortcut, lingxi68KnobPagingEnabled, awtrix,
-             haServerURL, haToken, grokBotSessionToken, deepSeekAPIKey, deepSeekPlatformToken, haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
+             haServerURL, haToken, grokBotSessionToken, deepSeekAPIKey, deepSeekPlatformToken,
+             xiaomiRegionRaw, xiaomiSelectedDeviceIDs,
+             haRefreshMinutes, haEntityID, haEntities, haCardEntityIDs,
              canvasHAEntityIDs, oracleCanvasHAEntityIDs, excerptCanvasHAEntityIDs, haEntityAliases,
              haMonitorEnabled, haMonitorEntityID, haMonitorExpectedState, haMonitorErrorEntityID,
              bambuEnableAlert, bambuStatusEntityID, bambuProgressEntityID, bambuTaskEntityID,
@@ -1456,6 +1466,8 @@ public final class AppSettings: ObservableObject {
         try container.encode(grokBotSessionToken, forKey: .grokBotSessionToken)
         try container.encode(deepSeekAPIKey, forKey: .deepSeekAPIKey)
         try container.encode(deepSeekPlatformToken, forKey: .deepSeekPlatformToken)
+        try container.encode(xiaomiRegionRaw, forKey: .xiaomiRegionRaw)
+        try container.encode(xiaomiSelectedDeviceIDs, forKey: .xiaomiSelectedDeviceIDs)
         try container.encode(haRefreshMinutes, forKey: .haRefreshMinutes)
         try container.encode(haEntityID, forKey: .haEntityID)
         try container.encode(haEntities, forKey: .haEntities)
@@ -1698,6 +1710,8 @@ extension AppSettings: Codable {
         grokBotSessionToken = try container.decodeIfPresent(String.self, forKey: .grokBotSessionToken) ?? grokBotSessionToken
         deepSeekAPIKey = try container.decodeIfPresent(String.self, forKey: .deepSeekAPIKey) ?? deepSeekAPIKey
         deepSeekPlatformToken = try container.decodeIfPresent(String.self, forKey: .deepSeekPlatformToken) ?? deepSeekPlatformToken
+        xiaomiRegionRaw = try container.decodeIfPresent(String.self, forKey: .xiaomiRegionRaw) ?? xiaomiRegionRaw
+        xiaomiSelectedDeviceIDs = try container.decodeIfPresent([String].self, forKey: .xiaomiSelectedDeviceIDs) ?? xiaomiSelectedDeviceIDs
         haRefreshMinutes = try container.decodeIfPresent(Int.self, forKey: .haRefreshMinutes) ?? haRefreshMinutes
         haEntityID = try container.decodeIfPresent(String.self, forKey: .haEntityID) ?? haEntityID
         haEntities = try container.decodeIfPresent([String].self, forKey: .haEntities) ?? haEntities

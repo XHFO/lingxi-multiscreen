@@ -6678,8 +6678,15 @@ Task { @MainActor in
             print("Menu bar：\(passed) 项通过，\(failures.count) 项失败")
             exit(failures.isEmpty ? 0 : 1)
         }
+        if CommandLine.arguments.contains("--xiaomi-only") {
+            try testXiaomiCloudBasics()
+            failures.forEach { print("失败：\($0)") }
+            print("Xiaomi：\(passed) 项通过，\(failures.count) 项失败")
+            exit(failures.isEmpty ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--ha-control-only") {
             try testHAControls()
+        try testXiaomiCloudBasics()
             failures.forEach { print("失败：\($0)") }
             print("HA controls：\(passed) 项通过，\(failures.count) 项失败")
             exit(failures.isEmpty ? 0 : 1)

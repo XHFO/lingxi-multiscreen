@@ -104,6 +104,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case system
     case nowPlaying
     case wallpaperLibrary
+    case xiaomi
     case customImage
     case canvas
     case excerptQuote
@@ -269,6 +270,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .system: return String(localized: "系统监控")
         case .nowPlaying: return String(localized: "正在播放")
         case .wallpaperLibrary: return String(localized: "壁纸库")
+        case .xiaomi: return String(localized: "小米 IoT")
         case .customImage: return String(localized: "自定义图片")
         case .canvas: return String(localized: "灵犀画板")
         case .excerptQuote: return String(localized: "摘录语录")
@@ -334,6 +336,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .system: return "gauge"
         case .nowPlaying: return "music.note"
         case .wallpaperLibrary: return "photo.on.rectangle.angled"
+        case .xiaomi: return "m.square.fill"
         case .customImage: return "photo"
         case .canvas: return "rectangle.3.group"
         case .excerptQuote: return "text.quote"
@@ -381,7 +384,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     /// 选择该面板时对应的显示模式（设置/外观/设备管理/按键控制/独立画板/开始使用无对应键盘显示模式）
     var displayMode: DisplayMode? {
         switch self {
-        case .controlCenterSource, .controlCenter, .welcome, .general, .appearance, .wallpaperLibrary, .awtrix, .awtrixCardManagement,
+        case .controlCenterSource, .controlCenter, .welcome, .general, .appearance, .wallpaperLibrary, .xiaomi, .awtrix, .awtrixCardManagement,
              .m5Controller: return nil
         case .oracleCanvas, .excerptCanvas, .devices, .buttonControl, .aiMacScreen,
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
@@ -1079,7 +1082,7 @@ struct SettingsView: View {
              .aiMacDashboard, .aiMacClock, .aiMacCustomImage,
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .excerptBoardManagement, .aiMacBoardManagement,
-             .controlCenterSource, .controlCenter, .devices, .general, .wallpaperLibrary, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device,
+             .controlCenterSource, .controlCenter, .devices, .general, .wallpaperLibrary, .xiaomi, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device,
              .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
              .readPicoInformation, .readPicoLockScreen, .readPicoFirmware:
             return true
@@ -1712,6 +1715,14 @@ struct SettingsView: View {
             }
             return
         }
+        if case .xiaomi = destination {
+            requestPicoNavigation {
+                clearFloatingControlCenterDevice()
+                controlCenterDataSource = nil
+                selected = .xiaomi
+            }
+            return
+        }
         requestPicoNavigation {
             if destination == .nowPlaying {
                 clearFloatingControlCenterDevice()
@@ -2092,6 +2103,7 @@ struct SettingsView: View {
         case .system: systemForm
         case .nowPlaying: nowPlayingForm
         case .wallpaperLibrary: EmptyView() // Owns its native gallery scrolling in detailColumn.
+        case .xiaomi: XiaomiSettingsView(model: model)
         case .customImage: customImageForm
         case .canvas: canvasForm
         case .excerptQuote: excerptQuoteForm
@@ -9380,6 +9392,7 @@ struct Sidebar: View {
         VStack(spacing: 2) {
             sidebarRow(.controlCenter)
             sidebarRow(.wallpaperLibrary)
+            sidebarRow(.xiaomi)
             Divider().padding(.vertical, 4)
             // 按设备实例分类：每台设备（设备管理中添加的）下面挂它的卡片功能，
             // 点开某台设备下的功能项即操作那台设备

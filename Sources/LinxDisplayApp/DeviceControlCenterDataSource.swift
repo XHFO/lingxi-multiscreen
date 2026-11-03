@@ -6,13 +6,14 @@ import LinxDisplayCore
 /// starts a refresh or changes the active device. Managed services appear here once, rather
 /// than also pretending to be display devices in the screen collection.
 struct DeviceControlCenterDataSource: Identifiable, Equatable {
-    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying, software }
+    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying, software, xiaomi }
     enum Destination: Equatable {
         case managedDevice(UUID)
         case cloudflare(UUID)
         case weather
         case nowPlaying
         case software(DisplayMode)
+        case xiaomi
     }
 
     /// 中控面板收录的软件卡片。天气、Cloudflare、Home Assistant、打印机和正在播放
@@ -98,6 +99,11 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
 
         // Software cards are shared state, not physical sources. They appear after the
         // configured device and website sources so adding one never changes existing order.
+        result.append(Self(id: "xiaomi:account", kind: .xiaomi,
+                           title: String(localized: "小米 IoT"), subtitle: "Xiaomi Cloud",
+                           status: String(localized: "打开设置"), symbolName: "m.square.fill",
+                           destination: .xiaomi))
+
         for mode in softwareModes {
             result.append(Self(id: "software:\(mode.rawValue)", kind: .software,
                                title: mode.title, subtitle: String(localized: "软件卡片"),
@@ -111,6 +117,13 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
 extension AppModel {
     @MainActor func controlCenterDataSources() -> [DeviceControlCenterDataSource] {
         DeviceControlCenterDataSource.sources(settings: settings).map { source in
+            if case .xiaomi = source.destination {
+                var updated = source
+                updated.status = xiaomiAccount == nil
+                    ? String(localized: "未登录小米账号")
+                    : String(localized: "已登录 · \(selectedXiaomiDevices.count) 台设备")
+                return updated
+            }
             if case let .software(mode) = source.destination {
                 var updated = source
                 updated.status = ControlCenterSoftwareSummary.make(model: self, settings: settings, mode: mode).status
