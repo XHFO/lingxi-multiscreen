@@ -7344,7 +7344,9 @@ public func setClockTimeFormat(_ format: String) {
         let region = xiaomiRegion
         let deviceID = "ha." + UUID().uuidString
         do {
-            let account = try await XiaomiBrowserLogin.login(region: region, deviceID: deviceID)
+            let account = try await XiaomiBrowserLogin.login(region: region, deviceID: deviceID) { status in
+                Task { @MainActor in self.xiaomiStatus = status }
+            }
             guard XiaomiAccountStore.save(account) else {
                 xiaomiStatus = "无法保存小米登录凭据。"
                 return

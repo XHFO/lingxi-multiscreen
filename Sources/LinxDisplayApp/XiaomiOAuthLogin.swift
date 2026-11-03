@@ -10,7 +10,13 @@ enum XiaomiOAuthLogin {
     }
 
     static func code(from url: URL) -> String? {
-        URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        if let code = components.queryItems?.first(where: { $0.name == "code" })?.value, !code.isEmpty {
+            return code
+        }
+        // 少数重定向会把参数放在 fragment 里。
+        let fragment = components.fragment ?? ""
+        return URLComponents(string: "?" + fragment)?
             .queryItems?.first(where: { $0.name == "code" })?.value
     }
 
