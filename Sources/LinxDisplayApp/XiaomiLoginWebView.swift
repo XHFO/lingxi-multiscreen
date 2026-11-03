@@ -8,6 +8,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
     let redirectPrefix: String
     let onCode: (String) -> Void
     let onCancel: () -> Void
+    let onError: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -30,19 +31,34 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         let parent: XiaomiLoginWebView
         init(_ parent: XiaomiLoginWebView) { self.parent = parent }
 
+        private func handleRedirect(_ url: URL?) -> Bool {
+            guard let url else { return false }
+            let isCallbackHost = url.host == "homeassistant.local" && url.port == 8123
+            let isConfiguredPrefix = url.absoluteString.hasPrefix(parent.redirectPrefix)
+            guard isCallbackHost || isConfiguredPrefix else { return false }
+            if let code = XiaomiOAuthLogin.code(from: url), !code.isEmpty {
+                parent.onCode(code)
+                return true
+            }
+            parent.onError("已到达小米回调地址，但没有收到 code。请重试登录。")
+            return true
+        }
+
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if let target = navigationAction.request.url,
-               target.absoluteString.hasPrefix(parent.redirectPrefix) {
+            if handleRedirect(navigationAction.request.url) {
                 decisionHandler(.cancel)
-                if let code = XiaomiOAuthLogin.code(from: target), !code.isEmpty {
-                    parent.onCode(code)
-                } else {
-                    parent.onCancel()
-                }
                 return
             }
             decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+            if handleRedirect(webView.url) { webView.stopLoading() }
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if handleRedirect(webView.url) { webView.stopLoading() }
         }
 
         /// 小米短信校验/登录成功可能用 target=_blank 或 window.open 打开结果页。
@@ -50,6 +66,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if let target = navigationAction.request.url, handleRedirect(target) { return nil }
             if navigationAction.targetFrame == nil {
                 webView.load(navigationAction.request)
             }
@@ -66,6 +83,7 @@ struct XiaomiLoginSheet: View {
     let url: URL
     let onCode: (String) -> Void
     let onCancel: () -> Void
+    @State private var message = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,7 +95,11 @@ struct XiaomiLoginSheet: View {
             Divider()
             XiaomiLoginWebView(url: url,
                                redirectPrefix: XiaomiOAuthLogin.redirectURL,
-                               onCode: onCode, onCancel: onCancel)
+                               onCode: onCode, onCancel: onCancel,
+                               onError: { message = $0 })
+            if !message.isEmpty {
+                Text(message).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.top, 8)
+            }
             Divider()
             Text("登录完成后窗口会自动关闭；授权信息只保存在本机加密凭据中。")
                 .font(.caption).foregroundStyle(.secondary).padding(12)
