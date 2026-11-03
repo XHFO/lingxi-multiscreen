@@ -1723,6 +1723,7 @@ struct SettingsView: View {
             }
             return
         }
+        if case .aiStatus = destination { return }
         requestPicoNavigation {
             if destination == .nowPlaying {
                 clearFloatingControlCenterDevice()

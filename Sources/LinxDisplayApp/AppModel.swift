@@ -464,6 +464,11 @@ public final class AppModel: ObservableObject {
     @Published public var xiaomiDevices: [XiaomiDevice] = []
     @Published public var xiaomiBusy = false
     @Published public var xiaomiStatus = ""
+    @Published public var aiStatusAuto: AIStatusEntry?
+    @Published public var aiStatusHookEntries: [AIStatusEntry] = []
+    private var aiStatusTask: Task<Void, Never>?
+    private var xiaomiLoginDeviceID: String?
+    private let aiStatusServer = AIStatusHTTPServer()
     @Published public var cloudflareBusy = false
     @Published public var cloudflareStatus = ""
     var cloudflareLastAttempt: Date?
@@ -7263,6 +7268,57 @@ public func setClockTimeFormat(_ format: String) {
         status = failures.isEmpty ? "DeepSeek 数据已刷新" : failures.joined(separator: "；")
     }
 
+    // MARK: - AI 状态
+
+    /// 启动 Codex 本地状态轮询和本机 hook 端点。重复调用无副作用。
+    public func startAIStatusMonitoring() {
+        guard aiStatusTask == nil else { return }
+        aiStatusServer.start { [weak self] entry in
+            guard let self else { return }
+            if let index = self.aiStatusHookEntries.firstIndex(where: { $0.source == entry.source }) {
+                self.aiStatusHookEntries[index] = entry
+            } else {
+                self.aiStatusHookEntries.append(entry)
+            }
+            if self.aiStatusHookEntries.count > 20 {
+                self.aiStatusHookEntries.removeFirst(self.aiStatusHookEntries.count - 20)
+            }
+        }
+        aiStatusTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let entry = await Task.detached(priority: .utility) {
+                    AIStatusReader.readCodex()
+                }.value
+                if let entry { self.aiStatusAuto = entry }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    /// 合并 Codex 自动状态和 hook 上报；同一来源以更新时间较新的为准。
+    public var aiStatusEntries: [AIStatusEntry] {
+        var bySource: [String: AIStatusEntry] = [:]
+        if let auto = aiStatusAuto { bySource[auto.source] = auto }
+        for entry in aiStatusHookEntries {
+            if let existing = bySource[entry.source], existing.updatedAt > entry.updatedAt { continue }
+            bySource[entry.source] = entry
+        }
+        func rank(_ state: AIStatusState) -> Int {
+            switch state {
+            case .running: return 0
+            case .approval: return 1
+            case .error: return 2
+            case .completed: return 3
+            case .idle: return 4
+            }
+        }
+        return bySource.values.sorted {
+            rank($0.state) == rank($1.state) ? $0.updatedAt > $1.updatedAt
+                : rank($0.state) < rank($1.state)
+        }
+    }
+
     // MARK: - 小米 IoT
 
     public var xiaomiRegion: XiaomiCloudRegion {
@@ -7274,17 +7330,28 @@ public func setClockTimeFormat(_ format: String) {
         return xiaomiDevices.filter { selected.contains($0.did) }
     }
 
-    public func loginXiaomi() async {
+    public func loginXiaomi() {
         guard !xiaomiBusy else { return }
-        xiaomiBusy = true
-        xiaomiStatus = "正在打开小米登录…"
-        defer { xiaomiBusy = false }
         let region = xiaomiRegion
         let deviceID = "ha." + UUID().uuidString
+        xiaomiLoginDeviceID = deviceID
+        guard let url = XiaomiOAuthLogin.authorizationURL(region: region, deviceID: deviceID) else {
+            xiaomiStatus = "无法生成小米登录地址。"
+            return
+        }
+        NSWorkspace.shared.open(url)
+        xiaomiStatus = "浏览器登录后，把地址栏中的完整回调地址粘贴到下方并点「完成登录」。"
+    }
+
+    public func completeXiaomiLogin(callback: String) async {
+        guard !xiaomiBusy else { return }
+        xiaomiBusy = true
+        defer { xiaomiBusy = false }
+        let region = xiaomiRegion
+        let deviceID = xiaomiLoginDeviceID ?? "ha." + UUID().uuidString
         do {
-            let account = try await XiaomiOAuthLogin.login(region: region, deviceID: deviceID) { url in
-                NSWorkspace.shared.open(url)
-            }
+            let account = try await XiaomiOAuthLogin.complete(callback: callback,
+                                                              region: region, deviceID: deviceID)
             guard XiaomiAccountStore.save(account) else {
                 xiaomiStatus = "无法保存小米登录凭据。"
                 return

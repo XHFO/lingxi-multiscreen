@@ -6,7 +6,7 @@ import LinxDisplayCore
 /// starts a refresh or changes the active device. Managed services appear here once, rather
 /// than also pretending to be display devices in the screen collection.
 struct DeviceControlCenterDataSource: Identifiable, Equatable {
-    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying, software, xiaomi }
+    enum Kind: Equatable { case cloudflare, homeAssistant, printer, weather, nowPlaying, software, xiaomi, aiStatus }
     enum Destination: Equatable {
         case managedDevice(UUID)
         case cloudflare(UUID)
@@ -14,6 +14,7 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
         case nowPlaying
         case software(DisplayMode)
         case xiaomi
+        case aiStatus
     }
 
     /// 中控面板收录的软件卡片。天气、Cloudflare、Home Assistant、打印机和正在播放
@@ -99,6 +100,11 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
 
         // Software cards are shared state, not physical sources. They appear after the
         // configured device and website sources so adding one never changes existing order.
+        result.append(Self(id: "ai-status:local", kind: .aiStatus,
+                           title: String(localized: "AI 状态"), subtitle: String(localized: "Codex / 本机 hook"),
+                           status: String(localized: "查看运行、批准与报错"), symbolName: "sparkles",
+                           destination: .aiStatus))
+
         result.append(Self(id: "xiaomi:account", kind: .xiaomi,
                            title: String(localized: "小米 IoT"), subtitle: "Xiaomi Cloud",
                            status: String(localized: "打开设置"), symbolName: "m.square.fill",
@@ -117,6 +123,12 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
 extension AppModel {
     @MainActor func controlCenterDataSources() -> [DeviceControlCenterDataSource] {
         DeviceControlCenterDataSource.sources(settings: settings).map { source in
+            if case .aiStatus = source.destination {
+                var updated = source
+                updated.status = aiStatusEntries.isEmpty ? String(localized: "暂无状态")
+                    : "\(aiStatusEntries.filter { $0.state == .running || $0.state == .approval }.count) 个活动状态"
+                return updated
+            }
             if case .xiaomi = source.destination {
                 var updated = source
                 updated.status = xiaomiAccount == nil
