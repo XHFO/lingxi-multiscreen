@@ -14,8 +14,11 @@ struct XiaomiLoginWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
         webView.allowsBackForwardNavigationGestures = true
         webView.load(URLRequest(url: url))
         return webView
@@ -23,7 +26,7 @@ struct XiaomiLoginWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let parent: XiaomiLoginWebView
         init(_ parent: XiaomiLoginWebView) { self.parent = parent }
 
@@ -40,6 +43,17 @@ struct XiaomiLoginWebView: NSViewRepresentable {
                 return
             }
             decisionHandler(.allow)
+        }
+
+        /// 小米短信校验/登录成功可能用 target=_blank 或 window.open 打开结果页。
+        /// WKWebView 默认没有这个委托时点击会完全无响应，验证码却已被消费。
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.targetFrame == nil {
+                webView.load(navigationAction.request)
+            }
+            return nil
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
