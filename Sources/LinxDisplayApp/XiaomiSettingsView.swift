@@ -40,8 +40,8 @@ struct XiaomiSettingsView: View {
                             .disabled(model.xiaomiBusy)
                     }
                 } else {
-                    Button(model.xiaomiBusy ? "正在登录…" : "登录小米账号") {
-                        model.loginXiaomi()
+                    Button(model.xiaomiBusy ? "正在登录…" : "扫码登录小米账号") {
+                        model.startXiaomiQRLogin()
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.xiaomiBusy)
@@ -105,16 +105,8 @@ struct XiaomiSettingsView: View {
                 await model.refreshXiaomiDevices()
             }
         }
-        .sheet(isPresented: Binding(get: { model.xiaomiLoginURL != nil },
-                                    set: { if !$0 { model.cancelXiaomiLogin() } })) {
-            if let url = model.xiaomiLoginURL {
-                XiaomiLoginSheet(url: url,
-                                 onCode: { code in
-                                     Task { await model.completeXiaomiLogin(code: code) }
-                                 },
-                                 onCancel: { model.cancelXiaomiLogin() })
-                    .controlCenterFloatingPresentationSurface()
-            }
+        .sheet(isPresented: $model.xiaomiQRSheet) {
+            XiaomiQRLoginSheet(model: model)
         }
     }
 

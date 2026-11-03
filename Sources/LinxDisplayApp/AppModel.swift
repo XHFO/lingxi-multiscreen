@@ -465,6 +465,10 @@ public final class AppModel: ObservableObject {
     @Published public var xiaomiBusy = false
     @Published public var xiaomiStatus = ""
     @Published public var xiaomiLoginURL: URL?
+    @Published public var xiaomiQRImage: NSImage?
+    @Published public var xiaomiQRSheet = false
+    @Published public var xiaomiQRStatus = ""
+    private var xiaomiQRTask: Task<Void, Never>?
     @Published public var aiStatusAuto: AIStatusEntry?
     @Published public var aiStatusHookEntries: [AIStatusEntry] = []
     private var aiStatusTask: Task<Void, Never>?
@@ -7329,6 +7333,58 @@ public func setClockTimeFormat(_ format: String) {
     public var selectedXiaomiDevices: [XiaomiDevice] {
         let selected = Set(settings.xiaomiSelectedDeviceIDs)
         return xiaomiDevices.filter { selected.contains($0.did) }
+    }
+
+    /// 小米扫码登录：不经过授权按钮。二维码确认后自动完成 OAuth 并换取 token。
+    public func startXiaomiQRLogin() {
+        xiaomiQRTask?.cancel()
+        xiaomiQRSheet = true
+        xiaomiQRImage = nil
+        xiaomiQRStatus = "正在获取小米二维码…"
+        let region = xiaomiRegion
+        let deviceID = "ha." + UUID().uuidString
+        xiaomiLoginDeviceID = deviceID
+        xiaomiQRTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let client = XiaomiQRLoginClient()
+                let qr = try await client.start()
+                if let (data, _) = try? await URLSession.shared.data(from: qr.qrImageURL) {
+                    self.xiaomiQRImage = NSImage(data: data)
+                }
+                self.xiaomiQRStatus = "请使用小米手机扫描二维码"
+                while !Task.isCancelled {
+                    if let _ = try await client.poll(qr) {
+                        self.xiaomiQRStatus = "扫码成功，正在完成授权…"
+                        guard let auth = XiaomiOAuthLogin.authorizationURL(region: region, deviceID: deviceID) else {
+                            throw XiaomiCloudError.invalidURL
+                        }
+                        let code = try await client.oauthCode(authURL: auth, redirectURL: XiaomiOAuthLogin.redirectURL)
+                        let account = try await XiaomiOAuthLogin.complete(code: code, region: region, deviceID: deviceID)
+                        guard XiaomiAccountStore.save(account) else {
+                            self.xiaomiQRStatus = "无法保存小米登录凭据。"
+                            return
+                        }
+                        self.xiaomiAccount = account
+                        self.xiaomiQRSheet = false
+                        self.xiaomiQRStatus = ""
+                        await self.refreshXiaomiDevices()
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            } catch {
+                self.xiaomiQRStatus = error.localizedDescription
+            }
+        }
+    }
+
+    public func cancelXiaomiQRLogin() {
+        xiaomiQRTask?.cancel()
+        xiaomiQRTask = nil
+        xiaomiQRSheet = false
+        xiaomiQRImage = nil
+        xiaomiQRStatus = ""
     }
 
     public func loginXiaomi() {
