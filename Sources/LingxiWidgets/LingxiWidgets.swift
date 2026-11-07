@@ -264,6 +264,152 @@ struct PrinterWidget: Widget {
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
+
+struct CloudflareWidgetData: Codable {
+    var domain: String; var requests: String; var bytes: String; var period: String
+}
+struct CloudflareDataEntry: TimelineEntry { let date: Date; let data: CloudflareWidgetData? }
+struct CloudflareDataProvider: TimelineProvider {
+    func placeholder(in context: Context) -> CloudflareDataEntry { CloudflareDataEntry(date: Date(), data: nil) }
+    func getSnapshot(in context: Context, completion: @escaping (CloudflareDataEntry) -> Void) { load(completion) }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<CloudflareDataEntry>) -> Void) {
+        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))) }
+    }
+    private func load(_ completion: @escaping (CloudflareDataEntry) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/cloudflare-data") else {
+            completion(CloudflareDataEntry(date: Date(), data: nil)); return
+        }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let value = data.flatMap { try? JSONDecoder().decode(CloudflareWidgetData.self, from: $0) }
+            DispatchQueue.main.async { completion(CloudflareDataEntry(date: Date(), data: value)) }
+        }.resume()
+    }
+}
+struct CloudflareWidgetView: View {
+    let entry: CloudflareDataEntry
+    @Environment(\.widgetFamily) private var family
+    var body: some View {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 16 : 8) {
+            HStack {
+                Label("Cloudflare", systemImage: "cloud.fill").font(family == .systemLarge ? .headline : .caption.weight(.semibold))
+                Spacer()
+                Text(entry.data?.period ?? "24 小时").font(.caption2).foregroundStyle(.secondary)
+            }
+            Text(entry.data?.domain ?? "暂无统计")
+                .font(family == .systemLarge ? .title.bold() : .title3.bold())
+                .lineLimit(1).minimumScaleFactor(0.6)
+            HStack(spacing: 16) {
+                metric("请求", entry.data?.requests ?? "—", large: family == .systemLarge)
+                metric("流量", entry.data?.bytes ?? "—", large: family == .systemLarge)
+            }
+            Spacer(minLength: 0)
+            Text("最近统计").font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(family == .systemLarge ? 20 : 12)
+        .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+    private func metric(_ title: String, _ value: String, large: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.system(size: large ? 34 : 22, weight: .semibold, design: .rounded))
+                .lineLimit(1).minimumScaleFactor(0.55)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+struct CloudflareWidget: Widget {
+    init() {}
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "LingxiCloudflare", provider: CloudflareDataProvider()) { entry in
+            CloudflareWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Cloudflare")
+        .description("请求、流量与统计周期")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
+    }
+}
+
+struct PrinterMetricDTO: Codable { var label: String; var value: String }
+struct PrinterWidgetData: Codable {
+    var name: String; var brand: String; var status: String; var task: String
+    var progress: Double; var metrics: [PrinterMetricDTO]; var error: String
+}
+struct PrinterDataEntry: TimelineEntry { let date: Date; let data: PrinterWidgetData? }
+struct PrinterDataProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> PrinterDataEntry { PrinterDataEntry(date: Date(), data: nil) }
+    func snapshot(for configuration: PrinterSelectionIntent, in context: Context) async -> PrinterDataEntry { await load(configuration) }
+    func timeline(for configuration: PrinterSelectionIntent, in context: Context) async -> Timeline<PrinterDataEntry> {
+        let entry = await load(configuration)
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))
+    }
+    private func load(_ configuration: PrinterSelectionIntent) async -> PrinterDataEntry {
+        var path = "/widget/printer-data"
+        if let id = configuration.printer?.id, let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "?id=\(encoded)"
+        }
+        guard let url = URL(string: "http://127.0.0.1:8788" + path),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let value = try? JSONDecoder().decode(PrinterWidgetData.self, from: data) else {
+            return PrinterDataEntry(date: Date(), data: nil)
+        }
+        return PrinterDataEntry(date: Date(), data: value)
+    }
+}
+struct PrinterDataView: View {
+    let entry: PrinterDataEntry
+    @Environment(\.widgetFamily) private var family
+    var body: some View {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 14 : 7) {
+            HStack {
+                Text(entry.data?.name ?? "打印机").font(family == .systemLarge ? .title2.bold() : .headline)
+                    .lineLimit(1)
+                Spacer()
+                if let status = entry.data?.status, !status.isEmpty {
+                    Text(status).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+            }
+            if let data = entry.data {
+                if !data.task.isEmpty {
+                    Text(data.task).font(family == .systemLarge ? .headline : .subheadline).lineLimit(2)
+                }
+                ProgressView(value: min(max(data.progress, 0), 1))
+                if !data.metrics.isEmpty {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                        ForEach(Array(data.metrics.prefix(family == .systemLarge ? 6 : 4).enumerated()), id: \.offset) { _, metric in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(metric.label).font(.caption2).foregroundStyle(.secondary)
+                                Text(metric.value).font(.system(size: family == .systemLarge ? 18 : 14, weight: .semibold, design: .rounded))
+                                    .lineLimit(1).minimumScaleFactor(0.65)
+                            }
+                        }
+                    }
+                }
+                if !data.error.isEmpty {
+                    Text(data.error).font(.caption2).foregroundStyle(.red).lineLimit(1)
+                }
+            } else {
+                Text("打开多屏灵犀，或在编辑小组件中选择打印机")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(family == .systemLarge ? 20 : 12)
+        .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+}
+struct PrinterDataWidget: Widget {
+    init() {}
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: "LingxiPrinter", intent: PrinterSelectionIntent.self,
+                               provider: PrinterDataProvider()) { entry in
+            PrinterDataView(entry: entry)
+        }
+        .configurationDisplayName("打印机")
+        .description("选择打印机并显示状态、任务与温度")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
+    }
+}
 struct LingxiWidget: Widget {
     let kind: String
     let path: String
@@ -299,8 +445,8 @@ struct LingxiWidgetBundle: WidgetBundle {
         LingxiWidget(kind: "LingxiEmoji", path: "emoji", title: "Emoji 壁纸")
         LingxiWidget(kind: "LingxiWeather", path: "weather", title: "天气")
         LingxiWidget(kind: "LingxiNowPlaying", path: "now-playing", title: "正在播放")
-        ImageWidget(kind: "LingxiCloudflare", path: "/widget/image/cloudflare", title: "Cloudflare")
+        CloudflareWidget()
         ImageWidget(kind: "LingxiHomeAssistant", path: "/widget/image/home-assistant", title: "Home Assistant")
-        PrinterWidget()
+        PrinterDataWidget()
     }
 }

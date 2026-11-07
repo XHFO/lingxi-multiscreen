@@ -7431,6 +7431,39 @@ public func setClockTimeFormat(_ format: String) {
             return payload("打印机", "\(printers.count)", "台设备",
                            printers.first.map { MenuBarNamingPolicy.resolvedDeviceName($0) } ?? "尚未添加打印机",
                            printers.isEmpty ? 0 : 1, "orange")
+        case "/widget/cloudflare-data":
+            guard let source = settings.cloudflareSources.first,
+                  let reading = source.snapshot, reading.matches(source.configuration) else {
+                return payload("Cloudflare", "—", "暂无统计", "打开多屏灵犀配置 Cloudflare", 0, "gray")
+            }
+            let config = source.configuration
+            let domain = [config.hostname, config.zoneName, source.name]
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? source.name
+            let dict: [String: Any] = [
+                "domain": domain,
+                "requests": CloudflareAnalyticsSnapshot.countText(reading.requests),
+                "bytes": CloudflareAnalyticsSnapshot.bytesText(reading.bytes),
+                "period": config.period.title
+            ]
+            return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+        case "/widget/printer-data":
+            let query2 = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
+            let did = query2.first(where: { $0.name == "id" })?.value
+            let sources = controlCenterDataSources().filter { $0.kind == .printer }
+            guard let source = sources.first(where: { did == nil || $0.id == did }) ?? sources.first,
+                  let snapshot = controlCenterPrinterSnapshot(for: source) else {
+                return payload("打印机", "—", "暂无打印机", "打开多屏灵犀添加打印机", 0, "gray")
+            }
+            let dict: [String: Any] = [
+                "name": source.title,
+                "brand": snapshot.brandTitle,
+                "status": snapshot.status,
+                "task": snapshot.task ?? "",
+                "progress": snapshot.progress ?? 0,
+                "metrics": snapshot.metrics.map { ["label": $0.label, "value": $0.value] },
+                "error": snapshot.error ?? ""
+            ]
+            return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
         case "/widget/ai-status":
             if let first = aiStatusEntries.first {
                 return payload("AI 状态", first.state.title, first.source,
