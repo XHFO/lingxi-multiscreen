@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let model = AppModel()
         self.model = model
+        model.startWidgetBridge()
         model.onAppearanceChanged = { [weak self] in
             MainActor.assumeIsolated { self?.applyAppearance() }
         }

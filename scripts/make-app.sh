@@ -34,6 +34,7 @@ if rg -q '^error:' "$BUILD_LOG"; then
 fi
 
 BIN="$BUILD_PATH/release/LinxDisplayApp"
+WIDGET_BIN="$BUILD_PATH/release/LingxiWidgets"
 APP_NAME="多屏灵犀 2.0 测试版"
 EXEC_NAME="LingxiMultiScreen"
 # 完整 2.0 测试主程序也可输出到独立候选目录，避免覆盖正在使用的测试包。
@@ -52,6 +53,16 @@ echo "==> 组装 $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
 chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
+# WidgetKit 扩展：主应用常驻时通过 127.0.0.1:8788 提供只读卡片快照。
+if [ -x "$WIDGET_BIN" ]; then
+    APPEX="$APP/Contents/PlugIns/LingxiWidgets.appex"
+    mkdir -p "$APPEX/Contents/MacOS"
+    cp "$WIDGET_BIN" "$APPEX/Contents/MacOS/LingxiWidgets"
+    chmod +x "$APPEX/Contents/MacOS/LingxiWidgets"
+    cp "$ROOT/Resources/LingxiWidgets-Info.plist" "$APPEX/Contents/Info.plist"
+    xattr -cr "$APPEX"
+    codesign --force --sign - --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APPEX"
+fi
 # 打包内置资源（应用图标；摘录画板预览背景：quote_0 设备 hero 图；口袋先知画板预览背景：Rand/0 设备 hero 图）
 if [ -f "$ROOT/Resources/Icon.icns" ]; then
     cp "$ROOT/Resources/Icon.icns" "$APP/Contents/Resources/"
@@ -322,6 +333,12 @@ xattr -d 'com.apple.fileprovider.fpfs#P' "$APP" 2>/dev/null || true
 # 嵌套可执行文件先单独签名，再签整个应用，避免 Gatekeeper 将刷机助手识别为未签名组件。
 codesign --force --sign - "$APP/Contents/Resources/Firmware/lingxi-esptool"
 codesign --force --deep --sign - "$APP"
+# --deep 会重新签嵌套扩展并丢掉沙盒 entitlement；必须再单独签 appex，
+# 然后只重签外层应用以更新封条（不能再用 --deep）。
+if [ -d "$APP/Contents/PlugIns/LingxiWidgets.appex" ]; then
+    codesign --force --sign - --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APP/Contents/PlugIns/LingxiWidgets.appex"
+    codesign --force --sign - "$APP"
+fi
 codesign --verify --deep --strict "$APP"
 
 if [ -d "$FINAL_APP" ]; then

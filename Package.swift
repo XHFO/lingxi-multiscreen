@@ -28,6 +28,11 @@ let package = Package(
             linkerSettings: [.linkedFramework("WebKit")]
         ),
         .executableTarget(
+            name: "LingxiWidgets",
+            path: "Sources/LingxiWidgets",
+            linkerSettings: [.linkedFramework("WidgetKit"), .linkedFramework("SwiftUI")]
+        ),
+        .executableTarget(
             name: "LinxDisplaySmokeTests",
             dependencies: ["LinxDisplayCore"],
             path: "Tests/LinxDisplaySmokeTests"

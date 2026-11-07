@@ -469,6 +469,7 @@ public final class AppModel: ObservableObject {
     @Published public var xiaomiQRSheet = false
     @Published public var xiaomiQRStatus = ""
     private var xiaomiQRTask: Task<Void, Never>?
+    private let widgetBridge = WidgetBridgeServer()
     @Published public var aiStatusAuto: AIStatusEntry?
     @Published public var aiStatusHookEntries: [AIStatusEntry] = []
     private var aiStatusTask: Task<Void, Never>?
@@ -7271,6 +7272,49 @@ public func setClockTimeFormat(_ format: String) {
         renderPreview()
         lastRefresh = "最后刷新：\(Self.formatNow())"
         status = failures.isEmpty ? "DeepSeek 数据已刷新" : failures.joined(separator: "；")
+    }
+
+    // MARK: - Widget 快照
+
+    public func startWidgetBridge() {
+        widgetBridge.start(model: self)
+    }
+
+    @MainActor
+    public func widgetSnapshotJSON(path: String) -> Data {
+        func payload(_ title: String, _ primary: String, _ subtitle: String,
+                     _ detail: String, _ progress: Double, _ accent: String) -> Data {
+            let dict: [String: Any] = ["title": title, "primary": primary, "subtitle": subtitle,
+                                       "detail": detail, "progress": progress, "accent": accent]
+            return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
+        }
+        switch path {
+        case "/widget/codex":
+            let p = usage.isAvailable ? "\(usage.remainingPercent)%" : "—"
+            let reset = usage.resetDate.map { DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short) } ?? "未读取"
+            return payload("Codex 用量", p, usage.windowTitle, usage.planType ?? "重置：\(reset)",
+                           Double(usage.remainingPercent) / 100, usage.isAvailable ? "blue" : "gray")
+        case "/widget/system":
+            return payload("系统监控", String(format: "%.0f%%", system.cpuPercent), "CPU",
+                           String(format: "内存 %.0f%% · 磁盘 %.0f%%", system.memoryPercent, system.diskPercent),
+                           system.cpuPercent / 100, system.cpuPercent > 85 ? "red" : "green")
+        case "/widget/deepseek":
+            let state = deepSeekUsage.state
+            let primary = state == .notConfigured ? "—" : String(format: "%.2f", deepSeekUsage.totalBalance)
+            return payload("DeepSeek", primary, state == .notConfigured ? "未配置" : deepSeekUsage.currency,
+                           deepSeekUsage.message.isEmpty ? "官方余额" : deepSeekUsage.message,
+                           state == .live ? 1 : 0.5, state == .unauthorized || state == .unreadable ? "red" : "purple")
+        case "/widget/ai-status":
+            if let first = aiStatusEntries.first {
+                return payload("AI 状态", first.state.title, first.source,
+                               first.task.isEmpty ? first.message : first.task,
+                               first.state == .running || first.state == .approval ? 1 : 0.4,
+                               first.state == .error ? "red" : first.state == .approval ? "orange" : "green")
+            }
+            return payload("AI 状态", "空闲", "Codex / 本机 hook", "暂无活动任务", 0, "gray")
+        default:
+            return payload("多屏灵犀", "—", "未知卡片", "", 0, "gray")
+        }
     }
 
     // MARK: - AI 状态

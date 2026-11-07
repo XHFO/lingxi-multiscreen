@@ -1,0 +1,106 @@
+import SwiftUI
+import WidgetKit
+
+struct WidgetSnapshot: Codable {
+    var title: String
+    var primary: String
+    var subtitle: String
+    var detail: String
+    var progress: Double
+    var accent: String
+    static func unavailable(_ title: String) -> WidgetSnapshot {
+        WidgetSnapshot(title: title, primary: "—", subtitle: "打开多屏灵犀", detail: "本机数据服务未运行", progress: 0, accent: "gray")
+    }
+}
+
+struct WidgetEntry: TimelineEntry {
+    let date: Date
+    let snapshot: WidgetSnapshot
+}
+
+struct WidgetProvider: TimelineProvider {
+    let kind: String
+    let title: String
+    func placeholder(in context: Context) -> WidgetEntry {
+        WidgetEntry(date: Date(), snapshot: .unavailable(title))
+    }
+    func getSnapshot(in context: Context, completion: @escaping (WidgetEntry) -> Void) {
+        load { completion(WidgetEntry(date: Date(), snapshot: $0)) }
+    }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<WidgetEntry>) -> Void) {
+        load { snapshot in
+            let entry = WidgetEntry(date: Date(), snapshot: snapshot)
+            completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300))))
+        }
+    }
+    private func load(completion: @escaping (WidgetSnapshot) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/\(kind)") else {
+            completion(.unavailable(title)); return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            let snapshot = data.flatMap { try? JSONDecoder().decode(WidgetSnapshot.self, from: $0) }
+            DispatchQueue.main.async { completion(snapshot ?? .unavailable(title)) }
+        }.resume()
+    }
+}
+
+struct SnapshotView: View {
+    let entry: WidgetEntry
+    var color: Color {
+        switch entry.snapshot.accent {
+        case "green": return .green
+        case "orange": return .orange
+        case "red": return .red
+        case "purple": return .purple
+        case "blue": return .blue
+        default: return .secondary
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(entry.snapshot.title).font(.headline)
+                Spacer()
+                Circle().fill(color).frame(width: 8, height: 8)
+            }
+            Text(entry.snapshot.primary).font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+            Text(entry.snapshot.subtitle).font(.caption).foregroundStyle(.secondary)
+            ProgressView(value: min(max(entry.snapshot.progress, 0), 1)).tint(color)
+            Text(entry.snapshot.detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+        }
+        .padding(14)
+        .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+}
+
+struct LingxiWidget: Widget {
+    let kind: String
+    let path: String
+    let title: String
+
+    init() { self.init(kind: "LingxiCodex", path: "codex", title: "Codex 用量") }
+    init(kind: String, path: String, title: String) {
+        self.kind = kind; self.path = path; self.title = title
+    }
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: WidgetProvider(kind: path, title: title)) { entry in
+            SnapshotView(entry: entry)
+        }
+        .configurationDisplayName(title)
+        .description("多屏灵犀卡片快照")
+        .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+@main
+struct LingxiWidgetBundle: WidgetBundle {
+    var body: some Widget {
+        LingxiWidget(kind: "LingxiCodex", path: "codex", title: "Codex 用量")
+        LingxiWidget(kind: "LingxiSystem", path: "system", title: "系统监控")
+        LingxiWidget(kind: "LingxiDeepSeek", path: "deepseek", title: "DeepSeek 用量")
+        LingxiWidget(kind: "LingxiAIStatus", path: "ai-status", title: "AI 状态")
+    }
+}
