@@ -182,8 +182,14 @@ struct PrinterEntity: AppEntity, Identifiable, Hashable {
 }
 struct PrinterQuery: EntityQuery {
     private func fetch() async -> [PrinterEntity] {
-        guard let url = URL(string: "http://127.0.0.1:8788/widget/printers") else { return [] }
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+        if let url = URL(string: "http://127.0.0.1:8788/widget/printers"),
+           let (data, _) = try? await URLSession.shared.data(from: url),
+           let list = try? JSONDecoder().decode([PrinterDTO].self, from: data), !list.isEmpty {
+            return list.map { PrinterEntity(id: $0.id, name: $0.name) }
+        }
+        // AppIntent 查询可能在宿主尚未启动桥接时运行；用打包时生成的列表兜底。
+        guard let url = Bundle.main.url(forResource: "WidgetPrinters", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
               let list = try? JSONDecoder().decode([PrinterDTO].self, from: data) else { return [] }
         return list.map { PrinterEntity(id: $0.id, name: $0.name) }
     }

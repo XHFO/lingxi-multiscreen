@@ -69,6 +69,22 @@ chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
 if [ -d "$WIDGET_BIN" ]; then
     APPEX="$APP/Contents/PlugIns/LingxiWidgets.appex"
     ditto "$WIDGET_BIN" "$APPEX"
+    # AppIntent 解析可能在主应用桥接就绪前发生，打包一份离线打印机列表兜底。
+    python3 - "$HOME/Library/Application Support/LinxDisplayBeta2/settings.json" "$APPEX/Contents/Resources/WidgetPrinters.json" <<'PYLIST'
+import json, os, sys
+source, output = sys.argv[1], sys.argv[2]
+items = []
+try:
+    data = json.load(open(source))
+    for device in data.get("devices", []):
+        if device.get("type") in (4, 5):
+            items.append({"id": "managed:" + str(device["id"]), "name": device.get("name", "打印机"),
+                          "subtitle": "Bambu Lab" if device.get("type") == 4 else "Formlabs"})
+except Exception:
+    pass
+os.makedirs(os.path.dirname(output), exist_ok=True)
+json.dump(items, open(output, "w"), ensure_ascii=False)
+PYLIST
     xattr -cr "$APPEX"
     codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APPEX"
 fi
