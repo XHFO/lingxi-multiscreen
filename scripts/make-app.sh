@@ -66,7 +66,7 @@ if [ -x "$WIDGET_BIN" ]; then
     chmod +x "$APPEX/Contents/MacOS/LingxiWidgets"
     cp "$ROOT/Resources/LingxiWidgets-Info.plist" "$APPEX/Contents/Info.plist"
     xattr -cr "$APPEX"
-    codesign --force --sign - --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APPEX"
+    codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APPEX"
 fi
 # 打包内置资源（应用图标；摘录画板预览背景：quote_0 设备 hero 图；口袋先知画板预览背景：Rand/0 设备 hero 图）
 if [ -f "$ROOT/Resources/Icon.icns" ]; then
