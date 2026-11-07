@@ -76,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.model = model
         model.startWidgetBridge()
         WidgetCenter.shared.reloadAllTimelines()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         model.onAppearanceChanged = { [weak self] in
             MainActor.assumeIsolated { self?.applyAppearance() }
         }
@@ -276,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 用户从「系统设置 → 输入监控」返回时，刷新授权状态并在需要时自动重连旋钮。
     func applicationDidBecomeActive(_ notification: Notification) {
+        WidgetCenter.shared.reloadAllTimelines()
         MainActor.assumeIsolated {
             model?.refreshInputMonitoringStatus()
         }
