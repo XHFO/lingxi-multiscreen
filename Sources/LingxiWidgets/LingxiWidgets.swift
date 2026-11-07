@@ -104,13 +104,23 @@ struct ImageProvider: TimelineProvider {
     let title: String
     func placeholder(in context: Context) -> ImageEntry { ImageEntry(date: Date(), data: nil, name: title) }
     func getSnapshot(in context: Context, completion: @escaping (ImageEntry) -> Void) {
-        load(completion)
+        load(family: context.family, completion)
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<ImageEntry>) -> Void) {
-        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300)))) }
+        load(family: context.family) { entry in
+            completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60))))
+        }
     }
-    private func load(_ completion: @escaping (ImageEntry) -> Void) {
-        guard let url = URL(string: "http://127.0.0.1:8788" + path) else {
+    private func size(for family: WidgetFamily) -> String {
+        switch family {
+        case .systemSmall: return "360&h=360"
+        case .systemLarge: return "720&h=720"
+        default: return "720&h=360"
+        }
+    }
+    private func load(family: WidgetFamily = .systemMedium, _ completion: @escaping (ImageEntry) -> Void) {
+        let separator = path.contains("?") ? "&" : "?"
+        guard let url = URL(string: "http://127.0.0.1:8788" + path + separator + "w=" + size(for: family)) else {
             completion(ImageEntry(date: Date(), data: nil, name: title)); return
         }
         var request = URLRequest(url: url); request.timeoutInterval = 5
@@ -130,7 +140,7 @@ struct ImageWidget: Widget {
         StaticConfiguration(kind: kind, provider: ImageProvider(path: path, title: title)) { entry in
             Group {
                 if let data = entry.data, let image = NSImage(data: data) {
-                    Image(nsImage: image).resizable().scaledToFit()
+                    Image(nsImage: image).resizable()
                 } else {
                     Text("打开多屏灵犀").font(.headline).foregroundStyle(.secondary)
                 }
@@ -174,16 +184,23 @@ struct PrinterEntry: TimelineEntry { let date: Date; let data: Data?; let name: 
 struct PrinterProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> PrinterEntry { PrinterEntry(date: Date(), data: nil, name: "打印机") }
     func snapshot(for configuration: PrinterSelectionIntent, in context: Context) async -> PrinterEntry {
-        await load(configuration)
+        await load(configuration, family: context.family)
     }
     func timeline(for configuration: PrinterSelectionIntent, in context: Context) async -> Timeline<PrinterEntry> {
-        let entry = await load(configuration)
-        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300)))
+        let entry = await load(configuration, family: context.family)
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))
     }
-    private func load(_ configuration: PrinterSelectionIntent) async -> PrinterEntry {
+    private func load(_ configuration: PrinterSelectionIntent, family: WidgetFamily) async -> PrinterEntry {
         var path = "/widget/image/printer"
         if let id = configuration.printer?.id, let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            path += "?id=\(encoded)"
+            path += "?id=\(encoded)&"
+        } else {
+            path += "?"
+        }
+        switch family {
+        case .systemSmall: path += "w=360&h=360"
+        case .systemLarge: path += "w=720&h=720"
+        default: path += "w=720&h=360"
         }
         guard let url = URL(string: "http://127.0.0.1:8788" + path),
               let (data, _) = try? await URLSession.shared.data(from: url) else {
@@ -199,7 +216,7 @@ struct PrinterWidget: Widget {
                                provider: PrinterProvider()) { entry in
             Group {
                 if let data = entry.data, let image = NSImage(data: data) {
-                    Image(nsImage: image).resizable().scaledToFit()
+                    Image(nsImage: image).resizable()
                 } else {
                     VStack(spacing: 6) {
                         Text("打印机").font(.headline)

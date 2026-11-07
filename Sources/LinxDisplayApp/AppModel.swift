@@ -7283,10 +7283,13 @@ public func setClockTimeFormat(_ format: String) {
 
     @MainActor
     public func widgetCardImage(path: String) -> Data? {
-        let size = CGSize(width: 360, height: 360)
         let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
         let requestedID = query.first(where: { $0.name == "id" })?.value
-        switch path {
+        let cleanPath = path.split(separator: "?").first.map(String.init) ?? path
+        let width = min(max(Double(query.first(where: { $0.name == "w" })?.value ?? "") ?? 360, 160), 900)
+        let height = min(max(Double(query.first(where: { $0.name == "h" })?.value ?? "") ?? 360, 160), 900)
+        let size = CGSize(width: width, height: height)
+        switch cleanPath {
         case "/widget/image/cloudflare":
             guard let source = settings.cloudflareSources.first else { return nil }
             return WidgetCardImageRenderer.png(

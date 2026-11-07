@@ -1,6 +1,7 @@
 import AppKit
 import LinxDisplayCore
 import SwiftUI
+import WidgetKit
 
 /// 主面板的操作全部位于内容区标题栏，不使用 AppKit 窗口工具栏。
 ///
@@ -74,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let model = AppModel()
         self.model = model
         model.startWidgetBridge()
+        WidgetCenter.shared.reloadAllTimelines()
         model.onAppearanceChanged = { [weak self] in
             MainActor.assumeIsolated { self?.applyAppearance() }
         }
