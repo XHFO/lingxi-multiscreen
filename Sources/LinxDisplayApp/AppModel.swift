@@ -7281,6 +7281,44 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     @MainActor
+    public func widgetCardImage(path: String) -> Data? {
+        let size = CGSize(width: 360, height: 360)
+        let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
+        let requestedID = query.first(where: { $0.name == "id" })?.value
+        switch path {
+        case "/widget/image/cloudflare":
+            guard let source = settings.cloudflareSources.first else { return nil }
+            return WidgetCardImageRenderer.png(
+                ControlCenterCloudflareContent(source: source,
+                    themeAccent: CloudflareDisplaySettingsPolicy.themeAccent(for: settings)),
+                size: size)
+        case "/widget/image/home-assistant":
+            guard let source = controlCenterDataSources().first(where: { $0.kind == .homeAssistant }) else { return nil }
+            return WidgetCardImageRenderer.png(
+                ControlCenterHomeAssistantCard(model: self, source: source, height: size.height, action: {}),
+                size: size)
+        case "/widget/image/printer":
+            let sources = controlCenterDataSources().filter { $0.kind == .printer }
+            guard let source = sources.first(where: { requestedID == nil || $0.id == requestedID }) ?? sources.first else { return nil }
+            return WidgetCardImageRenderer.png(
+                ControlCenterPrinterCard(source: source,
+                    snapshot: controlCenterPrinterSnapshot(for: source),
+                    height: size.height, action: {}),
+                size: size)
+        default:
+            return nil
+        }
+    }
+
+    @MainActor
+    public func widgetPrinterListJSON() -> Data {
+        let items = controlCenterDataSources().filter { $0.kind == .printer }.map {
+            ["id": $0.id, "name": $0.title, "subtitle": $0.subtitle]
+        }
+        return (try? JSONSerialization.data(withJSONObject: items)) ?? Data("[]".utf8)
+    }
+
+    @MainActor
     public func widgetSnapshotJSON(path: String) -> Data {
         func payload(_ title: String, _ primary: String, _ subtitle: String,
                      _ detail: String, _ progress: Double, _ accent: String) -> Data {

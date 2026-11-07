@@ -32,11 +32,23 @@ final class WidgetBridgeServer {
                 connection.cancel(); return
             }
             let parts = line.split(separator: " ")
-            let path = parts.count >= 2 ? String(parts[1]).split(separator: "?").first.map(String.init) ?? "/" : "/"
+            let fullPath = parts.count >= 2 ? String(parts[1]) : "/"
+            let path = fullPath.split(separator: "?").first.map(String.init) ?? "/"
             Task { @MainActor [weak self] in
                 guard let self, let model = self.model else { connection.cancel(); return }
-                let body = model.widgetSnapshotJSON(path: path)
-                let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                let body: Data
+                let contentType: String
+                if path.hasPrefix("/widget/image/") {
+                    body = model.widgetCardImage(path: fullPath) ?? Data()
+                    contentType = body.isEmpty ? "application/json" : "image/png"
+                } else if path == "/widget/printers" {
+                    body = model.widgetPrinterListJSON()
+                    contentType = "application/json; charset=utf-8"
+                } else {
+                    body = model.widgetSnapshotJSON(path: path)
+                    contentType = "application/json; charset=utf-8"
+                }
+                let header = "HTTP/1.1 200 OK\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
                 var output = Data(header.utf8); output.append(body)
                 connection.send(content: output, completion: .contentProcessed { _ in connection.cancel() })
             }

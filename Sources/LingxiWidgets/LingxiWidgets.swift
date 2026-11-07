@@ -1,3 +1,5 @@
+import AppIntents
+import AppKit
 import SwiftUI
 import WidgetKit
 
@@ -94,6 +96,124 @@ struct SnapshotView: View {
     }
 }
 
+
+struct ImageEntry: TimelineEntry { let date: Date; let data: Data?; let name: String }
+
+struct ImageProvider: TimelineProvider {
+    let path: String
+    let title: String
+    func placeholder(in context: Context) -> ImageEntry { ImageEntry(date: Date(), data: nil, name: title) }
+    func getSnapshot(in context: Context, completion: @escaping (ImageEntry) -> Void) {
+        load(completion)
+    }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<ImageEntry>) -> Void) {
+        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300)))) }
+    }
+    private func load(_ completion: @escaping (ImageEntry) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:8788" + path) else {
+            completion(ImageEntry(date: Date(), data: nil, name: title)); return
+        }
+        var request = URLRequest(url: url); request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            DispatchQueue.main.async { completion(ImageEntry(date: Date(), data: data, name: title)) }
+        }.resume()
+    }
+}
+
+struct ImageWidget: Widget {
+    let kind: String
+    let path: String
+    let title: String
+    init() { self.init(kind: "LingxiCloudflare", path: "/widget/image/cloudflare", title: "Cloudflare") }
+    init(kind: String, path: String, title: String) { self.kind = kind; self.path = path; self.title = title }
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: ImageProvider(path: path, title: title)) { entry in
+            Group {
+                if let data = entry.data, let image = NSImage(data: data) {
+                    Image(nsImage: image).resizable().scaledToFit()
+                } else {
+                    Text("打开多屏灵犀").font(.headline).foregroundStyle(.secondary)
+                }
+            }
+            .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+        }
+        .configurationDisplayName(title)
+        .description("与多屏灵犀中控卡片一致")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+struct PrinterDTO: Decodable, Identifiable { let id: String; let name: String; let subtitle: String }
+struct PrinterEntity: AppEntity, Identifiable, Hashable {
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "打印机")
+    static var defaultQuery = PrinterQuery()
+    let id: String
+    let name: String
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
+}
+struct PrinterQuery: EntityQuery {
+    private func fetch() async -> [PrinterEntity] {
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/printers") else { return [] }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let list = try? JSONDecoder().decode([PrinterDTO].self, from: data) else { return [] }
+        return list.map { PrinterEntity(id: $0.id, name: $0.name) }
+    }
+    func entities(for identifiers: [String]) async throws -> [PrinterEntity] {
+        let all = await fetch(); return all.filter { identifiers.contains($0.id) }
+    }
+    func suggestedEntities() async throws -> [PrinterEntity] { await fetch() }
+    func defaultResult() async -> PrinterEntity? { await fetch().first }
+}
+struct PrinterSelectionIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "选择打印机"
+    static var description = IntentDescription("选择要显示的中控打印机卡片")
+    @Parameter(title: "打印机") var printer: PrinterEntity?
+    init() {}
+}
+struct PrinterEntry: TimelineEntry { let date: Date; let data: Data?; let name: String }
+struct PrinterProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> PrinterEntry { PrinterEntry(date: Date(), data: nil, name: "打印机") }
+    func snapshot(for configuration: PrinterSelectionIntent, in context: Context) async -> PrinterEntry {
+        await load(configuration)
+    }
+    func timeline(for configuration: PrinterSelectionIntent, in context: Context) async -> Timeline<PrinterEntry> {
+        let entry = await load(configuration)
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300)))
+    }
+    private func load(_ configuration: PrinterSelectionIntent) async -> PrinterEntry {
+        var path = "/widget/image/printer"
+        if let id = configuration.printer?.id, let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "?id=\(encoded)"
+        }
+        guard let url = URL(string: "http://127.0.0.1:8788" + path),
+              let (data, _) = try? await URLSession.shared.data(from: url) else {
+            return PrinterEntry(date: Date(), data: nil, name: configuration.printer?.name ?? "打印机")
+        }
+        return PrinterEntry(date: Date(), data: data, name: configuration.printer?.name ?? "打印机")
+    }
+}
+struct PrinterWidget: Widget {
+    init() {}
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: "LingxiPrinter", intent: PrinterSelectionIntent.self,
+                               provider: PrinterProvider()) { entry in
+            Group {
+                if let data = entry.data, let image = NSImage(data: data) {
+                    Image(nsImage: image).resizable().scaledToFit()
+                } else {
+                    VStack(spacing: 6) {
+                        Text("打印机").font(.headline)
+                        Text("打开多屏灵犀，或在编辑小组件中选择打印机").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+        }
+        .configurationDisplayName("打印机")
+        .description("选择并显示 Bambu Lab / Formlabs 中控卡片")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
 struct LingxiWidget: Widget {
     let kind: String
     let path: String
@@ -128,8 +248,8 @@ struct LingxiWidgetBundle: WidgetBundle {
         LingxiWidget(kind: "LingxiEmoji", path: "emoji", title: "Emoji 壁纸")
         LingxiWidget(kind: "LingxiWeather", path: "weather", title: "天气")
         LingxiWidget(kind: "LingxiNowPlaying", path: "now-playing", title: "正在播放")
-        LingxiWidget(kind: "LingxiCloudflare", path: "cloudflare", title: "Cloudflare")
-        LingxiWidget(kind: "LingxiHomeAssistant", path: "home-assistant", title: "Home Assistant")
-        LingxiWidget(kind: "LingxiPrinter", path: "printer", title: "打印机")
+        ImageWidget(kind: "LingxiCloudflare", path: "/widget/image/cloudflare", title: "Cloudflare")
+        ImageWidget(kind: "LingxiHomeAssistant", path: "/widget/image/home-assistant", title: "Home Assistant")
+        PrinterWidget()
     }
 }
