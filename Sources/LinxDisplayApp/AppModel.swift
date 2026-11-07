@@ -7465,6 +7465,18 @@ public func setClockTimeFormat(_ format: String) {
             let requests = sources.compactMap { $0.snapshot?.requests }.reduce(0, +)
             return payload("Cloudflare", CloudflareAnalyticsSnapshot.countText(requests), "次请求",
                            "\(sources.count) 个站点来源", sources.isEmpty ? 0 : 1, "orange")
+        case "/widget/home-assistant-data":
+            let entities = haSnapshot.selectedEntities.isEmpty ? haSnapshot.entities : haSnapshot.selectedEntities
+            let items = entities.prefix(8).map { entity -> [String: Any] in
+                let name = haSnapshot.aliases[entity.entityId] ?? entity.friendlyName
+                return ["name": name, "state": entity.state, "domain": String(entity.entityId.split(separator: ".").first ?? "")]
+            }
+            let dict: [String: Any] = [
+                "count": entities.count,
+                "entities": Array(items),
+                "error": haSnapshot.errorText ?? ""
+            ]
+            return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
         case "/widget/home-assistant":
             let entities = haSnapshot.entities
             let unavailable = entities.filter { ["unavailable", "unknown"].contains($0.state.lowercased()) }.count

@@ -500,6 +500,75 @@ struct PrinterDataWidget: Widget {
         .contentMarginsDisabled()
     }
 }
+
+struct HAEntityDTO: Codable { var name: String; var state: String; var domain: String }
+struct HAWidgetData: Codable { var count: Int; var entities: [HAEntityDTO]; var error: String }
+struct HAEntry: TimelineEntry { let date: Date; let data: HAWidgetData? }
+struct HAProvider: TimelineProvider {
+    func placeholder(in context: Context) -> HAEntry { HAEntry(date: Date(), data: nil) }
+    func getSnapshot(in context: Context, completion: @escaping (HAEntry) -> Void) { load(completion) }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<HAEntry>) -> Void) {
+        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))) }
+    }
+    private func load(_ completion: @escaping (HAEntry) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/home-assistant-data") else {
+            completion(HAEntry(date: Date(), data: nil)); return
+        }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let value = data.flatMap { try? JSONDecoder().decode(HAWidgetData.self, from: $0) }
+            DispatchQueue.main.async { completion(HAEntry(date: Date(), data: value)) }
+        }.resume()
+    }
+}
+struct HAWidgetView: View {
+    let entry: HAEntry
+    @Environment(\.widgetFamily) private var family
+    var body: some View {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 10 : 5) {
+            HStack {
+                Label("Home Assistant", systemImage: "house.fill").font(family == .systemLarge ? .headline : .caption.weight(.semibold))
+                Spacer()
+                Text("\(entry.data?.count ?? 0) 个实体").font(.caption2).foregroundStyle(.secondary)
+            }
+            if let data = entry.data, !data.error.isEmpty {
+                Text(data.error).font(.caption2).foregroundStyle(.red).lineLimit(2)
+            }
+            if let entities = entry.data?.entities, !entities.isEmpty {
+                ForEach(Array(entities.prefix(family == .systemLarge ? 7 : 3).enumerated()), id: \.offset) { _, entity in
+                    HStack(spacing: 6) {
+                        Circle().fill(stateColor(entity.state)).frame(width: 6, height: 6)
+                        Text(entity.name).font(.caption).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(entity.state).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+            } else {
+                Text("暂无实体").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(family == .systemLarge ? 18 : 10)
+        .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+    private func stateColor(_ state: String) -> Color {
+        let value = state.lowercased()
+        if ["on", "open", "home", "playing", "heat", "cool"].contains(value) { return .green }
+        if ["unavailable", "unknown", "offline"].contains(value) { return .red }
+        return .secondary
+    }
+}
+struct HomeAssistantWidget: Widget {
+    init() {}
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "LingxiHomeAssistant", provider: HAProvider()) { entry in
+            HAWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Home Assistant")
+        .description("实体状态列表")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
+    }
+}
 struct LingxiWidget: Widget {
     let kind: String
     let path: String
@@ -536,7 +605,7 @@ struct LingxiWidgetBundle: WidgetBundle {
         LingxiWidget(kind: "LingxiWeather", path: "weather", title: "天气")
         LingxiWidget(kind: "LingxiNowPlaying", path: "now-playing", title: "正在播放")
         CloudflareWidget()
-        ImageWidget(kind: "LingxiHomeAssistant", path: "/widget/image/home-assistant", title: "Home Assistant")
+        HomeAssistantWidget()
         PrinterDataWidget()
     }
 }
