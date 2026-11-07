@@ -7284,6 +7284,29 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     @MainActor
+    public func widgetCloudflareMapPNG(path: String) -> Data? {
+        let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
+        guard let source = settings.cloudflareSources.first,
+              let reading = source.snapshot, reading.matches(source.configuration) else { return nil }
+        let width = min(max(Double(query.first(where: { $0.name == "w" })?.value ?? "") ?? 300, 120), 800)
+        let height = min(max(Double(query.first(where: { $0.name == "h" })?.value ?? "") ?? 150, 80), 800)
+        let dark = query.first(where: { $0.name == "scheme" })?.value == "dark"
+        let scale: CGFloat = 2
+        guard let context = CGContext(data: nil, width: Int(width * scale), height: Int(height * scale),
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        CloudflareWorldMap.draw(context, in: CGRect(x: 0, y: 0, width: width, height: height),
+            regions: reading.regions, byTraffic: source.configuration.rankByTraffic,
+            ink: dark ? NSColor.white.cgColor : NSColor.black.cgColor,
+            accent: source.configuration.resolvedAccentCG(themeAccent: nil))
+        guard let cg = context.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+    }
+
+    @MainActor
     public func widgetPrinterImagePNG(path: String) -> Data? {
         let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
         let id = query.first(where: { $0.name == "id" })?.value
@@ -7462,11 +7485,17 @@ public func setClockTimeFormat(_ format: String) {
             let config = source.configuration
             let domain = [config.hostname, config.zoneName, source.name]
                 .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? source.name
+            let regions = reading.rankedRegions(byTraffic: config.rankByTraffic).prefix(8).map {
+                ["code": $0.code, "name": $0.name,
+                 "requests": CloudflareAnalyticsSnapshot.countText($0.requests),
+                 "bytes": CloudflareAnalyticsSnapshot.bytesText($0.bytes)]
+            }
             let dict: [String: Any] = [
-                "domain": domain,
+                "domain": domain.uppercased(),
                 "requests": CloudflareAnalyticsSnapshot.countText(reading.requests),
                 "bytes": CloudflareAnalyticsSnapshot.bytesText(reading.bytes),
-                "period": config.period.title
+                "period": config.period.title,
+                "regions": Array(regions)
             ]
             return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
         case "/widget/printer-data":

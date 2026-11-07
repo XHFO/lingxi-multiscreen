@@ -265,65 +265,118 @@ struct PrinterWidget: Widget {
     }
 }
 
+struct CloudflareRegionDTO: Codable { var code: String; var name: String; var requests: String; var bytes: String }
 struct CloudflareWidgetData: Codable {
     var domain: String; var requests: String; var bytes: String; var period: String
+    var regions: [CloudflareRegionDTO]
 }
-struct CloudflareDataEntry: TimelineEntry { let date: Date; let data: CloudflareWidgetData? }
-struct CloudflareDataProvider: TimelineProvider {
-    func placeholder(in context: Context) -> CloudflareDataEntry { CloudflareDataEntry(date: Date(), data: nil) }
-    func getSnapshot(in context: Context, completion: @escaping (CloudflareDataEntry) -> Void) { load(completion) }
-    func getTimeline(in context: Context, completion: @escaping (Timeline<CloudflareDataEntry>) -> Void) {
-        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))) }
+enum CloudflareWidgetStyle: String, AppEnum {
+    case map, ranking
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "显示样式")
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .map: DisplayRepresentation(title: "热区地图"),
+        .ranking: DisplayRepresentation(title: "地区排行榜")
+    ]
+}
+struct CloudflareWidgetIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Cloudflare 样式"
+    static var description = IntentDescription("选择热区地图或地区排行榜")
+    @Parameter(title: "样式") var style: CloudflareWidgetStyle?
+    init() {}
+}
+struct CloudflareDataEntry: TimelineEntry {
+    let date: Date
+    let data: CloudflareWidgetData?
+    let style: CloudflareWidgetStyle
+    let map: Data?
+}
+struct CloudflareDataProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> CloudflareDataEntry {
+        CloudflareDataEntry(date: Date(), data: nil, style: .map, map: nil)
     }
-    private func load(_ completion: @escaping (CloudflareDataEntry) -> Void) {
-        guard let url = URL(string: "http://127.0.0.1:8788/widget/cloudflare-data") else {
-            completion(CloudflareDataEntry(date: Date(), data: nil)); return
+    func snapshot(for configuration: CloudflareWidgetIntent, in context: Context) async -> CloudflareDataEntry {
+        await load(configuration, family: context.family)
+    }
+    func timeline(for configuration: CloudflareWidgetIntent, in context: Context) async -> Timeline<CloudflareDataEntry> {
+        let entry = await load(configuration, family: context.family)
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))
+    }
+    private func load(_ configuration: CloudflareWidgetIntent, family: WidgetFamily) async -> CloudflareDataEntry {
+        let style = configuration.style ?? .map
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/cloudflare-data"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let value = try? JSONDecoder().decode(CloudflareWidgetData.self, from: data) else {
+            return CloudflareDataEntry(date: Date(), data: nil, style: style, map: nil)
         }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
-            let value = data.flatMap { try? JSONDecoder().decode(CloudflareWidgetData.self, from: $0) }
-            DispatchQueue.main.async { completion(CloudflareDataEntry(date: Date(), data: value)) }
-        }.resume()
+        var map: Data?
+        if style == .map {
+            let size: String
+            switch family {
+            case .systemSmall: size = "w=150&h=90"
+            case .systemLarge: size = "w=320&h=200"
+            default: size = "w=300&h=120"
+            }
+            if let mapURL = URL(string: "http://127.0.0.1:8788/widget/cloudflare-map?" + size) {
+                map = try? await URLSession.shared.data(from: mapURL).0
+            }
+        }
+        return CloudflareDataEntry(date: Date(), data: value, style: style, map: map)
     }
 }
 struct CloudflareWidgetView: View {
     let entry: CloudflareDataEntry
     @Environment(\.widgetFamily) private var family
     var body: some View {
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 16 : 8) {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 12 : 6) {
             HStack {
                 Label("Cloudflare", systemImage: "cloud.fill").font(family == .systemLarge ? .headline : .caption.weight(.semibold))
                 Spacer()
                 Text(entry.data?.period ?? "24 小时").font(.caption2).foregroundStyle(.secondary)
             }
             Text(entry.data?.domain ?? "暂无统计")
-                .font(family == .systemLarge ? .title.bold() : .title3.bold())
+                .font(family == .systemLarge ? .largeTitle.bold() : .title2.bold())
                 .lineLimit(1).minimumScaleFactor(0.6)
-            HStack(spacing: 16) {
-                metric("请求", entry.data?.requests ?? "—", large: family == .systemLarge)
-                metric("流量", entry.data?.bytes ?? "—", large: family == .systemLarge)
+            if entry.style == .map, let map = entry.map, let image = NSImage(data: map) {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: family == .systemLarge ? 170 : 100)
+            } else if entry.style == .ranking {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array((entry.data?.regions ?? []).prefix(family == .systemLarge ? 6 : 3).enumerated()), id: \.offset) { index, region in
+                        HStack(spacing: 6) {
+                            Text("\(index + 1)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 12)
+                            Text(region.name).font(.caption.weight(.medium)).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text(region.requests).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             Spacer(minLength: 0)
-            Text("最近统计").font(.caption2).foregroundStyle(.tertiary)
+            HStack(spacing: 14) {
+                metric("请求", entry.data?.requests ?? "—")
+                metric("流量", entry.data?.bytes ?? "—")
+            }
         }
-        .padding(family == .systemLarge ? 20 : 12)
+        .padding(family == .systemLarge ? 18 : 10)
         .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
     }
-    private func metric(_ title: String, _ value: String, large: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.system(size: large ? 34 : 22, weight: .semibold, design: .rounded))
-                .lineLimit(1).minimumScaleFactor(0.55)
+            Text(value).font(.system(size: family == .systemLarge ? 28 : 18, weight: .semibold, design: .rounded))
+                .lineLimit(1).minimumScaleFactor(0.6)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 struct CloudflareWidget: Widget {
     init() {}
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "LingxiCloudflare", provider: CloudflareDataProvider()) { entry in
+        AppIntentConfiguration(kind: "LingxiCloudflare", intent: CloudflareWidgetIntent.self,
+                               provider: CloudflareDataProvider()) { entry in
             CloudflareWidgetView(entry: entry)
         }
         .configurationDisplayName("Cloudflare")
-        .description("请求、流量与统计周期")
+        .description("热区地图或地区排行榜，域名、请求与流量")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
     }

@@ -38,7 +38,10 @@ final class WidgetBridgeServer {
                 guard let self, let model = self.model else { connection.cancel(); return }
                 let body: Data
                 let contentType: String
-                if path == "/widget/printer-image" {
+                if path == "/widget/cloudflare-map" {
+                    body = model.widgetCloudflareMapPNG(path: fullPath) ?? Data()
+                    contentType = body.isEmpty ? "application/json" : "image/png"
+                } else if path == "/widget/printer-image" {
                     body = model.widgetPrinterImagePNG(path: fullPath) ?? Data()
                     contentType = body.isEmpty ? "application/json" : "image/png"
                 } else if path.hasPrefix("/widget/image/") {
