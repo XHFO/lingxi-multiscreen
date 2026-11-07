@@ -48,6 +48,8 @@ struct WidgetProvider: TimelineProvider {
 
 struct SnapshotView: View {
     let entry: WidgetEntry
+    @Environment(\.widgetFamily) private var family
+    private var isLarge: Bool { family == .systemLarge }
     var color: Color {
         switch entry.snapshot.accent {
         case "green": return .green
@@ -59,19 +61,35 @@ struct SnapshotView: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: isLarge ? 14 : 6) {
             HStack {
-                Text(entry.snapshot.title).font(.headline)
+                Text(entry.snapshot.title).font(isLarge ? .title2.weight(.semibold) : .headline)
                 Spacer()
-                Circle().fill(color).frame(width: 8, height: 8)
+                Circle().fill(color).frame(width: isLarge ? 11 : 8, height: isLarge ? 11 : 8)
             }
-            Text(entry.snapshot.primary).font(.system(size: 34, weight: .bold, design: .rounded))
+            Spacer(minLength: 0)
+            Text(entry.snapshot.primary)
+                .font(.system(size: isLarge ? 64 : 34, weight: .bold, design: .rounded))
                 .foregroundStyle(color)
-            Text(entry.snapshot.subtitle).font(.caption).foregroundStyle(.secondary)
-            ProgressView(value: min(max(entry.snapshot.progress, 0), 1)).tint(color)
-            Text(entry.snapshot.detail).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+            Text(entry.snapshot.subtitle)
+                .font(isLarge ? .title3 : .caption).foregroundStyle(.secondary)
+            ProgressView(value: min(max(entry.snapshot.progress, 0), 1))
+                .tint(color)
+                .scaleEffect(y: isLarge ? 1.8 : 1, anchor: .center)
+            Text(entry.snapshot.detail)
+                .font(isLarge ? .body : .caption2).foregroundStyle(.tertiary).lineLimit(isLarge ? 5 : 2)
+            Spacer(minLength: 0)
+            if isLarge {
+                HStack {
+                    Text("多屏灵犀").font(.caption2).foregroundStyle(.quaternary)
+                    Spacer()
+                    Text(entry.date, style: .time).font(.caption2).foregroundStyle(.quaternary)
+                }
+            }
         }
-        .padding(14)
+        .padding(isLarge ? 22 : 14)
         .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
     }
 }
@@ -91,7 +109,7 @@ struct LingxiWidget: Widget {
         }
         .configurationDisplayName(title)
         .description("多屏灵犀卡片快照")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
