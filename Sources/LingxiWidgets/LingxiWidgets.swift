@@ -32,7 +32,7 @@ struct WidgetProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<WidgetEntry>) -> Void) {
         load { snapshot in
             let entry = WidgetEntry(date: Date(), snapshot: snapshot)
-            completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(300))))
+            completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60))))
         }
     }
     private func load(completion: @escaping (WidgetSnapshot) -> Void) {
@@ -97,12 +97,12 @@ struct SnapshotView: View {
 }
 
 
-struct ImageEntry: TimelineEntry { let date: Date; let data: Data?; let name: String }
+struct ImageEntry: TimelineEntry { let date: Date; let data: Data?; let darkData: Data?; let name: String }
 
 struct ImageProvider: TimelineProvider {
     let path: String
     let title: String
-    func placeholder(in context: Context) -> ImageEntry { ImageEntry(date: Date(), data: nil, name: title) }
+    func placeholder(in context: Context) -> ImageEntry { ImageEntry(date: Date(), data: nil, darkData: nil, name: title) }
     func getSnapshot(in context: Context, completion: @escaping (ImageEntry) -> Void) {
         load(family: context.family, completion)
     }
@@ -113,20 +113,45 @@ struct ImageProvider: TimelineProvider {
     }
     private func size(for family: WidgetFamily) -> String {
         switch family {
-        case .systemSmall: return "360&h=360"
-        case .systemLarge: return "720&h=720"
-        default: return "720&h=360"
+        case .systemSmall: return "170&h=170"
+        case .systemLarge: return "360&h=360"
+        default: return "360&h=180"
         }
     }
     private func load(family: WidgetFamily = .systemMedium, _ completion: @escaping (ImageEntry) -> Void) {
+        loadImage(family: family, dark: false) { light in
+            loadImage(family: family, dark: true) { dark in
+                DispatchQueue.main.async {
+                    completion(ImageEntry(date: Date(), data: light, darkData: dark, name: title))
+                }
+            }
+        }
+    }
+    private func loadImage(family: WidgetFamily, dark: Bool, _ completion: @escaping (Data?) -> Void) {
         let separator = path.contains("?") ? "&" : "?"
-        guard let url = URL(string: "http://127.0.0.1:8788" + path + separator + "w=" + size(for: family)) else {
-            completion(ImageEntry(date: Date(), data: nil, name: title)); return
+        guard let url = URL(string: "http://127.0.0.1:8788" + path + separator + "w=" + size(for: family) + "&scheme=" + (dark ? "dark" : "light")) else {
+            completion(nil); return
         }
         var request = URLRequest(url: url); request.timeoutInterval = 5
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            DispatchQueue.main.async { completion(ImageEntry(date: Date(), data: data, name: title)) }
-        }.resume()
+        URLSession.shared.dataTask(with: request) { data, _, _ in completion(data) }.resume()
+    }
+}
+
+struct WidgetImageView: View {
+    let entry: ImageEntry
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        Group {
+            if let data = (colorScheme == .dark ? entry.darkData : entry.data) ?? entry.data ?? entry.darkData,
+               let image = NSImage(data: data) {
+                Image(nsImage: image).resizable()
+            } else {
+                Text("打开多屏灵犀").font(.headline).foregroundStyle(.secondary)
+            }
+        }
+        .containerBackground(for: .widget) {
+            colorScheme == .dark ? Color(nsColor: .windowBackgroundColor) : Color.white
+        }
     }
 }
 
@@ -138,18 +163,12 @@ struct ImageWidget: Widget {
     init(kind: String, path: String, title: String) { self.kind = kind; self.path = path; self.title = title }
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: ImageProvider(path: path, title: title)) { entry in
-            Group {
-                if let data = entry.data, let image = NSImage(data: data) {
-                    Image(nsImage: image).resizable()
-                } else {
-                    Text("打开多屏灵犀").font(.headline).foregroundStyle(.secondary)
-                }
-            }
-            .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+            WidgetImageView(entry: entry)
         }
         .configurationDisplayName(title)
         .description("与多屏灵犀中控卡片一致")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }
 
@@ -180,9 +199,9 @@ struct PrinterSelectionIntent: WidgetConfigurationIntent {
     @Parameter(title: "打印机") var printer: PrinterEntity?
     init() {}
 }
-struct PrinterEntry: TimelineEntry { let date: Date; let data: Data?; let name: String }
+struct PrinterEntry: TimelineEntry { let date: Date; let data: Data?; let darkData: Data?; let name: String }
 struct PrinterProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> PrinterEntry { PrinterEntry(date: Date(), data: nil, name: "打印机") }
+    func placeholder(in context: Context) -> PrinterEntry { PrinterEntry(date: Date(), data: nil, darkData: nil, name: "打印机") }
     func snapshot(for configuration: PrinterSelectionIntent, in context: Context) async -> PrinterEntry {
         await load(configuration, family: context.family)
     }
@@ -191,40 +210,54 @@ struct PrinterProvider: AppIntentTimelineProvider {
         return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))
     }
     private func load(_ configuration: PrinterSelectionIntent, family: WidgetFamily) async -> PrinterEntry {
-        var path = "/widget/image/printer"
+        var base = "/widget/image/printer"
         if let id = configuration.printer?.id, let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            path += "?id=\(encoded)&"
+            base += "?id=\(encoded)&"
         } else {
-            path += "?"
+            base += "?"
         }
+        let dimensions: String
         switch family {
-        case .systemSmall: path += "w=360&h=360"
-        case .systemLarge: path += "w=720&h=720"
-        default: path += "w=720&h=360"
+        case .systemSmall: dimensions = "w=170&h=170"
+        case .systemLarge: dimensions = "w=360&h=360"
+        default: dimensions = "w=360&h=180"
         }
-        guard let url = URL(string: "http://127.0.0.1:8788" + path),
-              let (data, _) = try? await URLSession.shared.data(from: url) else {
-            return PrinterEntry(date: Date(), data: nil, name: configuration.printer?.name ?? "打印机")
+        func image(dark: Bool) async -> Data? {
+            guard let url = URL(string: "http://127.0.0.1:8788" + base + dimensions + "&scheme=" + (dark ? "dark" : "light")) else { return nil }
+            return try? await URLSession.shared.data(from: url).0
         }
-        return PrinterEntry(date: Date(), data: data, name: configuration.printer?.name ?? "打印机")
+        return PrinterEntry(date: Date(), data: await image(dark: false),
+                            darkData: await image(dark: true),
+                            name: configuration.printer?.name ?? "打印机")
     }
 }
+struct PrinterWidgetView: View {
+    let entry: PrinterEntry
+    @Environment(\.colorScheme) private var colorScheme
+    var body: some View {
+        Group {
+            if let data = (colorScheme == .dark ? entry.darkData : entry.data) ?? entry.data ?? entry.darkData,
+               let image = NSImage(data: data) {
+                Image(nsImage: image).resizable()
+            } else {
+                VStack(spacing: 6) {
+                    Text(entry.name).font(.headline)
+                    Text("打开多屏灵犀，或在编辑小组件中选择打印机").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .containerBackground(for: .widget) {
+            colorScheme == .dark ? Color(nsColor: .windowBackgroundColor) : Color.white
+        }
+    }
+}
+
 struct PrinterWidget: Widget {
     init() {}
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: "LingxiPrinter", intent: PrinterSelectionIntent.self,
                                provider: PrinterProvider()) { entry in
-            Group {
-                if let data = entry.data, let image = NSImage(data: data) {
-                    Image(nsImage: image).resizable()
-                } else {
-                    VStack(spacing: 6) {
-                        Text("打印机").font(.headline)
-                        Text("打开多屏灵犀，或在编辑小组件中选择打印机").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+            PrinterWidgetView(entry: entry)
         }
         .configurationDisplayName("打印机")
         .description("选择并显示 Bambu Lab / Formlabs 中控卡片")
@@ -247,6 +280,7 @@ struct LingxiWidget: Widget {
         .configurationDisplayName(title)
         .description("多屏灵犀卡片快照")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }
 

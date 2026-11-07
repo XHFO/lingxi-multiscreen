@@ -159,7 +159,8 @@ struct ControlCenterPrinterSnapshot {
 @MainActor private let controlCenterPrinterImageCache = ControlCenterPrinterImageCache()
 
 extension AppModel {
-    @MainActor func controlCenterPrinterSnapshot(for source: DeviceControlCenterDataSource) -> ControlCenterPrinterSnapshot? {
+    @MainActor func controlCenterPrinterSnapshot(for source: DeviceControlCenterDataSource,
+                                                  pictures: (camera: Data?, task: Data?)? = nil) -> ControlCenterPrinterSnapshot? {
         guard source.kind == .printer, case .managedDevice(let id) = source.destination,
               let device = settings.devices.first(where: { $0.id == id }), device.isEnabled else { return nil }
         switch device.type {
@@ -179,10 +180,10 @@ extension AppModel {
             let config = BambuLabCardSettings.from(device)
             guard let entities, !config.statusEntityID.isEmpty,
                   entities.contains(where: { $0.entityId == config.statusEntityID }) else { return nil }
-            let pictures = existingControlCenterBambuPictures(for: id)
+            let resolvedPictures = pictures ?? existingControlCenterBambuPictures(for: id)
             return .bambu(config, entities: entities,
                           staleErrorSeconds: TimeInterval(max(10, max(1, settings.haRefreshMinutes) * 2) * 60),
-                          cameraImage: pictures.camera, taskImage: pictures.task,
+                          cameraImage: resolvedPictures.camera, taskImage: resolvedPictures.task,
                           supportsPictures: device.settings.bambuDataSource != .localMQTT,
                           sampledAt: device.settings.bambuDataSource == .localMQTT ? nil : haSnapshot.sampledAt) { kind, data in
                 controlCenterPrinterImageCache.image(for: id, slot: kind == .camera ? .camera : .task, data: data)

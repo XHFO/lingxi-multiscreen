@@ -471,6 +471,8 @@ public final class AppModel: ObservableObject {
     @Published public var showDeepSeekLogin = false
     private var xiaomiQRTask: Task<Void, Never>?
     private let widgetBridge = WidgetBridgeServer()
+    private var widgetPrinterPictures: [UUID: (camera: Data?, task: Data?)] = [:]
+    private let widgetPreviewDemandOwner = UUID()
     @Published public var aiStatusAuto: AIStatusEntry?
     @Published public var aiStatusHookEntries: [AIStatusEntry] = []
     private var aiStatusTask: Task<Void, Never>?
@@ -7289,26 +7291,40 @@ public func setClockTimeFormat(_ format: String) {
         let width = min(max(Double(query.first(where: { $0.name == "w" })?.value ?? "") ?? 360, 160), 900)
         let height = min(max(Double(query.first(where: { $0.name == "h" })?.value ?? "") ?? 360, 160), 900)
         let size = CGSize(width: width, height: height)
+        let dark = query.first(where: { $0.name == "scheme" })?.value == "dark"
         switch cleanPath {
         case "/widget/image/cloudflare":
             guard let source = settings.cloudflareSources.first else { return nil }
             return WidgetCardImageRenderer.png(
                 ControlCenterCloudflareContent(source: source,
                     themeAccent: CloudflareDisplaySettingsPolicy.themeAccent(for: settings)),
-                size: size)
+                size: size, dark: dark)
         case "/widget/image/home-assistant":
             guard let source = controlCenterDataSources().first(where: { $0.kind == .homeAssistant }) else { return nil }
             return WidgetCardImageRenderer.png(
                 ControlCenterHomeAssistantCard(model: self, source: source, height: size.height, action: {}),
-                size: size)
+                size: size, dark: dark)
         case "/widget/image/printer":
             let sources = controlCenterDataSources().filter { $0.kind == .printer }
             guard let source = sources.first(where: { requestedID == nil || $0.id == requestedID }) ?? sources.first else { return nil }
+            var printerIDs = Set<UUID>()
+            for item in sources {
+                if case .managedDevice(let id) = item.destination { printerIDs.insert(id) }
+            }
+            beginControlCenterSourcePreviewDemand(owner: widgetPreviewDemandOwner, deviceIDs: printerIDs)
+            var pictures: (camera: Data?, task: Data?)?
+            if case .managedDevice(let id) = source.destination {
+                let live = existingControlCenterBambuPictures(for: id)
+                let cached = widgetPrinterPictures[id]
+                let merged = (live.camera ?? cached?.camera, live.task ?? cached?.task)
+                if live.camera != nil || live.task != nil { widgetPrinterPictures[id] = merged }
+                pictures = merged
+            }
             return WidgetCardImageRenderer.png(
                 ControlCenterPrinterCard(source: source,
-                    snapshot: controlCenterPrinterSnapshot(for: source),
+                    snapshot: controlCenterPrinterSnapshot(for: source, pictures: pictures),
                     height: size.height, action: {}),
-                size: size)
+                size: size, dark: dark)
         default:
             return nil
         }
