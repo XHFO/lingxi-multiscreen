@@ -30,6 +30,7 @@ let package = Package(
         .executableTarget(
             name: "LingxiWidgets",
             path: "Sources/LingxiWidgets",
+            swiftSettings: [.unsafeFlags(["-application-extension"])],
             linkerSettings: [.linkedFramework("WidgetKit"), .linkedFramework("SwiftUI")]
         ),
         .executableTarget(
