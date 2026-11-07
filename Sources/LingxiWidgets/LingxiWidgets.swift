@@ -334,9 +334,14 @@ struct PrinterWidgetData: Codable {
     var name: String; var brand: String; var status: String; var task: String
     var progress: Double; var metrics: [PrinterMetricDTO]; var error: String
 }
-struct PrinterDataEntry: TimelineEntry { let date: Date; let data: PrinterWidgetData? }
+struct PrinterDataEntry: TimelineEntry {
+    let date: Date
+    let data: PrinterWidgetData?
+    let camera: Data?
+    let task: Data?
+}
 struct PrinterDataProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> PrinterDataEntry { PrinterDataEntry(date: Date(), data: nil) }
+    func placeholder(in context: Context) -> PrinterDataEntry { PrinterDataEntry(date: Date(), data: nil, camera: nil, task: nil) }
     func snapshot(for configuration: PrinterSelectionIntent, in context: Context) async -> PrinterDataEntry { await load(configuration) }
     func timeline(for configuration: PrinterSelectionIntent, in context: Context) async -> Timeline<PrinterDataEntry> {
         let entry = await load(configuration)
@@ -350,9 +355,19 @@ struct PrinterDataProvider: AppIntentTimelineProvider {
         guard let url = URL(string: "http://127.0.0.1:8788" + path),
               let (data, _) = try? await URLSession.shared.data(from: url),
               let value = try? JSONDecoder().decode(PrinterWidgetData.self, from: data) else {
-            return PrinterDataEntry(date: Date(), data: nil)
+            return PrinterDataEntry(date: Date(), data: nil, camera: nil, task: nil)
         }
-        return PrinterDataEntry(date: Date(), data: value)
+        let id = configuration.printer?.id
+        func picture(_ kind: String) async -> Data? {
+            var path = "/widget/printer-image?kind=\(kind)"
+            if let id, let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                path += "&id=\(encoded)"
+            }
+            guard let url = URL(string: "http://127.0.0.1:8788" + path) else { return nil }
+            return try? await URLSession.shared.data(from: url).0
+        }
+        return PrinterDataEntry(date: Date(), data: value,
+                                camera: await picture("camera"), task: await picture("task"))
     }
 }
 struct PrinterDataView: View {
@@ -361,14 +376,29 @@ struct PrinterDataView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: family == .systemLarge ? 14 : 7) {
             HStack {
+                Circle().fill(statusColor).frame(width: 8, height: 8)
                 Text(entry.data?.name ?? "打印机").font(family == .systemLarge ? .title2.bold() : .headline)
                     .lineLimit(1)
                 Spacer()
                 if let status = entry.data?.status, !status.isEmpty {
-                    Text(status).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(status).font(.caption.weight(.semibold)).foregroundStyle(statusColor)
                 }
             }
             if let data = entry.data {
+                if family != .systemSmall, entry.camera != nil || entry.task != nil {
+                    HStack(spacing: 8) {
+                        if let camera = entry.camera, let image = NSImage(data: camera) {
+                            Image(nsImage: image).resizable().scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: family == .systemLarge ? 130 : 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        if let task = entry.task, let image = NSImage(data: task) {
+                            Image(nsImage: image).resizable().scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: family == .systemLarge ? 130 : 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
                 if !data.task.isEmpty {
                     Text(data.task).font(family == .systemLarge ? .headline : .subheadline).lineLimit(2)
                 }
@@ -395,6 +425,13 @@ struct PrinterDataView: View {
         }
         .padding(family == .systemLarge ? 20 : 12)
         .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+    private var statusColor: Color {
+        let status = entry.data?.status ?? ""
+        if status.contains("打印") || status.contains("运行") { return .green }
+        if status.contains("暂停") || status.contains("待机") || status.contains("休眠") { return .orange }
+        if status.contains("错误") || status.contains("失败") { return .red }
+        return .secondary
     }
 }
 struct PrinterDataWidget: Widget {

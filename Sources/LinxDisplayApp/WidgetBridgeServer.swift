@@ -38,7 +38,10 @@ final class WidgetBridgeServer {
                 guard let self, let model = self.model else { connection.cancel(); return }
                 let body: Data
                 let contentType: String
-                if path.hasPrefix("/widget/image/") {
+                if path == "/widget/printer-image" {
+                    body = model.widgetPrinterImagePNG(path: fullPath) ?? Data()
+                    contentType = body.isEmpty ? "application/json" : "image/png"
+                } else if path.hasPrefix("/widget/image/") {
                     body = model.widgetCardImage(path: fullPath) ?? Data()
                     contentType = body.isEmpty ? "application/json" : "image/png"
                 } else if path == "/widget/printers" {

@@ -7284,6 +7284,29 @@ public func setClockTimeFormat(_ format: String) {
     }
 
     @MainActor
+    public func widgetPrinterImagePNG(path: String) -> Data? {
+        let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
+        let id = query.first(where: { $0.name == "id" })?.value
+        let kind = query.first(where: { $0.name == "kind" })?.value ?? "camera"
+        let sources = controlCenterDataSources().filter { $0.kind == .printer }
+        guard let source = sources.first(where: { id == nil || $0.id == id }) ?? sources.first,
+              case .managedDevice(let deviceID) = source.destination else { return nil }
+        var ids = Set<UUID>()
+        for item in sources { if case .managedDevice(let value) = item.destination { ids.insert(value) } }
+        beginControlCenterSourcePreviewDemand(owner: widgetPreviewDemandOwner, deviceIDs: ids)
+        let live = existingControlCenterBambuPictures(for: deviceID)
+        let cached = widgetPrinterPictures[deviceID]
+        let merged = (live.camera ?? cached?.camera, live.task ?? cached?.task)
+        if live.camera != nil || live.task != nil { widgetPrinterPictures[deviceID] = merged }
+        let snapshot = controlCenterPrinterSnapshot(for: source, pictures: merged)
+        guard let picture = snapshot?.pictures.first(where: { $0.kind == (kind == "task" ? .task : .camera) }),
+              let image = picture.image,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    @MainActor
     public func widgetCardImage(path: String) -> Data? {
         let query = URLComponents(string: "http://127.0.0.1" + path)?.queryItems ?? []
         let requestedID = query.first(where: { $0.name == "id" })?.value
