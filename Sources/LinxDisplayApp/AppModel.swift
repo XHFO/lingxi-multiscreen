@@ -468,6 +468,7 @@ public final class AppModel: ObservableObject {
     @Published public var xiaomiQRImage: NSImage?
     @Published public var xiaomiQRSheet = false
     @Published public var xiaomiQRStatus = ""
+    @Published public var showDeepSeekLogin = false
     private var xiaomiQRTask: Task<Void, Never>?
     private let widgetBridge = WidgetBridgeServer()
     @Published public var aiStatusAuto: AIStatusEntry?

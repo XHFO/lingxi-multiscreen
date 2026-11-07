@@ -2202,9 +2202,15 @@ struct SettingsView: View {
                 Text("通过 DeepSeek 官方 GET /user/balance 读取总余额、赠送余额与充值余额。密钥仅保存在本机设置中。")
             }
             Section {
+                Button("登录平台并自动获取令牌") { model.showDeepSeekLogin = true }
                 SecureField("平台会话令牌（可选）", text: model.deepSeekPlatformTokenBinding)
                 Link("打开 DeepSeek 用量页", destination: URL(string: "https://platform.deepseek.com/usage")!)
-                Text("令牌来自 platform.deepseek.com 的浏览器本地存储 userToken，用于读取今日 / 本月 Token 与花费；不填时只显示官方余额。")
+                DisclosureGroup("自动获取失败时，手动复制 userToken") {
+                    Text("1. 在浏览器登录 platform.deepseek.com；\n2. 打开开发者工具 → Application / 存储 → Local Storage → https://platform.deepseek.com；\n3. 复制 userToken 的值，粘贴到上面的输入框。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("令牌只保存在本机，用于读取今日 / 本月 Token 与花费；不填时只显示官方余额。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -2256,6 +2262,16 @@ struct SettingsView: View {
             }
         }
         .controlCenterHostedFormSurface()
+        .sheet(isPresented: $model.showDeepSeekLogin) {
+            DeepSeekLoginSheet(
+                onToken: { token in
+                    model.settings.deepSeekPlatformToken = token
+                    model.showDeepSeekLogin = false
+                    Task { await model.refreshDeepSeek() }
+                },
+                onCancel: { model.showDeepSeekLogin = false })
+                .controlCenterFloatingPresentationSurface()
+        }
     }
 
     private var aiMacScreenForm: some View {
