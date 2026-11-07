@@ -7,6 +7,7 @@ struct ControlCenterGlassCard: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.widgetRendering) private var widgetRendering
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 20, style: .continuous) }
     private var border: Color {
@@ -27,7 +28,7 @@ struct ControlCenterGlassCard: ViewModifier {
     }
 
     @ViewBuilder private func surface(_ content: Content) -> some View {
-        if reduceTransparency {
+        if reduceTransparency || widgetRendering {
             content
                 .background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .clipShape(shape)

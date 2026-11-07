@@ -113,9 +113,9 @@ struct ImageProvider: TimelineProvider {
     }
     private func size(for family: WidgetFamily) -> String {
         switch family {
-        case .systemSmall: return "170&h=170"
-        case .systemLarge: return "360&h=360"
-        default: return "360&h=180"
+        case .systemSmall: return "150&h=150"
+        case .systemLarge: return "320&h=320"
+        default: return "300&h=150"
         }
     }
     private func load(family: WidgetFamily = .systemMedium, _ completion: @escaping (ImageEntry) -> Void) {
@@ -218,9 +218,9 @@ struct PrinterProvider: AppIntentTimelineProvider {
         }
         let dimensions: String
         switch family {
-        case .systemSmall: dimensions = "w=170&h=170"
-        case .systemLarge: dimensions = "w=360&h=360"
-        default: dimensions = "w=360&h=180"
+        case .systemSmall: dimensions = "w=150&h=150"
+        case .systemLarge: dimensions = "w=320&h=320"
+        default: dimensions = "w=300&h=150"
         }
         func image(dark: Bool) async -> Data? {
             guard let url = URL(string: "http://127.0.0.1:8788" + base + dimensions + "&scheme=" + (dark ? "dark" : "light")) else { return nil }
