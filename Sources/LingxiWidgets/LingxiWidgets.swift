@@ -197,6 +197,9 @@ struct PrinterSelectionIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "选择打印机"
     static var description = IntentDescription("选择要显示的中控打印机卡片")
     @Parameter(title: "打印机") var printer: PrinterEntity?
+    static var parameterSummary: some ParameterSummary {
+        Summary("显示 \(\.$printer)")
+    }
     init() {}
 }
 struct PrinterEntry: TimelineEntry { let date: Date; let data: Data?; let darkData: Data?; let name: String }
@@ -255,13 +258,14 @@ struct PrinterWidgetView: View {
 struct PrinterWidget: Widget {
     init() {}
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: "LingxiPrinter", intent: PrinterSelectionIntent.self,
+        AppIntentConfiguration(kind: "LingxiPrinterCard", intent: PrinterSelectionIntent.self,
                                provider: PrinterProvider()) { entry in
             PrinterWidgetView(entry: entry)
         }
         .configurationDisplayName("打印机")
         .description("选择并显示 Bambu Lab / Formlabs 中控卡片")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }
 
