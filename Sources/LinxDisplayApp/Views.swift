@@ -3782,6 +3782,34 @@ struct SettingsView: View {
 
     /// 设备管理页面：多台 灵犀68/口袋先知/摘录 设备的添加、重命名、删除与活动设备切换；
     /// 每台设备独立记住自己的画板与卡片设置；Home Assistant 服务器为全局唯一连接配置
+    private var codexDataSourceStatus: String {
+        model.usage.isAvailable ? "\(model.usage.remainingPercent)% · \(model.usage.windowTitle)" : "未读取 · 配置 Codex CLI 或 CC Switch"
+    }
+    private var qwenDataSourceStatus: String {
+        model.qwenQuota.available
+            ? "\(model.qwenQuota.remainingCredits.formatted(.number.precision(.fractionLength(0...1)))) \(model.qwenQuota.unit)"
+            : "未读取 · 需要本机千问办公服务"
+    }
+    private var grokDataSourceStatus: String {
+        if let remaining = model.grokBotUsage.remainingPercent { return "剩余 \(remaining)%" }
+        return model.grokBotUsage.message.isEmpty ? "未配置" : model.grokBotUsage.message
+    }
+    private func aiDataSourceRow(title: String, symbol: String, status: String, panel: Panel) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(.secondary).frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button("配置") {
+                deviceSheetOpen = false
+                controlCenterDataSource = nil
+                selected = panel
+            }.buttonStyle(.bordered)
+        }.padding(.vertical, 4)
+    }
+
     /// 共享数据源里的 DeepSeek 入口。密钥是全局配置，但卡片仍按设备在卡片管理中启用。
     private var deepSeekDataSourceRow: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -3845,7 +3873,7 @@ struct SettingsView: View {
                 Text("尚未添加设备").foregroundStyle(.secondary)
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-                ForEach(model.settings.devices) { device in
+                ForEach(model.settings.devices.filter { $0.type != .homeAssistant }) { device in
                     Button {
                         if device.type == .readPico && device.isEnabled {
                             openReadPicoDevice(device.id)
@@ -3876,12 +3904,80 @@ struct SettingsView: View {
             }
           }
           Section {
-            deepSeekDataSourceRow
+            aiDataSourceRow(title: "Codex 用量", symbol: "terminal",
+                            status: codexDataSourceStatus, panel: .codex)
+            aiDataSourceRow(title: "千问办公额度", symbol: "creditcard",
+                            status: qwenDataSourceStatus, panel: .qwenWork)
+            aiDataSourceRow(title: "Grok Bot 用量", symbol: "bolt.horizontal",
+                            status: grokDataSourceStatus, panel: .grokBot)
+            aiDataSourceRow(title: "DeepSeek 官方用量", symbol: "brain.head.profile",
+                            status: deepSeekDataSourceStatus, panel: .deepSeek)
+          } header: {
+            Text("AI 数据源")
+          } footer: {
+            Text("AI 额度与用量统一在这里配置；键盘卡片只负责显示，不再从卡片管理中添加数据源。")
+          }
+          Section {
+            let haSources = model.settings.devices.filter { $0.type == .homeAssistant }
+            if haSources.isEmpty {
+              Text("尚未添加 Home Assistant 数据源").foregroundStyle(.secondary)
+            }
+            ForEach(haSources) { device in
+              HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "house.fill").font(.title3).foregroundStyle(.secondary).frame(width: 24)
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(device.name).font(.headline)
+                  Text(device.isEnabled ? "Home Assistant · 已启用" : "Home Assistant · 已停用")
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("配置") {
+                  selectedManagedDeviceID = device.id
+                  highlightedDeviceID = device.id
+                  addingDeviceID = nil
+                  expandedDeviceIDs.insert(device.id)
+                  editingDeviceIDs.insert(device.id)
+                  deviceSheetOpen = true
+                }.buttonStyle(.bordered)
+              }.padding(.vertical, 4)
+            }
+            Button {
+              selectedManagedDeviceID = nil
+              addingDeviceID = nil
+              selectedAddDeviceType = .homeAssistant
+              deviceSheetOpen = true
+            } label: {
+              Label("添加 Home Assistant 数据源", systemImage: "plus.circle")
+            }.buttonStyle(.bordered)
+          } header: {
+            Text("Home Assistant")
+          } footer: {
+            Text("Home Assistant 作为共享数据源管理，不再和设备卡片混在一起。")
+          }
+          Section {
+            HStack(alignment: .top, spacing: 12) {
+              Image(systemName: "m.square.fill").font(.title3).foregroundStyle(Color.orange).frame(width: 24)
+              VStack(alignment: .leading, spacing: 4) {
+                Text("小米 IoT").font(.headline)
+                Text(model.xiaomiAccount == nil ? "未登录 · 登录后导入小米设备" : "已登录 · \(model.selectedXiaomiDevices.count) 台设备")
+                  .font(.caption).foregroundStyle(.secondary)
+              }
+              Spacer(minLength: 8)
+              Button(model.xiaomiAccount == nil ? "登录" : "配置") {
+                deviceSheetOpen = false
+                controlCenterDataSource = nil
+                selected = .xiaomi
+              }.buttonStyle(.bordered)
+            }.padding(.vertical, 4)
+          } header: {
+            Text("小米 IoT")
+          } footer: {
+            Text("小米账号与设备导入统一在数据源中管理，不再占据侧边栏。")
+          }
+          Section {
             CloudflareSourcesManagementView(model: model, showsTitle: false)
           } header: {
-            Text("共享数据源")
-          } footer: {
-            Text("在这里连接网站、AI 用量等数据服务。添加一次，所有设备的同类卡片共用，不需要在每台设备重复填写。")
+            Text("网站统计")
           }
         }
         .sheet(isPresented: $deviceSheetOpen, onDismiss: {
@@ -9409,7 +9505,6 @@ struct Sidebar: View {
         VStack(spacing: 2) {
             sidebarRow(.controlCenter)
             sidebarRow(.wallpaperLibrary)
-            sidebarRow(.xiaomi)
             Divider().padding(.vertical, 4)
             // 按设备实例分类：每台设备（设备管理中添加的）下面挂它的卡片功能，
             // 点开某台设备下的功能项即操作那台设备

@@ -12346,8 +12346,9 @@ public func setClockTimeFormat(_ format: String) {
         let visible = Set(activeKeyboardCardList.map(\.rawValue))
         let printerCount = enabledDevices(for: .bambuLab).count
         let formlabsCount = enabledDevices(for: .formlabs).count
+        let dataSourcePanels: Set<Panel> = [.codex, .qwenWork, .grokBot, .deepSeek]
         return Panel.orderedKeyboardItems(settings.sidebarOrder)
-            .filter { $0 != .devices && $0 != .cardRotation && !visible.contains($0.rawValue)
+            .filter { $0 != .devices && $0 != .cardRotation && !dataSourcePanels.contains($0) && !visible.contains($0.rawValue)
                 && (($0.bambuSlotIndex.map { $0 < printerCount }) ?? true)
                 && (($0.formlabsSlotIndex.map { $0 < formlabsCount }) ?? true) }
     }
