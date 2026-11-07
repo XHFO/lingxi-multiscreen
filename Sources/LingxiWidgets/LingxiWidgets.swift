@@ -102,5 +102,16 @@ struct LingxiWidgetBundle: WidgetBundle {
         LingxiWidget(kind: "LingxiSystem", path: "system", title: "系统监控")
         LingxiWidget(kind: "LingxiDeepSeek", path: "deepseek", title: "DeepSeek 用量")
         LingxiWidget(kind: "LingxiAIStatus", path: "ai-status", title: "AI 状态")
+        LingxiWidget(kind: "LingxiQwen", path: "qwen", title: "千问办公额度")
+        LingxiWidget(kind: "LingxiGrok", path: "grok", title: "Grok Bot")
+        LingxiWidget(kind: "LingxiSspai", path: "sspai", title: "少数派")
+        LingxiWidget(kind: "LingxiPomodoro", path: "pomodoro", title: "番茄钟")
+        LingxiWidget(kind: "LingxiExcerpt", path: "excerpt", title: "摘录语录")
+        LingxiWidget(kind: "LingxiEmoji", path: "emoji", title: "Emoji 壁纸")
+        LingxiWidget(kind: "LingxiWeather", path: "weather", title: "天气")
+        LingxiWidget(kind: "LingxiNowPlaying", path: "now-playing", title: "正在播放")
+        LingxiWidget(kind: "LingxiCloudflare", path: "cloudflare", title: "Cloudflare")
+        LingxiWidget(kind: "LingxiHomeAssistant", path: "home-assistant", title: "Home Assistant")
+        LingxiWidget(kind: "LingxiPrinter", path: "printer", title: "打印机")
     }
 }

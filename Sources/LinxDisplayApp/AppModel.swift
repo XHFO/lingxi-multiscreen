@@ -7304,6 +7304,73 @@ public func setClockTimeFormat(_ format: String) {
             return payload("DeepSeek", primary, state == .notConfigured ? "未配置" : deepSeekUsage.currency,
                            deepSeekUsage.message.isEmpty ? "官方余额" : deepSeekUsage.message,
                            state == .live ? 1 : 0.5, state == .unauthorized || state == .unreadable ? "red" : "purple")
+        case "/widget/qwen":
+            let q = qwenQuota
+            let used = q.percentageUsed ?? 0
+            return payload("千问办公额度", q.available ? String(format: "%.0f", q.remainingCredits) : "—",
+                           q.unit, q.available ? (q.plan ?? "剩余额度") : "未读取",
+                           q.available ? max(0, min(1, 1 - used / 100)) : 0,
+                           q.available ? "blue" : "gray")
+        case "/widget/grok":
+            let g = grokBotUsage
+            let pct = g.remainingPercent.map { "\($0)%" } ?? "—"
+            return payload("Grok Bot", pct, g.planLabel ?? "每周额度", g.message,
+                           Double(g.remainingPercent ?? 0) / 100,
+                           g.state == .live ? "green" : "gray")
+        case "/widget/sspai":
+            let article = sspaiArticles.first
+            return payload("少数派", article?.author ?? "—", article?.title ?? "暂无文章",
+                           "共 \(sspaiArticles.count) 篇推荐", article == nil ? 0 : 1, "red")
+        case "/widget/pomodoro":
+            let phase = pomodoro.state.phase
+            let title: String
+            switch phase {
+            case .idle: title = "空闲"
+            case .focus: title = "专注中"
+            case .shortBreak: title = "短休息"
+            case .longBreak: title = "长休息"
+            case .paused: title = "已暂停"
+            }
+            let remaining = pomodoro.state.endsAt.map { max(0, Int($0.timeIntervalSinceNow / 60)) } ?? 0
+            return payload("番茄钟", title, pomodoro.state.taskName,
+                           "已完成 \(pomodoro.state.completedFocusSessions) 个番茄 · 剩余 \(remaining) 分钟",
+                           phase == .focus ? 1 : 0, phase == .focus ? "red" : "orange")
+        case "/widget/excerpt":
+            return payload("摘录语录", "摘录", "每日一句", quoteDisplayText, 1, "orange")
+        case "/widget/emoji":
+            return payload("Emoji 壁纸", "\(settings.emojiWallpaperText.count)", "个字符",
+                           settings.emojiWallpaperText, 1, "purple")
+        case "/widget/weather":
+            guard settings.weather.isValid, let weather = settings.weatherSnapshot else {
+                return payload("天气", "—", "未设置城市", "打开多屏灵犀设置天气", 0, "gray")
+            }
+            return payload("天气", String(format: "%.0f°", weather.temperature), weather.city,
+                           "最高 \(Int(weather.high))° · 最低 \(Int(weather.low))° · 降雨 \(weather.rainProbability)%",
+                           Double(max(0, min(100, weather.rainProbability))) / 100, "blue")
+        case "/widget/now-playing":
+            let playing = nowPlaying
+            return payload("正在播放", playing.playbackRate > 0 ? "播放中" : "已暂停",
+                           playing.title.isEmpty ? "未在播放" : playing.title,
+                           playing.artist.isEmpty ? (playing.appName ?? "系统媒体") : playing.artist,
+                           playing.duration > 0 ? min(1, playing.elapsedTime / playing.duration) : 0,
+                           playing.title.isEmpty ? "gray" : "green")
+        case "/widget/cloudflare":
+            let sources = settings.cloudflareSources
+            let requests = sources.compactMap { $0.snapshot?.requests }.reduce(0, +)
+            return payload("Cloudflare", CloudflareAnalyticsSnapshot.countText(requests), "次请求",
+                           "\(sources.count) 个站点来源", sources.isEmpty ? 0 : 1, "orange")
+        case "/widget/home-assistant":
+            let entities = haSnapshot.entities
+            let unavailable = entities.filter { ["unavailable", "unknown"].contains($0.state.lowercased()) }.count
+            let first = haSnapshot.selected
+            return payload("Home Assistant", "\(entities.count)", "个实体",
+                           first.map { "\($0.entityId) · \($0.state)" } ?? (haSnapshot.errorText ?? "尚无实体"),
+                           entities.isEmpty ? 0 : 1, haSnapshot.errorText == nil ? "blue" : "red")
+        case "/widget/printer":
+            let printers = settings.devices.filter { $0.type == .bambuLab || $0.type == .formlabs }
+            return payload("打印机", "\(printers.count)", "台设备",
+                           printers.first.map { MenuBarNamingPolicy.resolvedDeviceName($0) } ?? "尚未添加打印机",
+                           printers.isEmpty ? 0 : 1, "orange")
         case "/widget/ai-status":
             if let first = aiStatusEntries.first {
                 return payload("AI 状态", first.state.title, first.source,
