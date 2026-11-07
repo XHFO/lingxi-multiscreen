@@ -7297,7 +7297,9 @@ public func setClockTimeFormat(_ format: String) {
             guard let source = settings.cloudflareSources.first else { return nil }
             return WidgetCardImageRenderer.png(
                 ControlCenterCloudflareContent(source: source,
-                    themeAccent: CloudflareDisplaySettingsPolicy.themeAccent(for: settings)),
+                    themeAccent: CloudflareDisplaySettingsPolicy.themeAccent(for: settings))
+                    .background(dark ? Color(nsColor: .windowBackgroundColor) : Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous)),
                 size: size, dark: dark)
         case "/widget/image/home-assistant":
             guard let source = controlCenterDataSources().first(where: { $0.kind == .homeAssistant }) else { return nil }
