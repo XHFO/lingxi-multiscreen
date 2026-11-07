@@ -569,6 +569,85 @@ struct HomeAssistantWidget: Widget {
         .contentMarginsDisabled()
     }
 }
+
+struct DeepSeekData: Codable {
+    var state: String; var balance: String; var currency: String; var message: String
+    var apiAvailable: Bool; var todayCost: String?; var todayTokens: String?
+    var monthCost: String?; var monthTokens: String?; var todayRequests: Int?; var monthRequests: Int?
+    var topModel: String?
+}
+struct DeepSeekEntry: TimelineEntry { let date: Date; let data: DeepSeekData? }
+struct DeepSeekProvider: TimelineProvider {
+    func placeholder(in context: Context) -> DeepSeekEntry { DeepSeekEntry(date: Date(), data: nil) }
+    func getSnapshot(in context: Context, completion: @escaping (DeepSeekEntry) -> Void) { load(completion) }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<DeepSeekEntry>) -> Void) {
+        load { entry in completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))) }
+    }
+    private func load(_ completion: @escaping (DeepSeekEntry) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:8788/widget/deepseek-data") else {
+            completion(DeepSeekEntry(date: Date(), data: nil)); return
+        }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            let value = data.flatMap { try? JSONDecoder().decode(DeepSeekData.self, from: $0) }
+            DispatchQueue.main.async { completion(DeepSeekEntry(date: Date(), data: value)) }
+        }.resume()
+    }
+}
+struct DeepSeekWidgetView: View {
+    let entry: DeepSeekEntry
+    @Environment(\.widgetFamily) private var family
+    var body: some View {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 10 : 5) {
+            HStack {
+                Text("DeepSeek").font(family == .systemLarge ? .headline : .caption.weight(.semibold))
+                Spacer()
+                Circle().fill((entry.data?.apiAvailable ?? false) ? .green : .orange).frame(width: 6, height: 6)
+            }
+            Text(entry.data?.balance ?? "—")
+                .font(.system(size: family == .systemLarge ? 38 : 26, weight: .bold, design: .rounded))
+                .foregroundStyle(.purple).lineLimit(1).minimumScaleFactor(0.6)
+            Text(entry.data?.currency ?? "CNY").font(.caption2).foregroundStyle(.secondary)
+            if let data = entry.data {
+                if family != .systemSmall {
+                    HStack(spacing: 12) {
+                        info("今日", data.todayCost ?? "—", data.todayTokens.map { $0 + " tok" } ?? "")
+                        info("本月", data.monthCost ?? "—", data.monthTokens.map { $0 + " tok" } ?? "")
+                    }
+                }
+                if family == .systemLarge {
+                    HStack(spacing: 12) {
+                        info("今日请求", data.todayRequests.map(String.init) ?? "—", "")
+                        info("本月请求", data.monthRequests.map(String.init) ?? "—", "")
+                    }
+                    if let top = data.topModel { Text("主要模型：\(top)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                if !data.message.isEmpty { Text(data.message).font(.caption2).foregroundStyle(.tertiary).lineLimit(2) }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(family == .systemLarge ? 18 : 10)
+        .containerBackground(for: .widget) { Color(nsColor: .windowBackgroundColor) }
+    }
+    private func info(_ title: String, _ value: String, _ sub: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 15, weight: .semibold, design: .rounded)).lineLimit(1).minimumScaleFactor(0.65)
+            if !sub.isEmpty { Text(sub).font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+struct DeepSeekWidget: Widget {
+    init() {}
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "LingxiDeepSeek", provider: DeepSeekProvider()) { entry in
+            DeepSeekWidgetView(entry: entry)
+        }
+        .configurationDisplayName("DeepSeek 用量")
+        .description("余额、今日/本月费用、Token、请求数与主要模型")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
+    }
+}
 struct LingxiWidget: Widget {
     let kind: String
     let path: String
@@ -594,7 +673,7 @@ struct LingxiWidgetBundle: WidgetBundle {
     var body: some Widget {
         LingxiWidget(kind: "LingxiCodex", path: "codex", title: "Codex 用量")
         LingxiWidget(kind: "LingxiSystem", path: "system", title: "系统监控")
-        LingxiWidget(kind: "LingxiDeepSeek", path: "deepseek", title: "DeepSeek 用量")
+        DeepSeekWidget()
         LingxiWidget(kind: "LingxiAIStatus", path: "ai-status", title: "AI 状态")
         LingxiWidget(kind: "LingxiQwen", path: "qwen", title: "千问办公额度")
         LingxiWidget(kind: "LingxiGrok", path: "grok", title: "Grok Bot")
@@ -603,6 +682,6 @@ struct LingxiWidgetBundle: WidgetBundle {
         LingxiWidget(kind: "LingxiExcerpt", path: "excerpt", title: "摘录语录")
         CloudflareWidget()
         HomeAssistantWidget()
-        PrinterDataWidget()
+        PrinterWidget()
     }
 }

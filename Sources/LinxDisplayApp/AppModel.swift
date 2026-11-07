@@ -7404,6 +7404,23 @@ public func setClockTimeFormat(_ format: String) {
             return payload("系统监控", String(format: "%.0f%%", system.cpuPercent), "CPU",
                            String(format: "内存 %.0f%% · 磁盘 %.0f%%", system.memoryPercent, system.diskPercent),
                            system.cpuPercent / 100, system.cpuPercent > 85 ? "red" : "green")
+        case "/widget/deepseek-data":
+            let d = deepSeekUsage
+            var dict: [String: Any] = [
+                "state": d.state.rawValue,
+                "balance": d.balanceText,
+                "currency": d.currency,
+                "message": d.message,
+                "apiAvailable": d.apiAvailable
+            ]
+            if let todayCost = d.todayCost { dict["todayCost"] = d.moneyText(todayCost) }
+            if let todayTokens = d.todayTokens { dict["todayTokens"] = todayTokens.formatted() }
+            if let monthCost = d.monthCost { dict["monthCost"] = d.moneyText(monthCost) }
+            if let monthTokens = d.monthTokens { dict["monthTokens"] = monthTokens.formatted() }
+            if let todayRequests = d.todayRequests { dict["todayRequests"] = todayRequests }
+            if let monthRequests = d.monthRequests { dict["monthRequests"] = monthRequests }
+            if let top = d.topModel { dict["topModel"] = top }
+            return (try? JSONSerialization.data(withJSONObject: dict)) ?? Data("{}".utf8)
         case "/widget/deepseek":
             let state = deepSeekUsage.state
             let primary = state == .notConfigured ? "—" : String(format: "%.2f", deepSeekUsage.totalBalance)
