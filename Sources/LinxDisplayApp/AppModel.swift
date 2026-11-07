@@ -7466,13 +7466,19 @@ public func setClockTimeFormat(_ format: String) {
             return payload("Cloudflare", CloudflareAnalyticsSnapshot.countText(requests), "次请求",
                            "\(sources.count) 个站点来源", sources.isEmpty ? 0 : 1, "orange")
         case "/widget/home-assistant-data":
-            let entities = haSnapshot.selectedEntities.isEmpty ? haSnapshot.entities : haSnapshot.selectedEntities
-            let items = entities.prefix(8).map { entity -> [String: Any] in
+            let sourceEntities = haSnapshot.selectedEntities.isEmpty ? haSnapshot.entities : haSnapshot.selectedEntities
+            let priority = ["light", "switch", "climate", "fan", "cover", "media_player", "sensor", "binary_sensor"]
+            func rank(_ entity: HAEntity) -> Int {
+                let domain = String(entity.entityId.split(separator: ".").first ?? "")
+                return priority.firstIndex(of: domain) ?? priority.count
+            }
+            let entities = sourceEntities.sorted { rank($0) < rank($1) }.prefix(8)
+            let items = entities.map { entity -> [String: Any] in
                 let name = haSnapshot.aliases[entity.entityId] ?? entity.friendlyName
                 return ["name": name, "state": entity.state, "domain": String(entity.entityId.split(separator: ".").first ?? "")]
             }
             let dict: [String: Any] = [
-                "count": entities.count,
+                "count": sourceEntities.count,
                 "entities": Array(items),
                 "error": haSnapshot.errorText ?? ""
             ]
