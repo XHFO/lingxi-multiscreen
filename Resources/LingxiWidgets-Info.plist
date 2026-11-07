@@ -11,6 +11,10 @@
     <key>CFBundlePackageType</key><string>XPC!</string>
     <key>CFBundleShortVersionString</key><string>2.0.0</string>
     <key>CFBundleVersion</key><string>88</string>
+    <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+    <key>DTPlatformName</key><string>macosx</string>
+    <key>DTSDKName</key><string>macosx26.0</string>
+    <key>UIDeviceFamily</key><array><integer>2</integer></array>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>NSExtension</key>
     <dict>

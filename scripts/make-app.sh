@@ -24,6 +24,10 @@ echo "==> swift build -c release（SDK ${SDK_VERSION}，最低 macOS ${MACOSX_DE
 # 分发包不携带 dSYM；在 Documents / File Provider 目录中生成 dSYM 还可能被系统
 # 扩展属性拦截。使用 SwiftPM 的产品级选项，避免它在编译结束后仍调用 dsymutil。
 BUILD_PATH="${LINGXI_SWIFT_BUILD_PATH:-$ROOT/.build}"
+# WidgetKit 扩展必须使用真实签名；ad-hoc 签名会让扩展在 ExtensionFoundation 启动时崩溃。
+# 优先使用环境变量，其次取本机第一张 Apple Development 证书，最后才回退 ad-hoc。
+CODESIGN_IDENTITY="${LINGXI_CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' 'NR==1{print $2}')}"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 BUILD_LOG="$(mktemp /private/tmp/lingxi-swift-build.XXXXXX)"
 swift build -c release --product LinxDisplayApp --disable-sandbox -debug-info-format none --scratch-path "$BUILD_PATH" 2>&1 | tee "$BUILD_LOG"
 # swiftbuild can exit successfully after a database I/O error and leave the old
@@ -35,6 +39,7 @@ fi
 
 BIN="$BUILD_PATH/release/LinxDisplayApp"
 WIDGET_BIN="$BUILD_PATH/release/LingxiWidgets"
+swift build -c release --product LingxiWidgets --disable-sandbox -debug-info-format none --scratch-path "$BUILD_PATH" >>"$BUILD_LOG" 2>&1
 APP_NAME="多屏灵犀 2.0 测试版"
 EXEC_NAME="LingxiMultiScreen"
 # 完整 2.0 测试主程序也可输出到独立候选目录，避免覆盖正在使用的测试包。
@@ -331,13 +336,13 @@ xattr -cr "$APP"
 xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "$APP" 2>/dev/null || true
 # 嵌套可执行文件先单独签名，再签整个应用，避免 Gatekeeper 将刷机助手识别为未签名组件。
-codesign --force --sign - "$APP/Contents/Resources/Firmware/lingxi-esptool"
-codesign --force --deep --sign - "$APP"
+codesign --force --sign "$CODESIGN_IDENTITY" "$APP/Contents/Resources/Firmware/lingxi-esptool"
+codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP"
 # --deep 会重新签嵌套扩展并丢掉沙盒 entitlement；必须再单独签 appex，
 # 然后只重签外层应用以更新封条（不能再用 --deep）。
 if [ -d "$APP/Contents/PlugIns/LingxiWidgets.appex" ]; then
-    codesign --force --sign - --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APP/Contents/PlugIns/LingxiWidgets.appex"
-    codesign --force --sign - "$APP"
+    codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APP/Contents/PlugIns/LingxiWidgets.appex"
+    codesign --force --sign "$CODESIGN_IDENTITY" "$APP"
 fi
 codesign --verify --deep --strict "$APP"
 
