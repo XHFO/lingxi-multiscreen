@@ -22,7 +22,7 @@ struct DeviceControlCenterDataSource: Identifiable, Equatable {
     static let softwareModes: [DisplayMode] = [
         .codex, .qwenWork, .grokBot, .deepSeek,
         .sspai, .pomodoro, .excerptQuote,
-        .systemMonitor, .emojiWallpaper
+        .systemMonitor
     ]
 
     let id: String
