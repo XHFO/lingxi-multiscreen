@@ -38,8 +38,15 @@ if rg -q '^error:' "$BUILD_LOG"; then
 fi
 
 BIN="$BUILD_PATH/release/LinxDisplayApp"
-WIDGET_BIN="$BUILD_PATH/release/LingxiWidgets"
-swift build -c release --product LingxiWidgets --disable-sandbox -debug-info-format none --scratch-path "$BUILD_PATH" >>"$BUILD_LOG" 2>&1
+# WidgetKit 扩展必须用 Xcode 的 App Extension target 构建；SwiftPM 手工 appex
+# 会在 ExtensionFoundation 启动时崩溃，无法被系统组件库枚举。
+WIDGET_DERIVED="$BUILD_PATH/xcode-widget"
+WIDGET_BIN="$WIDGET_DERIVED/Build/Products/Release/LingxiWidgets.appex"
+echo "==> xcodebuild WidgetKit 扩展"
+xcodebuild -project "$ROOT/LingxiWidgets.xcodeproj" -scheme LingxiWidgets \
+    -configuration Release -sdk macosx -derivedDataPath "$WIDGET_DERIVED" \
+    CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM=2N92534HPD \
+    CODE_SIGN_STYLE=Manual build >>"$BUILD_LOG" 2>&1
 APP_NAME="多屏灵犀 2.0 测试版"
 EXEC_NAME="LingxiMultiScreen"
 # 完整 2.0 测试主程序也可输出到独立候选目录，避免覆盖正在使用的测试包。
@@ -59,12 +66,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
 chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
 # WidgetKit 扩展：主应用常驻时通过 127.0.0.1:8788 提供只读卡片快照。
-if [ -x "$WIDGET_BIN" ]; then
+if [ -d "$WIDGET_BIN" ]; then
     APPEX="$APP/Contents/PlugIns/LingxiWidgets.appex"
-    mkdir -p "$APPEX/Contents/MacOS"
-    cp "$WIDGET_BIN" "$APPEX/Contents/MacOS/LingxiWidgets"
-    chmod +x "$APPEX/Contents/MacOS/LingxiWidgets"
-    cp "$ROOT/Resources/LingxiWidgets-Info.plist" "$APPEX/Contents/Info.plist"
+    ditto "$WIDGET_BIN" "$APPEX"
     xattr -cr "$APPEX"
     codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT/Resources/LingxiWidgets.entitlements" "$APPEX"
 fi
