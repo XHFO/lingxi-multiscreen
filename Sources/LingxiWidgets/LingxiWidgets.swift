@@ -188,10 +188,14 @@ struct PrinterQuery: EntityQuery {
             return list.map { PrinterEntity(id: $0.id, name: $0.name) }
         }
         // AppIntent 查询可能在宿主尚未启动桥接时运行；用打包时生成的列表兜底。
-        guard let url = Bundle.main.url(forResource: "WidgetPrinters", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let list = try? JSONDecoder().decode([PrinterDTO].self, from: data) else { return [] }
-        return list.map { PrinterEntity(id: $0.id, name: $0.name) }
+        let bundles = [Bundle.main, Bundle(identifier: "com.lingxi.multiscreen.beta2.widgets3")].compactMap { $0 }
+        for bundle in bundles {
+            guard let url = bundle.url(forResource: "WidgetPrinters", withExtension: "json"),
+                  let data = try? Data(contentsOf: url),
+                  let list = try? JSONDecoder().decode([PrinterDTO].self, from: data), !list.isEmpty else { continue }
+            return list.map { PrinterEntity(id: $0.id, name: $0.name) }
+        }
+        return []
     }
     func entities(for identifiers: [String]) async throws -> [PrinterEntity] {
         let all = await fetch(); return all.filter { identifiers.contains($0.id) }
@@ -201,6 +205,7 @@ struct PrinterQuery: EntityQuery {
 }
 struct PrinterSelectionIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "选择打印机"
+    static var isDiscoverable = true
     static var description = IntentDescription("选择要显示的中控打印机卡片")
     @Parameter(title: "打印机") var printer: PrinterEntity?
     static var parameterSummary: some ParameterSummary {
@@ -290,6 +295,7 @@ enum CloudflareWidgetStyle: String, AppEnum {
 }
 struct CloudflareWidgetIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Cloudflare 样式"
+    static var isDiscoverable = true
     static var description = IntentDescription("选择热区地图或地区排行榜")
     @Parameter(title: "样式") var style: CloudflareWidgetStyle?
     init() {}
