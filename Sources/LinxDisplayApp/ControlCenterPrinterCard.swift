@@ -116,13 +116,13 @@ struct ControlCenterPrinterSnapshot {
     static func formlabs(_ snapshot: FormlabsSnapshot, connection: FormlabsConnectionSettings,
                          decodeImage: (PictureKind, Data?) -> NSImage? = { _, data in data.flatMap(NSImage.init(data:)) }) -> Self {
         let job = snapshot.print
-        let rawStatus = snapshot.device?.isConnected == false ? "offline"
-            : job.flatMap { text($0.status) } ?? snapshot.device?.status ?? "unknown"
+        let rawStatus = snapshot.displayStatus
+        let showLivePrint = snapshot.isRealtimeAvailable && snapshot.hasCurrentPrint != false
         var metrics: [Metric] = []
-        if let value = duration((job?.estimatedTimeRemainingMS ?? snapshot.device?.estimatedPrintTimeRemainingMS).map { $0 / 1000 }) {
+        if showLivePrint, let value = duration((job?.estimatedTimeRemainingMS ?? snapshot.device?.estimatedPrintTimeRemainingMS).map { $0 / 1000 }) {
             metrics.append(.init(label: "剩余时间", value: value, symbol: "clock"))
         }
-        if connection.showLayers, let current = job?.currentLayer, let total = job?.layerCount,
+        if showLivePrint, connection.showLayers, let current = job?.currentLayer, let total = job?.layerCount,
            current >= 0, total > 0 {
             metrics.append(.init(label: "层数", value: "\(current) / \(total)", symbol: "square.3.layers.3d"))
         }
@@ -131,21 +131,22 @@ struct ControlCenterPrinterSnapshot {
             metrics.append(.init(label: "材料", value: material, symbol: "drop"))
         }
         var progress: Double?
-        if let current = job?.currentLayer, let total = job?.layerCount, current >= 0, total > 0 {
+        if showLivePrint, let current = job?.currentLayer, let total = job?.layerCount, current >= 0, total > 0 {
             progress = min(max(Double(current) / Double(total), 0), 1)
-        } else if let elapsed = job?.elapsedDurationMS, let total = job?.estimatedDurationMS,
+        } else if showLivePrint, let elapsed = job?.elapsedDurationMS, let total = job?.estimatedDurationMS,
                   elapsed.isFinite, total.isFinite, elapsed >= 0, total > 0 {
             progress = min(max(elapsed / total, 0), 1)
         }
         // A cached cloud error is not a new alert; keep it visibly attached to this reading.
-        let error = snapshot.cloudError.flatMap(text) ?? job.flatMap { job -> String? in
-            let state = job.status.lowercased()
+        let error = snapshot.dataIssue.flatMap(text) ?? snapshot.cloudError.flatMap(text) ?? job.flatMap { job -> String? in
+            let state = rawStatus.lowercased()
             return state.contains("error") || state.contains("fail") ? text(job.message) : nil
         }
         let thumbnail = job.flatMap { FormlabsTaskCachePolicy.taskIdentity($0).isEmpty ? nil : snapshot.thumbnail }
+        let task = job.flatMap { text($0.name) }.map { showLivePrint ? $0 : "缓存 · \($0)" }
         return .init(brand: .formlabs, usesBrandAccent: connection.useBrandAccent,
                      status: ScreenRenderer.formlabsStatusText(rawStatus),
-                     task: job.flatMap { text($0.name) }, progress: progress, metrics: metrics,
+                     task: task, progress: progress, metrics: metrics,
                      error: error,
                      pictures: connection.showThumbnail ? [.init(kind: .task,
                         image: decodeImage(.task, thumbnail), placeholder: "等待当前任务封面")] : [],

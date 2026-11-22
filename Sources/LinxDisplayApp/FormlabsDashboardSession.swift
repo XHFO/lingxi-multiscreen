@@ -151,6 +151,9 @@ enum FormlabsDashboardPayload {
 @MainActor
 final class FormlabsDashboardSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     static let dashboardURL = URL(string: "https://dashboard.formlabs.com/")!
+    // Dashboard can defer its detailed printer list until it has a usable layout.
+    // A restored session must have a viewport before any login sheet is shown.
+    static let backgroundViewport = CGSize(width: 1024, height: 768)
     private static let consentPrefix = "FormlabsDashboardAuthorized."
     let deviceID: UUID
     let serial: String
@@ -192,7 +195,7 @@ final class FormlabsDashboardSession: NSObject, ObservableObject, WKNavigationDe
         configuration.userContentController.addUserScript(WKUserScript(
             source: FormlabsDashboardPayload.observationScript(serial: serial),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = WKWebView(frame: CGRect(origin: .zero, size: Self.backgroundViewport), configuration: configuration)
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -253,6 +256,9 @@ final class FormlabsDashboardSession: NSObject, ObservableObject, WKNavigationDe
     }
 
     private func loadDashboard() {
+        if webView.window == nil, webView.bounds.width <= 0 || webView.bounds.height <= 0 {
+            webView.setFrameSize(Self.backgroundViewport)
+        }
         lastPageLoad = Date()
         webView.load(URLRequest(url: Self.dashboardURL))
     }
