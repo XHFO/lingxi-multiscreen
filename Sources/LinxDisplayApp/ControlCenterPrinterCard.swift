@@ -194,47 +194,63 @@ extension AppModel {
     }
 }
 
-/// C6-inspired hierarchy, authored for the control center's three native grid sizes.
+/// Printer media keeps a square stage at every saved card size. The original
+/// image is fitted inside that stage without cropping or changing its ratio.
 struct ControlCenterPrinterCard: View {
     let source: DeviceControlCenterDataSource
     let snapshot: ControlCenterPrinterSnapshot?
     let height: CGFloat
     let action: () -> Void
     @State private var hovering = false
+    @State private var selectedPictureKind: ControlCenterPrinterSnapshot.PictureKind = .task
     private var accent: Color { snapshot?.accent ?? .accentColor }
 
     var body: some View {
-        Button(action: action) {
-            GeometryReader { geometry in
-                let wide = geometry.size.width >= 430
-                let large = wide && geometry.size.height >= 520
-                let compact = geometry.size.height < 330 || (large && geometry.size.height < 660)
-                let inset: CGFloat = large ? (compact ? 18 : 26) : (compact ? 16 : 22)
-                VStack(alignment: .leading, spacing: large ? (compact ? 12 : 20) : (compact ? 8 : 12)) {
-                    header
+        GeometryReader { geometry in
+            let wide = geometry.size.width >= 430
+            let large = geometry.size.height >= 520
+            let compact = geometry.size.height < 330
+            let inset: CGFloat = compact ? 14 : (large ? 24 : 20)
+            let gap: CGFloat = compact ? 8 : 12
+            let contentWidth = geometry.size.width - inset * 2
+            let contentHeight = geometry.size.height - inset * 2 - 30 - gap * 2
+            ZStack {
+                // Navigation and media controls are siblings, never nested
+                // buttons. Noninteractive presentation lets clicks pass through
+                // to this full-card navigation target.
+                Button(action: action) {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(ControlCenterCardButtonStyle())
+                .help(String(localized: "打开打印机设置"))
+                .accessibilityLabel(source.title)
+                .accessibilityValue(accessibilityReading)
+                .accessibilityHint(String(localized: "打开打印机设置"))
+                .accessibilityIdentifier("control-center-printer-" + source.id)
+
+                VStack(alignment: .leading, spacing: gap) {
+                    header.printerCardPresentation()
                     if let snapshot {
-                        if large { largeContent(snapshot, width: geometry.size.width - inset * 2, compact: compact) }
-                        else if wide { mediumContent(snapshot, height: geometry.size.height - (compact ? 82 : 128), compact: compact) }
-                        else { smallContent(snapshot, height: geometry.size.height, compact: compact) }
+                        if large {
+                            largeContent(snapshot, width: contentWidth, availableHeight: contentHeight)
+                        } else if wide {
+                            mediumContent(snapshot, width: contentWidth, availableHeight: contentHeight, compact: compact)
+                        } else {
+                            smallContent(snapshot, width: contentWidth, compact: compact)
+                        }
                     } else {
-                        emptyContent
+                        emptyContent.printerCardPresentation()
                     }
-                    readingFooter
+                    readingFooter.printerCardPresentation()
                 }
                 .padding(inset)
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             }
-            .frame(height: height)
-            .controlCenterGlassCard(hovering: hovering)
         }
-        .buttonStyle(ControlCenterCardButtonStyle())
+        .frame(height: height)
+        .controlCenterGlassCard(hovering: hovering)
         .onHover { hovering = $0 }
-        .help(String(localized: "打开打印机设置"))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(source.title)
-        .accessibilityValue(accessibilityReading)
-        .accessibilityHint(String(localized: "打开打印机设置"))
-        .accessibilityIdentifier("control-center-printer-" + source.id)
+        .accessibilityElement(children: .contain)
     }
 
     private var header: some View {
@@ -246,74 +262,94 @@ struct ControlCenterPrinterCard: View {
         }
     }
 
-    private func smallContent(_ reading: ControlCenterPrinterSnapshot, height: CGFloat, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 6 : 9) {
-            if !reading.pictures.isEmpty {
-                pictureGallery(reading, height: compact
-                    ? min(76, max(54, height - (reading.error == nil ? 204 : 214)))
-                    : height >= 520 ? min(230, height * 0.32) : 88)
+    private func smallContent(_ reading: ControlCenterPrinterSnapshot, width: CGFloat, compact: Bool) -> some View {
+        let side = min(compact ? 116 : 148, max(104, (width - 12) * 0.48))
+        let dense = compact && (reading.error != nil || reading.pictureNotice != nil)
+        return VStack(alignment: .leading, spacing: compact ? (dense ? 3 : 6) : 10) {
+            HStack(alignment: .center, spacing: 12) {
+                if !reading.pictures.isEmpty {
+                    pictureGallery(reading, side: side, showAll: false)
+                }
+                VStack(alignment: .leading, spacing: compact ? 7 : 10) {
+                    if let task = reading.task {
+                        Text(task).font(.system(size: compact ? 13 : 15, weight: .semibold))
+                            .lineLimit(compact ? 3 : 4).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if reading.pictures.isEmpty {
+                        HStack(alignment: .firstTextBaseline) {
+                            status(reading, compact: true)
+                            Spacer(minLength: 8)
+                            percentage(reading, size: compact ? 28 : 34)
+                        }
+                    } else {
+                        status(reading, compact: true)
+                        percentage(reading, size: compact ? 28 : 34)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .printerCardPresentation()
             }
-            if let task = reading.task {
-                Text(task).font(.system(size: compact ? 13 : 14, weight: .semibold)).lineLimit(height >= 520 ? 2 : 1)
-            }
-            HStack(alignment: .firstTextBaseline) {
-                status(reading, compact: compact)
-                Spacer(minLength: 4)
-                percentage(reading, size: compact ? 26 : 32)
-            }
-            progress(reading, compact: compact)
-            metrics(reading, limit: 2, columns: 2, compact: compact)
-            error(reading, lines: 1)
-            pictureNotice(reading)
+            progress(reading, compact: compact).printerCardPresentation()
+            metrics(reading, limit: 2, columns: 2, compact: compact).printerCardPresentation()
+            error(reading, lines: 1).printerCardPresentation()
+            pictureNotice(reading).printerCardPresentation()
         }.frame(maxHeight: .infinity, alignment: .center)
     }
 
-    private func mediumContent(_ reading: ControlCenterPrinterSnapshot, height: CGFloat, compact: Bool) -> some View {
-        HStack(spacing: compact ? 14 : 24) {
+    private func mediumContent(_ reading: ControlCenterPrinterSnapshot, width: CGFloat,
+                               availableHeight: CGFloat, compact: Bool) -> some View {
+        let side = min(compact ? 156 : 206, max(104, availableHeight - (reading.pictures.count > 1 ? 26 : 0)))
+        return HStack(spacing: compact ? 18 : 24) {
             if !reading.pictures.isEmpty {
-                pictureGallery(reading, height: max(120, height - 8), vertical: reading.pictures.count > 1)
-                    .frame(width: compact ? min(150, height * 0.76) : min(215, max(155, height * 0.86)))
+                pictureGallery(reading, side: min(side, width * 0.40), showAll: false)
             }
-            VStack(alignment: .leading, spacing: compact ? 7 : 11) {
-                // At 360 pt the footer already names the brand. Sharing this row
-                // leaves room for a two-line task, three metrics and an error.
-                HStack(alignment: .firstTextBaseline) {
-                    percentage(reading, size: compact ? 32 : 44)
-                    Spacer(minLength: 8)
-                    status(reading, compact: compact)
-                }
+            VStack(alignment: .leading, spacing: compact ? 8 : 12) {
                 if let task = reading.task {
-                    Text(task).font(.system(size: compact ? 15 : 20, weight: .semibold)).lineLimit(2)
+                    Text(task).font(.system(size: compact ? 16 : 21, weight: .semibold)).lineLimit(2)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    status(reading, compact: compact)
+                    Spacer(minLength: 8)
+                    percentage(reading, size: compact ? 34 : 44)
                 }
                 progress(reading, compact: compact)
                 metrics(reading, limit: compact ? 2 : 3, columns: compact ? 2 : 3, compact: compact)
-                error(reading, lines: 1)
+                error(reading, lines: compact ? 1 : 2)
                 pictureNotice(reading)
-            }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .printerCardPresentation()
         }.frame(maxHeight: .infinity, alignment: .center)
     }
 
-    private func largeContent(_ reading: ControlCenterPrinterSnapshot, width: CGFloat, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 12 : 20) {
-            HStack(alignment: .top) {
+    private func largeContent(_ reading: ControlCenterPrinterSnapshot, width: CGFloat,
+                              availableHeight: CGFloat) -> some View {
+        let showAll = width >= 400
+        let pictureColumns = showAll ? max(1, reading.pictures.count) : 1
+        let galleryWidth = (width - CGFloat(pictureColumns - 1) * 12) / CGFloat(pictureColumns)
+        let extraCaption: CGFloat = reading.pictures.count > 1 ? 26 : 0
+        let detailsHeight: CGFloat = 170 + (reading.task == nil ? 0 : 56)
+            + (reading.error == nil ? 0 : 30) + (reading.pictureNotice == nil ? 0 : 30)
+        let side = max(104, min(galleryWidth, availableHeight - detailsHeight - extraCaption))
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(reading.brandTitle).font(.system(size: compact ? 15 : 17, weight: .semibold)).foregroundStyle(accent)
-                    status(reading, compact: compact)
+                    if let task = reading.task {
+                        Text(task).font(.system(size: width < 400 ? 19 : 23, weight: .semibold)).lineLimit(2)
+                    }
+                    status(reading)
                 }
-                Spacer()
-                percentage(reading, size: compact ? 44 : 62)
-            }
+                Spacer(minLength: 12)
+                percentage(reading, size: width < 400 ? 38 : 54)
+            }.printerCardPresentation()
             if !reading.pictures.isEmpty {
-                pictureGallery(reading, height: compact ? min(170, max(92, height - 430)) : min(230, max(110, height - 580)))
-                    .frame(width: width)
+                pictureGallery(reading, side: side, showAll: showAll)
+                    .frame(maxWidth: .infinity)
             }
-            if let task = reading.task {
-                Text(task).font(.system(size: compact ? 19 : 24, weight: .semibold)).lineLimit(2)
-            }
-            progress(reading, compact: compact)
-            metrics(reading, limit: 3, columns: 3, compact: compact)
-            error(reading, lines: 2)
-            pictureNotice(reading)
+            progress(reading).printerCardPresentation()
+            metrics(reading, limit: 3, columns: width < 400 ? 2 : 3).printerCardPresentation()
+            error(reading, lines: 2).printerCardPresentation()
+            pictureNotice(reading).printerCardPresentation()
         }.frame(maxHeight: .infinity, alignment: .center)
     }
 
@@ -353,18 +389,50 @@ struct ControlCenterPrinterCard: View {
         }
     }
 
-    @ViewBuilder private func pictureGallery(_ reading: ControlCenterPrinterSnapshot, height: CGFloat,
-                                              vertical: Bool = false) -> some View {
-        // Roles remain independent. A missing task cover never borrows a camera
-        // frame; camera snapshots are not described as a live video stream.
-        let compactPictures = vertical ? height < 160 : height < 85
-        let layout = vertical ? AnyLayout(VStackLayout(spacing: compactPictures ? 6 : 10)) : AnyLayout(HStackLayout(spacing: compactPictures ? 6 : 10))
-        layout {
-            ForEach(reading.pictures) { picture in
-                ControlCenterPrinterPicture(picture: picture, accent: accent, compact: compactPictures)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    @ViewBuilder private func pictureGallery(_ reading: ControlCenterPrinterSnapshot, side: CGFloat,
+                                              showAll: Bool) -> some View {
+        // Both roles stay available without splitting a compact image into tiny
+        // strips. A missing task cover never borrows a camera snapshot.
+        if reading.pictures.count > 1 && !showAll {
+            VStack(spacing: 4) {
+                if let picture = reading.pictures.first(where: { $0.kind == selectedPictureKind }) ?? reading.pictures.first {
+                    ControlCenterPrinterPicture(picture: picture, accent: accent, side: side)
+                        .printerCardPresentation()
+                }
+                HStack(spacing: 2) {
+                    ForEach(reading.pictures.sorted { $0.kind == .task && $1.kind != .task }) { picture in
+                        Button {
+                            selectedPictureKind = picture.kind
+                        } label: {
+                            Text(picture.kind == .task ? "任务" : "摄像头")
+                                .font(.system(size: 10, weight: .medium))
+                                .frame(maxWidth: .infinity).frame(height: 20)
+                                .background(selectedPictureKind == picture.kind ? accent.opacity(0.15) : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 5))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selectedPictureKind == picture.kind ? accent : .secondary)
+                        .accessibilityLabel(NSLocalizedString(picture.title, comment: "Printer picture role"))
+                        .accessibilityValue(selectedPictureKind == picture.kind ? String(localized: "已选择") : "")
+                        .accessibilityAddTraits(selectedPictureKind == picture.kind ? [.isSelected] : [])
+                        .accessibilityIdentifier("control-center-printer-picture-" + source.id + "-" + picture.id)
+                    }
+                }.frame(width: side)
+            }.frame(width: side)
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(reading.pictures.sorted { $0.kind == .task && $1.kind != .task }) { picture in
+                    VStack(alignment: .leading, spacing: 5) {
+                        ControlCenterPrinterPicture(picture: picture, accent: accent, side: side)
+                        if reading.pictures.count > 1 {
+                            Label(NSLocalizedString(picture.title, comment: "Printer picture role"), systemImage: picture.symbol)
+                                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }.frame(width: side).printerCardPresentation()
+                }
             }
-        }.frame(height: height)
+        }
     }
 
     @ViewBuilder private func pictureNotice(_ reading: ControlCenterPrinterSnapshot) -> some View {
@@ -433,6 +501,9 @@ struct ControlCenterPrinterCard: View {
                    : String(localized: "已读取"))
         }
         if let notice = snapshot.pictureNotice { parts.append(NSLocalizedString(notice, comment: "Printer picture availability")) }
+        if let sampledAt = snapshot.sampledAt {
+            parts.append(String(localized: "最近读取") + " " + sampledAt.formatted(.dateTime.hour().minute()))
+        }
         return parts.joined(separator: ", ")
     }
 }
@@ -440,33 +511,35 @@ struct ControlCenterPrinterCard: View {
 private struct ControlCenterPrinterPicture: View {
     let picture: ControlCenterPrinterSnapshot.Picture
     let accent: Color
-    let compact: Bool
+    let side: CGFloat
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            GeometryReader { geometry in
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(accent.opacity(0.055))
-                    if let image = picture.image {
-                        // Preserve the entire camera frame and model thumbnail,
-                        // including models whose supports reach the image edge.
-                        Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                    } else {
-                        VStack(spacing: 5) {
-                            Image(systemName: picture.symbol).font(.system(size: compact ? 17 : 20)).foregroundStyle(.secondary)
-                            if !compact {
-                                Text(NSLocalizedString(picture.placeholder, comment: "Printer picture availability"))
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-                                    .multilineTextAlignment(.center)
-                            }
-                        }.padding(6)
-                    }
-                }.frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(accent.opacity(0.055))
+            if let image = picture.image {
+                // A fixed square stage cannot collapse under the surrounding
+                // text. Fit preserves every edge and the source aspect ratio.
+                Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
+                    .frame(width: side - 8, height: side - 8)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: picture.symbol).font(.system(size: 22)).foregroundStyle(.secondary)
+                    Text(NSLocalizedString(picture.placeholder, comment: "Printer picture availability"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                        .multilineTextAlignment(.center)
+                }.padding(8)
             }
-            Label(NSLocalizedString(picture.title, comment: "Printer picture role"), systemImage: picture.symbol)
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-        }.accessibilityHidden(true)
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .fixedSize()
+    }
+}
+
+private extension View {
+    /// Keep the full card's navigation target reachable beneath its presentation,
+    /// while separate picture-selection buttons remain interactive and accessible.
+    func printerCardPresentation() -> some View {
+        allowsHitTesting(false).accessibilityHidden(true)
     }
 }
