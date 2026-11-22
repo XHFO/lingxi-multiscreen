@@ -704,7 +704,15 @@ static void form_task(void *arg){
     uint64_t next[C6_MAX_PRINTERS]={0};unsigned seen_generation=0,seen_focus=UINT32_MAX;
     for(;;){
         if(!runtime_enabled(C6_WORK_FORM)){if(w){memset(w,0,sizeof(*w));free(w);w=NULL;}seen_generation=0;vTaskDelay(pdMS_TO_TICKS(1000));continue;}
-        if(!ha_network_ready()){vTaskDelay(pdMS_TO_TICKS(1000));continue;}
+        if(!ha_network_ready()){
+            xSemaphoreTake(lock,portMAX_DELAY);
+            for(unsigned i=0;i<settings.printer_count;i++)if(settings.printers[i].source_formlabs&&!c6_form_is_demo(&settings.printers[i])){
+                state.printers[i].connected=false;state.form_phase[i]=2;
+            }
+            xSemaphoreGive(lock);
+            // Retain task/image caches and retry immediately after DHCP recovers.
+            memset(next,0,sizeof(next));vTaskDelay(pdMS_TO_TICKS(1000));continue;
+        }
         if(!w){w=calloc(1,sizeof(*w));if(!w){vTaskDelay(pdMS_TO_TICKS(5000));continue;}}
         for(unsigned i=0;i<C6_MAX_PRINTERS;i++){
             bool fetch=false;xSemaphoreTake(lock,portMAX_DELAY);
@@ -759,7 +767,7 @@ static void form_task(void *arg){
                     accepted=c6_formlabs_update(&state.printers[i],j,w->printer.serial,c6_seconds(),w->picture,sizeof(w->picture));
                     if(accepted){
                         want_picture=!media_focus||(media_focus&(1U<<i));
-                        phase=1;if(strcmp(previous,state.printers[i].thumbnail_key)){c6_thumbnail_clear(&thumbnails[i]);state.thumbnail_status[i]=0;state.thumbnail_revision[i]++;}
+                        phase=state.printers[i].connected?1:2;if(strcmp(previous,state.printers[i].thumbnail_key)){c6_thumbnail_clear(&thumbnails[i]);state.thumbnail_status[i]=0;state.thumbnail_revision[i]++;}
                         snprintf(previous,sizeof(previous),"%s",state.printers[i].thumbnail_key);
                         next[i]=c6_seconds()+(c6_print_active(state.printers[i].status)?30:120);
                     }

@@ -150,7 +150,10 @@ extension AppModel {
             case .bambuLab where device.settings.bambuDataSource != .localMQTT:
                 error = activeHADeviceID.flatMap { controlCenterHAPreviewError(for: $0) }
             case .formlabs:
-                error = formlabsSnapshots[id]?.cloudError
+                let snapshot = formlabsSnapshots[id]
+                let issues = [snapshot?.dataIssue, snapshot?.cloudError].compactMap { $0 }
+                    .filter { !$0.isEmpty }
+                error = issues.isEmpty ? nil : issues.joined(separator: "；")
             default: error = nil
             }
             guard let error else { return source }

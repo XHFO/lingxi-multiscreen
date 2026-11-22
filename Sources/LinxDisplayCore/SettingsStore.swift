@@ -1945,7 +1945,12 @@ public final class SettingsStore {
     }
 
     public func loadFormlabsTaskCache() -> [UUID: FormlabsSnapshot] {
-        (try? read([UUID: FormlabsSnapshot].self, from: formlabsTaskCacheURL)) ?? [:]
+        let saved = (try? read([UUID: FormlabsSnapshot].self, from: formlabsTaskCacheURL)) ?? [:]
+        return saved.mapValues { snapshot in
+            var restored = snapshot
+            restored.dataIssue = snapshot.dataIssue ?? "等待更新，当前显示最近缓存"
+            return restored
+        }
     }
 
     /// 只持久化确实包含任务的快照；临时连接错误不写入缓存，启动后仍可先显示

@@ -221,25 +221,49 @@ public enum C6LocalRenderer {
         let strings = Strings(); let print = snapshot.print
         var value = c6_render_printer_t()
         value.card_style = Int32(cardStyle.rawValue)
-        value.formlabs = true; value.name = strings.add(name); value.task = strings.add(print?.name ?? "")
-        value.status = strings.add(print?.status.isEmpty == false ? print!.status : snapshot.device?.status ?? "")
-        value.connected = snapshot.device?.isConnected ?? false
+        let showLivePrint = snapshot.isRealtimeAvailable && snapshot.hasCurrentPrint != false
+        let savedTask = print?.name ?? ""
+        let task = !showLivePrint && !savedTask.isEmpty
+            ? (language == .english ? "Cached · " : "缓存 · ") + savedTask : savedTask
+        let status = snapshot.displayStatus.lowercased()
+        value.formlabs = true; value.name = strings.add(name); value.task = strings.add(task)
+        // The shared C renderer replaces every disconnected status with “offline”.
+        // Keep API availability distinct from an explicitly disconnected printer.
+        value.status = strings.add(status == "data_unavailable"
+            ? (language == .english ? "No update" : "数据未更新") : status)
+        value.connected = status == "data_unavailable" || snapshot.device?.isConnected == true
+        value.completed = showLivePrint && ["finished", "completed", "complete", "finish"].contains(status)
+        value.is_error = status.contains("error") || status.contains("fail")
         value.style = portableStyle(palette)
         if configuration.useBrandAccent { if !value.style.enabled { value.style = c6_renderer_default_style() }; value.style.accent = 0x2878db }
-        let progress = print?.progress
+        let progress = showLivePrint ? print?.progress : nil
         value.progress_available = progress?.isFinite == true
         value.show_task = true; value.show_status = true; value.show_progress = progress?.isFinite == true
         value.progress = Int32(((progress?.isFinite == true ? min(1, max(0, progress!)) : 0) * 100).rounded(.towardZero))
         value.show_image = configuration.showThumbnail; value.cover_configured = configuration.showThumbnail
         if let data = snapshot.thumbnail, let frame = C6TaskThumbnail.encodeMedia(from: data) { value.cover = strings.picture(frame) }
-        if configuration.showLayers, let layer = print?.currentLayer, let total = print?.layerCount, total > 0 { value.layers = strings.add((language == .english ? "Layers " : "层数 ") + "\(layer) / \(total)") }
+        if showLivePrint, configuration.showLayers, let layer = print?.currentLayer, let total = print?.layerCount, total > 0 { value.layers = strings.add((language == .english ? "Layers " : "层数 ") + "\(layer) / \(total)") }
         value.material = strings.add(configuration.showMaterial ? print?.materialName ?? "" : "")
-        if let remaining = print?.estimatedTimeRemainingMS ?? snapshot.device?.estimatedPrintTimeRemainingMS, remaining >= 0, remaining.isFinite {
+        if showLivePrint, let remaining = print?.estimatedTimeRemainingMS ?? snapshot.device?.estimatedPrintTimeRemainingMS, remaining >= 0, remaining.isFinite {
             value.show_remaining = true
             value.remaining_seconds = UInt32(min(Double(UInt32.max), ceil(remaining / 1000)))
             value.remaining_available = true
             let minutes = Int(min(525600, ceil(remaining / 60000)))
             value.time_text = strings.add(language == .english ? "Remaining \(minutes) min" : "剩余 \(minutes) 分钟")
+        }
+        if let sampledAt = snapshot.sampledAt {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = Calendar.current.isDateInToday(sampledAt) ? "HH:mm:ss" : "MM-dd HH:mm"
+            let label = snapshot.isRealtimeAvailable
+                ? (language == .english ? "Updated " : "数据更新 ")
+                : (language == .english ? "Cached " : "缓存 ")
+            value.updated_text = strings.add(label + formatter.string(from: sampledAt))
+        } else if !snapshot.isRealtimeAvailable {
+            let text = snapshot.hasData
+                ? (language == .english ? "Cache time unknown" : "缓存时间未知")
+                : (language == .english ? "No cached update" : "数据未更新 · 暂无缓存")
+            value.updated_text = strings.add(text)
         }
         return withExtendedLifetime(strings) { render(language: language, digitStyle: digitStyle,
             saturationPercent: saturationPercent, contrastPercent: contrastPercent) { c6_renderer_printer($0, &value) } }

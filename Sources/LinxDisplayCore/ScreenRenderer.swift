@@ -2235,6 +2235,7 @@ public enum ScreenRenderer {
                                      item: item, deviceCanvas: deviceCanvas,
                                      monochrome: monochromeDeviceCanvas,
                                      accent: accentOverride ?? colors.accentCG,
+                                     now: now,
                                      emphasizeThumbnail: deviceCanvas && singleModuleCanvas)
         case .clock:
             let text = clockTimeText(now, format: settings.timeFormat)
@@ -2646,6 +2647,7 @@ public enum ScreenRenderer {
                                                   deviceCanvas: Bool,
                                                   monochrome: Bool,
                                                   accent: CGColor,
+                                                  now: Date,
                                                   emphasizeThumbnail: Bool = false) {
         guard band.width > 8, band.height > 8 else { return }
         // 与 Bambu 墨水屏模块统一：白色圆角卡片、最深黑字和黑色进度强调；
@@ -2668,8 +2670,8 @@ public enum ScreenRenderer {
         let name = item?.deviceName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let displayName = name.isEmpty ? fallbackName : name
         let snapshot = item?.snapshot ?? .empty
-        let rawStatus = snapshot.print?.status.isEmpty == false
-            ? snapshot.print!.status : (snapshot.device?.status ?? "unknown")
+        let rawStatus = snapshot.displayStatus
+        let showLivePrint = snapshot.isRealtimeAvailable && snapshot.hasCurrentPrint != false
         let status = formlabsStatusText(rawStatus)
         let isError = rawStatus.lowercased().contains("error")
             || rawStatus.lowercased().contains("fail")
@@ -2695,7 +2697,8 @@ public enum ScreenRenderer {
                  x2: content.maxX, y2: dividerY, color: cardBorder)
         var cursor = content.minY + headerH + headerGap
         guard snapshot.hasData else {
-            drawText(ctx, "等待云端数据", size: deviceCanvas ? 11 : 9, bold: false,
+            let explanation = snapshot.dataIssue ?? snapshot.cloudError ?? "等待云端数据"
+            drawText(ctx, explanation, size: deviceCanvas ? 11 : 9, bold: false,
                      color: secondary,
                      in: rect(content.minX, cursor, content.width,
                               max(content.maxY - cursor, 10)), align: .center)
@@ -2726,7 +2729,8 @@ public enum ScreenRenderer {
 
         // 与 Bambu 模块保持同一信息顺序：设备名/状态 → 任务名 → 进度。
         // 横向墨水屏优先使用单行大字，竖向灵犀画板在空间允许时显示两行。
-        let task = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let savedTask = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let task = !showLivePrint && !savedTask.isEmpty ? "缓存 · \(savedTask)" : savedTask
         if !task.isEmpty {
             let preferred: CGFloat = deviceCanvas ? 13.5 : 10.5
             // 口袋先知中 Formlabs 独占 200×200 画板时，项目文件名明确限制为最多两行；
@@ -2748,7 +2752,7 @@ public enum ScreenRenderer {
             cursor += 2
         }
 
-        if let progress = snapshot.print?.progress {
+        if showLivePrint, let progress = snapshot.print?.progress {
             let progressH = min(max(content.height * 0.12, deviceCanvas ? 20 : 16), 24)
             let percent = "\(Int((progress * 100).rounded()))%"
             let percentSize: CGFloat = deviceCanvas ? 12.5 : 10
@@ -2810,7 +2814,10 @@ public enum ScreenRenderer {
         }
 
         var rows: [(String, Bool)] = []
-        if item?.connection.showLayers == true,
+        if !snapshot.isRealtimeAvailable {
+            rows.append((formlabsDataFooter(snapshot, now: now, compact: true), false))
+        }
+        if showLivePrint, item?.connection.showLayers == true,
            let current = snapshot.print?.currentLayer,
            let total = snapshot.print?.layerCount, total > 0 {
             rows.append(("层数  \(current) / \(total)", false))
@@ -2821,7 +2828,7 @@ public enum ScreenRenderer {
         }
         let remaining = snapshot.print?.estimatedTimeRemainingMS
             ?? snapshot.device?.estimatedPrintTimeRemainingMS
-        if let remaining, remaining > 0 {
+        if showLivePrint, let remaining, remaining > 0 {
             rows.append(("剩余  \(formlabsDuration(remaining))", false))
         }
         guard !rows.isEmpty, detailArea.height > 4 else { return }
@@ -6180,16 +6187,23 @@ public enum ScreenRenderer {
                  color: colors.borderCG)
 
         guard snapshot.hasData else {
-            drawText(ctx, "等待连接", size: 22, bold: true, color: colors.primaryTextCG,
+            let explanation = snapshot.dataIssue ?? snapshot.cloudError
+            drawAdaptiveText(ctx, explanation == nil ? "等待连接" : formlabsStatusText(snapshot.displayStatus),
+                     maxSize: 22, minSize: 14, bold: true, color: colors.primaryTextCG,
                      in: rect(c.minX + 8, c.minY + 138, c.width - 16, 34), align: .center)
-            drawText(ctx, "请先填写 Dashboard API 凭证\n并选择云端打印机",
+            drawText(ctx, explanation ?? "请先填写 Dashboard API 凭证\n并选择云端打印机",
                      size: 8, bold: false, color: colors.secondaryTextCG,
                      in: rect(c.minX + 10, c.minY + 178, c.width - 20, 46), align: .center)
+            if explanation != nil {
+                drawText(ctx, formlabsDataFooter(snapshot, now: now),
+                         size: 8.5, bold: true, color: colors.secondaryTextCG,
+                         in: rect(c.minX + 8, c.maxY - 25, c.width - 16, 17), align: .center)
+            }
             return try encode(ctx, quality: settings.jpegQuality)
         }
 
-        let rawStatus = snapshot.print?.status.isEmpty == false
-            ? snapshot.print!.status : (snapshot.device?.status ?? "unknown")
+        let rawStatus = snapshot.displayStatus
+        let showLivePrint = snapshot.isRealtimeAvailable && snapshot.hasCurrentPrint != false
         let footerTop = c.maxY - 34
         // 正文与 Bambu 独立卡片一样拥有明确的页脚安全区。安全区设到最大值、
         // 同时显示缩略图和全部详情时，也不能让最后一项压到数据更新时间上。
@@ -6200,16 +6214,17 @@ public enum ScreenRenderer {
         let isError = rawStatus.lowercased().contains("error") || rawStatus.lowercased().contains("fail")
         let statusColor = isError ? CGColor(red: 0.95, green: 0.35, blue: 0.25, alpha: 1) : accent
 
-        let taskName = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let savedTaskName = snapshot.print?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let taskName = !showLivePrint && !savedTaskName.isEmpty ? "缓存 · \(savedTaskName)" : savedTaskName
         let taskSize: CGFloat = 13
         let taskLines = taskName.isEmpty
             ? [] : fileNameLines(taskName, size: taskSize, maxW: c.width - 20, maxLines: 2)
-        let infoRowCount = (connection.showLayers
+        let infoRowCount = (showLivePrint && connection.showLayers
                             && snapshot.print?.currentLayer != nil
                             && (snapshot.print?.layerCount ?? 0) > 0 ? 1 : 0)
             + (connection.showMaterial
                && !(snapshot.print?.materialName ?? "").isEmpty ? 1 : 0)
-            + ((snapshot.print?.estimatedTimeRemainingMS
+            + (showLivePrint && (snapshot.print?.estimatedTimeRemainingMS
                 ?? snapshot.device?.estimatedPrintTimeRemainingMS ?? 0) > 0 ? 1 : 0)
         let reservedTailHeight = (taskLines.isEmpty ? 0 : CGFloat(taskLines.count) * 18 + 5)
             + CGFloat(infoRowCount) * 16
@@ -6218,7 +6233,7 @@ public enum ScreenRenderer {
         // 使用数字一半字号；进度条独占下一行并铺满正文宽度。
         let heroTop = c.minY + 43
         var y: CGFloat
-        if let progress = snapshot.print?.progress {
+        if showLivePrint, let progress = snapshot.print?.progress {
             let clamped = min(max(progress, 0), 1)
             let number = String(format: "%.0f", clamped * 100)
             let backdrop = colors.secondaryTextCG.copy(alpha: 0.34) ?? colors.tertiaryTextCG
@@ -6316,7 +6331,7 @@ public enum ScreenRenderer {
             y += 5
         }
 
-        if connection.showLayers, let current = snapshot.print?.currentLayer,
+        if showLivePrint, connection.showLayers, let current = snapshot.print?.currentLayer,
            let total = snapshot.print?.layerCount, total > 0 {
             drawText(ctx, "层数  \(current) / \(total)", size: 9.5, bold: false,
                      color: colors.secondaryTextCG,
@@ -6332,13 +6347,13 @@ public enum ScreenRenderer {
         }
         let remaining = snapshot.print?.estimatedTimeRemainingMS
             ?? snapshot.device?.estimatedPrintTimeRemainingMS
-        if let remaining, remaining > 0 {
+        if showLivePrint, let remaining, remaining > 0 {
             drawText(ctx, "剩余  \(formlabsDuration(remaining))", size: 9.5, bold: false,
                      color: colors.secondaryTextCG,
                      in: rect(c.minX + 10, y, c.width - 20, 15), align: .center)
             y += 16
         }
-        if let message = snapshot.print?.message, !message.isEmpty, y < c.maxY - 55 {
+        if showLivePrint, let message = snapshot.print?.message, !message.isEmpty, y < c.maxY - 55 {
             drawText(ctx, message, size: 8, bold: false, color: colors.secondaryTextCG,
                      in: rect(c.minX + 10, y, c.width - 20, 28), align: .center)
         }
@@ -6347,12 +6362,22 @@ public enum ScreenRenderer {
 
         drawLine(ctx, x1: c.minX + 18, y1: c.maxY - 29,
                  x2: c.maxX - 18, y2: c.maxY - 29, color: colors.borderCG)
-        let footer = snapshot.cloudError == nil
-            ? "数据更新  \(formatDate(snapshot.sampledAt ?? now, "HH:mm:ss"))"
-            : "缓存数据  \(formatDate(snapshot.sampledAt ?? now, "HH:mm:ss"))"
+        let footer = formlabsDataFooter(snapshot, now: now)
         drawText(ctx, footer, size: 8.5, bold: true, color: colors.secondaryTextCG,
                  in: rect(c.minX + 8, c.maxY - 25, c.width - 16, 17), align: .center)
         return try encode(ctx, quality: settings.jpegQuality)
+    }
+
+    /// A failed or stale response must never acquire the current render time as its data time.
+    private static func formlabsDataFooter(_ snapshot: FormlabsSnapshot, now: Date,
+                                           compact: Bool = false) -> String {
+        guard let sampledAt = snapshot.sampledAt else {
+            if snapshot.isRealtimeAvailable { return "尚无更新时间" }
+            return snapshot.hasData ? "缓存时间未知" : "数据未更新 · 暂无缓存"
+        }
+        let format = Calendar.current.isDate(sampledAt, inSameDayAs: now) ? "HH:mm:ss" : "MM-dd HH:mm"
+        let label = snapshot.isRealtimeAvailable ? "数据更新" : (compact ? "缓存" : "缓存数据")
+        return "\(label)  \(formatDate(sampledAt, format))"
     }
 
     public static func formlabsStatusText(_ raw: String) -> String {
@@ -6360,11 +6385,14 @@ public enum ScreenRenderer {
             .lowercased().replacingOccurrences(of: "-", with: "_")
         let values: [String: String] = [
             "idle": "空闲", "ready": "就绪", "printing": "打印中",
-            "paused": "已暂停", "finished": "已完成", "completed": "已完成",
+            "paused": "已暂停", "pausing": "暂停中", "finished": "已完成", "completed": "已完成",
+            "complete": "已完成", "finish": "已完成", "data_unavailable": "数据未更新",
+            "queued": "排队中", "preprint": "准备中", "preheat": "预热中",
+            "precoat": "铺料中", "postcoat": "收尾中", "waiting_for_resolution": "等待处理",
             "preparing": "准备中", "finishing": "收尾中", "warming": "预热中",
             "error": "发生错误", "failed": "打印失败", "offline": "离线",
-            "cancelled": "已取消", "canceled": "已取消", "aborted": "已取消",
-            "disconnected": "未连接", "unknown": "状态未知"
+            "cancelled": "已取消", "canceled": "已取消", "aborted": "已取消", "aborting": "取消中",
+            "disconnected": "未连接", "off": "离线", "unavailable": "未连接", "unknown": "状态未知"
         ]
         return values[normalized] ?? (raw.isEmpty ? "状态未知" : raw)
     }

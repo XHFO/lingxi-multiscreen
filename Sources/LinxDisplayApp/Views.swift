@@ -4734,32 +4734,30 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func formlabsDeviceConfigInline(_ deviceID: UUID) -> some View {
+        let connection = model.formlabsSettings(for: deviceID)
+        let dashboard = connection.dataSource == .dashboard
         let discovered = model.formlabsDiscoveredDevices[deviceID] ?? []
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 4) {
-                Text("Formlabs Dashboard API")
-                    .font(.system(size: 12, weight: .semibold))
-                HelpIcon(text: "纯云端模式：设备状态、任务名、准确进度、层数、耗材种类与缩略图均来自 Formlabs Dashboard API。")
-            }
+            Text(dashboard ? "Formlabs Dashboard 网页连接" : "Formlabs Developer API")
+                .font(.system(size: 12, weight: .semibold))
             Toggle(isOn: model.formlabsBoolBinding(for: deviceID, \.useBrandAccent)) {
                 HStack(spacing: 4) {
                     Text("使用 Formlabs 品牌强调色")
                     HelpIcon(text: "开启时使用 Formlabs 品牌蓝；关闭后跟随软件的全局主题强调色。")
                 }
             }
-            deviceConnectionField(deviceID, label: "Client ID",
-                                  binding: model.formlabsStringBinding(for: deviceID, \.clientID),
-                                  fieldWidth: 320,
-                                  helpText: "在 Formlabs Developer Platform 创建应用后获得。",
-                                  helpURL: formlabsDeveloperDocsURL)
-            draftField(key: "\(deviceID.uuidString)#FormlabsSecret", label: "Client Secret",
-                       binding: model.formlabsStringBinding(for: deviceID, \.clientSecret),
-                       fieldWidth: 320, secure: true)
-            HStack {
+            if !dashboard {
+                deviceConnectionField(deviceID, label: "Client ID",
+                                      binding: model.formlabsStringBinding(for: deviceID, \.clientID),
+                                      fieldWidth: 320,
+                                      helpText: "在 Formlabs Developer Platform 创建应用后获得。接口可能返回历史快照，状态卡会说明数据是否仍可用。",
+                                      helpURL: formlabsDeveloperDocsURL)
+                draftField(key: "\(deviceID.uuidString)#FormlabsSecret", label: "Client Secret",
+                           binding: model.formlabsStringBinding(for: deviceID, \.clientSecret),
+                           fieldWidth: 320, secure: true)
                 Button("读取云端打印机") { Task { await model.discoverFormlabsDevices(deviceID) } }
-                HelpIcon(text: "先应用 Client ID 和 Client Secret，再从账号中读取打印机。")
             }
-            if !discovered.isEmpty {
+            if !dashboard && !discovered.isEmpty {
                 Picker("云端打印机", selection: model.formlabsStringBinding(for: deviceID, \.printerSerial)) {
                     Text("请选择").tag("")
                     ForEach(discovered) { printer in
@@ -4777,18 +4775,46 @@ struct SettingsView: View {
                                       binding: model.formlabsStringBinding(for: deviceID, \.printerSerial),
                                       fieldWidth: 320)
             }
-            HStack {
-                Button("测试云端连接") { Task { await model.testFormlabsConnection(deviceID) } }
-                Button("立即刷新") {
-                    Task { await model.refreshFormlabs(deviceID: deviceID, force: true, pushIfVisible: true) }
+            if dashboard {
+                Text("通过官方网页登录读取状态，仅在这台 Mac 上运行。电脑退出后停止更新，不用于 C6 独立云端连接。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("打开 Dashboard 登录") { model.connectFormlabsDashboard(deviceID) }
+                    Button("立即刷新") {
+                        Task { await model.refreshFormlabs(deviceID: deviceID, force: true, pushIfVisible: true) }
+                    }
+                    Button("断开并清除登录") { model.disconnectFormlabsDashboard(deviceID) }
                 }
-                Spacer()
+                Button("切回 Developer API") {
+                    model.formlabsDataSourceBinding(for: deviceID).wrappedValue = .developerAPI
+                }
+                .font(.caption)
+            } else {
+                HStack {
+                    Button("测试云端连接") { Task { await model.testFormlabsConnection(deviceID) } }
+                    Button("立即刷新") {
+                        Task { await model.refreshFormlabs(deviceID: deviceID, force: true, pushIfVisible: true) }
+                    }
+                    Spacer()
+                }
+                Divider().padding(.vertical, 4)
+                Button("连接 Dashboard 实时状态") { model.connectFormlabsDashboard(deviceID) }
+                Text("如果 Developer API 未提供当前任务，可选择登录官方 Dashboard。点击连接后切换；原有 Client ID 和 Secret 会保留。此连接需要 Mac 保持运行。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let status = model.formlabsConnectionStatus[deviceID], !status.isEmpty {
                 Text(status)
                     .font(.caption)
-                    .foregroundStyle(status.contains("失败") || status.contains("异常") ? Color.red : Color.secondary)
+                    .foregroundStyle(status.contains("失败") || status.contains("失效") ? Color.red : Color.secondary)
                     .textSelection(.enabled)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { model.formlabsDashboardLoginDeviceID == deviceID },
+            set: { if !$0 { model.formlabsDashboardLoginDeviceID = nil } }
+        )) {
+            if let session = model.formlabsDashboardSession(for: deviceID) {
+                FormlabsDashboardLoginView(session: session) { model.formlabsDashboardLoginDeviceID = nil }
             }
         }
     }

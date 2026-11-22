@@ -1,7 +1,13 @@
 import Foundation
 
+public enum FormlabsDataSource: String, Codable, CaseIterable {
+    case developerAPI
+    case dashboard
+}
+
 /// Formlabs Dashboard API 的持久化配置。
 public struct FormlabsConnectionSettings: Codable, Equatable {
+    public var dataSource: FormlabsDataSource
     public var printerSerial: String
     public var clientID: String
     public var clientSecret: String
@@ -14,7 +20,9 @@ public struct FormlabsConnectionSettings: Codable, Equatable {
     public init(printerSerial: String = "",
                 clientID: String = "", clientSecret: String = "",
                 showThumbnail: Bool = true, showLayers: Bool = true,
-                showMaterial: Bool = true, useBrandAccent: Bool = true) {
+                showMaterial: Bool = true, useBrandAccent: Bool = true,
+                dataSource: FormlabsDataSource = .developerAPI) {
+        self.dataSource = dataSource
         self.printerSerial = printerSerial
         self.clientID = clientID
         self.clientSecret = clientSecret
@@ -26,7 +34,7 @@ public struct FormlabsConnectionSettings: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case printerSerial, clientID, clientSecret, showThumbnail, showLayers, showMaterial,
-             useBrandAccent
+             useBrandAccent, dataSource
     }
 
     /// 旧版配置没有强调色开关；回退为旧版始终使用的品牌蓝。
@@ -39,6 +47,7 @@ public struct FormlabsConnectionSettings: Codable, Equatable {
         showLayers = try c.decodeIfPresent(Bool.self, forKey: .showLayers) ?? true
         showMaterial = try c.decodeIfPresent(Bool.self, forKey: .showMaterial) ?? true
         useBrandAccent = try c.decodeIfPresent(Bool.self, forKey: .useBrandAccent) ?? true
+        dataSource = try c.decodeIfPresent(FormlabsDataSource.self, forKey: .dataSource) ?? .developerAPI
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -50,6 +59,7 @@ public struct FormlabsConnectionSettings: Codable, Equatable {
         try c.encode(showLayers, forKey: .showLayers)
         try c.encode(showMaterial, forKey: .showMaterial)
         try c.encode(useBrandAccent, forKey: .useBrandAccent)
+        try c.encode(dataSource, forKey: .dataSource)
     }
 }
 
@@ -63,11 +73,14 @@ public struct FormlabsDeviceInfo: Codable, Equatable, Identifiable {
     public var firmwareVersion: String
     public var readyToPrintNow: Bool?
     public var estimatedPrintTimeRemainingMS: Double?
+    public var lastPingedAt: Date?
+    public var lastModified: Date?
 
     public init(id: String, productName: String = "Formlabs 打印机", status: String = "unknown",
                 isConnected: Bool = false, connectionType: String = "", ipAddress: String = "",
                 firmwareVersion: String = "", readyToPrintNow: Bool? = nil,
-                estimatedPrintTimeRemainingMS: Double? = nil) {
+                estimatedPrintTimeRemainingMS: Double? = nil,
+                lastPingedAt: Date? = nil, lastModified: Date? = nil) {
         self.id = id
         self.productName = productName
         self.status = status
@@ -77,17 +90,18 @@ public struct FormlabsDeviceInfo: Codable, Equatable, Identifiable {
         self.firmwareVersion = firmwareVersion
         self.readyToPrintNow = readyToPrintNow
         self.estimatedPrintTimeRemainingMS = estimatedPrintTimeRemainingMS
+        self.lastPingedAt = lastPingedAt
+        self.lastModified = lastModified
     }
 
-    /// Dashboard 某些响应不带 `is_connected`。只有明确的离线状态才据此推断断开；
-    /// `unknown` 可能只是新固件状态，仍应让智能轮播保守展示。API 明确返回的布尔值
-    /// 始终优先，尤其不能让 `status=printing` 覆盖显式的 `false`。
+    /// 缺少连接字段时，UNKNOWN 不能作为在线证据。未收录但有意义的新状态仍保守展示。
+    /// API 明确返回的布尔值始终优先。
     public static func resolvedIsConnected(explicit: Bool?, status: String) -> Bool {
         if let explicit { return explicit }
         let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased().replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
-        return !["off", "offline", "disconnected", "unavailable"].contains(normalized)
+        return !["", "unknown", "off", "offline", "disconnected", "unavailable"].contains(normalized)
     }
 }
 
@@ -176,23 +190,52 @@ public struct FormlabsSnapshot: Codable, Equatable {
     public var thumbnail: Data?
     public var sampledAt: Date?
     public var cloudError: String?
+    /// 成功收到 HTTP 响应并不代表设备数据新鲜；与网络/授权错误分别保存。
+    public var dataIssue: String?
+    /// nil 兼容旧缓存；false 表示任务内容只是保留的最近任务。
+    public var hasCurrentPrint: Bool?
     /// App 在一次可信的活动→成功完成转换中写入的绝对时间。持久化该原始时间，
     /// 重启后只恢复剩余宽限，不会因重复刷新或加载 finished 缓存重新计时。
     public var completionObservedAt: Date?
 
     public init(device: FormlabsDeviceInfo? = nil, print: FormlabsPrintInfo? = nil,
                 thumbnail: Data? = nil, sampledAt: Date? = nil,
-                cloudError: String? = nil, completionObservedAt: Date? = nil) {
+                cloudError: String? = nil, completionObservedAt: Date? = nil,
+                dataIssue: String? = nil, hasCurrentPrint: Bool? = nil) {
         self.device = device
         self.print = print
         self.thumbnail = thumbnail
         self.sampledAt = sampledAt
         self.cloudError = cloudError
         self.completionObservedAt = completionObservedAt
+        self.dataIssue = dataIssue
+        self.hasCurrentPrint = hasCurrentPrint
     }
 
     public static let empty = FormlabsSnapshot()
     public var hasData: Bool { device != nil || print != nil }
+    public var isRealtimeAvailable: Bool {
+        cloudError == nil && dataIssue == nil && device?.isConnected == true
+    }
+
+    /// 当前设备状态和错误优先于历史任务，避免离线/失败被缓存的成功状态覆盖。
+    public var displayStatus: String {
+        let deviceStatus = device?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if ["offline", "off", "disconnected", "unavailable"].contains(deviceStatus) { return "offline" }
+        if cloudError != nil || dataIssue != nil { return "data_unavailable" }
+        if device?.isConnected == false { return "offline" }
+        if ["failed", "error", "cancelled", "canceled", "aborted"].contains(deviceStatus) { return deviceStatus }
+        if hasCurrentPrint == false {
+            if ["idle", "ready"].contains(deviceStatus),
+               let status = print?.status.lowercased(),
+               ["finished", "completed", "complete", "failed", "error", "cancelled", "canceled", "aborted"].contains(status) {
+                return status
+            }
+            return deviceStatus.isEmpty ? "unknown" : deviceStatus
+        }
+        if let status = print?.status, !status.isEmpty { return status }
+        return deviceStatus.isEmpty ? "unknown" : deviceStatus
+    }
 }
 
 /// Formlabs Dashboard 在任务结束后可能立即把 `current_print_run` 置空。
@@ -259,11 +302,19 @@ public enum FormlabsTaskCachePolicy {
             && leftThumbnail != rightThumbnail
     }
 
-    /// 云端不再返回当前任务时，把最后一次活动快照固化为已完成；失败、取消等
-    /// 已经明确终止的状态保持原义，不误改为成功完成。
+    /// 任务消失只表示缺少当前任务；只有明确的成功终态才能补齐到 100%。
     public static func retainedPrint(previous: FormlabsPrintInfo?,
-                                     latest: FormlabsPrintInfo?) -> FormlabsPrintInfo? {
+                                     latest: FormlabsPrintInfo?,
+                                     deviceStatus: String? = nil) -> FormlabsPrintInfo? {
+        let reported = deviceStatus?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: "-", with: "_") ?? ""
+        let failureStates = ["failed", "error", "cancelled", "canceled", "aborted"]
         if var latest {
+            // Device failures can arrive before the nested run catches up.
+            if failureStates.contains(reported) {
+                latest.status = reported
+                latest.estimatedTimeRemainingMS = 0
+            }
             // 同一任务的新响应缺少有效耗材时，保留最近一次已确认的材料名称；
             // “未分配”等占位字符串不会污染后续显示。
             if let previous, isSameTask(previous, latest),
@@ -276,19 +327,18 @@ public enum FormlabsTaskCachePolicy {
             return latest
         }
         guard var cached = previous else { return nil }
+        let terminalStates = ["finished", "completed", "complete", "failed", "error", "cancelled", "canceled", "aborted"]
+        if terminalStates.contains(reported) { cached.status = reported }
         let terminal = cached.status.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased().replacingOccurrences(of: "-", with: "_")
         let successful = ["finished", "completed", "complete"].contains(terminal)
-        let keepStatus = successful || ["failed", "error", "cancelled", "canceled", "aborted"]
-            .contains(terminal)
-        if !keepStatus { cached.status = "finished" }
-        if successful || !keepStatus {
+        if successful {
             if let total = cached.layerCount, total > 0 { cached.currentLayer = total }
             if let estimated = cached.estimatedDurationMS, estimated > 0 {
                 cached.elapsedDurationMS = estimated
             }
         }
-        cached.estimatedTimeRemainingMS = 0
+        if terminalStates.contains(terminal) { cached.estimatedTimeRemainingMS = 0 }
         return cached
     }
 }
@@ -312,6 +362,7 @@ public enum FormlabsError: LocalizedError {
     case http(Int, String)
     case missingCloudCredentials
     case printerNotFound
+    case unavailableData(String)
 
     public var errorDescription: String? {
         switch self {
@@ -319,6 +370,7 @@ public enum FormlabsError: LocalizedError {
         case .http(let code, let detail): return "Formlabs 请求失败（HTTP \(code)）\(detail.isEmpty ? "" : "：\(detail)")"
         case .missingCloudCredentials: return "尚未填写 Dashboard API 的 Client ID 和 Client Secret"
         case .printerNotFound: return "Dashboard API 中没有找到对应序列号的打印机"
+        case .unavailableData(let reason): return reason
         }
     }
 
@@ -332,11 +384,13 @@ public actor FormlabsClient {
     }
 
     private let session: URLSession
+    private let now: () -> Date
     private var tokens: [String: OAuthToken] = [:]
     private let cloudBaseURL = URL(string: "https://api.formlabs.com")!
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = .shared, now: @escaping () -> Date = Date.init) {
         self.session = session
+        self.now = now
     }
 
     /// 使用 Dashboard API 列出当前账号可访问的打印机，供设备管理选择序列号。
@@ -344,12 +398,8 @@ public actor FormlabsClient {
         let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, !secret.isEmpty else { throw FormlabsError.missingCloudCredentials }
-        let token = try await accessToken(clientID: id, clientSecret: secret)
         let url = cloudBaseURL.appendingPathComponent("developer/v1/printers/")
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 12
-        let payload = try await data(for: request)
+        let (payload, _) = try await authorizedData(url: url, clientID: id, clientSecret: secret)
         let root = try jsonObject(payload)
         return objectArray(root, preferredKeys: ["printers", "results", "data", "items"])
             .compactMap { Self.parseCloudDevice($0) }
@@ -358,32 +408,9 @@ public actor FormlabsClient {
     public func refresh(settings: FormlabsConnectionSettings,
                         previous: FormlabsSnapshot = .empty) async -> FormlabsSnapshot {
         var result = previous
-        result.sampledAt = Date()
-
         do {
             let cloud = try await cloudPrinter(settings: settings)
-            result.device = cloud.device
-            let previousPrint = previous.print
-            let definitelyNewTask = FormlabsTaskCachePolicy.isDefinitelyDifferentTask(
-                previousPrint, cloud.print)
-            result.print = FormlabsTaskCachePolicy.retainedPrint(previous: previousPrint,
-                                                                 latest: cloud.print)
-            result.cloudError = nil
-            // 只有确认的新任务才丢弃上一任务封面/完成时间；身份字段短暂缺失属于
-            // 未知，下载失败时继续沿用最近有效数据。
-            if cloud.print != nil, definitelyNewTask {
-                result.thumbnail = nil
-                result.completionObservedAt = nil
-            }
-            if settings.showThumbnail, let current = cloud.print,
-               let request = thumbnailRequest(urlString: current.thumbnailURL,
-                                              token: cloud.token) {
-                // 缩略图是附加内容：下载短暂失败时保留上一张有效图片，不能把已经成功
-                // 获取的打印机状态一并标记为云端连接异常。
-                if let data = try? await data(for: request), !data.isEmpty {
-                    result.thumbnail = data
-                }
-            }
+            result = await snapshot(from: cloud, settings: settings, previous: previous)
         } catch {
             result.cloudError = error.localizedDescription
         }
@@ -391,39 +418,124 @@ public actor FormlabsClient {
     }
 
     public func testCloud(settings: FormlabsConnectionSettings) async throws -> FormlabsPrintInfo? {
-        try await cloudPrinter(settings: settings).print
+        let reading = try await cloudPrinter(settings: settings)
+        if let issue = reading.dataIssue { throw FormlabsError.unavailableData(issue) }
+        return reading.print
+    }
+
+    /// Payload is observed inside the user's explicitly connected official Dashboard WebView.
+    /// This client never imports browser cookies or attempts to use developer tokens on private endpoints.
+    public func refreshDashboard(settings: FormlabsConnectionSettings,
+                                 previous: FormlabsSnapshot = .empty,
+                                 payload: Data) async -> FormlabsSnapshot {
+        var result = previous
+        do {
+            let root = try jsonObject(payload)
+            let serial = settings.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !serial.isEmpty else { throw FormlabsError.printerNotFound }
+            let printer: [String: Any]
+            if let array = root as? [[String: Any]] {
+                guard let match = array.first(where: { Self.serial($0)?.caseInsensitiveCompare(serial) == .orderedSame }) else {
+                    throw FormlabsError.printerNotFound
+                }
+                printer = match
+            } else if let object = root as? [String: Any] {
+                printer = object["printer"] as? [String: Any] ?? object
+            } else { throw FormlabsError.invalidResponse }
+            var reading = try parseReading(printer, expectedSerial: serial, token: "")
+            reading.device.connectionType = "dashboard"
+            result = await snapshot(from: reading, settings: settings, previous: previous)
+        } catch {
+            result.cloudError = error.localizedDescription
+        }
+        return result
+    }
+
+    private struct Reading {
+        var device: FormlabsDeviceInfo
+        var print: FormlabsPrintInfo?
+        var token: String
+        var dataIssue: String?
+    }
+
+    private func snapshot(from reading: Reading, settings: FormlabsConnectionSettings,
+                          previous: FormlabsSnapshot) async -> FormlabsSnapshot {
+        var result = previous
+        result.device = reading.device
+        result.cloudError = nil
+        result.dataIssue = reading.dataIssue
+        result.hasCurrentPrint = reading.print != nil
+        // An old heartbeat or unavailable state must not overwrite the last trustworthy task,
+        // renew its sample time, or create a completion event.
+        guard reading.dataIssue == nil, reading.device.isConnected else { return result }
+        result.print = FormlabsTaskCachePolicy.retainedPrint(
+            previous: previous.print, latest: reading.print, deviceStatus: reading.device.status)
+        if reading.device.isConnected { result.sampledAt = now() }
+        if reading.print != nil,
+           FormlabsTaskCachePolicy.isDefinitelyDifferentTask(previous.print, reading.print) {
+            result.thumbnail = nil
+            result.completionObservedAt = nil
+        }
+        if settings.showThumbnail, let current = reading.print,
+           let request = thumbnailRequest(urlString: current.thumbnailURL, token: reading.token),
+           let bytes = try? await data(for: request), !bytes.isEmpty {
+            result.thumbnail = bytes
+        }
+        return result
     }
 
     private func cloudPrinter(settings: FormlabsConnectionSettings) async throws
-        -> (device: FormlabsDeviceInfo, print: FormlabsPrintInfo?, token: String) {
+        -> Reading {
         let clientID = settings.clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = settings.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientID.isEmpty, !secret.isEmpty else { throw FormlabsError.missingCloudCredentials }
         let serial = settings.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !serial.isEmpty else { throw FormlabsError.printerNotFound }
-        let token = try await accessToken(clientID: clientID, clientSecret: secret)
-        let encoded = serial.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? serial
-        let url = cloudBaseURL.appendingPathComponent("developer/v1/printers/\(encoded)/")
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 12
-        let data = try await data(for: request)
+        let url = cloudBaseURL.appendingPathComponent("developer/v1/printers")
+            .appendingPathComponent(serial).appendingPathComponent("")
+        let (data, token) = try await authorizedData(url: url, clientID: clientID, clientSecret: secret)
         guard let root = try jsonObject(data) as? [String: Any] else { throw FormlabsError.invalidResponse }
         let printer = root["printer"] as? [String: Any] ?? root
+        return try parseReading(printer, expectedSerial: serial, token: token)
+    }
+
+    private func parseReading(_ printer: [String: Any], expectedSerial: String, token: String) throws -> Reading {
+        guard let actualSerial = Self.serial(printer),
+              actualSerial.caseInsensitiveCompare(expectedSerial) == .orderedSame else {
+            throw FormlabsError.invalidResponse
+        }
         let status = printer["printer_status"] as? [String: Any]
             ?? printer["status"] as? [String: Any]
             ?? printer
+        guard Self.string(status["status"]) != nil || Self.string(status["state"]) != nil
+                || status["current_print_run"] is [String: Any]
+                || printer["current_print_run"] is [String: Any] else { throw FormlabsError.invalidResponse }
         let run = status["current_print_run"] as? [String: Any]
             ?? printer["current_print_run"] as? [String: Any]
-        guard let device = Self.parseCloudDevice(printer, fallbackSerial: serial) else {
+        guard var device = Self.parseCloudDevice(printer) else {
             throw FormlabsError.invalidResponse
         }
         let printerMaterial = Self.installedMaterialName(printer: printer,
                                                          status: status,
                                                          run: run)
-        return (device,
-                run.map { Self.parsePrint($0, printerMaterial: printerMaterial) },
-                token)
+        let print = run.map { Self.parsePrint($0, printerMaterial: printerMaterial) }
+        if printer["is_connected"] == nil, let status = print?.status,
+           !["", "unknown"].contains(status.lowercased()), device.status.lowercased() == "unknown" {
+            device.isConnected = true
+        }
+        let issue: String?
+        if let heartbeat = device.lastPingedAt,
+           now().timeIntervalSince(heartbeat) > 300 || heartbeat.timeIntervalSince(now()) > 300 {
+            issue = "Formlabs 设备数据未更新，当前显示最近缓存"
+        } else if status["last_pinged_at"] is String && device.lastPingedAt == nil {
+            issue = "Formlabs 返回的设备更新时间无法识别"
+        } else if ["", "unknown"].contains(device.status.lowercased()),
+                  print == nil || ["", "unknown"].contains(print?.status.lowercased() ?? "") {
+            issue = "Formlabs 暂未提供实时状态，请连接 Dashboard 或稍后重试"
+        } else {
+            issue = nil
+        }
+        return Reading(device: device, print: print, token: token, dataIssue: issue)
     }
 
     /// 不同 Form / Fuse 设备分别通过料盒、树脂槽或料斗上报当前耗材。
@@ -485,18 +597,41 @@ public actor FormlabsClient {
         } else {
             url = URL(string: raw, relativeTo: cloudBaseURL)?.absoluteURL
         }
-        guard let url else { return nil }
+        guard let url, url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else { return nil }
         var request = URLRequest(url: url)
         if url.host?.caseInsensitiveCompare(cloudBaseURL.host ?? "") == .orderedSame {
+            guard !token.isEmpty else { return nil }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.timeoutInterval = 12
         return request
     }
 
+    private func authorizedData(url: URL, clientID: String, clientSecret: String) async throws -> (Data, String) {
+        let token = try await accessToken(clientID: clientID, clientSecret: clientSecret)
+        func request(_ value: String) -> URLRequest {
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(value)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 12
+            return request
+        }
+        do { return (try await data(for: request(token)), token) }
+        catch FormlabsError.http(let code, _) where code == 401 {
+            // Another in-flight request may already have refreshed this credential's token.
+            let key = clientID + "\u{0}" + clientSecret
+            if tokens[key]?.value == token { tokens[key] = nil }
+            let refreshed = try await accessToken(clientID: clientID, clientSecret: clientSecret)
+            do { return (try await data(for: request(refreshed)), refreshed) }
+            catch FormlabsError.http(let retryCode, let detail) where retryCode == 401 {
+                if tokens[key]?.value == refreshed { tokens[key] = nil }
+                throw FormlabsError.http(retryCode, detail)
+            }
+        }
+    }
+
     private func accessToken(clientID: String, clientSecret: String) async throws -> String {
         let key = clientID + "\u{0}" + clientSecret
-        if let cached = tokens[key], cached.expiresAt.timeIntervalSinceNow > 120 {
+        if let cached = tokens[key], cached.expiresAt.timeIntervalSince(now()) > 120 {
             return cached.value
         }
         let url = cloudBaseURL.appendingPathComponent("developer/v1/o/token/")
@@ -513,7 +648,8 @@ public actor FormlabsClient {
             throw FormlabsError.invalidResponse
         }
         let expires = Self.number(json["expires_in"]) ?? 86_400
-        tokens[key] = OAuthToken(value: value, expiresAt: Date().addingTimeInterval(expires))
+        guard expires.isFinite, expires > 0 else { throw FormlabsError.invalidResponse }
+        tokens[key] = OAuthToken(value: value, expiresAt: now().addingTimeInterval(expires))
         return value
     }
 
@@ -521,8 +657,8 @@ public actor FormlabsClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw FormlabsError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = String(data: data, encoding: .utf8)?.prefix(240) ?? ""
-            throw FormlabsError.http(http.statusCode, String(detail))
+            // Error bodies may echo request credentials; only the status code enters UI/cache.
+            throw FormlabsError.http(http.statusCode, "")
         }
         return data
     }
@@ -541,13 +677,15 @@ public actor FormlabsClient {
         return []
     }
 
-    private static func parseCloudDevice(_ object: [String: Any], fallbackSerial: String? = nil) -> FormlabsDeviceInfo? {
-        guard let id = string(object["serial"])
-                ?? string(object["printer_serial"])
-                ?? string(object["serial_number"])
-                ?? string(object["machine_id"])
-                ?? string(object["id"])
-                ?? fallbackSerial else { return nil }
+    private static func serial(_ object: [String: Any]) -> String? {
+        let value = string(object["serial"]) ?? string(object["printer_serial"])
+            ?? string(object["serial_number"]) ?? string(object["machine_id"]) ?? string(object["id"])
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private static func parseCloudDevice(_ object: [String: Any]) -> FormlabsDeviceInfo? {
+        guard let id = serial(object) else { return nil }
         let statusObject = object["printer_status"] as? [String: Any]
             ?? object["status"] as? [String: Any]
         let rawStatus = string(statusObject?["status"])
@@ -560,7 +698,9 @@ public actor FormlabsClient {
             explicit: bool(object["is_connected"]), status: rawStatus)
         return FormlabsDeviceInfo(
             id: id,
-            productName: string(object["name"])
+            productName: string(object["alias"]).flatMap { $0.isEmpty ? nil : $0 }
+                ?? string(object["user_facing_name"])
+                ?? string(object["name"])
                 ?? string(object["printer_name"])
                 ?? string(object["product_name"])
                 ?? string(object["model"])
@@ -572,7 +712,9 @@ public actor FormlabsClient {
             firmwareVersion: string(object["firmware_version"]) ?? "",
             readyToPrintNow: bool(object["ready_to_print_now"]),
             estimatedPrintTimeRemainingMS: number(run?["estimated_time_remaining_ms"])
-                ?? number(object["estimated_print_time_remaining_ms"])
+                ?? number(object["estimated_print_time_remaining_ms"]),
+            lastPingedAt: date(statusObject?["last_pinged_at"] ?? object["last_pinged_at"]),
+            lastModified: date(statusObject?["last_modified"] ?? object["last_modified"])
         )
     }
 
@@ -586,7 +728,8 @@ public actor FormlabsClient {
             printSettingsName: string(object["print_settings_name"]),
             printerMaterial: printerMaterial)
         return FormlabsPrintInfo(
-            runID: string(object["print_run_id"])
+            runID: string(object["guid"])
+                ?? string(object["print_run_id"])
                 ?? string(object["run_id"])
                 ?? string(object["uuid"])
                 ?? string(object["id"]),
@@ -611,13 +754,25 @@ public actor FormlabsClient {
     }
 
     private static func number(_ value: Any?) -> Double? {
-        if let value = value as? NSNumber { return value.doubleValue }
-        if let value = value as? String { return Double(value) }
-        return nil
+        let number: Double?
+        if let value = value as? NSNumber { number = value.doubleValue }
+        else if let value = value as? String { number = Double(value) }
+        else { number = nil }
+        return number?.isFinite == true ? number : nil
     }
 
     private static func integer(_ value: Any?) -> Int? {
-        number(value).map { Int($0) }
+        guard let number = number(value), number >= 0, number < Double(Int.max) else { return nil }
+        return Int(number)
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        guard let value = value as? String, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private static func bool(_ value: Any?) -> Bool? {

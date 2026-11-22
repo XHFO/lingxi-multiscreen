@@ -7693,9 +7693,13 @@ func testFormlabs() throws {
     checkEqual(ScreenRenderer.formlabsStatusText("cancelled"), "已取消", "Formlabs 取消状态汉化")
     checkEqual(ScreenRenderer.formlabsStatusText("custom_state"), "custom_state", "未知状态保留原文")
 
-    let retainedCompleted = FormlabsTaskCachePolicy.retainedPrint(previous: byLayer, latest: nil)
+    let retainedUnknown = FormlabsTaskCachePolicy.retainedPrint(previous: byLayer, latest: nil)
+    checkEqual(retainedUnknown?.status, "printing", "Formlabs 任务消失不能当作成功完成")
+    checkEqual(retainedUnknown?.currentLayer, 25, "Formlabs 未确认完成时保留可信进度")
+    let retainedCompleted = FormlabsTaskCachePolicy.retainedPrint(previous: byLayer, latest: nil,
+                                                                 deviceStatus: "FINISHED")
     checkEqual(retainedCompleted?.name, "Dental Model", "Formlabs 空闲后保留最近任务名")
-    checkEqual(retainedCompleted?.status, "finished", "Formlabs 当前任务消失后固化为已完成")
+    checkEqual(retainedCompleted?.status, "finished", "Formlabs 明确成功终态才固化为已完成")
     checkEqual(retainedCompleted?.currentLayer, 100, "Formlabs 已完成缓存补齐最终层数")
     checkEqual(retainedCompleted?.estimatedTimeRemainingMS, 0,
                "Formlabs 已完成缓存清零剩余时间")
@@ -7739,8 +7743,8 @@ func testFormlabs() throws {
     let repeatedNameNewRun = FormlabsPrintInfo(runID: "run-2", name: "Repeated Model")
     check(FormlabsTaskCachePolicy.isDefinitelyDifferentTask(repeatedNameOldRun, repeatedNameNewRun),
           "Formlabs 稳定 run ID 应区分同名的连续任务")
-    check(FormlabsDeviceInfo.resolvedIsConnected(explicit: nil, status: "unknown"),
-          "Formlabs 缺少连接字段的未知新状态应保守参与轮播")
+    check(!FormlabsDeviceInfo.resolvedIsConnected(explicit: nil, status: "unknown"),
+          "Formlabs 缺少连接字段的UNKNOWN不能声明在线")
     check(!FormlabsDeviceInfo.resolvedIsConnected(explicit: false, status: "printing"),
           "Formlabs API 明确断开时不能被打印状态覆盖")
 

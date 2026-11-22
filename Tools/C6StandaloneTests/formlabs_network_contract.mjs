@@ -21,6 +21,7 @@ const program=`
 #include "local_sources.h"
 #include "formlabs_source.h"
 #include "source_budget.h"
+#include "form_auth_cache.h"
 #define MESSAGE_LIMIT 16384
 #define HTTP_METHOD_POST 1
 #define HTTP_METHOD_GET 0
@@ -42,7 +43,7 @@ static jmp_buf stop;
 static int xSemaphoreTake(int l,int t){return pdTRUE;}
 static void xSemaphoreGive(int l){}
 static bool runtime_enabled(unsigned work){return c6_source_needed(&settings,work);}
-static bool ha_network_ready(void){return true;}
+static bool ha_network_ready(void){return !((mode==11&&now>=10)||(mode==12&&now>=10&&now<20));}
 static bool http_budget(bool tls){return mode!=6;}
 uint64_t c6_seconds(void){return now;}
 static bool current(unsigned generation){return generation==state.generation;}
@@ -66,6 +67,7 @@ static void *esp_http_client_init(const esp_http_client_config_t *c){
         assert(!strcmp(c->url,"https://api.formlabs.com/developer/v1/printers/Form-123/"));printer_calls++;
         if(mode==1)http_status=401;if(mode==2)http_status=429;
         snprintf(response,sizeof(response),"{\\"serial\\":\\"Form-123\\",\\"status\\":{\\"status\\":\\"%s\\",\\"current_print_run\\":{\\"id\\":17,\\"name\\":\\"fixture\\",\\"status\\":\\"%s\\",\\"currently_printing_layer\\":4,\\"layer_count\\":10,\\"print_thumbnail\\":{\\"thumbnail\\":\\"https://files.formlabs.com/fixture.png\\"}}}}",mode==4?"idle":"printing",mode==4?"idle":"printing");
+        if(mode==13&&printer_calls>1)snprintf(response,sizeof(response),"{\\"serial\\":\\"Form-123\\",\\"is_connected\\":true,\\"printer_status\\":{\\"status\\":\\"UNKNOWN\\",\\"current_print_run\\":null}}");
         if(mode==5)state.generation++; // Configuration changed while in flight.
     }
     return (void*)1;
@@ -101,6 +103,18 @@ static void run(int scenario,uint64_t duration){
     settings.enabled=true;settings.printer_count=1;settings.revision=7;state.generation=1;
     c6_printer_config_t *p=&settings.printers[0];p->enabled=p->source_formlabs=p->show_image=true;
     strcpy(p->serial,"Form-123");strcpy(p->form_client_id,"client+id");strcpy(p->form_client_secret,"secret&value");
+    if(scenario==11||scenario==12){
+        // Wi-Fi loss only changes real Formlabs cloud sources. Dedicated demos
+        // and an unrelated generic printer retain their independent state.
+        settings.printer_count=2;p=&settings.printers[1];
+#if C6_FORMLABS_ONLY
+        p->enabled=p->source_formlabs=true;strcpy(p->serial,";;tex_2");
+        assert(c6_form_demo_seed(p,&state.printers[1]));state.form_phase[1]=5;
+#else
+        state.printers[1].known=state.printers[1].connected=true;
+        strcpy(state.printers[1].status,"printing");state.printers[1].progress=74;state.form_phase[1]=5;
+#endif
+    }
     if(!setjmp(stop))form_task(NULL);
 }
 int main(void){
@@ -113,14 +127,31 @@ int main(void){
     run(6,65);assert(!token_calls&&!printer_calls&&state.form_phase[0]==4); // low heap
     run(7,65);assert(token_calls==2&&!printer_calls&&!state.printers[0].updated); // incomplete token
     run(9,15);assert(token_calls==2&&printer_calls==2); // changed account invalidates token
-    run(10,15);assert(printer_calls==2&&picture_calls==1); // visible-page entry fetches cover promptly
+    run(10,15);
+#if C6_FORMLABS_ONLY
+    assert(printer_calls==1&&picture_calls==0); // dedicated profile keeps its normal polling interval
+#else
+    assert(printer_calls==2&&picture_calls==1); // generic visible-page entry fetches cover promptly
+#endif
+    run(11,3601);assert(printer_calls==1&&!state.printers[0].connected&&state.form_phase[0]==2);
+    assert(state.printers[0].progress==40&&!strcmp(state.printers[0].task,"fixture")&&!state.printers[0].updated&&!state.printers[0].completed_at);
+    assert(!c6_print_eligible(&state.printers[0],now)&&thumbnails[0].bytes&&picture_calls==1);
+    assert(state.printers[1].connected&&state.printers[1].progress==74&&state.form_phase[1]==5);
+    run(12,25);assert(printer_calls==2&&token_calls==1&&picture_calls==1);
+    assert(state.printers[0].connected&&state.printers[0].updated==20&&state.form_phase[0]==1);
+    assert(state.printers[1].connected&&state.printers[1].progress==74&&state.form_phase[1]==5);
+    run(13,65);assert(printer_calls==2&&state.form_phase[0]==2&&!state.printers[0].connected);
+    assert(state.printers[0].progress==40&&!state.printers[0].updated&&!state.printers[0].completed_at);
+    assert(!strcmp(state.printers[0].status,"UNKNOWN")&&thumbnails[0].bytes&&picture_calls==1);
     c6_thumbnail_clear(&thumbnails[0]);
-    puts("C6 Formlabs cloud worker: actual bounded HTTP/OAuth escaping, bearer isolation, token reuse/expiry, 30/120s polling, 401/429 backoff, source race, incomplete data, heap guard and visible-cover refresh passed");
+    puts("C6 Formlabs cloud worker: bounded HTTP/OAuth, polling/backoff, source races, Wi-Fi loss/recovery, demo isolation and unknown-response cache freshness passed");
 }
 `;
 const directory=mkdtempSync(join(tmpdir(),'lingxi-c6-form-network-')),binary=join(directory,'contract');
 try{
-  const build=spawnSync('clang',['-std=c11','-I',cjson,'-I',join(root,'Tools/C6StandaloneTests/stubs'),'-I',join(root,'Tools/WaveshareC6Firmware/src'),'-x','c','-',join(root,'Tools/WaveshareC6Firmware/src/formlabs_source.c'),join(root,'Tools/WaveshareC6Firmware/src/thumbnail_cache.c'),join(root,'Tools/WaveshareC6Firmware/src/local_state.c'),join(cjson,'cJSON.c'),'-lm','-o',binary],{input:program,encoding:'utf8'});
-  assert.equal(build.status,0,build.stderr);
-  const test=spawnSync(binary,[],{encoding:'utf8'});assert.equal(test.status,0,test.stderr);console.log(test.stdout.trim());
+  for(const dedicated of [0,1]){
+    const build=spawnSync('clang',['-std=c11','-D',`C6_FORMLABS_ONLY=${dedicated}`,'-I',cjson,'-I',join(root,'Tools/C6StandaloneTests/stubs'),'-I',join(root,'Tools/WaveshareC6Firmware/src'),'-x','c','-',join(root,'Tools/WaveshareC6Firmware/src/formlabs_source.c'),join(root,'Tools/WaveshareC6Firmware/src/thumbnail_cache.c'),join(root,'Tools/WaveshareC6Firmware/src/local_state.c'),join(cjson,'cJSON.c'),'-lm','-o',binary],{input:program,encoding:'utf8'});
+    assert.equal(build.status,0,build.stderr);
+    const test=spawnSync(binary,[],{encoding:'utf8'});assert.equal(test.status,0,test.stderr);console.log(`${dedicated?'Dedicated':'Generic'}: ${test.stdout.trim()}`);
+  }
 }finally{rmSync(directory,{recursive:true,force:true});}

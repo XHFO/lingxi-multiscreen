@@ -157,6 +157,9 @@ public final class AppModel: ObservableObject {
     private let lyricsClient = LyricsClient()
     private let imageApi = ImageApiClient()
     private let formlabsClient = FormlabsClient()
+    private var formlabsDashboardSessions: [UUID: FormlabsDashboardSession] = [:]
+    private var formlabsDashboardClearingIDs: Set<UUID> = []
+    @Published var formlabsDashboardLoginDeviceID: UUID?
     private let esp8266Flasher = ESP8266FirmwareFlasher()
     private let m5FirmwareFlasher = ESP8266FirmwareFlasher()
     private var aiMacDiscoveryTask: Task<String, Error>?
@@ -820,6 +823,11 @@ public final class AppModel: ObservableObject {
     /// 恢复初始设定：清除全部设置、已添加的设备、自定义内容与自定义图片缓存，
     /// 回到首次启动状态。调用前界面已完成多次确认。
     public func resetToFactoryDefaults() {
+        for device in settings.devices where device.type == .formlabs {
+            formlabsDashboardSessions.removeValue(forKey: device.id)?.stop()
+            FormlabsDashboardSession.forget(device.id)
+        }
+        formlabsDashboardLoginDeviceID = nil
         // 1. 磁盘数据（设置/番茄钟/自定义图片/图片缓存）移入废纸篓（可恢复，不永久删除）
         store.resetAllData()
         // 2. 换入全新默认设置并重新接线 onChange
@@ -1072,6 +1080,10 @@ public final class AppModel: ObservableObject {
         guard let index = settings.devices.firstIndex(where: { $0.id == id }) else { return }
         guard settings.devices[index].isEnabled != enabled else { return }
         settings.devices[index].isEnabled = enabled
+        if settings.devices[index].type == .formlabs, !enabled {
+            formlabsDashboardSessions.removeValue(forKey: id)?.stop()
+            if formlabsDashboardLoginDeviceID == id { formlabsDashboardLoginDeviceID = nil }
+        }
         if settings.devices[index].type == .awtrix {
             if enabled {
                 Task { await refreshAWTRIX(deviceID: id) }
@@ -1528,6 +1540,9 @@ public final class AppModel: ObservableObject {
             removeBambuPrinterCard()
         }
         if type == .formlabs {
+            formlabsDashboardSessions.removeValue(forKey: id)?.stop()
+            FormlabsDashboardSession.forget(id)
+            if formlabsDashboardLoginDeviceID == id { formlabsDashboardLoginDeviceID = nil }
             printerRotationStates[id] = nil
             formlabsSnapshots[id] = nil
             formlabsDiscoveredDevices[id] = nil
@@ -2164,16 +2179,101 @@ public final class AppModel: ObservableObject {
                                         _ body: (inout FormlabsConnectionSettings) -> Void) {
         guard let index = settings.devices.firstIndex(where: { $0.id == id && $0.type == .formlabs }) else { return }
         var value = settings.devices[index].settings.formlabsConnection ?? FormlabsConnectionSettings()
-        let previousSerial = value.printerSerial
+        let previous = value
         body(&value)
         settings.devices[index].settings.formlabsConnection = value
-        if value.printerSerial != previousSerial {
-            // 改绑另一台实体打印机时，旧打印机的最近任务不能串到新设备上。
+        if value.printerSerial != previous.printerSerial || value.dataSource != previous.dataSource
+            || value.clientID != previous.clientID || value.clientSecret != previous.clientSecret {
+            // A source/account change must never inherit another source's task or response.
+            formlabsDashboardSessions.removeValue(forKey: id)?.stop()
+            if value.printerSerial != previous.printerSerial {
+                clearFormlabsDashboardLogin(id)
+            }
+            if formlabsDashboardLoginDeviceID == id { formlabsDashboardLoginDeviceID = nil }
             printerRotationStates[id] = nil
             formlabsSnapshots[id] = nil
+            formlabsDiscoveredDevices[id] = nil
+            formlabsConnectionStatus[id] = nil
             store.saveFormlabsTaskCache(formlabsSnapshots)
         }
         lastFormlabsRefresh[id] = nil
+    }
+
+    public func formlabsDataSourceBinding(for id: UUID) -> Binding<FormlabsDataSource> {
+        Binding(get: { self.formlabsSettings(for: id).dataSource },
+                set: { value in self.mutateFormlabsSettings(id) { $0.dataSource = value } })
+    }
+
+    func formlabsDashboardSession(for id: UUID) -> FormlabsDashboardSession? {
+        formlabsDashboardSessions[id]
+    }
+
+    private func ensureFormlabsDashboardSession(_ id: UUID) -> FormlabsDashboardSession? {
+        let config = formlabsSettings(for: id)
+        let serial = config.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard config.dataSource == .dashboard, !serial.isEmpty,
+              settings.devices.contains(where: { $0.id == id && $0.type == .formlabs && $0.isEnabled }),
+              !formlabsDashboardClearingIDs.contains(id),
+              FormlabsDashboardSession.isAuthorized(id) else { return nil }
+        if let session = formlabsDashboardSessions[id], session.serial == serial { return session }
+        formlabsDashboardSessions.removeValue(forKey: id)?.stop()
+        let session = FormlabsDashboardSession(deviceID: id, serial: serial)
+        formlabsDashboardSessions[id] = session
+        session.onChange = { [weak self, weak session] in
+            guard let self, let session, self.formlabsDashboardSessions[id] === session,
+                  self.formlabsSettings(for: id).dataSource == .dashboard else { return }
+            self.formlabsConnectionStatus[id] = session.statusText
+            self.lastFormlabsRefresh[id] = nil
+            Task { @MainActor [weak self] in
+                await self?.refreshFormlabs(deviceID: id, pushIfVisible: true)
+            }
+        }
+        session.start()
+        return session
+    }
+
+    func connectFormlabsDashboard(_ id: UUID) {
+        guard settings.devices.contains(where: { $0.id == id && $0.type == .formlabs && $0.isEnabled }) else {
+            formlabsConnectionStatus[id] = "请先启用此打印机，再连接 Dashboard。"
+            return
+        }
+        guard !formlabsDashboardClearingIDs.contains(id) else {
+            formlabsConnectionStatus[id] = "正在清除之前的 Dashboard 登录，请稍候重试。"
+            return
+        }
+        let config = formlabsSettings(for: id)
+        guard !config.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            formlabsConnectionStatus[id] = "请先填写并应用打印机序列号。"
+            return
+        }
+        // This is called only by the explicit Connect button, never by polling.
+        if config.dataSource != .dashboard {
+            mutateFormlabsSettings(id) { $0.dataSource = .dashboard }
+        }
+        FormlabsDashboardSession.authorize(id)
+        guard let session = ensureFormlabsDashboardSession(id) else { return }
+        session.isLoginVisible = true
+        if session.requiresLogin { session.openDashboard() }
+        formlabsDashboardLoginDeviceID = id
+    }
+
+    private func clearFormlabsDashboardLogin(_ id: UUID) {
+        formlabsDashboardClearingIDs.insert(id)
+        FormlabsDashboardSession.forget(id) { [weak self] in
+            self?.formlabsDashboardClearingIDs.remove(id)
+        }
+    }
+
+    func disconnectFormlabsDashboard(_ id: UUID) {
+        formlabsDashboardSessions.removeValue(forKey: id)?.stop()
+        clearFormlabsDashboardLogin(id)
+        if formlabsDashboardLoginDeviceID == id { formlabsDashboardLoginDeviceID = nil }
+        formlabsSnapshots[id] = nil
+        printerRotationStates[id] = nil
+        store.saveFormlabsTaskCache(formlabsSnapshots)
+        formlabsConnectionStatus[id] = "已断开 Dashboard，并清除此设备的网页登录。"
+        lastFormlabsRefresh[id] = nil
+        renderPreview()
     }
 
     public func formlabsStringBinding(for id: UUID,
@@ -2201,22 +2301,35 @@ public final class AppModel: ObservableObject {
 
     public func discoverFormlabsDevices(_ id: UUID) async {
         let config = formlabsSettings(for: id)
+        guard config.dataSource == .developerAPI else { return }
         formlabsConnectionStatus[id] = "正在从 Formlabs 云端读取打印机…"
         do {
             let devices = try await formlabsClient.cloudPrinters(
                 clientID: config.clientID, clientSecret: config.clientSecret)
+            guard settings.devices.contains(where: {
+                $0.id == id && $0.type == .formlabs && $0.settings.formlabsConnection == config
+            }) else { return }
             formlabsDiscoveredDevices[id] = devices
             formlabsConnectionStatus[id] = devices.isEmpty
                 ? "云端账号下没有可用打印机" : "云端发现 \(devices.count) 台打印机"
         } catch {
+            guard formlabsSettings(for: id) == config else { return }
             formlabsConnectionStatus[id] = "云端读取失败：\(error.localizedDescription)"
         }
     }
 
     public func testFormlabsConnection(_ id: UUID) async {
         let config = formlabsSettings(for: id)
+        guard config.dataSource == .developerAPI else {
+            await refreshFormlabs(deviceID: id, force: true, pushIfVisible: true)
+            return
+        }
         formlabsConnectionStatus[id] = "正在测试 Formlabs 云端连接…"
-        formlabsConnectionStatus[id] = await formlabsCloudTestText(config)
+        let status = await formlabsCloudTestText(config)
+        guard settings.devices.contains(where: {
+            $0.id == id && $0.type == .formlabs && $0.settings.formlabsConnection == config
+        }) else { return }
+        formlabsConnectionStatus[id] = status
         await refreshFormlabs(deviceID: id, force: true, pushIfVisible: true)
     }
 
@@ -2812,6 +2925,8 @@ public final class AppModel: ObservableObject {
 
     /// App 退出前把不足 180ms 的最后一次滑杆修改写盘；终止期间不再发网络请求。
     public func prepareForTermination() {
+        formlabsDashboardSessions.values.forEach { $0.stop() }
+        formlabsDashboardSessions = [:]
         c6PreparingForQuit = true
         c6HeartbeatTask?.cancel()
         c6CardOptionTasks.values.forEach { $0.cancel() }
@@ -2987,7 +3102,8 @@ public final class AppModel: ObservableObject {
             if let index = devices.firstIndex(where: { item in
                 if printer.sourceFormlabs {
                     let connection = item.settings.formlabsConnection
-                    return connection?.printerSerial == match.serial && connection?.clientID == match.formClientID
+                    return connection?.dataSource == .developerAPI
+                        && connection?.printerSerial == match.serial && connection?.clientID == match.formClientID
                 }
                 if printer.sourceHA { return item.id.uuidString.replacingOccurrences(of: "-", with: "") == match.serial }
                 return item.settings.bambuMQTT?.serial == match.serial
@@ -4107,7 +4223,10 @@ public final class AppModel: ObservableObject {
             }
         } else if let slot = mode.formlabsSlotIndex {
             let devices = enabledDevices(for: .formlabs)
-            if devices.indices.contains(slot) { serial = devices[slot].settings.formlabsConnection?.printerSerial }
+            if devices.indices.contains(slot),
+               devices[slot].settings.formlabsConnection?.dataSource == .developerAPI {
+                serial = devices[slot].settings.formlabsConnection?.printerSerial
+            }
             brand = "formlabs"; source = "formlabs"
         }
         guard let serial, !serial.isEmpty, serial.utf8.count < 40,
@@ -6310,20 +6429,19 @@ public func setClockTimeFormat(_ format: String) {
         if mode.formlabsSlotIndex != nil {
             guard let device = formlabsDevice(for: mode) else { return false }
             let connection = device.settings.formlabsConnection ?? FormlabsConnectionSettings()
-            guard !connection.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !connection.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !connection.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { return false }
+            guard !connection.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            if connection.dataSource == .developerAPI {
+                guard !connection.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !connection.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            } else if !FormlabsDashboardSession.isAuthorized(device.id) { return false }
             guard let snapshot = formlabsSnapshots[device.id] else {
                 // 配置完整但第一次云端刷新尚未返回，暂时保留卡片以兼容新状态。
                 return true
             }
-            let states = [snapshot.print?.status, snapshot.device?.status]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+            guard snapshot.isRealtimeAvailable else { return false }
             let activity: SmartCardRotationPolicy.PrinterActivity =
                 snapshot.device?.isConnected == false
-                ? .inactive : SmartCardRotationPolicy.printerActivity(states: states)
+                ? .inactive : SmartCardRotationPolicy.printerActivity(state: snapshot.displayStatus)
             let persistedState = snapshot.completionObservedAt.map {
                 SmartCardRotationPolicy.PrinterRotationState(
                     lastActivity: activity == .idle ? .idle : .completed,
@@ -6367,13 +6485,11 @@ public func setClockTimeFormat(_ format: String) {
         deviceID: UUID,
         now: Date
     ) -> FormlabsSnapshot {
+        guard snapshot.isRealtimeAvailable else { return snapshot }
         var updated = snapshot
-        let states = [snapshot.print?.status, snapshot.device?.status]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
         let activity: SmartCardRotationPolicy.PrinterActivity =
             snapshot.device?.isConnected == false
-            ? .inactive : SmartCardRotationPolicy.printerActivity(states: states)
+            ? .inactive : SmartCardRotationPolicy.printerActivity(state: snapshot.displayStatus)
         let persisted = snapshot.completionObservedAt.map {
             SmartCardRotationPolicy.PrinterRotationState(
                 lastActivity: activity == .idle ? .idle : .completed,
@@ -7885,20 +8001,43 @@ public func setClockTimeFormat(_ format: String) {
         guard let device = settings.devices.first(where: { $0.id == deviceID && $0.type == .formlabs }) else { return }
         guard force || formLabsRefreshDue(deviceID: deviceID, now: Date()) else { return }
         let config = device.settings.formlabsConnection ?? FormlabsConnectionSettings()
-        let hasCloud = !config.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !config.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !config.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard hasCloud else { return }
+        let hasSerial = !config.printerSerial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasCloud = config.dataSource == .dashboard || (
+            !config.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !config.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        guard hasSerial, hasCloud, !formlabsRefreshing.contains(deviceID) else { return }
         formlabsRefreshing.insert(deviceID)
         defer { formlabsRefreshing.remove(deviceID) }
         lastFormlabsRefresh[deviceID] = Date()
         let previous = formlabsSnapshots[deviceID] ?? .empty
-        var updated = await formlabsClient.refresh(settings: config, previous: previous)
+        var updated: FormlabsSnapshot
+        var dashboardSession: FormlabsDashboardSession?
+        if config.dataSource == .dashboard {
+            dashboardSession = ensureFormlabsDashboardSession(deviceID)
+            if let session = dashboardSession, let payload = session.currentPayload {
+                let observedAt = session.receivedAt
+                updated = await formlabsClient.refreshDashboard(settings: config, previous: previous, payload: payload)
+                guard session.currentPayload == payload, session.receivedAt == observedAt else {
+                    lastFormlabsRefresh[deviceID] = nil; return
+                }
+                // Only usable state receives the page-observation timestamp. Unavailable
+                // heartbeats must retain the timestamp of the last trustworthy snapshot.
+                updated.sampledAt = updated.isRealtimeAvailable ? observedAt : previous.sampledAt
+            } else {
+                updated = previous
+                updated.cloudError = dashboardSession?.statusText ?? "请点击连接 Dashboard，并在官方网页中登录。"
+                updated.dataIssue = "Dashboard 暂无可用的实时状态。"
+            }
+        } else {
+            updated = await formlabsClient.refresh(settings: config, previous: previous)
+        }
+        if config.dataSource == .dashboard,
+           formlabsDashboardSessions[deviceID] !== dashboardSession { return }
         // Discard a late response if this source was deleted or reconfigured.
         guard settings.devices.contains(where: {
             $0.id == deviceID && $0.type == .formlabs && $0.settings.formlabsConnection == config
         }) else { return }
-        if updated.cloudError == nil {
+        if updated.cloudError == nil && updated.isRealtimeAvailable {
             if FormlabsTaskCachePolicy.isDefinitelyDifferentTask(
                 previous.print, updated.print) {
                 printerRotationStates[deviceID] = nil
@@ -7910,9 +8049,13 @@ public func setClockTimeFormat(_ format: String) {
         store.saveFormlabsTaskCache(formlabsSnapshots)
         if let cloudError = updated.cloudError {
             formlabsConnectionStatus[deviceID] = "云端刷新失败：\(cloudError)"
+        } else if let issue = updated.dataIssue {
+            formlabsConnectionStatus[deviceID] = issue
         } else {
-            formlabsConnectionStatus[deviceID] = "Formlabs 云端数据已更新"
+            formlabsConnectionStatus[deviceID] = config.dataSource == .dashboard
+                ? "Dashboard 打印机状态已更新" : "Formlabs 云端数据已更新"
         }
+        dashboardSession?.refreshPageIfNeeded(force: force)
         guard updateVisiblePreview, formlabsDevice(for: settings.displayMode)?.id == deviceID else { return }
         renderPreview()
         if pushIfVisible { await pushWhenAvailable(force: false, silentIfUnchanged: true) }
@@ -13305,6 +13448,7 @@ public func setClockTimeFormat(_ format: String) {
         let wantedForms = Set(modes.compactMap(\.formlabsSlotIndex) + modules.compactMap(\.formlabsSlotIndex))
         for (index, printer) in enabledDevices(for: .formlabs).enumerated() where wantedForms.contains(index) {
             let fields = printer.settings.formlabsConnection ?? FormlabsConnectionSettings()
+            guard fields.dataSource == .developerAPI else { continue }
             var p = C6PrinterConfiguration()
             p.sourceFormlabs = true; p.serial = fields.printerSerial
             p.formClientID = fields.clientID; p.name = printer.name
@@ -13338,6 +13482,7 @@ public func setClockTimeFormat(_ format: String) {
         credentials.haToken = selection.ha.enabled ? (c6HomeAssistantConnection?.token ?? "") : ""
         for printer in enabledDevices(for: .formlabs) {
             let fields = printer.settings.formlabsConnection ?? FormlabsConnectionSettings()
+            guard fields.dataSource == .developerAPI else { continue }
             if selection.printers.contains(where: { $0.sourceFormlabs && $0.serial == fields.printerSerial && $0.formClientID == fields.clientID }) {
                 if let p = selection.printers.first(where: { $0.sourceFormlabs && $0.serial == fields.printerSerial && $0.formClientID == fields.clientID }) {
                     credentials.formClientSecrets[p.credentialKey] = fields.clientSecret
@@ -13568,6 +13713,7 @@ public func setClockTimeFormat(_ format: String) {
         }
         if let id = upload.formDeviceID {
             guard let printer = settings.devices.first(where: { $0.id == id && $0.isEnabled && $0.type == .formlabs }),
+                  printer.settings.formlabsConnection?.dataSource == .developerAPI,
                   printer.settings.formlabsConnection?.printerSerial == upload.serial,
                   printer.settings.formlabsConnection?.clientID == upload.formClientID,
                   let print = formlabsSnapshots[id]?.print else { return false }
@@ -13603,7 +13749,8 @@ public func setClockTimeFormat(_ format: String) {
                 && selectedPrinters.contains(where: { C6ConfigurationSync.mediaSourceMatches(p, selected: $0) }) {
                 if p.sourceFormlabs {
                     guard let device = enabledDevices(for: .formlabs).first(where: {
-                        $0.settings.formlabsConnection?.printerSerial == p.serial
+                        $0.settings.formlabsConnection?.dataSource == .developerAPI
+                            && $0.settings.formlabsConnection?.printerSerial == p.serial
                             && $0.settings.formlabsConnection?.clientID == p.formClientID
                     }), let snapshot = formlabsSnapshots[device.id], let print = snapshot.print,
                        let taskKey = C6TaskThumbnail.formlabsTaskKey(runID: print.runID, name: print.name),

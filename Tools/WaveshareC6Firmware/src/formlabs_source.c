@@ -8,6 +8,8 @@ static cJSON *get(cJSON *j,const char *key){return cJSON_GetObjectItemCaseSensit
 static const char *text(cJSON *j,const char *key){cJSON *v=get(j,key);return cJSON_IsString(v)?v->valuestring:"";}
 static const char *first(cJSON *j,const char *a,const char *b){const char *s=text(j,a);return *s?s:text(j,b);}
 static double number(cJSON *j,const char *key){cJSON *v=get(j,key);if(cJSON_IsNumber(v))return isfinite(v->valuedouble)?v->valuedouble:NAN;if(cJSON_IsString(v)){char *end;double n=strtod(v->valuestring,&end);if(end!=v->valuestring&&!*end&&isfinite(n))return n;}return NAN;}
+static bool unavailable_status(const char *s){return !*s||!strcasecmp(s,"unknown")||!strcasecmp(s,"offline")||!strcasecmp(s,"disconnected")||!strcasecmp(s,"off")||!strcasecmp(s,"unavailable");}
+static bool failed_status(const char *s){return !strcasecmp(s,"failed")||!strcasecmp(s,"error")||!strcasecmp(s,"cancelled")||!strcasecmp(s,"canceled")||!strcasecmp(s,"aborted");}
 static bool material_valid(const char *s){
     const char *bad[]={"","unknown","unknown material","none","null","n/a","not assigned","not_assigned","not set","not available","unassigned","default","未分配","未指定","未知","暂无","默认"};
     for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++)if(!strcasecmp(s,bad[i]))return false;
@@ -35,13 +37,16 @@ bool c6_formlabs_update(c6_printer_state_t *s,cJSON *root,const char *serial,uin
     cJSON *run=get(status,"current_print_run");if(!cJSON_IsObject(run))run=get(p,"current_print_run");
     // A success response must actually contain printer state, not an API error object.
     if(!*device_status&&!cJSON_HasObjectItem(status,"current_print_run")&&!cJSON_HasObjectItem(p,"current_print_run"))return false;
-    cJSON *online=get(p,"is_connected");bool connected=cJSON_IsBool(online)?cJSON_IsTrue(online):strcasecmp(device_status,"offline")&&strcasecmp(device_status,"disconnected")&&strcasecmp(device_status,"off")&&strcasecmp(device_status,"unavailable");
+    const char *live_status=*device_status?device_status:text(run,"status");
+    bool unavailable=unavailable_status(live_status);
+    cJSON *online=get(p,"is_connected");bool connected=!unavailable&&(!cJSON_IsBool(online)||cJSON_IsTrue(online));
+    uint64_t previous_updated=s->updated;
     cJSON *data=cJSON_CreateObject();if(!data)return false;
     if(cJSON_IsObject(run)){
-        const char *id=first(run,"print_run_id","run_id");if(!*id)id=first(run,"uuid","id");
+        const char *id=text(run,"guid");if(!*id)id=first(run,"print_run_id","run_id");if(!*id)id=first(run,"uuid","id");
         char number_id[32];if(!*id&&isfinite(number(run,"id"))){snprintf(number_id,sizeof(number_id),"%.0f",number(run,"id"));id=number_id;}
         const char *name=first(run,"name","print_name");
-        const char *run_status=text(run,"status");if(!*run_status)run_status=device_status;
+        const char *run_status=text(run,"status");if(!*run_status||failed_status(device_status))run_status=device_status;
         const char *identity=*id?id:name;char key[17];c6_task_key("formlabs",identity,key);
         bool new_task=*key&&strcmp(key,s->thumbnail_key);
         if(new_task){s->material[0]=0;s->layer=s->layer_count=0;picture[0]=0;}
@@ -63,13 +68,24 @@ bool c6_formlabs_update(c6_printer_state_t *s,cJSON *root,const char *serial,uin
         const char *url=text(thumb,"thumbnail");if(!*url)url=text(run,"thumbnail_url");
         if(*url&&strlen(url)<capacity)snprintf(picture,capacity,"%s",url);
     }else if(*s->thumbnail_key){
-        // Match FormlabsTaskCachePolicy: keep the previous run until a genuinely new run.
-        bool failure=!strcasecmp(s->status,"failed")||!strcasecmp(s->status,"error")||!strcasecmp(s->status,"cancelled")||!strcasecmp(s->status,"canceled")||!strcasecmp(s->status,"aborted");
-        cJSON_AddStringToObject(data,"gcode_state",failure?s->status:"finished");
-        if(!failure){cJSON_AddNumberToObject(data,"mc_percent",100);s->layer=s->layer_count;}
-        cJSON_AddNumberToObject(data,"mc_remaining_time",0);
+        // A missing current run is not proof of completion. Only an explicit
+        // terminal status can change the cached task's outcome or make it 100%.
+        if(c6_print_finished(device_status)){
+            cJSON_AddStringToObject(data,"gcode_state",device_status);
+            cJSON_AddNumberToObject(data,"mc_percent",100);s->layer=s->layer_count;
+            cJSON_AddNumberToObject(data,"mc_remaining_time",0);
+        }else if(failed_status(device_status)){
+            cJSON_AddStringToObject(data,"gcode_state",device_status);
+            cJSON_AddNumberToObject(data,"mc_remaining_time",0);s->completed_at=0;
+        }else if(!c6_print_finished(s->status)&&!failed_status(s->status)){
+            cJSON_AddStringToObject(data,"gcode_state",*device_status?device_status:"unknown");
+        }
     }else cJSON_AddStringToObject(data,"gcode_state",*device_status?device_status:"unknown");
-    c6_print_update(s,data,now);s->connected=connected;cJSON_Delete(data);return true;
+    c6_print_update(s,data,now);s->connected=connected;
+    if(failed_status(s->status))s->completed_at=0;
+    // Receiving disconnected/UNKNOWN state must not make cached data look fresh.
+    if(!connected)s->updated=previous_updated;
+    cJSON_Delete(data);return true;
 }
 static bool suffix(const char *host,const char *ending){size_t a=strlen(host),b=strlen(ending);return a>b&&!strcasecmp(host+a-b,ending);}
 bool c6_formlabs_picture_url(const char *raw,char *url,size_t capacity,bool *bearer){
