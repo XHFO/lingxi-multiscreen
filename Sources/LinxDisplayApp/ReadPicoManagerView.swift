@@ -1189,6 +1189,11 @@ extension ReadPicoHTTPClient: ReadPicoManagerDeviceClient {}
             return "所有设备设置已由阅读器确认保存。"
         }
     }
+    var workspaceUSBPort: String {
+        if let selectedBoardUSBPort, usbPorts.contains(selectedBoardUSBPort) { return selectedBoardUSBPort }
+        if usbPorts.count == 1 { return usbPorts[0] }
+        return ""
+    }
     private func availableBoardUSBIdentity() -> String? {
         let ports = discoverUSBPorts()
         if let selectedBoardUSBPort, ports.contains(selectedBoardUSBPort) { return identifyUSBPort(selectedBoardUSBPort) }

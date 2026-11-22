@@ -25,7 +25,7 @@ public struct ReadPicoUSBBoardStatus: Sendable {
     public let directProtocol: Int, chunkBytes: Int
     public let displayIntent: Bool
     public let dualOrientation: Bool, pairMaxBytes: Int
-    public let modelProtocol: Int, modelMaxBytes: Int
+    public let modelProtocol: Int, modelMaxBytes: Int, modelDelta: Int
     public var supportsModel: Bool { modelProtocol == 1 && modelMaxBytes >= ReadPicoBoardModel.maximumBytes }
     public let contentChannel: ReadPicoContentChannel
     public let appChannels: [String]
@@ -37,13 +37,13 @@ public struct ReadPicoUSBBoardStatus: Sendable {
     public init(taskID: String, state: String, power: ReadPicoPowerStatus? = nil, directProtocol: Int = 0, chunkBytes: Int = 0,
                 displayIntent: Bool = false, dualOrientation: Bool = false, pairMaxBytes: Int = 0,
                 revision: UInt32? = nil, orientation: String? = nil, contentChannel: ReadPicoContentChannel = .canvas, appChannels: [String] = [],
-                modelProtocol: Int = 0, modelMaxBytes: Int = 0) {
+                modelProtocol: Int = 0, modelMaxBytes: Int = 0, modelDelta: Int = 0) {
         self.taskID = taskID; self.state = state; self.power = power
         self.directProtocol = directProtocol; self.chunkBytes = chunkBytes; self.displayIntent = displayIntent
         self.dualOrientation = dualOrientation; self.pairMaxBytes = pairMaxBytes
         self.revision = revision; self.orientation = orientation
         self.contentChannel = contentChannel; self.appChannels = appChannels
-        self.modelProtocol = modelProtocol; self.modelMaxBytes = modelMaxBytes
+        self.modelProtocol = modelProtocol; self.modelMaxBytes = modelMaxBytes; self.modelDelta = modelDelta
     }
     public init(line: String) throws {
         let raw = Array(line.utf8)
@@ -74,6 +74,7 @@ public struct ReadPicoUSBBoardStatus: Sendable {
         displayIntent = (object["display_intent"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
         dualOrientation = (object["dual_orientation"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
         pairMaxBytes = integer(object["pair_max_bytes"]) ?? 0
+        modelDelta = integer(object["model_delta"]) ?? 0
         modelProtocol = integer(object["model_protocol"]) ?? 0
         modelMaxBytes = integer(object["model_max_bytes"]) ?? 0
         revision = integer(object["revision"]).flatMap { UInt32(exactly: $0) }
@@ -309,10 +310,15 @@ public struct ReadPicoUSBBoardClient: Sendable {
         guard !model || capability.supportsModel else {
             throw ReadPicoManagerError.unavailable("请更新 Pico 固件以支持本机排版的数据画板；不会改发整屏截图。")
         }
+        let cacheKey = "usb:" + port + ":" + contentChannel.rawValue
+        let delta = model && capability.modelDelta == 1 ? ReadPicoBoardDeltaCache.shared.get(cacheKey).flatMap { ReadPicoBoardDelta.make(base: $0, next: bmp) } : nil
+        let payload = delta ?? bmp
+        var confirmed = false
+        defer { if !confirmed { ReadPicoBoardDeltaCache.shared.set(cacheKey, nil) } }
         let task = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let crc = String(format: "%08x", readPicoCRC32(bmp))
-        let verb = model ? "BEGINMODEL \(contentChannel.rawValue)" : contentChannel == .canvas ? (paired ? "BEGINPAIR" : "BEGIN") : "BEGINAPP \(contentChannel.rawValue)"
-        let begin = "RPICO BOARD \(verb) \(task) \(bmp.count) \(crc) \(display ? 1 : 0)\n"
+        let crc = String(format: "%08x", readPicoCRC32(payload))
+        let verb = delta != nil ? "BEGINDELTA \(contentChannel.rawValue)" : model ? "BEGINMODEL \(contentChannel.rawValue)" : contentChannel == .canvas ? (paired ? "BEGINPAIR" : "BEGIN") : "BEGINAPP \(contentChannel.rawValue)"
+        let begin = "RPICO BOARD \(verb) \(task) \(payload.count) \(crc) \(display ? 1 : 0)\n"
         var abortNeeded = false, atChunkBoundary = true
         defer {
             // After a complete chunk, an ordered ABORT releases both staged frames. A partial
@@ -326,18 +332,18 @@ public struct ReadPicoUSBBoardClient: Sendable {
         try wire.acknowledgement(task: task, phase: "ready", offset: 0)
         var offset = 0
         await progress(.init("正在通过 USB 直接发送画板…", fraction: 0))
-        while offset < bmp.count {
+        while offset < payload.count {
             try wire.checkCancellation()
-            let count = min(capability.chunkBytes, bmp.count - offset)
+            let count = min(capability.chunkBytes, payload.count - offset)
             atChunkBoundary = false
             try wire.write(Data("RPICO BOARD CHUNK \(task) \(offset) \(count)\n".utf8))
-            let start = bmp.startIndex + offset
-            try wire.write(bmp.subdata(in: start..<(start + count)))
+            let start = payload.startIndex + offset
+            try wire.write(payload.subdata(in: start..<(start + count)))
             atChunkBoundary = true
             try wire.acknowledgement(task: task, phase: "chunk", offset: offset + count)
             offset += count
-            if offset == bmp.count || offset % (32 * capability.chunkBytes) == 0 {
-                await progress(.init("正在传输画板：\(ByteCountFormatter.string(fromByteCount: Int64(offset), countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: Int64(bmp.count), countStyle: .file))", fraction: Double(offset) / Double(bmp.count)))
+            if offset == payload.count || offset % (32 * capability.chunkBytes) == 0 {
+                await progress(.init("正在传输画板：\(ByteCountFormatter.string(fromByteCount: Int64(offset), countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: Int64(payload.count), countStyle: .file))", fraction: Double(offset) / Double(payload.count)))
             }
         }
         atChunkBoundary = false
@@ -350,6 +356,7 @@ public struct ReadPicoUSBBoardClient: Sendable {
             if status.taskID == task {
                 guard status.contentChannel == contentChannel else { throw ReadPicoManagerError.unavailable("设备回执的应用频道不一致，请在设备上核对。") }
                 if status.state == "saved" || status.state == "displayed" {
+                    confirmed = true; ReadPicoBoardDeltaCache.shared.set(cacheKey, model ? bmp : nil)
                     return .init(taskID: task, state: status.state, power: status.power,
                                  revision: status.revision, orientation: status.orientation, contentChannel: contentChannel)
                 }

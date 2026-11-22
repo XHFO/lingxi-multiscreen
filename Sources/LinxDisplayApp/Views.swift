@@ -138,6 +138,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     case c6Device
     case readPicoDevice
     case readPicoApps
+    case readPicoConsole
     case readPicoFonts
     case readPicoNotes
     case readPicoDrawings
@@ -159,8 +160,17 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
 
     static var readPicoItems: [Panel] {
-        [.readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
-         .readPicoInformation, .readPicoLockScreen, .readPicoFirmware]
+        [.readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoDrawings,
+         .readPicoInformation, .readPicoConsole, .readPicoApps, .readPicoLockScreen, .readPicoSettings, .readPicoFirmware]
+    }
+
+    var picoGroupHeading: String? {
+        switch self {
+        case .readPicoDevice: return "内容"
+        case .readPicoInformation: return "桌面工作区"
+        case .readPicoApps: return "设备"
+        default: return nil
+        }
     }
 
     var readPicoSection: ReadPicoDeviceSection? {
@@ -169,6 +179,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .readPicoFonts: return .fonts
         case .readPicoNotes: return .notes
         case .readPicoApps: return .apps
+        case .readPicoConsole: return .console
         case .readPicoDrawings: return .drawings
         case .readPicoSettings: return .settings
         case .readPicoInformation: return .information
@@ -305,7 +316,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .readPicoDevice: return String(localized: "图书")
         case .readPicoFonts: return String(localized: "字体")
         case .readPicoNotes: return String(localized: "笔记")
-        case .readPicoApps: return String(localized: "应用")
+        case .readPicoApps: return String(localized: "应用包")
+        case .readPicoConsole: return String(localized: "桌面控制台")
         case .readPicoDrawings: return String(localized: "画板原稿")
         case .readPicoSettings: return String(localized: "设备设置")
         case .readPicoInformation: return String(localized: "灵犀画板")
@@ -363,7 +375,8 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         case .readPicoDevice: return "book.closed"
         case .readPicoFonts: return "textformat"
         case .readPicoNotes: return "note.text"
-        case .readPicoApps: return "square.grid.2x2"
+        case .readPicoApps: return "shippingbox"
+        case .readPicoConsole: return "rectangle.grid.2x3"
         case .readPicoDrawings: return "scribble.variable"
         case .readPicoSettings: return "slider.horizontal.3"
         case .readPicoInformation: return "rectangle.on.rectangle"
@@ -391,7 +404,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
              .aiMacCard, .aiMacCardManagement, .aiMacControl,
              .cardRotation, .keyboardSettings, .oracleBoardManagement, .excerptBoardManagement,
              .aiMacBoardManagement, .c6Device, .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps,
-             .readPicoDrawings, .readPicoSettings, .readPicoInformation,
+             .readPicoDrawings, .readPicoSettings, .readPicoInformation, .readPicoConsole,
              .readPicoLockScreen, .readPicoFirmware: return nil
         case .qwenWork: return .qwenWork
         case .codex: return .codex
@@ -1084,7 +1097,7 @@ struct SettingsView: View {
              .excerptBoardManagement, .aiMacBoardManagement,
              .controlCenterSource, .controlCenter, .devices, .general, .wallpaperLibrary, .xiaomi, .awtrix, .awtrixCardManagement, .m5Controller, .c6Device,
              .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
-             .readPicoInformation, .readPicoLockScreen, .readPicoFirmware:
+             .readPicoInformation, .readPicoConsole, .readPicoLockScreen, .readPicoFirmware:
             return true
         case .buttonControl:
             return model.settings.rand0ButtonTarget != .keyboard
@@ -2137,7 +2150,7 @@ struct SettingsView: View {
                 C6DeviceView(model: model, deviceID: id)
             }
         case .readPicoDevice, .readPicoFonts, .readPicoNotes, .readPicoApps, .readPicoDrawings, .readPicoSettings,
-             .readPicoInformation, .readPicoLockScreen, .readPicoFirmware:
+             .readPicoInformation, .readPicoConsole, .readPicoLockScreen, .readPicoFirmware:
             EmptyView() // Own scrolling and navigation in the embedded device detail.
         case .devices: devicesForm
         case .buttonControl: buttonControlForm
@@ -9672,6 +9685,10 @@ struct Sidebar: View {
                                      awtrixApps: [AWTRIXCardDescriptor] = []) -> some View {
         return DisclosureGroup(isExpanded: isExpanded) {
             ForEach(panels) { panel in
+                if switchType == .readPico, let title = panel.picoGroupHeading {
+                    Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.leading, Self.submenuIndent + 2).padding(.top, 10).padding(.bottom, 2)
+                }
                 if panel == .cardRotation, switchType == .keyboard, let deviceID {
                     cardRotationRow(deviceID)
                         .padding(.leading, Self.submenuIndent)

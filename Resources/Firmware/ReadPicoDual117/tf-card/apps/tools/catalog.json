@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "device_ready": true,
+  "apps": [
+    {
+      "id": "desktop-console",
+      "kind": 134,
+      "title": "桌面控制台",
+      "description": "多屏灵犀电脑快捷启动 · USB优先、局域网可选",
+      "file": "desktop-console.pga",
+      "version": 10100,
+      "abi": 1,
+      "directory": "apps/tools",
+      "minimum_firmware": "0.40.0-dual117",
+      "bytes": 84572,
+      "sha256": "5c48e6804cbe801d0492eb347461d63febe99f2e16660a0aa3374b910c7b0549",
+      "source_sha256": "938e589a4437c48b9d753a3f776e099202e09250fa9f5088c316df8a3d6d8ed5",
+      "inputs": {
+        "apps/src/desktop_console.c": "a1f38c7ad432a53bc8bd2ae163422f812edd881e57d99229886ea5cc14e5dd50",
+        "components/read_pico_apps/include/pico_app_sdk.h": "210a5cac49d245e5b71c8a757d692825d2022e2a72c4619fe98d0e6c75a5631e",
+        "apps/include/workspace_service.h": "3d6c2abb4f53434f8e50f272ca3fcfe700498d7014380b276ec09b819e066c2b",
+        "components/read_pico_apps/include/pico_app_workspace.h": "10090205f89de87d60e6befe43dbb77b91a5312742596b3e23ebe7be606a9ab0"
+      },
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    },
+    {
+      "id": "lingxi-board",
+      "kind": 132,
+      "title": "灵犀画板",
+      "description": "多屏灵犀语义看板 · 独立 TF 渲染引擎",
+      "file": "lingxi-board.pga",
+      "version": 10001,
+      "abi": 1,
+      "directory": "apps/tools",
+      "minimum_firmware": "0.40.0-dual109",
+      "board_model_abi": 1,
+      "bytes": 47516,
+      "sha256": "2ac8eb6da035a3b325e0d4589f052ed89a69110b0a4c2ad4d54edcc2c32f8662",
+      "source_sha256": "eafe7745ec3ac3730a210cd115b2e960ff2f15dcf89d5d3e81c1ff11aa85c130",
+      "inputs": {
+        "apps/src/lingxi_board.c": "aa6a03e2341794b08d46a1a8721a32b51a45cff32d373d4ef0160f626c761947",
+        "components/read_pico_apps/include/pico_app_sdk.h": "210a5cac49d245e5b71c8a757d692825d2022e2a72c4619fe98d0e6c75a5631e",
+        "main/system/pico_board_render.c": "68863536041dbefa2a99374c3b69302f2e89c5f063c163b05466c7bc20ecfabb",
+        "components/read_pico_apps/include/pico_app_board.h": "75238af52a6e38b1c85bc14e457c976b7e4e1b4b3c511e55105d5dce517fddc1"
+      },
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ]
+    }
+  ]
+}

@@ -191,7 +191,7 @@ import LinxDisplayCore
     }
     func send(interval: Int? = nil, usb: Bool = false) {
         guard active, let manager, !manager.busy, !ownsPush else { return }
-        if interval != nil && automatic, !validateAutomaticOwner(manager) { return }
+        if interval != nil && (!automatic || !validateAutomaticOwner(manager)) { return }
         do {
             let sendingAutomatically = interval != nil && automatic
             let source: ReadPicoCanvasDraft
@@ -404,6 +404,7 @@ struct ReadPicoLingxiBoardView: View {
         let target: PicoPreviewTarget
         let initial: PicoPhotoEdit?
     }
+    @ObservedObject private var workspace: ReadPicoWorkspaceSession
     private var wallpaperKey: String { "device.\(deviceID.uuidString).board" }
     private var photoTarget: PicoPreviewTarget { draft.landscape ? .picoLandscape : .pico }
     init(model: AppModel, deviceID: UUID, drafts: ReadPicoDraftGuard,
@@ -415,6 +416,7 @@ struct ReadPicoLingxiBoardView: View {
         _draft = ObservedObject(wrappedValue: drafts.canvas)
         _manager = ObservedObject(wrappedValue: drafts.model)
         _session = ObservedObject(wrappedValue: model.readPicoBoardSession(for: deviceID))
+        _workspace = ObservedObject(wrappedValue: .session(for: deviceID.uuidString))
     }
     private var modules: [CanvasModule] { draft.board.modules.compactMap(CanvasModule.init(rawValue:)) }
     private var canSend: Bool {
@@ -697,6 +699,20 @@ struct ReadPicoLingxiBoardView: View {
             if !draft.hasRenderableBoardContent {
                 Text("先在内容编辑中添加图片、组件或手绘。")
                     .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        Section("双设备工作区") {
+            ReadPicoWorkspacePanel(session: workspace, manager: manager, port: manager.workspaceUSBPort)
+            if workspace.mode == .board {
+                Button("同步当前画板到第二台", systemImage: "rectangle.on.rectangle") {
+                    ReadPicoDesktopConsoleSession.session(for: deviceID.uuidString).stop()
+                    session.refresh()
+                    if let data = session.frame?.modelData {
+                        workspace.sendBoard(data, revision: UInt32.random(in: 1...UInt32.max), manager: manager, port: manager.workspaceUSBPort)
+                    } else { manager.report("双机同步需要语义画板；请在内容编辑中使用信息组件。图片仍可单独发送到各设备。", error: true) }
+                }.disabled(manager.busy || workspace.busy || draft.canvasMode != 2)
+                Text("这会在另一台完整接收后打开灵犀画板。不会改动配对、阅读位置或当前画稿。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         Section("自动推送与轮播") {

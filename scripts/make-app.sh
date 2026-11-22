@@ -196,7 +196,7 @@ fi
 # BEGIN READ_PICO_PACKAGE
 # 中文：日常更新仅用 APP；首次安装资源独立校验，并只在分区不匹配且确认后使用。
 # English: Normal updates use APP only; separately validate first-install resources for confirmed mismatches.
-PICO_DIRECTORY="$ROOT/Resources/Firmware/ReadPico"
+PICO_DIRECTORY="${LINGXI_READPICO_FIRMWARE_DIRECTORY:-$ROOT/Resources/Firmware/ReadPico}"
 PICO_APP_SOURCE="$PICO_DIRECTORY/read-pico-app.bin"
 PICO_MANIFEST_SOURCE="$PICO_DIRECTORY/manifest.json"
 if [ -e "$PICO_DIRECTORY" ] || [ -L "$PICO_DIRECTORY" ]; then

@@ -1,0 +1,28 @@
+{
+  "version": "0.40.0-dual117",
+  "automatic_install": false,
+  "packages": [
+    {
+      "id": "desktop-console",
+      "kind": 134,
+      "bytes": 84572,
+      "sha256": "5c48e6804cbe801d0492eb347461d63febe99f2e16660a0aa3374b910c7b0549",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "path": "apps/tools/desktop-console.pga"
+    },
+    {
+      "id": "lingxi-board",
+      "kind": 132,
+      "bytes": 47516,
+      "sha256": "2ac8eb6da035a3b325e0d4589f052ed89a69110b0a4c2ad4d54edcc2c32f8662",
+      "targets": [
+        "esp32s3-xtensa",
+        "macos-arm64"
+      ],
+      "path": "apps/tools/lingxi-board.pga"
+    }
+  ]
+}

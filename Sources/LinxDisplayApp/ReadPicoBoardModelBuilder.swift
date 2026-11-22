@@ -209,7 +209,7 @@ import LinxDisplayCore
         for character in safe { if result.utf8.count + String(character).utf8.count > limit - 3 { break }; result.append(character) }
         return result + "…"
     }
-    private static func makeAsset(_ image: NSImage, maximumSide: Int) throws -> ReadPicoBoardModel.Asset {
+    static func makeAsset(_ image: NSImage, maximumSide: Int) throws -> ReadPicoBoardModel.Asset {
         var bounds = CGRect(origin: .zero, size: image.size)
         guard let source = image.cgImage(forProposedRect: &bounds, context: nil, hints: nil) else { throw ReadPicoManagerError.invalid("无法读取画板图片素材。") }
         let scale = min(1, Double(maximumSide) / Double(max(source.width, source.height)))

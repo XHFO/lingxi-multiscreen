@@ -4,7 +4,7 @@ import LinxDisplayCore
 /// All reader functions are peers in the device sidebar. The section is owned
 /// by the main window, while its connection and drafts belong to the reader.
 enum ReadPicoDeviceSection: String, CaseIterable {
-    case books, fonts, notes, apps, drawings, settings, information, lockScreen, firmware
+    case books, fonts, notes, apps, drawings, settings, information, console, lockScreen, firmware
 
     var managerSection: String? {
         switch self {
@@ -14,7 +14,7 @@ enum ReadPicoDeviceSection: String, CaseIterable {
         case .apps: return "apps"
         case .drawings: return "drawings"
         case .settings: return "connection"
-        case .information, .lockScreen, .firmware: return nil
+        case .information, .console, .lockScreen, .firmware: return nil
         }
     }
 }

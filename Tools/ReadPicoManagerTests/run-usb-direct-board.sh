@@ -13,6 +13,7 @@ PYTHON
 sdk="$(scripts/select-macos-sdk)"
 scripts/swiftc-sdk-compat -sdk "$sdk" -parse-as-library -swift-version 5 -Xfrontend -disable-access-control \
   Sources/LinxDisplayCore/ReadPicoUSBTransfer.swift Sources/LinxDisplayCore/ReadPicoPowerStatus.swift Sources/LinxDisplayCore/ReadPicoManager.swift \
+  Sources/LinxDisplayCore/ReadPicoBoardModel.swift Sources/LinxDisplayCore/ReadPicoBoardDelta.swift Sources/LinxDisplayCore/ReadPicoDesktopConsole.swift \
   "$output/USBBoardExposed.swift" Sources/LinxDisplayCore/ReadPicoSafeEject.swift Tools/ReadPicoManagerTests/USBDirectBoardPTYTests.swift \
   -o "$output/tests"
 if [ "$#" -ge 2 ]; then

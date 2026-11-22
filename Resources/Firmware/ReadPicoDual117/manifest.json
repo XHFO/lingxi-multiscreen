@@ -1,0 +1,19 @@
+{
+  "board": "read-pico-esp32s3",
+  "chip": "esp32s3",
+  "version": "0.40.0-dual117",
+  "app_address": "0x20000",
+  "slot_bytes": 4194304,
+  "image_bytes": 4193600,
+  "free_bytes": 704,
+  "sha256": "5c3b88c809c54318759d040c33f31cdb08785b4ed9d83c4999fc398129eff1f2",
+  "kind": "application",
+  "channel": "local-candidate",
+  "tf_apps": {
+    "count": 2,
+    "directory": "tf-card",
+    "manifest": "tf-manifest.json",
+    "automatic_install": false,
+    "installation_note": "两台分别显式安装桌面控制台1.1.0与灵犀画板1.0.1；固件更新不改写TF内容。"
+  }
+}

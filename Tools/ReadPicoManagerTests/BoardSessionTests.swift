@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import LinxDisplayCore
 
+private let testOwner = UUID()
+
 private actor BoardSessionDevice: ReadPicoManagerDeviceClient {
     private var frames: [Data] = []
     private var appFrames = 0
@@ -32,7 +34,7 @@ private actor BoardSessionDevice: ReadPicoManagerDeviceClient {
         let config = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ReadPicoHomeConfiguration()))
         return try JSONDecoder().decode(ReadPicoHomeSnapshot.self, from: JSONSerialization.data(withJSONObject: ["config": config, "saved_wifi": [], "network_online": true]))
     }
-    func saveHome(_ config: ReadPicoHomeConfiguration, token: String) async throws {}
+    func saveHome(_ config: ReadPicoHomeConfiguration, token: String, cfAccessClientId: String, cfAccessClientSecret: String) async throws {}
     func capabilities() async throws -> ReadPicoCapabilities {
         if gateNextCapability {
             gateNextCapability = false; capabilityEntered = true
@@ -188,7 +190,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         let original = draft("发送源")
         let session = ReadPicoLingxiBoardSession()
         var supplied = first
-        session.activate(manager: manager, draft: original) { supplied }
+        session.activate(owner: testOwner, manager: manager, draft: original) { supplied }
         check(session.frame?.bitmap == first.bitmap, "Preview starts with provider frame")
         await device.configure(gated: true)
         session.start(interval: 60)
@@ -200,7 +202,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         original.board.text = "较新的编辑"
         session.edited()
         check(session.automatic && session.frame?.bitmap == first.bitmap, "Edit preserves the enabled automatic source and the in-flight preview")
-        session.disappear()
+        session.disappear(owner: testOwner)
         check(manager.busy && !manager.cancelling, "Leaving editor does not cancel a submitted frame")
         check(session.automatic && session.nextUpdate == nil, "Leaving during submission preserves automatic work while awaiting the display acknowledgement")
         await device.release(); try await idle(manager)
@@ -216,20 +218,20 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         let releasedDraft = draft("View已释放")
         var releasedSession: ReadPicoLingxiBoardSession? = ReadPicoLingxiBoardSession()
         weak var weakSession = releasedSession
-        releasedSession!.activate(manager: manager, draft: releasedDraft) { second }
+        releasedSession!.activate(owner: testOwner, manager: manager, draft: releasedDraft) { second }
         await device.configure(gated: true)
         releasedSession!.send(); try await received(2, from: device)
-        releasedSession!.disappear(); releasedSession = nil
+        releasedSession!.disappear(owner: testOwner); releasedSession = nil
         check(weakSession == nil, "Pending completion does not retain the editor")
         await device.release(); try await idle(manager)
         check(!releasedDraft.hasUnsavedChanges, "Frozen source is acknowledged even after editor deallocation")
 
         let previousDraft = draft("旧上下文"), replacementDraft = draft("新上下文")
         let replacementSession = ReadPicoLingxiBoardSession()
-        replacementSession.activate(manager: manager, draft: previousDraft) { first }
+        replacementSession.activate(owner: testOwner, manager: manager, draft: previousDraft) { first }
         await device.configure(gated: true)
         replacementSession.send(); try await received(3, from: device)
-        replacementSession.activate(manager: manager, draft: replacementDraft) { second }
+        replacementSession.activate(owner: testOwner, manager: manager, draft: replacementDraft) { second }
         await device.release(); try await idle(manager)
         check(!previousDraft.hasUnsavedChanges, "Old completion confirms only old frozen source")
         check(replacementDraft.hasUnsavedChanges && replacementSession.lastConfirmed == nil, "Old completion cannot confirm replacement context")
@@ -238,7 +240,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         var changingFrame = first
         let visibleDraft = draft("可见草稿")
         let visibleSession = ReadPicoLingxiBoardSession()
-        visibleSession.activate(manager: manager, draft: visibleDraft) { changingFrame }
+        visibleSession.activate(owner: testOwner, manager: manager, draft: visibleDraft) { changingFrame }
         await device.configure(gated: true)
         visibleSession.send(); try await received(4, from: device)
         changingFrame = second; visibleDraft.board.text = "发送期间编辑"; visibleSession.edited()
@@ -246,7 +248,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         await device.release(); try await idle(manager)
         check(visibleSession.frame?.bitmap == second.bitmap && visibleDraft.hasUnsavedChanges,
               "Confirmation releases queued preview without confirming the newer draft")
-        visibleSession.disappear()
+        visibleSession.disappear(owner: testOwner)
 
         await device.configure(gated: true)
         replacementSession.start(interval: 60); replacementSession.send(interval: 60)
@@ -274,7 +276,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         // Real Session + injected HTTP transport: the timer is only installed after the device receipt.
         let automaticDraft = draft("自动供电更新")
         let automaticSession = ReadPicoLingxiBoardSession()
-        automaticSession.activate(manager: manager, draft: automaticDraft) { first }
+        automaticSession.activate(owner: testOwner, manager: manager, draft: automaticDraft) { first }
         manager.acceptPowerStatus(battery)
         await device.configure(gated: true)
         let beforeAutomatic = await device.count()
@@ -302,13 +304,13 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         check(countAfterManual == beforeSkip + 1, "Manual resend is available for the same image")
         automaticSession.setInterval(0)
         check(!automaticSession.automatic && automaticSession.nextUpdate == nil, "Manual mode immediately cancels the deadline")
-        automaticSession.disappear()
+        automaticSession.disappear(owner: testOwner)
 
         // A slow USB-like handoff must not add another full update interval after its display ACK.
         let slowDraft = draft("慢传输后的尾随更新")
         let slowSession = ReadPicoLingxiBoardSession()
         var newestFrame = first
-        slowSession.activate(manager: manager, draft: slowDraft,
+        slowSession.activate(owner: testOwner, manager: manager, draft: slowDraft,
             cadence: { .init(dynamicSeconds: 2, contentCheckSeconds: 5) }) { newestFrame }
         manager.acceptPowerStatus(charging)
         await device.configure(gated: true)
@@ -328,7 +330,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         let newestReceived = await device.lastFrame()
         check(newestReceived == second.bitmap && slowSession.effectiveSeconds == 2,
               "Tail work renders only the latest image at the configured global interval")
-        slowSession.disappear()
+        slowSession.disappear(owner: testOwner)
 
         let frozenDraft = draft("后台冻结源")
         frozenDraft.board.text = "启用时的内容"
@@ -336,7 +338,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         var dynamicValue = first
         var observedFrozenText = ""
         func installFrozenEditor() {
-            frozenSession.activate(manager: manager, draft: frozenDraft,
+            frozenSession.activate(owner: testOwner, manager: manager, draft: frozenDraft,
                 cadence: { .init(dynamicSeconds: 2, contentCheckSeconds: 5) },
                 automaticSource: {
                     let copy = ReadPicoLingxiBoardSession.frozenCopy(of: frozenDraft)
@@ -353,7 +355,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         check(!frozenDraft.hasUnsavedChanges && observedFrozenText == "启用时的内容",
               "First automatic display acknowledges only its exact editable source snapshot")
         frozenDraft.board.text = "尚未应用的新编辑"; frozenSession.edited()
-        frozenSession.disappear()
+        frozenSession.disappear(owner: testOwner)
         dynamicValue = second
         let beforeBackground = await device.count()
         try await received(beforeBackground + 1, from: device); try await idle(manager)
@@ -371,14 +373,14 @@ private final class BoardOwnerProbe: @unchecked Sendable {
               "Removing a managed device cancels the timer and releases the frozen source")
 
         let invalidSession = ReadPicoLingxiBoardSession()
-        invalidSession.activate(manager: manager, draft: draft("无效渲染")) {
+        invalidSession.activate(owner: testOwner, manager: manager, draft: draft("无效渲染")) {
             throw ReadPicoManagerError.invalid("无法生成测试预览")
         }
         invalidSession.start(interval: 60)
         check(invalidSession.frame == nil && invalidSession.isError && !invalidSession.automatic && invalidSession.nextUpdate == nil,
               "Rendering failure stops automatic work and keeps its visible error")
-        invalidSession.disappear()
-        session.disappear(); replacementSession.disappear(); manager.deactivate()
+        invalidSession.disappear(owner: testOwner)
+        session.disappear(owner: testOwner); replacementSession.disappear(owner: testOwner); manager.deactivate()
 
         let ownerDevice = BoardSessionDevice(), ownerProbe = BoardOwnerProbe()
         let ownerManager = ReadPicoManagerModel(usbClient: .init { _, _ in ownerProbe.start() },
@@ -405,12 +407,12 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         ownerManager.pendingLockImage = nil
         let ownerSession = ReadPicoLingxiBoardSession()
         let ownerDraft = draft("Owner A")
-        ownerSession.activate(manager: ownerManager, draft: ownerDraft, cadence: { .init(contentCheckSeconds: 1) }) { first }
+        ownerSession.activate(owner: testOwner, manager: ownerManager, draft: ownerDraft, cadence: { .init(contentCheckSeconds: 1) }) { first }
         ownerManager.acceptPowerStatus(charging)
         ownerSession.start(interval: 1); try await idle(ownerManager)
         for _ in 0..<50 { if ownerSession.nextUpdate != nil { break }; await Task.yield() }
         check(ownerSession.automatic && ownerSession.nextUpdate != nil, "Owner A has a scheduled automatic frame before leaving")
-        ownerSession.disappear(); ownerManager.deactivate()
+        ownerSession.disappear(owner: testOwner); ownerManager.deactivate()
         let afterDeparture = ownerProbe.counts
         check(ownerManager.ownerGeneration != initialOwner, "Owner deactivation revokes automatic work independently of transport state")
         try await Task.sleep(nanoseconds: 1_200_000_000)
@@ -433,7 +435,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         let savedSession = ReadPicoLingxiBoardSession(), firstSavedDraft = draft("画板 A"), secondSavedDraft = draft("画板 B")
         let firstSavedID = UUID(), secondSavedID = UUID()
         var currentSavedFrame = first, renderedSecondBoard = false
-        savedSession.activate(manager: savedManager, draft: firstSavedDraft, automaticSource: {
+        savedSession.activate(owner: testOwner, manager: savedManager, draft: firstSavedDraft, automaticSource: {
             .init(draft: firstSavedDraft, render: { currentSavedFrame }, cadence: { .init() }, boards: [
                 .init(id: firstSavedID, name: "画板 A", durationSeconds: 5, draft: firstSavedDraft,
                       render: { currentSavedFrame }, cadence: { .init() }),
@@ -479,7 +481,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         try await idle(restartManager)
         let restartSession = ReadPicoLingxiBoardSession(), restartDraft = draft("重新开启")
         var restartFrame = first
-        restartSession.activate(manager: restartManager, draft: restartDraft) { restartFrame }
+        restartSession.activate(owner: testOwner, manager: restartManager, draft: restartDraft) { restartFrame }
         restartSession.start(interval: 60); try await idle(restartManager)
         try await scheduled(restartSession)
         await restartDevice.holdNextCapability()
@@ -516,7 +518,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         nestedDraft.playlist.items = [.init(module: 5, name: "音乐"), .init(module: 0, name: "停用时钟"), .init(module: 27, name: "天气")]
         nestedDraft.playlist.items[1].enabled = false
         otherDraft.board.modules = [2]
-        routeSession.activate(manager: routeManager, draft: nestedDraft, automaticSource: {
+        routeSession.activate(owner: testOwner, manager: routeManager, draft: nestedDraft, automaticSource: {
             .init(draft: nestedDraft, render: { first }, cadence: { .init() }, boards: [
                 .init(id: UUID(), name: "嵌套轮播", durationSeconds: 60, draft: nestedDraft, render: { first }, cadence: { .init() }),
                 .init(id: UUID(), name: "其他画板", durationSeconds: 60, draft: otherDraft, render: { second }, cadence: { .init() })
@@ -563,7 +565,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         let pairDraft = draft("双方向同一内容")
         var pairFrame = ReadPicoLingxiBoardRenderer.Result(bitmap: first.bitmap, preview: first.preview, width: 684, height: 1216, pairedBitmap: firstPair)
         let pairSession = ReadPicoLingxiBoardSession()
-        pairSession.activate(manager: pairManager, draft: pairDraft) { pairFrame }
+        pairSession.activate(owner: testOwner, manager: pairManager, draft: pairDraft) { pairFrame }
         pairSession.start(interval: 60)
         try await received(1, from: pairDevice); try await idle(pairManager); try await scheduled(pairSession)
         let initialPair = await pairDevice.lastFrame()
@@ -581,7 +583,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         check(updatedPair == changedPair, "A changed landscape layout sends a new pair even when portrait pixels are identical")
         pairSession.stop()
         let imageSource = ReadPicoCanvasDraft(); imageSource.image = first.preview; imageSource.canvasMode = 0
-        pairSession.activate(manager: pairManager, draft: imageSource) { pairFrame }
+        pairSession.activate(owner: testOwner, manager: pairManager, draft: imageSource) { pairFrame }
         pairSession.send(); try await received(3, from: pairDevice); try await idle(pairManager)
         let imagePair = await pairDevice.lastFrame()
         check(imagePair == changedPair, "Image-source acknowledgement cannot replace the rendered pair with a single bitmap")
@@ -597,7 +599,7 @@ private final class BoardOwnerProbe: @unchecked Sendable {
         var appFrame = ReadPicoLingxiBoardRenderer.Result(bitmap: first.bitmap, preview: first.preview, width: 684, height: 1216,
             pairedBitmap: firstPair, contentChannel: .cloudflare)
         let appSession = ReadPicoLingxiBoardSession()
-        appSession.activate(manager: appManager, draft: appDraft) { appFrame }
+        appSession.activate(owner: testOwner, manager: appManager, draft: appDraft) { appFrame }
         appSession.start(interval: 60); try await received(1, from: appDevice); try await idle(appManager)
         check(appManager.boardDelivery?.contentChannel == .cloudflare && appManager.boardDelivery?.displayed == false,
               "App saved receipt retains its destination without claiming display")

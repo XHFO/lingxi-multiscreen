@@ -1,7 +1,8 @@
 import AppKit
 import LinxDisplayCore
 
-/// A frozen information frame. The same monochrome bitmap is previewed and sent.
+/// Legacy information entry now uses the same semantic model and firmware renderer.
+/// 旧信息入口共用语义模型与固件绘制，照片保留独立图片通道。
 struct ReadPicoInformationFrame {
     struct Row { var label: String; var value: String }
     enum Layout { case clock, information, media, image }
@@ -23,14 +24,33 @@ enum ReadPicoInformationRenderer {
         let width: Int
         let height: Int
         let pairedBitmap: Data?
-        var transferData: Data { pairedBitmap ?? bitmap }
-        init(bitmap: Data, preview: NSImage, width: Int, height: Int, pairedBitmap: Data? = nil) {
-            self.bitmap = bitmap; self.preview = preview; self.width = width; self.height = height; self.pairedBitmap = pairedBitmap
+        let modelData: Data?
+        var transferData: Data { modelData ?? pairedBitmap ?? bitmap }
+        init(bitmap: Data, preview: NSImage, width: Int, height: Int, pairedBitmap: Data? = nil, modelData: Data? = nil) {
+            self.bitmap = bitmap; self.preview = preview; self.width = width; self.height = height; self.pairedBitmap = pairedBitmap; self.modelData = modelData
         }
     }
 
     @MainActor static func render(_ frame: ReadPicoInformationFrame,
                                   landscape: Bool, dither: Bool) throws -> Result {
+        if frame.layout != .image {
+            var module = ReadPicoBoardModel.Module(kind: frame.layout == .clock ? .clock : frame.layout == .media ? .nowPlaying : .text,
+                id: "information", title: frame.title, subtitle: frame.subtitle,
+                body: frame.unavailableReason ?? (frame.layout == .media ? frame.primary : ""), footer: frame.footer,
+                metrics: frame.primary.isEmpty || frame.layout == .clock || frame.layout == .media ? [] : [.init("", frame.primary)],
+                rows: Array(frame.rows.prefix(24)).map { .init($0.label, $0.value) })
+            if frame.layout == .clock { module.timestamp = floor(frame.sampledAt.timeIntervalSince1970 / 60) * 60 }
+            var assets: [ReadPicoBoardModel.Asset] = []
+            if let image = frame.image {
+                let asset = try ReadPicoBoardModelBuilder.makeAsset(NSImage(cgImage: image, size: .zero), maximumSide: 128)
+                assets = [asset]; module.asset = asset.id
+            }
+            let content = ReadPicoBoardModel(boardID: "information", generatedAt: frame.sampledAt.timeIntervalSince1970, modules: [module], assets: assets)
+            let data = try content.encoded()
+            let image = try ReadPicoNativeBoardRenderer.render(data, landscape: landscape, now: frame.sampledAt)
+            return Result(bitmap: try ReadPicoBitmap.makeGray16(image: image, width: image.width, height: image.height),
+                preview: NSImage(cgImage: image, size: .zero), width: image.width, height: image.height, modelData: data)
+        }
         let portrait = try renderSingle(frame, landscape: false)
         let horizontal = try renderSingle(frame, landscape: true)
         let selected = landscape ? horizontal : portrait

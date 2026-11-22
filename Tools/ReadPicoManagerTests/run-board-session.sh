@@ -14,14 +14,14 @@ origins = [manager, board, root/'Sources/LinxDisplayApp/ReadPicoCanvasDraft.swif
 board_support = [root/'Sources/LinxDisplayApp'/name for name in ('ReadPicoBoardPlaylist.swift', 'ReadPicoBoardCarouselCursor.swift')]
 models = root/'Sources/LinxDisplayCore/Models.swift'
 renderer = root/'Sources/LinxDisplayApp/ReadPicoLingxiBoardRenderer.swift'
-core = [root/'Sources/LinxDisplayCore'/name for name in ('ReadPicoUSBTransfer.swift', 'ReadPicoUSBWireless.swift', 'ReadPicoBoardRouting.swift', 'ReadPicoManager.swift', 'ReadPicoLocalLibrary.swift', 'ReadPicoUSBBoard.swift', 'ReadPicoSafeEject.swift', 'ReadPicoBundledApps.swift', 'ReadPicoPowerStatus.swift')]
+core = [root/'Sources/LinxDisplayCore'/name for name in ('ReadPicoUSBTransfer.swift', 'ReadPicoUSBWireless.swift', 'ReadPicoBoardRouting.swift', 'ReadPicoManager.swift', 'ReadPicoLocalLibrary.swift', 'ReadPicoUSBBoard.swift', 'ReadPicoSafeEject.swift', 'ReadPicoBundledApps.swift', 'ReadPicoPowerStatus.swift', 'ReadPicoBoardModel.swift', 'ReadPicoBoardDelta.swift', 'ReadPicoDesktopConsole.swift', 'ReadPicoWeRead.swift', 'ReadPicoWeReadTF.swift', 'L10n.swift', 'SealedCredentialStore.swift')]
 origins += core + board_support + [models, renderer, root/'Tools/ReadPicoManagerTests/BoardSessionTests.swift']
 digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
 before = {str(p.relative_to(root)): digest(p) for p in origins}
 (output/'ManagerModel.swift').write_text(manager.read_text().split('struct ReadPicoManagerView: View {', 1)[0])
 (output/'BoardSession.swift').write_text(board.read_text().split('/// The reader board follows Oracle', 1)[0])
 (output/'LibrarySyncCounter.swift').write_text(library.read_text().split('@MainActor final class ReadPicoLocalLibraryModel', 1)[0])
-(output/'RendererResult.swift').write_text(renderer.read_text().split('    @MainActor static func render(', 1)[0] + '}\n')
+(output/'RendererResult.swift').write_text(renderer.read_text().split('    @MainActor static func transfer(', 1)[0] + '    static func nativePreview(_ result: Result, landscape: Bool, now: Date) throws -> Result { result }\n}\n')
 model_source = models.read_text()
 start = model_source.index('public enum CanvasModule:')
 end = model_source.index('/// 键盘独立番茄钟卡片的刷新对齐策略。', start)

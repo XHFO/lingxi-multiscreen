@@ -567,6 +567,7 @@ public struct ReadPicoCanvasCapability: Decodable, Sendable {
     public let displayIntent: Bool?
     public let dualOrientation: Bool?, pairMaxBytes: Int?
     public let modelProtocol: Int?, modelMaxBytes: Int?
+    public var modelDelta: Int? = nil
     public var supportsModel: Bool { supported && modelProtocol == 1 && (modelMaxBytes ?? 0) >= ReadPicoBoardModel.maximumBytes }
     public let orientation: String?
     public let appChannels: [String]?
@@ -587,7 +588,7 @@ public struct ReadPicoCanvasCapability: Decodable, Sendable {
         case supported, width, height, formats, state, revision
         case maxBytes = "max_bytes", grayLevels = "gray_levels", bitDepths = "bit_depths", displayIntent = "display_intent"
         case dualOrientation = "dual_orientation", pairMaxBytes = "pair_max_bytes", orientation
-        case modelProtocol = "model_protocol", modelMaxBytes = "model_max_bytes"
+        case modelProtocol = "model_protocol", modelMaxBytes = "model_max_bytes", modelDelta = "model_delta"
         case appChannels = "app_channels", appReceipts = "app_receipts"
     }
 }
@@ -976,11 +977,17 @@ public actor ReadPicoHTTPClient: ReadPicoContentStore {
             try ReadPicoCanvasPair.validate(bmp)
         } else { try ReadPicoBitmap.validateCanvas(bmp, capability: capability) }
         guard !display || capability.displayIntent == true else { throw ReadPicoManagerError.unavailable("请更新设备固件，以支持发送后立即展示。") }
-        let path = model ? (contentChannel == .canvas ? "pico/canvas/model" : "pico/apps/\(contentChannel.rawValue)/model")
+        let cacheKey = "lan:" + connection.baseURL.absoluteString + ":" + contentChannel.rawValue
+        let delta = model && capability.modelDelta == 1 ? ReadPicoBoardDeltaCache.shared.get(cacheKey).flatMap { ReadPicoBoardDelta.make(base: $0, next: bmp) } : nil
+        let path = model ? (contentChannel == .canvas ? "pico/canvas/" : "pico/apps/\(contentChannel.rawValue)/") + (delta == nil ? "model" : "model-delta")
             : contentChannel == .canvas ? (pair ? "pico/canvas/pair" : "pico/canvas") : "pico/apps/\(contentChannel.rawValue)/pair"
-        let data = try await request(display ? path + "/show" : path, method: "POST", data: bmp,
-                                     contentType: model ? "application/vnd.readpico.board-model+json" : pair ? "application/vnd.readpico.canvas-pair" : "image/bmp")
-        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any], body["ok"] as? Bool == true, body["accepted"] as? Bool == true else { throw ReadPicoManagerError.invalid("设备没有接收画布。") }
+        let data: Data
+        do {
+            data = try await request(display ? path + "/show" : path, method: "POST", data: delta ?? bmp,
+                contentType: delta != nil ? "application/vnd.readpico.board-delta" : model ? "application/vnd.readpico.board-model+json" : pair ? "application/vnd.readpico.canvas-pair" : "image/bmp")
+        } catch { ReadPicoBoardDeltaCache.shared.set(cacheKey, nil); throw error }
+        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any], body["ok"] as? Bool == true, body["accepted"] as? Bool == true else { ReadPicoBoardDeltaCache.shared.set(cacheKey, nil); throw ReadPicoManagerError.invalid("设备没有接收画布。") }
+        ReadPicoBoardDeltaCache.shared.set(cacheKey, model ? bmp : nil)
     }
     /// A saved receipt confirms delivery only; only displayed confirms panel presentation.
     public func pushCanvasConfirmed(_ bmp: Data, capability: ReadPicoCanvasCapability,

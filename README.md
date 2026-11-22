@@ -21,7 +21,7 @@
 
 构建缓存异常时可使用独立目录：`LINGXI_SWIFT_BUILD_PATH=/private/tmp/lingxi-build bash scripts/make-app.sh`。不要在同一构建目录同时运行多个 Swift 构建。
 
-[当前进度与验证记录](docs/2.0-PROGRESS.md) · [Pico 管理说明](docs/READ-PICO-MANAGER.md) · [Cloudflare 数据源](docs/CLOUDFLARE-ANALYTICS.md) · [DeepSeek 官方用量](docs/DEEPSEEK-USAGE.md) · [C6 开发记录](docs/C6-STANDALONE-2.0.md)
+[Pico 桌面控制台与双机工作区](docs/PICO-DESKTOP-CONSOLE.md) · [当前进度与验证记录](docs/2.0-PROGRESS.md) · [Pico 管理说明](docs/READ-PICO-MANAGER.md) · [Cloudflare 数据源](docs/CLOUDFLARE-ANALYTICS.md) · [DeepSeek 官方用量](docs/DEEPSEEK-USAGE.md) · [C6 开发记录](docs/C6-STANDALONE-2.0.md)
 
 ## 后续验证
 

@@ -76,7 +76,10 @@ struct ReadPicoWorkbenchView: View {
                     .allowsHitTesting(showsManager)
                     .accessibilityHidden(!showsManager)
                 switch section {
-                case .books, .fonts, .apps, .drawings, .settings: EmptyView()
+                case .books, .fonts, .drawings: EmptyView()
+                case .settings: EmptyView()
+                case .console: ReadPicoDesktopConsoleView(manager: drafts.model, deviceID: deviceID)
+                case .apps: EmptyView()
                 case .notes:
                     if showsReadingNotes {
                         VStack(spacing: 0) {
