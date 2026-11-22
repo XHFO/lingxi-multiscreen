@@ -184,11 +184,11 @@ final class FormlabsDashboardSession: NSObject, ObservableObject, WKNavigationDe
         }
     }
 
-    init(deviceID: UUID, serial: String) {
+    init(deviceID: UUID, serial: String, websiteDataStore: WKWebsiteDataStore? = nil) {
         self.deviceID = deviceID
         self.serial = serial
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: deviceID)
+        configuration.websiteDataStore = websiteDataStore ?? WKWebsiteDataStore(forIdentifier: deviceID)
         configuration.userContentController.addUserScript(WKUserScript(
             source: FormlabsDashboardPayload.observationScript(serial: serial),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))

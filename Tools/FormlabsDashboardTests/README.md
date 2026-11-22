@@ -1,6 +1,6 @@
 # Formlabs Dashboard local tests
 
-Run `bash Tools/FormlabsDashboardTests/run.sh` for the Swift payload projection and the exact injected JavaScript observer under local fetch/XHR fixtures. Add `--webkit` to also exercise a hidden, nonpersistent WKWebView with inline fixture HTML. The WebKit test may require a host environment that permits WebKit's auxiliary processes.
+Run `bash Tools/FormlabsDashboardTests/run.sh` for the Swift payload projection and the exact injected JavaScript observer under local fetch/XHR fixtures. Add `--webkit` to also exercise a hidden, nonpersistent WKWebView with inline fixture HTML, then mount and detach the actual login view inside a window that is never shown or activated. The latter verifies its initial native first responder and that detaching the view preserves the background session. The WebKit test may require a host environment that permits WebKit's auxiliary processes.
 
 The tests never sign in, use a real printer, read browser cookies, or send a Formlabs request. The hidden WebView replaces fetch before installing the production observer and rejects navigation after loading the inline fixture.
 

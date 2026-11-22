@@ -37,23 +37,26 @@ struct FormlabsDashboardLoginView: View {
 
 private struct DashboardWebView: NSViewRepresentable {
     let session: FormlabsDashboardSession
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+
+    func makeNSView(context: Context) -> WKWebView {
+        // Return the actual WebKit responder to SwiftUI, and restore native
+        // keyboard focus once when reattaching this retained background page.
         let webView = session.webView
         webView.removeFromSuperview()
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(webView)
-        NSLayoutConstraint.activate([
-            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            webView.topAnchor.constraint(equalTo: container.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
-        return container
+        DispatchQueue.main.async { [weak webView, weak session] in
+            guard let webView, let session, session.isLoginVisible,
+                  let window = webView.window else { return }
+            // One request on attachment only; state updates must not steal focus
+            // from a login field, a popup, or the sheet's native buttons.
+            window.makeFirstResponder(webView)
+        }
+        return webView
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
-    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
-        // AppModel retains the WKWebView; detaching it must not stop the session.
-        nsView.subviews.forEach { $0.removeFromSuperview() }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {}
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: ()) {
+        // SwiftUI detaches the view. AppModel retains it and its authorized page;
+        // dismissing this sheet must not stop loading or remove the observer.
     }
 }

@@ -14,5 +14,10 @@ if [[ "${1:-}" == "--webkit" ]]; then
     "$ROOT/Sources/LinxDisplayApp/FormlabsDashboardSession.swift" \
     "$ROOT/Tools/FormlabsDashboardTests/HiddenWebViewTests.swift" -o "$STAGE/hidden-webkit-tests"
   "$STAGE/hidden-webkit-tests"
+  swiftc -swift-version 5 -sdk "$SDK_PATH" -module-cache-path "$STAGE/modules" -parse-as-library \
+    "$ROOT/Sources/LinxDisplayApp/FormlabsDashboardSession.swift" \
+    "$ROOT/Sources/LinxDisplayApp/FormlabsDashboardLoginView.swift" \
+    "$ROOT/Tools/FormlabsDashboardTests/LoginFocusTests.swift" -o "$STAGE/login-focus-tests"
+  "$STAGE/login-focus-tests"
 fi
 printf '%s\n' "$STAGE"
